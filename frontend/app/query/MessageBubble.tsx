@@ -1162,13 +1162,15 @@ export default function MessageBubble({
   );
 }
 
-// ─── Trust line — categorical certainty + answer-scoped freshness ───────────
+// ─── Trust line — ONE quiet receipt, marks only when they carry signal ───────
 //
-// Three states a business user can act on (Checked / Checked & corrected /
-// Take with care) instead of a number nobody can act on. Freshness is scoped
-// to THE TABLES THIS ANSWER USED — the oldest one, honestly — replacing the
-// tenant-wide banner that showed the newest date coloured by the worst
-// unrelated connection.
+// Owner feedback 2026-08-27: the default "✓ Checked against your data" mark
+// appeared on EVERY answer, so it carried no information — and the separate
+// "How I got this" expander duplicated what one line can say. The receipt is
+// now a single muted line: sources (catalog-linked) · data-as-of (oldest
+// table this answer used, honestly) · seconds. A MARK renders only in the
+// exceptional states a reader should notice: ★ Verified by your team,
+// ✓ Checked & corrected, △ Take with care. Default success shows no mark.
 
 function oldestSourceDate(sources?: AnswerSource[]): string | null {
   const dates = (sources ?? []).map((s) => s.lastRefreshedAt).filter(Boolean) as string[];
@@ -1176,10 +1178,22 @@ function oldestSourceDate(sources?: AnswerSource[]): string | null {
   return dates.reduce((a, b) => (new Date(a).getTime() <= new Date(b).getTime() ? a : b));
 }
 
+/** Sources for the receipt — server-resolved when present, else bare names. */
+function answerSources(msg: Message): AnswerSource[] {
+  return msg.sources?.length
+    ? msg.sources
+    : (msg.tablesUsed ?? []).map((name) => ({
+        name: name.split('.').pop() ?? name,
+        kind: 'unknown' as const,
+        lastRefreshedAt: null,
+      }));
+}
+
 function TrustLine({ msg }: { msg: Message }) {
+  const sources = answerSources(msg);
   const oldest = oldestSourceDate(msg.sources);
   const fStatus = oldest ? getFreshnessStatus(oldest) : 'unknown';
-  const freshClass = fStatus === 'old' ? 'text-err' : fStatus === 'stale' ? 'text-warn' : 'text-muted';
+  const freshClass = fStatus === 'old' ? 'text-err' : fStatus === 'stale' ? 'text-warn' : 'text-muted-2';
 
   const mark = msg.checking
     ? null // the checking strip at the top of the card already says it
@@ -1190,19 +1204,34 @@ function TrustLine({ msg }: { msg: Message }) {
         ? { cls: 'text-ok', text: '★ Verified by your team' }
         : msg.wasRepaired
           ? { cls: 'text-ok', text: '✓ Checked & corrected' }
-          : { cls: 'text-ok', text: '✓ Checked against your data' };
+          : null; // default success: no mark — an always-on mark says nothing
 
-  if (!mark && !oldest && !msg.answeredInMs) return null;
+  if (!mark && sources.length === 0 && !oldest && !msg.warning) return null;
 
   return (
     <div className="border-t border-line pt-2 space-y-1">
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11.5px]">
-        {mark && <span className={`font-medium ${mark.cls}`}>{mark.text}</span>}
-        {oldest && (
-          <span className={freshClass}>Data as of {formatRelativeTime(oldest)}</span>
+      <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1 text-[11px] text-muted-2">
+        {mark && <span className={`font-medium text-[11.5px] ${mark.cls}`}>{mark.text}</span>}
+        {sources.length > 0 && (
+          <span>
+            From{' '}
+            {sources.slice(0, 4).map((s, i) => (
+              <span key={s.name}>
+                {i > 0 && ', '}
+                <Link
+                  href={`/catalog?table=${encodeURIComponent(s.name)}`}
+                  className="text-muted hover:text-ocean hover:underline"
+                >
+                  {humanizeTableName(s.name)}
+                </Link>
+              </span>
+            ))}
+            {sources.length > 4 && <span> +{sources.length - 4}</span>}
+          </span>
         )}
+        {oldest && <span className={freshClass}>· data as of {formatRelativeTime(oldest)}</span>}
         {msg.answeredInMs != null && msg.answeredInMs > 0 && (
-          <span className="text-muted-2 font-mono text-[10.5px]">answered in {Math.max(1, Math.round(msg.answeredInMs / 1000))}s</span>
+          <span className="font-mono text-[10px]">· {Math.max(1, Math.round(msg.answeredInMs / 1000))}s</span>
         )}
       </div>
       {msg.warning && !msg.checking && (
@@ -1212,59 +1241,31 @@ function TrustLine({ msg }: { msg: Message }) {
   );
 }
 
-// ─── "How I got this" — the plain-language method expander ──────────────────
+// ─── "Details" — repair trail + analyst-level depth, ONLY when it exists ─────
 //
-// Collapsed by default (the answer is the product; this is the audit trail).
-// Everyone gets: the tables behind the answer, humanized and deep-linked to
-// the Data Catalog (the same trust loop the dashboards' provenance panel
-// closes — /catalog?table= degrades to search on a miss, never a dead end),
-// plus the repair loop's "What I checked". Admin/analyst additionally get
-// the numeric confidence detail, the SQL and the raw model reasoning —
-// which used to float over the chat in a speech bubble, for every role.
+// Owner feedback 2026-08-27: the always-on "How I got this" expander didn't
+// add much — its business-user half (the source tables) now lives inline on
+// the receipt line above. What remains renders only when there is genuinely
+// something behind it: the repair loop's "What I checked" (any role — it is
+// the receipt of a correction), and for admin/analyst the confidence detail,
+// SQL and stored model reasoning. A viewer on an ordinary answer sees no
+// expander at all.
 
 function HowIGotThis({ msg, canSeeSql, showSql }: { msg: Message; canSeeSql: boolean; showSql: boolean }) {
   const [sqlOpen, setSqlOpen] = useState(false);
   const [reasoningOpen, setReasoningOpen] = useState(false);
 
-  const sources: AnswerSource[] = msg.sources?.length
-    ? msg.sources
-    : (msg.tablesUsed ?? []).map((name) => ({
-        name: name.split('.').pop() ?? name,
-        kind: 'unknown' as const,
-        lastRefreshedAt: null,
-      }));
-
-  const hasContent = sources.length > 0 || (msg.repairSummary?.length ?? 0) > 0 || canSeeSql;
-  if (!hasContent) return null;
+  const hasRepairTrail = (msg.repairSummary?.length ?? 0) > 0;
+  const hasAnalystDetail = canSeeSql && (msg.confidence !== undefined || !!msg.queryLayer || !!msg.sql || !!msg.reasoning);
+  if (!hasRepairTrail && !hasAnalystDetail) return null;
 
   return (
     <details className="border-t border-line pt-2 group">
-      <summary className="cursor-pointer list-none flex items-center gap-1 text-[11.5px] font-medium text-ocean hover:text-ocean-hover transition-colors select-none">
+      <summary className="cursor-pointer list-none flex items-center gap-1 text-[11px] font-medium text-muted hover:text-ocean transition-colors select-none">
         <ChevronRight className="w-3 h-3 transition-transform group-open:rotate-90" strokeWidth={2} />
-        How I got this
+        {hasRepairTrail && !hasAnalystDetail ? 'What I checked' : 'Details'}
       </summary>
       <div className="pt-2.5 pl-4 space-y-3 text-[12px]">
-        {sources.length > 0 && (
-          <div className="space-y-1">
-            <div className="text-[10px] font-mono uppercase tracking-[0.1em] text-muted">From</div>
-            {sources.map((s) => (
-              <div key={s.name} className="flex items-baseline gap-2 flex-wrap">
-                <Link
-                  href={`/catalog?table=${encodeURIComponent(s.name)}`}
-                  className="text-ocean hover:underline font-medium"
-                >
-                  {humanizeTableName(s.name)}
-                </Link>
-                {(s.productName || s.sourceName) && (
-                  <span className="text-muted-2 text-[11px]">{s.productName ?? s.sourceName}</span>
-                )}
-                {s.lastRefreshedAt && (
-                  <span className="text-muted-2 font-mono text-[10.5px]">refreshed {formatRelativeTime(s.lastRefreshedAt)}</span>
-                )}
-              </div>
-            ))}
-          </div>
-        )}
         {msg.repairSummary && msg.repairSummary.length > 0 && (
           <div className="space-y-1">
             <div className="text-[10px] font-mono uppercase tracking-[0.1em] text-muted">What I checked</div>

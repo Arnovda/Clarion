@@ -100,6 +100,19 @@ save, verify, pin, schedule, and the feedback loop closes into curation:**
 - **Investigate is on the rail** (gap analysis G10 closed): Uncover group,
   all roles, Search icon — the fully-built root-cause agent had ZERO nav
   links since it shipped.
+- **CARD QUIETED + REASONING GIVEN SPACE (same day, owner feedback: "too
+  much information … you really can't follow the reasoning").** (a) The
+  default "✓ Checked against your data" mark is GONE — an always-on mark
+  carries no signal; marks render only in the exceptional states (★
+  Verified / ✓ Checked & corrected / △ Take with care). (b) "How I got
+  this" is gone as an always-on expander: the receipt is ONE muted line —
+  `From <sources, catalog-linked> · data as of <oldest> · Ns` — and the
+  expander survives only when it has real content (repair trail "What I
+  checked" for any role; confidence/SQL/reasoning for analyst+, renamed
+  "Details"). A viewer on an ordinary answer sees no expander at all.
+  (c) `ThinkingBubble`'s 2-line reasoning clamp became a fixed-height
+  (max-h-40) AUTO-SCROLLING pane showing the FULL live stream pinned to
+  the tail — followable, scrollback available, layout still bounded.
 - Validation: backend `npm run check` clean; **full suite 41 files / 400
   passed** (12 new in `saved-questions.test.ts`: normalization, unsafe-SQL
   400 + nothing stored, viewer-verified silently false, normalized-dup

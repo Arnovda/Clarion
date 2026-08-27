@@ -5,12 +5,14 @@
  *
  * - `ThinkingBubble`: the PROGRESS TIMELINE — named steps in domain language
  *   ("Understanding your question" → "Looking at Sales, Receivables" →
- *   "Running the numbers" → "Writing the answer"), with a bounded two-line
- *   tail of live reasoning under the active step. This replaced the old
- *   220ms/word reveal of the raw thinking stream, which was always truncated
- *   mid-stream and grew without bound (2026-08-27 Ask AI assessment §5.2 —
- *   the Perplexity progress model). The component unmounts when the answer
- *   lands; the durable receipt is the answer card's trust line.
+ *   "Running the numbers" → "Writing the answer"), with the live reasoning
+ *   streaming into a FIXED-HEIGHT, AUTO-SCROLLING pane under the active
+ *   step. Owner feedback 2026-08-27: the first version clamped this to two
+ *   lines, which made the reasoning impossible to actually follow — the
+ *   pane now shows the full stream (~10 lines visible, pinned to the
+ *   bottom, scrollback available) while the layout stays bounded. The
+ *   component unmounts when the answer lands; the durable receipt is the
+ *   answer card's trust line.
  * - `ThinkingPanel`:  the repair loop, framed as DILIGENCE — "Double-checking
  *   the result", not an incident log. Renders the loop's narrative events
  *   and the inline clarification input.
@@ -75,6 +77,14 @@ export function ThinkingBubble({
   const writing = phase === 'Writing the answer…' || phase === 'Formatting answer…';
   const understandingDone = tables.length > 0 || running || writing;
 
+  // Keep the reasoning pane pinned to the newest text as it streams — the
+  // reader follows the tail, and can scroll back if they want the start.
+  const reasoningRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const el = reasoningRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [liveText]);
+
   const tableLabel = tables.slice(0, 3).map(humanizeTableName).join(', ')
     + (tables.length > 3 ? '…' : '');
 
@@ -83,9 +93,10 @@ export function ThinkingBubble({
       key: 'understand',
       label: 'Understanding your question',
       state: understandingDone ? 'done' : 'active',
-      // Bounded tail of the live reasoning — two clamped lines, replaced as
-      // the stream advances. Never the full accumulating dump.
-      sub: !understandingDone && liveText ? liveText.slice(-220) : undefined,
+      // The FULL live reasoning while this step is active — rendered in a
+      // fixed-height auto-scrolling pane below, so it is followable without
+      // the layout growing without bound.
+      sub: !understandingDone && liveText ? liveText : undefined,
     },
     ...(tables.length > 0
       ? [{ key: 'tables', label: `Looking at ${tableLabel}`, state: 'done' as StepState }]
@@ -118,9 +129,12 @@ export function ThinkingBubble({
                   {s.label}{s.state === 'active' ? '…' : ''}
                 </span>
                 {s.sub && (
-                  <p className="text-[11px] text-muted leading-relaxed mt-0.5 line-clamp-2 break-words">
+                  <div
+                    ref={reasoningRef}
+                    className="text-[11px] text-muted leading-relaxed mt-1 max-h-40 overflow-y-auto pr-1 whitespace-pre-wrap break-words border-l-2 border-line pl-2.5"
+                  >
                     {s.sub}
-                  </p>
+                  </div>
                 )}
               </div>
             </div>
