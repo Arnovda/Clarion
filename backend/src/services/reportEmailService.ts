@@ -12,7 +12,8 @@
 import { semanticDb } from '../db/knex';
 import { createConnector, createProductConnector } from '../connectors/ConnectorFactory';
 import { sendEmail } from './emailService';
-import { generateReportNarrative } from '../ai/AIService';
+import { generateReportNarrative, formatAnswer } from '../ai/AIService';
+import { getProductWarehousePath } from './productContext';
 import { logger } from '../utils/logger';
 import type { KpiResult } from '../ai/prompts/answerFormatterPrompt';
 
@@ -172,7 +173,16 @@ export async function sendScheduledReport(scheduleId: number): Promise<void> {
       logger.warn({ scheduleId }, '[report-email] Product not found');
       return;
     }
-    const warehousePath = await import('./productContext').then((m) => m.getProductWarehousePath(product));
+    // NOTE: this call used to pass the whole product ROW (the signature
+    // changed to `connectionId` in the 2026-05-05 rebuild and this caller
+    // was never updated — hidden behind an untyped dynamic import). Pass
+    // the connection id it actually expects, and fail legibly when the
+    // warehouse has nothing materialised.
+    const warehousePath = await getProductWarehousePath(product.connection_id as number);
+    if (!warehousePath) {
+      logger.warn({ scheduleId }, '[report-email] Product warehouse not materialised');
+      return;
+    }
     connector = await createProductConnector(warehousePath, product.connection_id as number);
   } else {
     const connection = await semanticDb('connections').where({ id: connectionId }).first();
@@ -296,7 +306,6 @@ async function sendScheduledQuestion(schedule: {
   try {
     let connector;
     if (sq.data_layer === 'product') {
-      const { getProductWarehousePath } = await import('./productContext');
       const warehousePath = await getProductWarehousePath(sq.connection_id);
       if (!warehousePath) throw new Error('product warehouse not materialised');
       connector = await createProductConnector(warehousePath, sq.connection_id as number, sq.tenant_id as number);
@@ -318,7 +327,6 @@ async function sendScheduledQuestion(schedule: {
   let summary: string | null = null;
   if (schedule.ai_summary && rows.length > 0) {
     try {
-      const { formatAnswer } = await import('../ai/AIService');
       summary = await formatAnswer(sq.question as string, rows);
     } catch (err) {
       logger.warn({ scheduleId: schedule.id, err }, '[report-email] answer summary failed — sending without it');
