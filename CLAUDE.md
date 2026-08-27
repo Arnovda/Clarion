@@ -31,7 +31,44 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-08-27 (data experience consolidation plan — doc only; same day as the dual-id fix below)
+**Last updated:** 2026-08-27 (data experience Release A "Every door leads somewhere true" SHIPPED)
+
+**DATA EXPERIENCE RELEASE A IS BUILT (2026-08-27, same day as the plan
+below; implements its §5 Release A with the owner's settled decisions:
+sample rows ALL ROLES, Structure tree stays, notebook pane NEVER deleted —
+"it earns its keep"). All deterministic, zero AI calls:**
+- **Shared-data cards now land on the Data Catalog for EVERY role**
+  (`/catalog?refTableId=<id>`) — was: curators → the build workshop
+  (broken anyway for display-named tables), viewers → a dead `<div>`.
+- **`/catalog` deep links work**: new one-shot restore effect resolves
+  `?refTableId=<product_tables id>` AND `?table=<name>` (matched against
+  the new `tableName` on by-source reference cards + display name) once
+  the catalog feed loads, landing on the FULL reference view (sample rows
+  included); an unmatched `?table=` (fact/rollup) falls back to prefilled
+  catalog search instead of a dead end.
+- **`/semantic/product-preview` is ALL ROLES now** (owner decision —
+  Ask AI already serves viewers the same rows; the non-negotiable is
+  about SQL, not data). Kills the 403-as-UX on ProductFullView's and
+  ReferenceDetailPanel's Sample surfaces. Tenant scoping unchanged.
+- **The trust loop closes from the dashboard**: the filter provenance "?"
+  popover gained "View <table> in the Data Catalog →"
+  (`/catalog?table=`), and WidgetProvenance's product-table chips are
+  links now. Build's finish card gained "See your subjects →".
+- **Dead ends removed**: the workshop's stale "Tip" card (claimed a chat
+  that never mounts) deleted; ProductFullView's "Edit in notebook →"
+  now curator-gated (isCurator threaded through TablesTab/TableRow);
+  stale header comments fixed (`products/[id]/page.tsx` "all 6 tabs",
+  ReferenceDetailPanel's phantom editing claim — now points at the
+  Release B merge).
+- Validation: backend check clean, full suite **39 files / 383 passed**,
+  all eight ratchets green, frontend tsc + lint (touched files, incl.
+  removing catalog/page.tsx's pre-existing unused ProductCardGrid
+  import) + `next build` green.
+- **NOT in this slice**: Release B component merges (one product page,
+  one table page, Structure driving shared panels) and Release C cockpit
+  merge — see the plan below.
+
+**Prior last updated:** 2026-08-27 (data experience consolidation plan — doc only; same day as the dual-id fix below)
 
 **NEW DOC: `docs/backlog/data-experience-consolidation.md` (2026-08-27, doc
 only; no code changed).** Owner, after walking the Reference/Item flow live:

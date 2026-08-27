@@ -808,12 +808,9 @@ function OverviewSection({
         </div>
       )}
 
-      <Card title="Tip">
-        <p className="text-[13px] text-ink-2 leading-relaxed">
-          Use the chat on the right. Switch to <span className="font-medium">Refine</span> to suggest changes
-          (better column names, new KPIs, fixed descriptions). I&rsquo;ll propose safe edits you can review and apply with one click.
-        </p>
-      </Card>
+      {/* (The old "Tip" card claimed a chat on the right — embedAskAI is
+          false at every call site, so that chat never mounted. Removed
+          2026-08-27; the Refine button in the header is the real entry.) */}
     </div>
   );
 }

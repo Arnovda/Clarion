@@ -12,11 +12,17 @@
  *
  * Every role (Subjects group in the rail, 2026-08-18): the lookups are
  * CONTENT — your customers, your products — and a viewer can already read
- * the same rows through Ask AI. Viewers get the read-only view: the cards
- * don't link into the build workshop for them. Curators keep the
- * click-through. Reads the existing catalog-by-source endpoint, which
- * already unfolds reference-kind products into one card per lookup table
- * with its reverse-lineage ("used in").
+ * the same rows through Ask AI.
+ *
+ * EVERY card links to the Data Catalog's reference view (2026-08-27,
+ * data-experience consolidation Release A). It used to send curators into
+ * the BUILD WORKSHOP — Deploy/Refine/Delete and a SQL-first table view,
+ * when the job of a click on "Item" is seeing the items — and gave viewers
+ * a dead <div>. One door per thing: content clicks land on the
+ * understanding surface for every role; the workshop is entered only
+ * through explicit workshop links. Reads the existing catalog-by-source
+ * endpoint, which already unfolds reference-kind products into one card
+ * per lookup table with its reverse-lineage ("used in").
  */
 
 import { useEffect, useState } from 'react';
@@ -111,16 +117,13 @@ function SharedData() {
             <div className="grid gap-3 sm:grid-cols-2">
               {block.reference.map((card) => {
                 const Glyph = iconForReference(card.name);
-                // Viewers get the card without the click-through: the target
-                // is the build workshop, a curator surface.
-                const Wrapper = curator ? 'a' : 'div';
                 return (
-                  <Wrapper
+                  <a
                     key={card.tableId}
-                    {...(curator ? { href: `/products/${card.productId}?table=${encodeURIComponent(card.name)}` } : {})}
+                    href={`/catalog?refTableId=${card.tableId}`}
                     className={cn(
                       'group flex flex-col gap-2 rounded-[10px] border border-line bg-raised px-5 py-4 transition-colors duration-1 ease-observatory',
-                      curator && 'hover:border-ocean',
+                      'hover:border-ocean',
                     )}
                   >
                     <div className="flex items-center gap-2.5">
@@ -145,7 +148,7 @@ function SharedData() {
                       )}
                       {card.lastRefreshedAt && <span>· refreshed {formatRelativeLong(card.lastRefreshedAt)}</span>}
                     </div>
-                  </Wrapper>
+                  </a>
                 );
               })}
             </div>

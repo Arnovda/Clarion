@@ -176,6 +176,7 @@ interface ReferenceCardOut {
   productId: number;       // the wrapping data_product (kept for stability)
   tableId: number;         // the addressable product_table — what we open
   name: string;            // table display_name or table_name
+  tableName: string;       // technical name — /catalog?table= deep links match on it
   description: string | null;
   rowCount: number | null;
   lastRefreshedAt: string | null;
@@ -518,6 +519,10 @@ router.get('/catalog/by-source', requireAuth, async (req: Request, res: Response
             productId: raw.id,
             tableId: t.table_id,
             name: t.display_name ?? t.table_name,
+            // Technical name too: /catalog?table=<name> deep links (dashboard
+            // filter provenance) resolve against it — the display name alone
+            // can't match a spec's `dim_item`.
+            tableName: t.table_name,
             description: t.description ?? raw.description,
             rowCount: t.row_count != null ? Number(t.row_count) : null,
             lastRefreshedAt: isoOrNull(t.last_run_at),

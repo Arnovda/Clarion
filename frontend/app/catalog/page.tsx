@@ -20,7 +20,7 @@
  * affordances, and role-gating logic apply unchanged.
  */
 
-import { Suspense, useCallback, useEffect, useMemo, useState } from 'react';
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { Loader2, Plus, LayoutGrid, Network, Search, X, Library, ShieldCheck, List } from 'lucide-react';
 import RequireRole from '@/components/RequireRole';
@@ -39,7 +39,7 @@ import { parseIdFromSlug } from '@/lib/catalog';
 import { cn } from '@/lib/cn';
 import api from '@/lib/api';
 import { getItem, setItem, storageKeys } from '@/lib/storage';
-import ProductCardGrid, { type ProductCardData } from '@/components/catalog/ProductCardGrid';
+import { type ProductCardData } from '@/components/catalog/ProductCardGrid';
 import CatalogSplitView, { type SourceBlockData } from '@/components/catalog/CatalogSplitView';
 import GlossaryMatchCards, { type GlossaryEntry } from '@/components/catalog/GlossaryMatchCards';
 import ProductFullView from '@/components/catalog/ProductFullView';
@@ -206,9 +206,54 @@ function CatalogInner() {
       const id = Number(productId);
       if (Number.isFinite(id)) setProductRootId(id);
     }
-    // (Future: support ?catalog=&schema=&table=&column= for shareable deep links.)
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // ── Restore a reference-table deep link once the catalog feed is loaded ────
+  // Two forms, both landing on the full reference view (rows included):
+  //   ?refTableId=<product_tables id> — Shared-data cards and internal links
+  //   ?table=<name>                   — links that only know a table NAME,
+  //                                     e.g. the dashboard filter provenance
+  //                                     popover ("dim_item"). Matched against
+  //                                     the technical name and the display
+  //                                     name; when nothing matches (a fact or
+  //                                     rollup table), the name lands in the
+  //                                     catalog search instead of a dead end.
+  // One-shot: user navigation afterwards must not be fought by the URL.
+  const deepLinkDoneRef = useRef(false);
+  useEffect(() => {
+    if (deepLinkDoneRef.current || catalogLoading) return;
+    const refId = params.get('refTableId');
+    const tableName = params.get('table');
+    if (!refId && !tableName) { deepLinkDoneRef.current = true; return; }
+    deepLinkDoneRef.current = true;
+
+    const wanted = refId ? Number(refId) : null;
+    const nameLc = tableName?.toLowerCase() ?? null;
+    for (const block of catalogBlocks) {
+      for (const card of block.reference) {
+        const hit = wanted != null
+          ? card.tableId === wanted
+          : nameLc != null && (card.tableName?.toLowerCase() === nameLc || card.name.toLowerCase() === nameLc);
+        if (hit) {
+          setReferenceTableId(card.tableId);
+          setReferenceProductId(card.productId);
+          setProductRootId(null);
+          setSourceRootConnId(null);
+          setTableSel(null);
+          setSchemaSel(null);
+          setProductFullView(true); // land on the full view — sample rows included
+          return;
+        }
+      }
+    }
+    if (nameLc) {
+      // No reference card carries this name (a fact/rollup table, or a stale
+      // link) — surface it through search so the user still lands near it.
+      setSearch(tableName!.replace(/^(dim|fact|rollup_monthly)_/, '').replace(/_/g, ' '));
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [catalogLoading, catalogBlocks]);
 
   // ── Selection handlers ─────────────────────────────────────────────────────
   const handleSelectTable = useCallback((sel: CatalogSelection) => {

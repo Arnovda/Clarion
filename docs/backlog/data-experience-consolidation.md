@@ -228,15 +228,18 @@ workshop unification per §3.
 
 ---
 
-## 6. Owner decisions queued
+## 6. Owner decisions — SETTLED (owner, 2026-08-27)
 
-1. **Sample-row visibility** — recommendation: all roles for product-layer
-   tables (Ask AI already serves viewers the same rows; the role table's
-   "never show raw SQL" rule is about SQL, not data). Minimum: analyst+.
-2. **Manage ↔ workshop merge direction** (Release C) — recommendation above.
-3. **Does Structure survive at all?** Recommendation: yes, as an
-   analyst-only tree toggle with shared panels — it's the fastest column-level
-   navigation for curators — but if usage stays low after Release B, delete it.
+1. **Sample-row visibility: ALL ROLES** for product-layer tables (recommendation
+   accepted — Ask AI already serves viewers the same rows; the non-negotiable
+   is about SQL, not data). Implemented in Release A.
+2. **Manage ↔ workshop merge direction** (Release C): recommendation accepted —
+   Manage mode becomes the single curator cockpit. **HARD CONSTRAINT added by
+   the owner: the notebook pane survives** ("it earns its keep") — Release C
+   relocates it into the cockpit; it is never deleted.
+3. **The Structure tree STAYS** — the owner is a fan. Release B keeps it as
+   the analyst tree view, changed only so its clicks drive the SAME panels as
+   the Browse cards.
 
 ## 7. What NOT to do
 

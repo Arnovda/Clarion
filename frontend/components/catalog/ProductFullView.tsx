@@ -247,7 +247,7 @@ export default function ProductFullView({ productId, onBack }: Props) {
             <MetricsTab kpis={kpis} palette={palette} />
           )}
           {tab === 'tables' && (
-            <TablesTab tables={allTables} productId={productId} palette={palette} />
+            <TablesTab tables={allTables} productId={productId} palette={palette} isCurator={isCurator} />
           )}
           {tab === 'quality' && (
             <QualityTab productId={productId} tables={allTables} palette={palette} />
@@ -363,11 +363,12 @@ function KpiCard({ kpi }: { kpi: Kpi }) {
 // ───────────────────────────────────────────────────────────────────────────
 
 function TablesTab({
-  tables, productId, palette,
+  tables, productId, palette, isCurator,
 }: {
   tables: ProductTable[];
   productId: number;
   palette: SourcePalette;
+  isCurator: boolean;
 }) {
   const [expandedId, setExpandedId] = useState<number | null>(null);
   if (tables.length === 0) {
@@ -383,6 +384,7 @@ function TablesTab({
             productId={productId}
             expanded={expandedId === t.id}
             onToggle={() => setExpandedId((cur) => cur === t.id ? null : t.id)}
+            isCurator={isCurator}
           />
         ))}
       </div>
@@ -391,12 +393,13 @@ function TablesTab({
 }
 
 function TableRow({
-  table, productId, expanded, onToggle,
+  table, productId, expanded, onToggle, isCurator,
 }: {
   table: ProductTable;
   productId: number;
   expanded: boolean;
   onToggle: () => void;
+  isCurator: boolean;
 }) {
   return (
     <div>
@@ -447,12 +450,16 @@ function TableRow({
             <div className="text-[10px] font-mono uppercase tracking-[0.12em] text-muted-2 mb-2">Sample data</div>
             <PreviewTable url={`/semantic/product-preview?productTableId=${table.id}&limit=10`} />
           </div>
-          <a
-            href={`/products/${productId}?table=${encodeURIComponent(table.table_name)}`}
-            className="inline-flex items-center gap-1.5 text-[11.5px] font-medium text-ocean hover:underline"
-          >
-            Edit in notebook →
-          </a>
+          {/* Workshop link — curator-gated like "Open in Build": showing a
+              viewer a door into a role-gated route is a dead end. */}
+          {isCurator && (
+            <a
+              href={`/products/${productId}?table=${encodeURIComponent(table.table_name)}`}
+              className="inline-flex items-center gap-1.5 text-[11.5px] font-medium text-ocean hover:underline"
+            >
+              Edit in notebook →
+            </a>
+          )}
         </div>
       )}
     </div>

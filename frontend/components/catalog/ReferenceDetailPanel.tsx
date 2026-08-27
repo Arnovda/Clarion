@@ -17,9 +17,11 @@
  *
  * Lean compared to ProductTableDetailPanel:
  *   - no relationships graph (Used-in covers the actionable subset)
- *   - editing affordances pulled back to the essentials (description, role)
- *   - no save/discard footer choreography — saves go through the existing
- *     PATCH /api/products/columns/:id and refresh on success
+ *   - READ-ONLY today — no editing affordances (an earlier version of this
+ *     comment promised description/role editing that was never built; the
+ *     data-experience consolidation plan merges this panel with
+ *     ProductTableDetailPanel, whose editing is real — see
+ *     docs/backlog/data-experience-consolidation.md Release B)
  */
 
 import { useEffect, useState } from 'react';
@@ -476,7 +478,9 @@ function SampleTab({ tableId, productId }: { tableId: number; productId: number 
         if (cancelled) return;
         const status = e?.response?.status;
         if (status === 403) {
-          setError('Sample data is admin-only on this surface.');
+          // Should no longer occur — product-preview is all-roles since
+          // 2026-08-27 — kept as a graceful fallback for older deployments.
+          setError('Sample data is not available for your role.');
         } else {
           setError(e?.response?.data?.error ?? e?.message ?? 'Failed to load');
         }

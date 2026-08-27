@@ -718,13 +718,19 @@ function RunPanel({ src, run, intent, onCancel, onDismiss }: {
             </ul>
           )}
           {run.ok && (
-            <div className="mt-2">
+            <div className="mt-2 flex flex-wrap items-center gap-3">
               <a
                 href={question ? `/query?q=${encodeURIComponent(question)}&autoSubmit=1` : '/query'}
                 className="inline-flex items-center gap-1.5 rounded-[8px] bg-ocean px-3.5 py-1.5 text-[12.5px] font-medium text-white hover:opacity-90"
               >
                 {question ? <>Ask: “{question}”</> : <>Ask your first question</>}
                 <ArrowRight className="h-3.5 w-3.5" strokeWidth={2} aria-hidden />
+              </a>
+              <a
+                href="/subjects"
+                className="inline-flex items-center gap-1 text-[12.5px] font-medium text-ocean hover:underline"
+              >
+                See your subjects →
               </a>
             </div>
           )}

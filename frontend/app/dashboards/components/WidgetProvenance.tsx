@@ -180,7 +180,20 @@ export default function WidgetProvenance({ widget, dataLayer, isAdminOrAnalyst, 
                         ) : (
                           <Database className="w-3.5 h-3.5 shrink-0 text-muted-2" strokeWidth={1.75} />
                         )}
-                        <span className="text-[12.5px] font-medium text-ink truncate">{t.name}</span>
+                        {/* Product-layer tables link into the Data Catalog —
+                            the trust affordance the owner asked for: doubt
+                            born here resolves on the table's own page. */}
+                        {t.kind === 'product' ? (
+                          <a
+                            href={`/catalog?table=${encodeURIComponent(t.name)}`}
+                            className="text-[12.5px] font-medium text-ink truncate hover:text-ocean hover:underline"
+                            title="View this table in the Data Catalog"
+                          >
+                            {t.name}
+                          </a>
+                        ) : (
+                          <span className="text-[12.5px] font-medium text-ink truncate">{t.name}</span>
+                        )}
                         <span className={cn(
                           'text-[10px] font-mono uppercase tracking-[0.08em] px-1.5 py-0.5 rounded border border-line ml-1',
                           t.kind === 'product' && 'text-ai bg-ai-soft',

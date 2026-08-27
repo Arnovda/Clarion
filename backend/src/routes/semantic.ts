@@ -1942,7 +1942,14 @@ router.post('/improve-text', requireAuth, requireRole('admin', 'analyst'), async
 });
 
 // GET /api/semantic/product-preview?productTableId=123&limit=10
-router.get('/product-preview', requireAuth, requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
+//
+// ALL ROLES on purpose (owner decision, 2026-08-27 — data-experience
+// consolidation Release A): this returns ROWS of the tenant's own product
+// tables, which every role can already read through Ask AI; the
+// non-negotiable is about SQL, not data. It was admin-only while two
+// consumer catalog panels advertised a Sample tab — a 403 as UX. Tenant
+// scoping is unchanged (resolveProductTableById matches tenant_id).
+router.get('/product-preview', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const db = reqDb(req);
     const { productTableId, limit = '10' } = req.query as Record<string, string>;

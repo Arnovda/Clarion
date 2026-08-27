@@ -170,8 +170,7 @@ function FilterProvenance({ filter, options }: { filter: FilterSpec; options: st
               )}
               {options.length === 1 && (
                 <p className="text-[11px] text-muted mt-2 leading-relaxed">
-                  Only one value exists — if you expected more, check this field on the{' '}
-                  {humanizeTableName(filter.table)} table in the Data Catalog, or ask AI about it.
+                  Only one value exists — if you expected more, check the table below or ask AI about it.
                 </p>
               )}
             </>
@@ -180,6 +179,12 @@ function FilterProvenance({ filter, options }: { filter: FilterSpec; options: st
               Every widget on this dashboard is filtered on this date field.
             </p>
           )}
+          <a
+            href={`/catalog?table=${encodeURIComponent(filter.table)}`}
+            className="mt-3 inline-flex items-center gap-1 text-[11.5px] font-medium text-ocean hover:underline"
+          >
+            View {humanizeTableName(filter.table)} in the Data Catalog →
+          </a>
         </div>
       )}
     </div>

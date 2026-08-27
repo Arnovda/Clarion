@@ -26,6 +26,8 @@ export interface ReferenceCardData {
   productId: number;
   tableId: number;
   name: string;
+  /** Technical table name (e.g. dim_item) — used by /catalog?table= deep links. */
+  tableName?: string;
   description: string | null;
   rowCount: number | null;
   lastRefreshedAt: string | null;

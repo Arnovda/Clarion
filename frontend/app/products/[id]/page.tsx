@@ -3,9 +3,11 @@
 /**
  * /products/[id] — Build's operator surface for one product.
  *
- * Mounts <ProductRootPanel> with all 6 tabs (Overview / Tables / Schema
- * diagram / Data flow / KPIs / Quality / SQL) and the Rebuild + Refine +
- * Delete actions. Admin/analyst only — same role gate as /products.
+ * Mounts <ProductRootPanel> — Overview + Tables tabs, the per-table
+ * notebook, and the Deploy all / Refresh / Refine / Delete actions.
+ * Admin/analyst only — same role gate as /products. (An earlier version
+ * of this comment claimed 6 tabs; the 2026-08-18 slimming moved Schema
+ * diagram / Data flow / KPIs / Quality to the topic's Manage mode.)
  *
  * Navigation flow:
  *   - From BuildDashboard at /products: click a row → land here.
