@@ -31,7 +31,43 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-08-27 (catalog product tables were 404ing since the 2026-07-28 gate — dual-id fix + filter provenance)
+**Last updated:** 2026-08-27 (data experience consolidation plan — doc only; same day as the dual-id fix below)
+
+**NEW DOC: `docs/backlog/data-experience-consolidation.md` (2026-08-27, doc
+only; no code changed).** Owner, after walking the Reference/Item flow live:
+too many panes/views on the same data; likes the Data Catalog; wants ONE
+coherent flow. Method: full code inventory of every product-layer
+data-inspection surface (file:line). Measured: **~15 surfaces / 6+
+components render the same product data** — the product overview exists 4×
+(workshop OverviewSection, the SAME component re-rendered inside catalog
+Structure via EntityDetailPanel, ProductPreviewPanel, ProductFullView; topic
+layer a deliberate 5th), the tables list 5×, ONE reference table has TWO
+different detail panels depending on the door (Structure tree →
+ProductTableDetailPanel, editable+SQL; Browse card → ReferenceDetailPanel,
+read-only, no role logic), Quality renders via 5 call sites (two components
+both named QualityTab), lineage 3 ways. Worst routing: a Shared-data card
+click lands CURATORS in the build workshop ("Operator surface",
+Deploy/Refine/Delete, SQL-first) — broken anyway for display-named tables
+(card passes display_name, ProductRootPanel matches table_name) — and gives
+VIEWERS a dead <div>. Plus: `?refTableId` written but never read,
+/semantic/product-preview is admin-only while two consumer panels advertise
+Sample rows (403 as UX), the workshop Tip references a chat that never
+mounts (embedAskAI=false at every call site), and NOTHING links into the
+understanding surfaces from dashboards/Ask-AI-success/Build-finish/Home.
+**Target model (§3): three surfaces, one page per thing, role layers
+capability on the page** — Subjects stays as-is; the Data Catalog becomes
+the ONE understanding surface (one merged product page, one merged table
+page with SAMPLE ROWS FIRST, Structure demoted to a tree toggle driving the
+same panels); the workshop keeps only surgery (notebook/deploy/rebuild) and
+is never the landing of a content click. Re-asserts the 2026-08-18 IA rule
+that later additions broke. §5 sequences: Release A routing+defect fixes
+(D1–D10), Release B component merges, Release C the Manage-mode↔workshop
+cockpit merge (owner decision queued, recommendation: Manage wins, absorbs
+the notebook). §6 queues: sample-row visibility (recommend all roles —
+Ask AI already serves viewers the same rows), cockpit merge direction,
+Structure's survival. Published as artifact "One Door Per Thing".
+
+**Prior last updated:** 2026-08-27 (catalog product tables were 404ing since the 2026-07-28 gate — dual-id fix + filter provenance)
 
 **THE CATALOG'S PRODUCT TABLES WERE "TABLE NOT FOUND" SINCE 2026-07-28 —
 FOUND FROM THE OWNER'S FIRST CLICK, FIXED (2026-08-27).** Owner clicked
