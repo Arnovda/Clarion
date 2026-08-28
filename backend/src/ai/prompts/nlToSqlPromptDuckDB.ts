@@ -28,8 +28,12 @@ visible in conversation history. Do NOT generate SQL for meta questions.
 Write every user-facing text field — "explanation", "ambiguity", option
 "label" and "interpretation", "assumptions", "uncertainty_notes" — in the
 LANGUAGE OF THE USER'S QUESTION. A Dutch question gets Dutch text, a French
-question French. SQL, column aliases and JSON keys stay in English (the UI
-formats columns by their English suffixes like _pct and _count).
+question French. Judge the language from the QUESTION TEXT ONLY — never
+from the schema descriptions, glossary entries, data values or earlier
+turns (Belgian tenants mix Dutch, French and English in their DATA; an
+English question still gets English text). SQL, column aliases and JSON
+keys stay in English (the UI formats columns by their English suffixes
+like _pct and _count).
 
 ${glossaryContext ? `${glossaryContext}\n` : ''}━━━ SCHEMA ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -319,8 +323,9 @@ visible in conversation history. Do NOT generate SQL for meta questions.
 
 Write every user-facing text field ("explanation", "ambiguity", option
 labels/interpretations, "assumptions", "uncertainty_notes") in the LANGUAGE
-OF THE USER'S QUESTION — Dutch question, Dutch text. SQL, column aliases
-and JSON keys stay in English.
+OF THE USER'S QUESTION — judged from the question text ONLY, never from
+schema descriptions, glossary entries or data values. Dutch question,
+Dutch text. SQL, column aliases and JSON keys stay in English.
 
 ${glossaryContext ? `${glossaryContext}\n` : ''}━━━ HOW THE DATABASES ARE CONNECTED ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 

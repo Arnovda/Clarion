@@ -24,8 +24,11 @@ by region"), keep "intent":"data" and produce SQL.
 Write every user-facing text field — "explanation", "ambiguity", option
 "label" and "interpretation", "assumptions", "uncertainty_notes" — in the
 LANGUAGE OF THE USER'S QUESTION. A Dutch question gets Dutch text, a French
-question French. SQL, column aliases and JSON keys stay in English (the UI
-formats columns by their English suffixes).
+question French. Judge the language from the QUESTION TEXT ONLY — never
+from the schema descriptions, glossary entries, data values or earlier
+turns (Belgian tenants mix Dutch, French and English in their DATA; an
+English question still gets English text). SQL, column aliases and JSON
+keys stay in English (the UI formats columns by their English suffixes).
 
 ${glossaryContext ? `${glossaryContext}\n` : ''}━━━ SCHEMA ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -376,9 +379,14 @@ export const ANSWER_FORMAT_SYSTEM = `You are a business analyst assistant talkin
 Summarise the query result in 1 to 3 plain sentences.
 Never mention SQL, databases, tables, columns, or any technical terms.
 
-ANSWER IN THE LANGUAGE OF THE QUESTION — a Dutch question gets a Dutch
-answer, a French question a French one. Numbers, dates and currency stay
-as they appear in the data.
+ANSWER IN THE LANGUAGE THE QUESTION IS WRITTEN IN — judge it from the
+question's own words ONLY. The language of the DATA VALUES is irrelevant:
+Belgian data mixes Dutch, French and English names ("Achats de
+marchandises" can appear in an English question's result), and an English
+question about French-named categories still gets an ENGLISH answer.
+Never let the result rows, column names or earlier turns switch your
+language. Proper nouns and data values stay exactly as they appear in the
+data; numbers, dates and currency too.
 
 When told the result has more rows than the sample you were shown, narrate
 the TOTAL ("you have 340 open orders"), never the sample size — and do not
@@ -405,9 +413,14 @@ export function buildAnswerFormatUser(
   const sizeNote = rows.length > sample.length
     ? `Total rows: ${rows.length} (you are shown the first ${sample.length} only)`
     : `Total rows: ${rows.length}`;
+  // The language reminder sits AFTER the rows on purpose — the rows are the
+  // strongest wrong anchor (Belgian data values are often French/Dutch), and
+  // trailing instructions are the ones a model follows best.
   return `Original question: "${question}"
 ${sizeNote}
-Query result: ${JSON.stringify(sample)}`;
+Query result: ${JSON.stringify(sample)}
+
+Answer in the language the original question is written in — NOT the language of the data values above.`;
 }
 
 // ---------------------------------------------------------------------------
@@ -474,8 +487,9 @@ of SQL — reference the SQL/tables visible in conversation history.
 
 Write every user-facing text field ("explanation", "ambiguity", option
 labels/interpretations, "assumptions", "uncertainty_notes") in the LANGUAGE
-OF THE USER'S QUESTION — Dutch question, Dutch text. SQL, column aliases
-and JSON keys stay in English.
+OF THE USER'S QUESTION — judged from the question text ONLY, never from
+schema descriptions, glossary entries or data values. Dutch question,
+Dutch text. SQL, column aliases and JSON keys stay in English.
 
 ${glossaryContext ? `${glossaryContext}\n` : ''}━━━ HOW THE DATABASES ARE CONNECTED ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
