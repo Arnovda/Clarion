@@ -31,7 +31,50 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-08-28 (ASK AI WORKSHEET PHASES 5–8 SHIPPED — the brief is fully implemented; same day as phases 1–4 below)
+**Last updated:** 2026-08-29 (COMPETITIVE READ: Decision Computing — doc only, no code changed)
+
+**NEW DOC: `docs/backlog/decision-computing-analysis.md` (2026-08-28, doc only).**
+Owner asked whether decisioncomputing.ai is in Clarion's space and what could be
+incorporated. Their site is egress-blocked from the sandbox, so their content was
+reconstructed from indexed search results across homepage/about/pricing/use-cases/
+insurance/bid-management and six `/news` posts (quotes are theirs); the Clarion
+side is verified against the code, not against this file. **Verdict: not a
+competitor — the other half of the same sentence.** They are an agentic
+*workflow-automation* platform for enterprise knowledge work (drag-and-drop agent
+builder, priced by workflow, 200 seats / 750 workflows at enterprise tier, SF, ~5
+people, Array Ventures); Clarion is an SMB *understanding* platform that builds
+the model first. Shared substrate is real (DuckDB over a lakehouse, LLM over
+governed enterprise data, lineage-as-product, "the domain expert owns the AI"),
+and their "Data & analytics" use case is Clarion's whole product — but
+everything else they sell Clarion doesn't do, and everything Clarion does
+upstream they don't do. **The useful part is the mirror**: four of their five
+stated 2026 open problems are Clarion's own prior conclusions (hybrid
+deterministic-AI — Clarion is ahead; evaluation by domain experts —
+machinery exists, measurement doesn't; durable execution — for builds, not
+reasoning; agent UX — the worksheet answers it). **The fifth is a blind spot:
+holistic retrieval across documents/inboxes.** Six gaps verified in code:
+(4.1) **zero unstructured data** — no embeddings/vector/full-text/PDF/OCR/upload
+anywhere, `binary` type class read by nothing; (4.2) **Clarion still never acts**
+— `SourceConnector` has no write verb at all, and `morning_briefs.emailed_at`
+is still never written; (4.3) **no evaluation layer** — no eval/golden/benchmark
+in the repo, thumbs-down files a gap and is never read back, while a golden set
+sits unassembled in `query_log` + verified questions + `conversation_messages.meta`;
+(4.4) **the proactive loop is three unconnected pieces** — pulse `sensitivity`
+fires nothing, `runInvestigation()`'s only caller is an HTTP route, quality alerts
+only run inside a profiling request; (4.5) **no tool-use anywhere** — zero hits
+for `tools:`/`tool_use`/`input_schema`, all ~45 capabilities are prompt→JSON,
+so an agent is capped at one SQL query per turn; (4.6) replay exists for data and
+answers but not for AI decisions. Recommendations, ranked cheapest-first:
+**(1) eval harness + one accuracy number**, **(2) close pulse→alert→
+investigate and let the brief email**, (3) the answer that arrives with a drafted
+action attached, (4) documents as a second data type — narrow, deterministic,
+linked to modelled entities, scoped BY the semantic layer, (5) real tool-use for
+the two agent loops, (6) decision replay. What NOT to take: a drag-and-drop agent
+canvas (contradicts the standing no-agent-workspace rule), their verticals,
+"all data types" as a slogan, any loosening of the SQL guard, "1000x" as a target.
+Published as artifact "Clarion and Decision Computing". No code changed.
+
+**Prior last updated:** 2026-08-28 (ASK AI WORKSHEET PHASES 5–8 SHIPPED — the brief is fully implemented; same day as phases 1–4 below)
 
 **WORKSHEET PHASES 5–8 ARE BUILT (2026-08-28, second slice of the day; the
 brief in `docs/backlog/ask-ai-worksheet.md` is now FULLY implemented):**
