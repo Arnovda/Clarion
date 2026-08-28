@@ -31,7 +31,37 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-08-27 (ASK AI RELEASE 3 "ANSWERS GO SOMEWHERE" SHIPPED — third slice of the same day; R1+R2 below are on main)
+**Last updated:** 2026-08-28 (ASK AI WORKSHEET — owner's build brief transcribed + implementation mapping; doc only, awaiting go-ahead)
+
+**NEW DOC: `docs/backlog/ask-ai-worksheet.md` (2026-08-28, doc only; no
+code changed).** The owner delivered a full build brief (PDF + two
+mockups) replacing the stacked chat on /query with a **worksheet**: a
+question+answer is a STEP (frozen snapshot of question, assumptions,
+result, SQL, data-as-of), steps form a TREE (branch on ask-from-earlier
+or on assumption change), a 220px thread spine on the left, ONE canvas
+rendering one step at a time, assumption CHIPS as controls with option
+menus (+ add exposes silently-resolved assumptions), frozen snapshots
+with explicit re-run (never silently refresh), auto-labels, collapsing
+above 12 steps, full tree a11y. Part 1 of the doc is the brief verbatim
+in substance; **Part 2 is the implementation mapping**: verdict (this is
+the structural fix for the "long chat" pain R1–R3 treated symptomatically
+— and nothing shipped this week fights it: meta persistence IS the
+snapshot, the quieted receipt IS the step footer, R3 actions are step
+actions), the exists/gap table (conversation_messages needs only
+parent_message_id/label/starred/data_as_of), **the one genuinely new
+backend piece — STRUCTURED assumptions** ({label, detail, options,
+value} incl. silently-resolved; recommendation: re-generate with the
+changed assumption pinned + tolerant parsing, not per-option SQL
+patches), proposed answers where the spec is silent (repair maps onto
+the loading state and updates the SAME step; clarify is not a step;
+investigate/forecast are step kinds; canSeeSql gating carries over
+untouched; legacy conversations chain linearly at read time; keep
+/query URL with t/s params), sizing (phases 1–4 ≈ one R1+R2-scale
+slice; 5–8 a second), and what NOT to do (no ordered array — tree from
+parentId; no branch-to-thread/diff/reorder; don't rebuild charts).
+Owner's build order adopted as-is: **ship 1–4 before touching 5**.
+
+**Prior last updated:** 2026-08-27 (ASK AI RELEASE 3 "ANSWERS GO SOMEWHERE" SHIPPED — third slice of the same day; R1+R2 below are on main)
 
 **ASK AI RELEASE 3 "ANSWERS GO SOMEWHERE" IS BUILT (2026-08-27; implements
 the assessment's §6 R3 with the owner's §8.3 decision: verified-answer
