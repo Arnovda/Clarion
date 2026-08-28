@@ -84,7 +84,10 @@ function QueryPageInner() {
   /** The question in flight — becomes a real step when its answer lands. */
   const [pendingAsk, setPendingAsk] = useState<{ question: string; parentLocalId: number | null; label?: string } | null>(null);
   const [spineOpen, setSpineOpen] = useState(true);
-  const [convListOpen, setConvListOpen] = useState(false);
+  const [convListOpen, setConvListOpen] = useState(false); // mobile slide-over
+  /** Desktop rail: show the THREAD LIST over the spine (auto when no
+   *  thread is open; user-opened via "← threads" while in one). */
+  const [railThreadsOpen, setRailThreadsOpen] = useState(false);
   useEffect(() => {
     if (getItem('clarion.spineOpen') === '0') setSpineOpen(false);
     // Below 1100px the spine starts collapsed (spec §1 responsive rule).
@@ -366,22 +369,36 @@ function QueryPageInner() {
         // Deep link: /query?t=<threadId>&s=<stepServerId> restores a specific
         // step (read from window.location — these params are written with
         // history.replaceState/pushState, invisible to useSearchParams).
+        // WITHOUT a deep link, Ask AI lands on the FRESH ask pane — never
+        // auto-opened into the most recent thread (owner feedback
+        // 2026-08-28); the rail shows the thread list right next to it.
         const p = new URLSearchParams(window.location.search);
         const t = p.get('t');
         const s = p.get('s');
         if (t && convs.some((c) => c.id === Number(t))) {
           if (s) pendingUrlStepRef.current = Number(s);
           selectConversation(Number(t));
-        } else if (convs.length > 0 && !activeId) {
-          selectConversation(convs[0].id);
         }
-      } else if (convs.length > 0 && !activeId) {
-        selectConversation(convs[0].id);
       }
       initialized.current = true;
     });
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [starFilter]);
+
+  // Clicking "Ask AI" in the nav while already on /query soft-navigates to
+  // bare /query (Next strips our history-API params). That click means
+  // "give me a fresh pane" — detect it via the router-visible search params
+  // (their identity changes only on real navigations, never on our own
+  // replaceState writes).
+  const searchKey = searchParams.toString();
+  const prevSearchKeyRef = useRef<string | null>(null);
+  useEffect(() => {
+    const prev = prevSearchKeyRef.current;
+    prevSearchKeyRef.current = searchKey;
+    if (prev === null || prev === searchKey) return; // initial mount / no change
+    if (searchKey === '' && window.location.search === '') freshPane();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchKey]);
 
   // Keep the URL linkable: ?t=<thread>&s=<step server id>. Step changes
   // within a thread PUSH (the back button walks steps, spec §4.1); thread
@@ -486,36 +503,26 @@ function QueryPageInner() {
 
   // ── Conversation management (server-side) ──
 
-  async function startNewConversation() {
-    try {
-      const res = await api.post('/conversations', { sourceKey: selectedSource });
-      const conv: Conversation = {
-        id: res.data.data.id,
-        title: res.data.data.title,
-        starred: false,
-        createdAt: res.data.data.created_at,
-        updatedAt: res.data.data.updated_at,
-        messages: [],
-      };
-      setConversations((prev) => [conv, ...prev]);
-      setActiveId(conv.id);
-      setMessages([]);
-      resetRepair();
-      setSelectedStepId(null);
-      setPendingAsk(null);
-      nextId.current = 0;
-      setTimeout(() => inputRef.current?.focus(), 50);
-    } catch {
-      // Fallback: still allow local usage
-      const tempId = -Date.now();
-      setConversations((prev) => [{ id: tempId, title: 'New conversation', starred: false, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), messages: [] }, ...prev]);
-      setActiveId(tempId);
-      setMessages([]);
-      resetRepair();
-      setSelectedStepId(null);
-      setPendingAsk(null);
-      nextId.current = 0;
+  /**
+   * The fresh ask pane — what "Ask AI" means (owner feedback 2026-08-28:
+   * landing in the LATEST thread felt like someone else's desk). No thread
+   * is opened and no empty server row is created; `send()` makes the
+   * conversation when the first question is asked. The thread list stays
+   * visible in the rail, so history is one click away, not hidden.
+   */
+  function freshPane() {
+    resetRepair();
+    setActiveId(null);
+    setMessages([]);
+    setSelectedStepId(null);
+    setPendingAsk(null);
+    setRailThreadsOpen(false);
+    nextId.current = 0;
+    // Leave the URL bare — the sync effect skips when no thread is active.
+    if (window.location.search.includes('t=')) {
+      window.history.replaceState(window.history.state, '', window.location.pathname);
     }
+    setTimeout(() => inputRef.current?.focus(), 50);
   }
 
   async function selectConversation(id: number) {
@@ -619,15 +626,8 @@ function QueryPageInner() {
   async function deleteConversation(id: number) {
     if (!window.confirm('Delete this conversation? This cannot be undone.')) return;
     try { await api.delete(`/conversations/${id}`); } catch { /* non-fatal */ }
-    setConversations((prev) => {
-      const next = prev.filter((c) => c.id !== id);
-      if (id === activeId) {
-        if (next.length > 0) { selectConversation(next[0].id); }
-        else { setActiveId(null); setMessages([]); setSelectedStepId(null); setPendingAsk(null); }
-        resetRepair();
-      }
-      return next;
-    });
+    setConversations((prev) => prev.filter((c) => c.id !== id));
+    if (id === activeId) freshPane();
   }
 
   async function toggleStar(id: number) {
@@ -1472,6 +1472,11 @@ function QueryPageInner() {
   // the horizontal space.
 
   const connectionIdForActions = selectedSource.startsWith('c:') ? Number(selectedSource.split(':')[1]) : null;
+  // The rail: thread list when nothing is open (history visible on the
+  // landing, not hidden behind a slide-over) or when the user asks for it;
+  // the step spine while working a thread.
+  const showThreadList = railThreadsOpen || !activeId || flatSteps.length === 0;
+  const railHasContent = flatSteps.length > 0 || conversations.length > 0;
   const showPendingCanvas = pendingAsk && selectedStep?.id === PENDING_STEP_ID;
 
   const askForm = (
@@ -1584,18 +1589,55 @@ function QueryPageInner() {
   return (
     <AppShell title="Ask your Data" showSearch={false}>
       <div className="flex flex-1 min-h-0 relative">
-        {/* ── Thread spine ── */}
-        {spineOpen && flatSteps.length > 0 && (
-          <div className="w-[220px] flex-shrink-0 border-r border-line bg-raised min-h-0 hidden md:block">
-            <StepSpine
-              steps={flatSteps}
-              selectedId={selectedStep?.id ?? null}
-              onSelect={(id) => setSelectedStepId(id)}
-              onBranchHere={() => inputRef.current?.focus()}
-              branchCount={countBranches(stepRoots)}
-              onToggleStar={toggleStarStep}
-              onRename={renameStep}
-            />
+        {/* ── Rail: thread list ⇄ step spine ── */}
+        {spineOpen && railHasContent && (
+          <div className={`${showThreadList ? 'w-[260px]' : 'w-[220px]'} flex-shrink-0 border-r border-line bg-raised min-h-0 hidden md:flex md:flex-col`}>
+            {showThreadList ? (
+              <>
+                {/* Back to the open thread's steps, when there is one. */}
+                {activeId != null && flatSteps.length > 0 && (
+                  <button
+                    onClick={() => setRailThreadsOpen(false)}
+                    className="flex-shrink-0 text-left px-4 pt-4 -mb-1 font-mono text-[10px] lowercase tracking-[0.1em] text-ocean/80 hover:text-ocean transition-colors"
+                  >
+                    ← back to this thread
+                  </button>
+                )}
+                <div className="flex-1 min-h-0">
+                  <ChatSidebar
+                    conversations={conversations}
+                    activeId={activeId}
+                    onSelect={(id) => { selectConversation(id); setRailThreadsOpen(false); }}
+                    onNew={freshPane}
+                    onDelete={deleteConversation}
+                    onStar={toggleStar}
+                    starFilter={starFilter}
+                    onToggleStarFilter={() => setStarFilter((f) => !f)}
+                  />
+                </div>
+              </>
+            ) : (
+              <>
+                {/* One consistent place for history: the rail. */}
+                <button
+                  onClick={() => setRailThreadsOpen(true)}
+                  className="flex-shrink-0 text-left px-3 pt-3 -mb-2 font-mono text-[10px] lowercase tracking-[0.1em] text-muted hover:text-ocean transition-colors"
+                >
+                  ← threads
+                </button>
+                <div className="flex-1 min-h-0">
+                  <StepSpine
+                    steps={flatSteps}
+                    selectedId={selectedStep?.id ?? null}
+                    onSelect={(id) => setSelectedStepId(id)}
+                    onBranchHere={() => inputRef.current?.focus()}
+                    branchCount={countBranches(stepRoots)}
+                    onToggleStar={toggleStarStep}
+                    onRename={renameStep}
+                  />
+                </div>
+              </>
+            )}
           </div>
         )}
 
@@ -1604,22 +1646,32 @@ function QueryPageInner() {
           {/* Top strip: spine toggle · all conversations · product pill · SQL toggle · delete */}
           <div className="flex-shrink-0 px-4 py-2 flex items-center justify-between border-b border-line bg-raised">
             <div className="flex items-center gap-2 min-w-0">
-              {flatSteps.length > 0 && (
+              {railHasContent && (
                 <button
                   onClick={toggleSpine}
-                  title={spineOpen ? 'Hide the thread' : 'Show the thread'}
+                  title={spineOpen ? 'Hide the side panel' : 'Show the side panel'}
                   className="p-1.5 rounded text-muted hover:text-ink hover:bg-softer transition-colors hidden md:block"
                 >
                   {spineOpen ? <PanelLeftClose className="w-4 h-4" strokeWidth={1.6} /> : <PanelLeftOpen className="w-4 h-4" strokeWidth={1.6} />}
                 </button>
               )}
+              {/* Mobile only — the rail carries history on desktop. */}
               <button
                 onClick={() => setConvListOpen(true)}
-                className="flex items-center gap-1.5 px-2 py-1.5 rounded text-[11px] font-mono uppercase tracking-[0.08em] text-muted hover:text-ink hover:bg-softer transition-colors"
+                className="md:hidden flex items-center gap-1.5 px-2 py-1.5 rounded text-[11px] font-mono uppercase tracking-[0.08em] text-muted hover:text-ink hover:bg-softer transition-colors"
               >
                 <History className="w-3.5 h-3.5" strokeWidth={1.6} />
-                All conversations
+                Threads
               </button>
+              {activeId != null && flatSteps.length > 0 && (
+                <button
+                  onClick={freshPane}
+                  className="flex items-center gap-1.5 px-2 py-1.5 rounded text-[11px] font-mono uppercase tracking-[0.08em] text-muted hover:text-ink hover:bg-softer transition-colors"
+                  title="Start a fresh question — this thread stays in your history"
+                >
+                  + New thread
+                </button>
+              )}
               {productContext && (
                 <div className="flex items-center gap-2 px-2.5 py-1 bg-ai-soft border border-line rounded-md min-w-0">
                   <span className="text-[12.5px] font-medium text-ink truncate">{productContext.name}</span>
@@ -1781,10 +1833,10 @@ function QueryPageInner() {
           {flatSteps.length > 0 && askForm}
         </div>
 
-        {/* ── All conversations — slide-over (spec §1: the full-width list is
-              gone from the page; this buys back the horizontal space). ── */}
+        {/* ── Threads slide-over — MOBILE ONLY: on desktop the rail carries
+              the thread list. ── */}
         {convListOpen && (
-          <div className="fixed inset-0 z-40" role="dialog" aria-label="All conversations">
+          <div className="fixed inset-0 z-40 md:hidden" role="dialog" aria-label="All conversations">
             <div className="absolute inset-0 bg-ink/25" onClick={() => setConvListOpen(false)} />
             <div className="absolute left-0 top-0 bottom-0 w-[320px] bg-raised border-r border-line shadow-lg flex flex-col">
               <div className="flex items-center justify-between px-4 py-3 border-b border-line">
@@ -1798,7 +1850,7 @@ function QueryPageInner() {
                   conversations={conversations}
                   activeId={activeId}
                   onSelect={(id) => { selectConversation(id); setConvListOpen(false); }}
-                  onNew={() => { startNewConversation(); setConvListOpen(false); }}
+                  onNew={() => { freshPane(); setConvListOpen(false); }}
                   onDelete={deleteConversation}
                   onStar={toggleStar}
                   starFilter={starFilter}

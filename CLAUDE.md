@@ -85,10 +85,25 @@ brief in `docs/backlog/ask-ai-worksheet.md` is now FULLY implemented):**
   range or removing an assumption." (dashed card; the chips above are the
   cause); error steps get a **Retry** button (re-ask as a SIBLING — the
   failure stays in the spine with its warn dot).
+- **LANDING + HISTORY REWORKED (same day, owner feedback from first live
+  use: "Ask AI just opens the latest chat… history is hidden behind 'All
+  Conversations'").** Ask AI now ALWAYS lands on the fresh ask pane —
+  never auto-opened into the most recent thread (`?t=` deep links still
+  restore; clicking the nav entry while ON /query is detected via the
+  router-visible search params and resets too). **The rail carries
+  history**: thread list (ChatSidebar, 260px) when no thread is open or
+  via "← threads"; the step spine (220px) while working one — so history
+  sits next to the landing instead of behind a slide-over. The slide-over
+  is MOBILE-ONLY now; "+ New thread" in the top strip; `freshPane()`
+  replaced startNewConversation (no more empty server-side conversation
+  rows — send() creates the thread on the first question); deleting the
+  active thread lands on the fresh pane. Side effect, intended:
+  `?q=&autoSubmit=1` deep links now ask in a NEW thread instead of
+  appending to whichever conversation happened to be most recent.
 - Validation: backend `npm run check` clean; **suite 42 files / 408
   passed** (5 new); all eight ratchets green (per-ratchet exit codes,
   repo root); frontend `tsc` clean, lint clean, `next build` green
-  (`/query` 40.2 kB / 374 kB).
+  (`/query` 40.5 kB / 374 kB).
 
 **Prior last updated:** 2026-08-28 (ASK AI WORKSHEET PHASES 1–4 SHIPPED — steps as a tree, spine + one-step canvas, branching on ask)
 
