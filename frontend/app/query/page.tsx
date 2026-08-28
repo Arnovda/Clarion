@@ -9,12 +9,14 @@ import { useRole, canCurate } from '@/lib/role';
 import { streamSSE, SSEHttpError } from '@/lib/sse';
 import { getItem, setItem, storageKeys } from '@/lib/storage';
 import { formatRelativeTime, getOverallFreshnessStatus } from '@/lib/freshness';
-import { X, Loader2, ArrowRight } from 'lucide-react';
+import { X, Loader2, ArrowRight, ChevronDown, PanelLeftClose, PanelLeftOpen, History } from 'lucide-react';
 import { type DataSource } from './components';
 import MessageBubble from './MessageBubble';
 import { ThinkingBubble, ThinkingPanel } from './thinking';
 import ChatSidebar from './ChatSidebar';
 import EmptyState from './EmptyState';
+import StepSpine, { PENDING_STEP_ID } from './StepSpine';
+import { deriveSteps, flattenSteps, countBranches, oldestSourceDate } from './steps';
 import type {
   AnswerSource,
   DebugInfo,
@@ -73,6 +75,23 @@ function QueryPageInner() {
   // is persisted (server-side by /query/repair). See the repair section below.
   const [repairState, setRepairState] = useState<RepairState | null>(null);
 
+  // ── Worksheet state (docs/backlog/ask-ai-worksheet.md) ────────────────────
+  // The canvas renders ONE step; the spine holds the tree. Selection is by
+  // CLIENT message id; PENDING_STEP_ID marks the step currently streaming.
+  const [selectedStepId, setSelectedStepId] = useState<number | null>(null);
+  /** The question in flight — becomes a real step when its answer lands. */
+  const [pendingAsk, setPendingAsk] = useState<{ question: string; parentLocalId: number | null } | null>(null);
+  const [spineOpen, setSpineOpen] = useState(true);
+  const [convListOpen, setConvListOpen] = useState(false);
+  useEffect(() => {
+    if (getItem('clarion.spineOpen') === '0') setSpineOpen(false);
+    // Below 1100px the spine starts collapsed (spec §1 responsive rule).
+    else if (typeof window !== 'undefined' && window.innerWidth < 1100) setSpineOpen(false);
+  }, []);
+  function toggleSpine() {
+    setSpineOpen((o) => { setItem('clarion.spineOpen', o ? '0' : '1'); return !o; });
+  }
+
   // Data freshness indicator
   const [freshnessDates, setFreshnessDates] = useState<(string | null)[]>([]);
 
@@ -127,9 +146,49 @@ function QueryPageInner() {
   const canInvestigate = resolvedProductId != null;
 
   const nextId      = useRef(0);
-  const bottomRef   = useRef<HTMLDivElement>(null);
   const inputRef    = useRef<HTMLInputElement>(null);
   const initialized = useRef(false);
+  const canvasRef   = useRef<HTMLDivElement>(null);
+
+  // ── Step tree derivation (pure — app/query/steps.ts) ──────────────────────
+  // The pending question is injected as a synthetic assistant message so it
+  // takes its true place in the tree (last child of its parent).
+  const spineMessages: Message[] = pendingAsk
+    ? [...messages, {
+        id: PENDING_STEP_ID, role: 'assistant' as const, text: '',
+        question: pendingAsk.question,
+        parentLocalId: pendingAsk.parentLocalId ?? undefined,
+      }]
+    : messages;
+  const stepRoots = deriveSteps(spineMessages);
+  const flatSteps = flattenSteps(stepRoots);
+  const selectedStep = flatSteps.find((s) => s.id === selectedStepId)
+    ?? (flatSteps.length > 0 ? flatSteps[flatSteps.length - 1] : null);
+  const isNonLeaf = !!selectedStep && selectedStep.children.length > 0;
+
+  // Send-time parent capture — `send` is a memoised callback, so it reads the
+  // selection through a ref rather than re-binding on every click.
+  const selectedStepRef = useRef<{ localId: number | null; serverId?: number }>({ localId: null });
+  useEffect(() => {
+    if (selectedStep && selectedStep.id !== PENDING_STEP_ID) {
+      selectedStepRef.current = { localId: selectedStep.id, serverId: selectedStep.serverId };
+    } else if (!selectedStep) {
+      selectedStepRef.current = { localId: null };
+    }
+    // While the pending step is selected, keep the parent captured at send time.
+  }, [selectedStep]);
+
+  const messagesRef = useRef<Message[]>([]);
+  useEffect(() => { messagesRef.current = messages; }, [messages]);
+
+  /** An answer landed — the new step exists and becomes selected (spec §4.2). */
+  function landStep(localId: number) {
+    setPendingAsk(null);
+    setSelectedStepId(localId);
+  }
+
+  /** Restored from ?s= before the conversation's messages arrive. */
+  const pendingUrlStepRef = useRef<number | null>(null);
 
   // In-flight SSE streams (/think + /repair) — aborted on unmount so a
   // navigated-away chat doesn't keep streaming into dead state setters.
@@ -229,13 +288,63 @@ function QueryPageInner() {
 
   useEffect(() => {
     loadConversations(starFilter).then((convs) => {
-      if (convs.length > 0 && !activeId) {
+      if (!initialized.current) {
+        // Deep link: /query?t=<threadId>&s=<stepServerId> restores a specific
+        // step (read from window.location — these params are written with
+        // history.replaceState/pushState, invisible to useSearchParams).
+        const p = new URLSearchParams(window.location.search);
+        const t = p.get('t');
+        const s = p.get('s');
+        if (t && convs.some((c) => c.id === Number(t))) {
+          if (s) pendingUrlStepRef.current = Number(s);
+          selectConversation(Number(t));
+        } else if (convs.length > 0 && !activeId) {
+          selectConversation(convs[0].id);
+        }
+      } else if (convs.length > 0 && !activeId) {
         selectConversation(convs[0].id);
       }
       initialized.current = true;
     });
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [starFilter]);
+
+  // Keep the URL linkable: ?t=<thread>&s=<step server id>. Step changes
+  // within a thread PUSH (the back button walks steps, spec §4.1); thread
+  // changes REPLACE. Written via the history API directly so Next's router
+  // is not involved (no re-render, no scroll reset).
+  useEffect(() => {
+    if (!activeId || activeId < 0) return;
+    const sid = selectedStep && selectedStep.id !== PENDING_STEP_ID ? selectedStep.serverId : undefined;
+    const params = new URLSearchParams(window.location.search);
+    const prevT = params.get('t');
+    const prevS = params.get('s');
+    const nextT = String(activeId);
+    const nextS = sid != null ? String(sid) : null;
+    if (prevT === nextT && prevS === nextS) return;
+    params.set('t', nextT);
+    if (nextS) params.set('s', nextS); else params.delete('s');
+    const url = `${window.location.pathname}?${params.toString()}`;
+    if (prevT === nextT && prevS && nextS) {
+      window.history.pushState(window.history.state, '', url);
+    } else {
+      window.history.replaceState(window.history.state, '', url);
+    }
+  }, [activeId, selectedStep]);
+
+  // Back/forward between steps: re-select from the URL.
+  useEffect(() => {
+    const onPop = () => {
+      const p = new URLSearchParams(window.location.search);
+      const t = p.get('t');
+      const s = p.get('s');
+      if (!t || Number(t) !== activeId || !s) return;
+      const m = messagesRef.current.find((mm) => mm.serverId === Number(s));
+      if (m) setSelectedStepId(m.id);
+    };
+    window.addEventListener('popstate', onPop);
+    return () => window.removeEventListener('popstate', onPop);
+  }, [activeId]);
 
   // Helper: persist a message to the server. The `meta` bundle carries the
   // display metadata that used to be DROPPED on persist (assumptions, clarify
@@ -279,6 +388,12 @@ function QueryPageInner() {
         reasoning: msg.reasoning,
         queryLayer: msg.queryLayer,
         ...(Object.keys(meta).length > 0 ? { meta } : {}),
+        // Worksheet step fields (assistant rows only): the tree edge and the
+        // warehouse freshness frozen at ask time.
+        ...(msg.role === 'assistant' && msg.parentServerId != null ? { parentMessageId: msg.parentServerId } : {}),
+        ...(msg.role === 'assistant'
+          ? (() => { const d = msg.dataAsOf ?? oldestSourceDate(msg.sources); return d ? { dataAsOf: d } : {}; })()
+          : {}),
       });
       return res.data.data?.id as number | undefined;
     } catch (err) {
@@ -286,9 +401,11 @@ function QueryPageInner() {
     }
   }
 
+  // Switching steps (including submitting, which selects the pending step)
+  // scrolls the canvas to the top of the step (spec §4.7).
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages, loading, repairState?.events.length]);
+    canvasRef.current?.scrollTo({ top: 0 });
+  }, [selectedStepId, activeId]);
 
   // ── Conversation management (server-side) ──
 
@@ -307,6 +424,8 @@ function QueryPageInner() {
       setActiveId(conv.id);
       setMessages([]);
       resetRepair();
+      setSelectedStepId(null);
+      setPendingAsk(null);
       nextId.current = 0;
       setTimeout(() => inputRef.current?.focus(), 50);
     } catch {
@@ -316,6 +435,8 @@ function QueryPageInner() {
       setActiveId(tempId);
       setMessages([]);
       resetRepair();
+      setSelectedStepId(null);
+      setPendingAsk(null);
       nextId.current = 0;
     }
   }
@@ -392,14 +513,28 @@ function QueryPageInner() {
           repairSummary: meta.repairSummary as string[] | undefined,
           verified: meta.verified as boolean | undefined,
           flagReason: meta.flagReason as string | undefined,
+          // Worksheet step fields (migration 84).
+          parentServerId: (m.parent_message_id as number | null) ?? null,
+          label: (m.label as string | null) ?? null,
+          starred: (m.starred as boolean | undefined) ?? false,
+          dataAsOf: (m.data_as_of as string | null) ?? null,
           ...(isInvestigation ? { mode: 'investigate' as const, investigation } : {}),
         };
       });
       setMessages(msgs);
       nextId.current = msgs.length > 0 ? Math.max(...msgs.map((m) => m.id)) + 1 : 0;
+      // Select the deep-linked step, else the thread's last step (the leaf).
+      setPendingAsk(null);
+      const urlStep = pendingUrlStepRef.current;
+      pendingUrlStepRef.current = null;
+      const assistants = msgs.filter((mm) => mm.role === 'assistant');
+      const target = urlStep != null ? assistants.find((mm) => mm.serverId === urlStep) : undefined;
+      setSelectedStepId(target?.id ?? (assistants.length > 0 ? assistants[assistants.length - 1].id : null));
     } catch {
       setMessages([]);
       nextId.current = 0;
+      setSelectedStepId(null);
+      setPendingAsk(null);
     }
   }
 
@@ -410,7 +545,7 @@ function QueryPageInner() {
       const next = prev.filter((c) => c.id !== id);
       if (id === activeId) {
         if (next.length > 0) { selectConversation(next[0].id); }
-        else { setActiveId(null); setMessages([]); }
+        else { setActiveId(null); setMessages([]); setSelectedStepId(null); setPendingAsk(null); }
         resetRepair();
       }
       return next;
@@ -516,6 +651,7 @@ function QueryPageInner() {
     const provisional: Message = { ...prev.holdMsg, checking: true };
     setMessages((ms) => [...ms, provisional]);
     updateRepair((p) => p ? { ...p, revealed: true, holdMsg: provisional } : p);
+    landStep(provisional.id);
   }
 
   /** The repair loop ended without a correction — release the original answer. */
@@ -527,6 +663,7 @@ function QueryPageInner() {
       const original = { ...prev.holdMsg, checking: false };
       setMessages((ms) => [...ms, original]);
       updateRepair((p) => p ? { ...p, revealed: true, holdMsg: original, isActive: false } : p);
+      landStep(original.id);
     } else if (prev.revealed) {
       setMessages((ms) => ms.map((m) => m.id === prev.forMessageId ? { ...m, checking: false } : m));
       updateRepair((p) => p ? { ...p, isActive: false } : p);
@@ -625,6 +762,7 @@ function QueryPageInner() {
           // Settled inside the hold — the answer appears once, correct.
           setMessages((ms) => [...ms, corrected(prev.holdMsg!)]);
           updateRepair((p) => p ? { ...p, revealed: true, isActive: false } : p);
+          landStep(prev.holdMsg!.id);
         } else {
           setMessages((ms) => ms.map((m) => m.id === params.messageId ? corrected(m) : m));
           updateRepair((p) => p ? { ...p, isActive: false } : p);
@@ -753,6 +891,12 @@ function QueryPageInner() {
     }
 
     setInput('');
+    // Worksheet branching (spec §4.2): the new step is a CHILD of the step
+    // selected at send time. Captured through a ref so this memoised
+    // callback reads the live selection.
+    const parent = selectedStepRef.current;
+    setPendingAsk({ question: q, parentLocalId: parent.localId });
+    setSelectedStepId(PENDING_STEP_ID);
     const userMsgId = nextId.current++;
     setMessages((prev) => [...prev, { id: userMsgId, role: 'user', text: q }]);
     // Persist user message to server — await so any failure is visible in console
@@ -794,6 +938,8 @@ function QueryPageInner() {
           role: 'assistant',
           text: '',
           question: q,
+          parentServerId: parent.serverId ?? null,
+          parentLocalId: parent.localId ?? undefined,
           mode: 'investigate',
           investigation: {
             question: q,
@@ -808,6 +954,7 @@ function QueryPageInner() {
           },
         },
       ]);
+      landStep(investigateMsgId);
       const controller = new AbortController();
       // Capture the final state so we can persist after the stream ends.
       // Using local refs avoids racing the React state batch.
@@ -880,6 +1027,7 @@ function QueryPageInner() {
             role: 'assistant',
             text,
             question: q,
+            parentServerId: parent.serverId ?? null,
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
             debug: persistDebug as any,
           });
@@ -929,6 +1077,8 @@ function QueryPageInner() {
           ambiguities: d.ambiguities, mismatches: d.mismatches, debug: d.debug, rows: d.rows,
           queryLayer: d.queryLayer,
           visualization: d.visualization,
+          parentServerId: parent.serverId ?? null,
+          parentLocalId: parent.localId ?? undefined,
         };
         // Persist to server
         if (cid && cid > 0) {
@@ -936,6 +1086,7 @@ function QueryPageInner() {
           if (serverId) assistantMsg.serverId = serverId;
         }
         setMessages((prev) => [...prev, assistantMsg]);
+        landStep(assistantId);
         if (d.warning && !d.blocked && d.sql && d.rows) {
           startRepair({
             messageId: assistantId, question: q, originalSql: d.sql, originalRows: d.rows, warning: d.warning,
@@ -976,6 +1127,8 @@ function QueryPageInner() {
             sql: d.sql, tablesUsed: d.tablesUsed, confidence: d.confidence,
             blocked: d.blocked, rows: d.rows,
             forecast: d.forecast,
+            parentServerId: parent.serverId ?? null,
+            parentLocalId: parent.localId ?? undefined,
           };
           if (cid && cid > 0) {
             persistMessage(cid, assistantMsg).then((serverId) => {
@@ -983,12 +1136,17 @@ function QueryPageInner() {
             });
           }
           setMessages((prev) => [...prev, assistantMsg]);
+          landStep(assistantId);
         } catch {
+          const errId = nextId.current++;
           setMessages((prev) => [...prev, {
-            id: nextId.current++, role: 'assistant',
+            id: errId, role: 'assistant', question: q,
+            parentServerId: parent.serverId ?? null,
+            parentLocalId: parent.localId ?? undefined,
             text: 'Something went wrong generating the forecast. Please try again.',
             error: true,
           }]);
+          landStep(errId);
         } finally {
           setLoading(false);
           setThinkingPhase('');
@@ -1013,6 +1171,7 @@ function QueryPageInner() {
             connectionId: sourceId,
             question:     q,
             ...(cid && cid > 0 ? { conversationId: cid } : {}),
+            ...(parent.serverId ? { parentMessageId: parent.serverId } : {}),
             ...(selectedDomains.length > 0 ? { domains: selectedDomains } : {}),
             ...(useSourceLayer ? { dataLayer: 'source' as const } : {}),
           },
@@ -1073,6 +1232,8 @@ function QueryPageInner() {
               policyNotice: d.policyNotice,
               adminNotified: d.adminNotified,
               verified: d.verified,
+              parentServerId: parent.serverId ?? null,
+              parentLocalId: parent.localId ?? undefined,
             };
 
             const needsRepair = !!(d.warning && !d.blocked && d.sql && d.rows);
@@ -1086,6 +1247,7 @@ function QueryPageInner() {
                 });
               }
               setMessages((prev) => [...prev, assistantMsg]);
+              landStep(assistantId);
             } else {
               // The double-checking flow: HOLD the flagged answer out of the
               // transcript (owner decision — up to ~10s, then reveal it
@@ -1119,13 +1281,17 @@ function QueryPageInner() {
             }
 
           } else if (type === 'error') {
+            const errId = nextId.current++;
             setMessages((prev) => [...prev, {
-              id: nextId.current++, role: 'assistant',
+              id: errId, role: 'assistant', question: q,
+              parentServerId: parent.serverId ?? null,
+              parentLocalId: parent.localId ?? undefined,
               text: (event.message as string) || 'Something went wrong. Please try again.',
               error: true,
               errorDetail: event.errorDetail as string | undefined,
               errorStack: event.errorStack as string | undefined,
             }]);
+            landStep(errId);
           }
           },
         });
@@ -1138,9 +1304,13 @@ function QueryPageInner() {
             : err.status >= 500
               ? 'The server hit an error processing your question. Please try again in a moment.'
               : `Could not run your question (HTTP ${err.status}). Please try again.`;
+          const errId = nextId.current++;
           setMessages((prev) => [...prev, {
-            id: nextId.current++, role: 'assistant', text: friendly, error: true,
+            id: errId, role: 'assistant', text: friendly, error: true, question: q,
+            parentServerId: parent.serverId ?? null,
+            parentLocalId: parent.localId ?? undefined,
           }]);
+          landStep(errId);
           return;
         }
         throw err; // network / stream errors → generic handler below
@@ -1149,10 +1319,13 @@ function QueryPageInner() {
       }
 
     } catch {
+      const errId = nextId.current++;
       setMessages((prev) => [
         ...prev,
-        { id: nextId.current++, role: 'assistant', text: 'Something went wrong. Please try again.', error: true },
+        { id: errId, role: 'assistant', text: 'Something went wrong. Please try again.', error: true, question: q,
+          parentServerId: parent.serverId ?? null, parentLocalId: parent.localId ?? undefined },
       ]);
+      landStep(errId);
     } finally {
       setLoading(false);
       setThinkingPhase('');
@@ -1195,239 +1368,326 @@ function QueryPageInner() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [autoQuestion, autoSubmit, selectedSource, productContext, urlProductId]);
 
-  // ── Render ──
+  // ── Render — the worksheet: spine + one-step canvas ──────────────────────
+  //
+  // docs/backlog/ask-ai-worksheet.md §1: nav rail (AppShell) · 220px thread
+  // spine · canvas capped at 880px. The old full-width conversation list
+  // moved behind an "All conversations" slide-over — that is what buys back
+  // the horizontal space.
 
-  const sidebarContent = (
-    <ChatSidebar
-      conversations={conversations}
-      activeId={activeId}
-      onSelect={selectConversation}
-      onNew={startNewConversation}
-      onDelete={deleteConversation}
-      onStar={toggleStar}
-      starFilter={starFilter}
-      onToggleStarFilter={() => setStarFilter((f) => !f)}
-    />
+  const connectionIdForActions = selectedSource.startsWith('c:') ? Number(selectedSource.split(':')[1]) : null;
+  const showPendingCanvas = pendingAsk && selectedStep?.id === PENDING_STEP_ID;
+
+  const askForm = (
+    <div className="flex-shrink-0 px-6 py-3 border-t border-line bg-raised">
+      {/* Freshness banner — worst-source status with the OLDEST date. The
+          per-answer receipt on each step is the primary signal; this is the
+          tenant-wide catch-all. */}
+      {(() => {
+        const validDates = freshnessDates.filter(Boolean) as string[];
+        if (validDates.length === 0) return null;
+        const status = getOverallFreshnessStatus(freshnessDates);
+        if (status === 'fresh' || status === 'unknown') return null;
+        const oldest = new Date(Math.min(...validDates.map(d => new Date(d).getTime())));
+        const colour = status === 'old' ? 'text-err' : 'text-warn';
+        return (
+          <div className={`max-w-[880px] mx-auto mb-2 font-mono text-[10.5px] uppercase tracking-[0.08em] ${colour}`}>
+            Some of your data was last refreshed {formatRelativeTime(oldest)}
+          </div>
+        );
+      })()}
+      <form onSubmit={handleSubmit} className="max-w-[880px] mx-auto flex gap-2 items-end">
+        <input
+          ref={inputRef}
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          placeholder={isNonLeaf ? 'Ask from here — this will branch…' : 'Ask a follow-up…'}
+          disabled={loading}
+          autoComplete="off"
+          className="flex-1 font-sans text-[14px] px-[13px] py-[10px] rounded-sm border border-line bg-raised text-ink outline-none transition-all duration-1 ease-observatory placeholder:text-muted-2 focus:border-ocean focus:shadow-[0_0_0_3px_var(--ocean-soft)] disabled:opacity-50"
+        />
+        <button
+          type="submit"
+          disabled={loading || !input.trim()}
+          className="inline-flex items-center gap-2 font-sans font-medium text-[13.5px] leading-none px-4 py-[10px] rounded-sm border bg-ocean text-white border-ocean hover:bg-ocean-hover hover:border-ocean-hover transition-all duration-1 ease-observatory disabled:opacity-50 disabled:cursor-not-allowed focus-visible:outline-none focus-visible:shadow-[0_0_0_3px_var(--ocean-soft)]"
+        >
+          {loading ? (
+            <Loader2 className="w-3.5 h-3.5 animate-spin" strokeWidth={2} aria-hidden="true" />
+          ) : (
+            <ArrowRight className="w-3.5 h-3.5" strokeWidth={1.8} aria-hidden="true" />
+          )}
+          {loading ? 'Thinking…' : 'Ask'}
+        </button>
+      </form>
+      {/* Mode hint — shows the auto-detected mode for the current input,
+          lets the user flip it. Investigate requires a product context. */}
+      <div className="max-w-[880px] mx-auto mt-2 flex items-center justify-between gap-2">
+        <div className="flex items-center gap-2 text-[11px] font-mono uppercase tracking-[0.08em] text-muted-2">
+          {input.trim() ? (
+            modeOverride !== 'auto' ? (
+              <span className="flex items-center gap-1.5">
+                <span>{modeOverride === 'investigate' ? '🕵️ Investigate' : '💬 Ask'} (forced)</span>
+                <button
+                  type="button"
+                  onClick={() => setModeOverride('auto')}
+                  className="text-ocean hover:underline normal-case font-sans tracking-normal"
+                >
+                  reset
+                </button>
+              </span>
+            ) : detectedMode === 'investigate' && canInvestigate ? (
+              <span className="flex items-center gap-1.5">
+                <span>🕵️ Investigate mode</span>
+                <button
+                  type="button"
+                  onClick={() => setModeOverride('ask')}
+                  className="text-ocean hover:underline normal-case font-sans tracking-normal"
+                >
+                  switch to ask
+                </button>
+              </span>
+            ) : detectedMode === 'investigate' && !canInvestigate ? (
+              <span className="text-amber-700">
+                🕵️ Investigate needs a topic ·{' '}
+                <a href="/investigate" className="underline hover:text-ocean">pick one here</a>
+                {' '}· ask mode used
+              </span>
+            ) : (
+              <span className="flex items-center gap-1.5">
+                <span>💬 Ask mode</span>
+                {canInvestigate && (
+                  <button
+                    type="button"
+                    onClick={() => setModeOverride('investigate')}
+                    className="text-ocean hover:underline normal-case font-sans tracking-normal"
+                  >
+                    switch to investigate
+                  </button>
+                )}
+              </span>
+            )
+          ) : (
+            <span>&nbsp;</span>
+          )}
+        </div>
+        {canSeeSql && (
+          <label className="inline-flex items-center gap-2 cursor-pointer select-none text-[11px] font-mono uppercase tracking-[0.08em] text-muted-2 hover:text-ink-3 transition-colors">
+            <input
+              type="checkbox"
+              checked={useSourceLayer}
+              onChange={(e) => setUseSourceLayer(e.target.checked)}
+              className="w-3 h-3 rounded-sm border border-line accent-ocean"
+            />
+            Query source data
+          </label>
+        )}
+      </div>
+    </div>
   );
 
   return (
-    <AppShell
-      title="Ask your Data"
-      showSearch={false}
-      contextPanel={sidebarContent}
-    >
-      <div className="flex flex-col flex-1 min-h-0">
-        {/* Sub-header: optional product-context pill + show SQL toggle.
-            The source picker used to live here. It was removed —
-            users shouldn't be deciding which source to query against
-            up front. The backend defaults to the user's primary
-            connection (URL param > last-used > first). If a question
-            is ambiguous across sources, the AI clarifies via its
-            existing intent='clarify' response shape rather than
-            forcing the user to pre-select. */}
-        <div className="flex-shrink-0 px-6 py-2.5 flex items-center justify-between border-b border-line bg-raised">
-          <div className="flex items-center gap-3">
-            {productContext ? (
-              <div className="flex items-center gap-2 px-3 py-1.5 bg-ai-soft border border-line rounded-md">
-                <span className="text-[13px] font-medium text-ink">{productContext.name}</span>
-                <span className="text-[10px] font-mono tracking-[0.08em] uppercase text-ai bg-raised px-1.5 py-0.5 rounded border border-line">Product</span>
-                <button
-                  onClick={() => setProductContext(null)}
-                  className="text-muted-2 hover:text-ink-2 ml-1 transition-colors"
-                  title="Clear product focus"
-                >
-                  <X className="w-3.5 h-3.5" strokeWidth={2} />
-                </button>
-              </div>
-            ) : null}
+    <AppShell title="Ask your Data" showSearch={false}>
+      <div className="flex flex-1 min-h-0 relative">
+        {/* ── Thread spine ── */}
+        {spineOpen && flatSteps.length > 0 && (
+          <div className="w-[220px] flex-shrink-0 border-r border-line bg-raised min-h-0 hidden sm:block">
+            <StepSpine
+              steps={flatSteps}
+              selectedId={selectedStep?.id ?? null}
+              onSelect={(id) => setSelectedStepId(id)}
+              onBranchHere={() => inputRef.current?.focus()}
+              branchCount={countBranches(stepRoots)}
+            />
           </div>
-          <div className="flex items-center gap-4">
-            {canSeeSql && (
-              <label className="flex items-center gap-2 text-[11px] font-mono tracking-[0.08em] uppercase text-muted cursor-pointer select-none">
-                <div onClick={() => setShowSql((s) => !s)}
-                  className={`relative w-8 h-4 rounded-full transition-colors cursor-pointer ${showSql ? 'bg-ocean' : 'bg-line-strong'}`}>
-                  <div className={`absolute top-0.5 w-3 h-3 bg-white rounded-full shadow-1 transition-transform ${showSql ? 'translate-x-4' : 'translate-x-0.5'}`} />
-                </div>
-                Show SQL
-              </label>
-            )}
-            {messages.length > 0 && (
-              <button onClick={() => {
-                // This DELETES the conversation, it doesn't just clear the view.
-                if (!window.confirm('Delete this conversation? This cannot be undone.')) return;
-                if (activeId && activeId > 0) {
-                  api.delete(`/conversations/${activeId}`).catch(() => {});
-                  setConversations((prev) => prev.filter((c) => c.id !== activeId));
-                }
-                setActiveId(null); setMessages([]); resetRepair();
-              }}
-                className="text-[11px] font-mono tracking-[0.08em] uppercase text-muted hover:text-ink-2 transition-colors">
-                Clear chat
-              </button>
-            )}
-          </div>
-        </div>
+        )}
 
-        {/* Messages */}
-        <div className="flex-1 min-h-0 overflow-y-auto">
-          <div className="max-w-2xl mx-auto w-full px-4 py-6">
-            {messages.length === 0 && !loading ? (
-              <EmptyState
-                onStarter={send}
-                productContext={productContext}
-                input={input}
-                setInput={setInput}
-                onSubmit={handleSubmit}
-                loading={loading}
-                canQuerySource={canSeeSql}
-                useSourceLayer={useSourceLayer}
-                setUseSourceLayer={setUseSourceLayer}
-              />
-            ) : (
-              <div className="space-y-4">
-                {messages.map((m) => (
-                  <div key={m.id}>
-                    <MessageBubble msg={m} showSql={showSql} isAdmin={isAdmin} canSeeSql={canSeeSql} onSend={send} onFeedback={handleFeedback} onExport={handleExport} conversationId={activeId} connectionId={selectedSource.startsWith('c:') ? Number(selectedSource.split(':')[1]) : null} onReplayInvestigation={handleReplayInvestigation} />
-                    {/* The live double-check panel shows only WHILE the loop
-                        runs (or waits on a clarification). Once settled it
-                        disappears — the answer card's trust line and "What I
-                        checked" are the durable receipt, so a corrected
-                        answer costs one card, not 2,000px of transcript. */}
-                    {repairState?.forMessageId === m.id && repairState.revealed
-                      && (repairState.isActive || repairState.pendingClarification) && (
-                      <div className="mt-3">
-                        <ThinkingPanel repair={repairState} onClarify={handleClarify} canSeeSql={canSeeSql} />
+        {/* ── Canvas column ── */}
+        <div className="flex-1 min-w-0 flex flex-col min-h-0">
+          {/* Top strip: spine toggle · all conversations · product pill · SQL toggle · delete */}
+          <div className="flex-shrink-0 px-4 py-2 flex items-center justify-between border-b border-line bg-raised">
+            <div className="flex items-center gap-2 min-w-0">
+              {flatSteps.length > 0 && (
+                <button
+                  onClick={toggleSpine}
+                  title={spineOpen ? 'Hide the thread' : 'Show the thread'}
+                  className="p-1.5 rounded text-muted hover:text-ink hover:bg-softer transition-colors hidden sm:block"
+                >
+                  {spineOpen ? <PanelLeftClose className="w-4 h-4" strokeWidth={1.6} /> : <PanelLeftOpen className="w-4 h-4" strokeWidth={1.6} />}
+                </button>
+              )}
+              <button
+                onClick={() => setConvListOpen(true)}
+                className="flex items-center gap-1.5 px-2 py-1.5 rounded text-[11px] font-mono uppercase tracking-[0.08em] text-muted hover:text-ink hover:bg-softer transition-colors"
+              >
+                <History className="w-3.5 h-3.5" strokeWidth={1.6} />
+                All conversations
+              </button>
+              {productContext && (
+                <div className="flex items-center gap-2 px-2.5 py-1 bg-ai-soft border border-line rounded-md min-w-0">
+                  <span className="text-[12.5px] font-medium text-ink truncate">{productContext.name}</span>
+                  <button
+                    onClick={() => setProductContext(null)}
+                    className="text-muted-2 hover:text-ink-2 transition-colors shrink-0"
+                    title="Clear product focus"
+                  >
+                    <X className="w-3.5 h-3.5" strokeWidth={2} />
+                  </button>
+                </div>
+              )}
+            </div>
+            <div className="flex items-center gap-4">
+              {canSeeSql && (
+                <label className="flex items-center gap-2 text-[11px] font-mono tracking-[0.08em] uppercase text-muted cursor-pointer select-none">
+                  <div onClick={() => setShowSql((sv) => !sv)}
+                    className={`relative w-8 h-4 rounded-full transition-colors cursor-pointer ${showSql ? 'bg-ocean' : 'bg-line-strong'}`}>
+                    <div className={`absolute top-0.5 w-3 h-3 bg-white rounded-full shadow-1 transition-transform ${showSql ? 'translate-x-4' : 'translate-x-0.5'}`} />
+                  </div>
+                  Show SQL
+                </label>
+              )}
+              {flatSteps.length > 0 && (
+                <button onClick={() => {
+                  // This DELETES the thread, it doesn't just clear the view.
+                  if (!window.confirm('Delete this thread? This cannot be undone.')) return;
+                  if (activeId && activeId > 0) {
+                    api.delete(`/conversations/${activeId}`).catch(() => {});
+                    setConversations((prev) => prev.filter((c) => c.id !== activeId));
+                  }
+                  setActiveId(null); setMessages([]); setSelectedStepId(null); setPendingAsk(null); resetRepair();
+                }}
+                  className="text-[11px] font-mono tracking-[0.08em] uppercase text-muted hover:text-ink-2 transition-colors">
+                  Delete thread
+                </button>
+              )}
+            </div>
+          </div>
+
+          {/* Canvas */}
+          <div ref={canvasRef} className="flex-1 min-h-0 overflow-y-auto">
+            <div className="max-w-[880px] mx-auto w-full px-6 py-6">
+              {flatSteps.length === 0 ? (
+                <EmptyState
+                  onStarter={send}
+                  productContext={productContext}
+                  input={input}
+                  setInput={setInput}
+                  onSubmit={handleSubmit}
+                  loading={loading}
+                  canQuerySource={canSeeSql}
+                  useSourceLayer={useSourceLayer}
+                  setUseSourceLayer={setUseSourceLayer}
+                />
+              ) : showPendingCanvas ? (
+                /* ── The step being asked: question up top, result region is
+                      the live progress timeline (spec §5 loading state). ── */
+                <div className="space-y-4" aria-live="polite">
+                  <h1 className="font-display italic text-[19px] leading-[1.3] tracking-[-0.01em] text-ink m-0 text-left">
+                    {pendingAsk!.question}
+                  </h1>
+                  {loading && (
+                    <ThinkingBubble
+                      bare
+                      phase={thinkingPhase}
+                      liveText={thinkingText}
+                      sql={thinkingSql}
+                      confidence={thinkingConf}
+                      tables={thinkingTables}
+                      canSeeSql={canSeeSql}
+                    />
+                  )}
+                  {/* Double-checking while the answer is still HELD. */}
+                  {repairState && !repairState.revealed && (
+                    <ThinkingPanel bare repair={repairState} onClarify={handleClarify} canSeeSql={canSeeSql} />
+                  )}
+                </div>
+              ) : selectedStep ? (
+                <div className="space-y-3">
+                  {/* Non-leaf banner (spec §4.2). */}
+                  {isNonLeaf && (
+                    <div className="px-3 py-2 rounded-md bg-ocean-softer border border-ocean/20 text-[11.5px] text-ink-2">
+                      Viewing an earlier step — asking from here starts a new branch.
+                    </div>
+                  )}
+                  {/* Question — serif italic, LEFT-aligned (spec §2). */}
+                  <div>
+                    <h1 className="font-display italic text-[19px] leading-[1.3] tracking-[-0.01em] text-ink m-0 text-left">
+                      {selectedStep.msg.question ?? selectedStep.label}
+                    </h1>
+                    {/* "reading" chips — the assumptions in force, clickable.
+                        A click re-asks with that assumption changed, which
+                        branches from THIS step (parent = selection). */}
+                    {(selectedStep.msg.assumptions?.length ?? 0) > 0 && (
+                      <div className="flex flex-wrap items-center gap-1.5 mt-2.5">
+                        <span className="font-mono text-[10px] lowercase tracking-[0.1em] text-muted-2 mr-0.5">reading</span>
+                        {selectedStep.msg.assumptions!.map((a, i) => (
+                          <button
+                            key={i}
+                            onClick={() => send(`Same question, but change this assumption: "${a}". Use a different interpretation and tell me which one you picked.`)}
+                            title="Ask again with this assumption changed — this starts a new branch"
+                            className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full border border-line-strong bg-raised text-[11.5px] text-ink-3 hover:border-ocean/50 hover:text-ocean transition-colors text-left"
+                          >
+                            {a}
+                            <ChevronDown className="w-3 h-3 opacity-50 shrink-0" strokeWidth={2} aria-hidden="true" />
+                          </button>
+                        ))}
                       </div>
                     )}
                   </div>
-                ))}
-                {loading && (
-                  <ThinkingBubble
-                    phase={thinkingPhase}
-                    liveText={thinkingText}
-                    sql={thinkingSql}
-                    confidence={thinkingConf}
-                    tables={thinkingTables}
+                  {/* The snapshot — restored from stored state, never re-queried. */}
+                  <MessageBubble
+                    canvas
+                    msg={selectedStep.msg}
+                    showSql={showSql}
+                    isAdmin={isAdmin}
                     canSeeSql={canSeeSql}
+                    onSend={send}
+                    onFeedback={handleFeedback}
+                    onExport={handleExport}
+                    conversationId={activeId}
+                    connectionId={connectionIdForActions}
+                    onReplayInvestigation={handleReplayInvestigation}
                   />
-                )}
-                {/* Double-checking panel while the answer is still HELD —
-                    it has no message to attach to yet. */}
-                {repairState && !repairState.revealed && (
-                  <ThinkingPanel repair={repairState} onClarify={handleClarify} canSeeSql={canSeeSql} />
-                )}
-                <div ref={bottomRef} />
-              </div>
-            )}
+                  {/* The live double-check panel shows only WHILE the loop runs
+                      (or waits on a clarification) — the step's receipt is the
+                      durable record. */}
+                  {repairState?.forMessageId === selectedStep.id && repairState.revealed
+                    && (repairState.isActive || repairState.pendingClarification) && (
+                    <ThinkingPanel bare repair={repairState} onClarify={handleClarify} canSeeSql={canSeeSql} />
+                  )}
+                </div>
+              ) : null}
+            </div>
           </div>
+
+          {/* Ask input — sticky to the bottom of the CANVAS column (spec §4.7);
+              the empty thread carries its own centred input via EmptyState. */}
+          {flatSteps.length > 0 && askForm}
         </div>
 
-        {/* Input (pinned at bottom during active conversation) */}
-        {(messages.length > 0 || loading) && (
-          <div className="flex-shrink-0 px-4 py-3 border-t border-line bg-raised">
-            {/* Freshness banner — worst-source status with the OLDEST date, so the
-                sentence and the colour describe the same thing (it used to show
-                the NEWEST date coloured by the worst unrelated source). The
-                per-answer "Data as of …" on each card is the primary signal;
-                this is the tenant-wide catch-all. */}
-            {(() => {
-              const validDates = freshnessDates.filter(Boolean) as string[];
-              if (validDates.length === 0) return null;
-              const status = getOverallFreshnessStatus(freshnessDates);
-              if (status === 'fresh' || status === 'unknown') return null;
-              const oldest = new Date(Math.min(...validDates.map(d => new Date(d).getTime())));
-              const colour = status === 'old' ? 'text-err' : 'text-warn';
-              return (
-                <div className={`max-w-2xl mx-auto mb-2 text-center font-mono text-[10.5px] uppercase tracking-[0.08em] ${colour}`}>
-                  Some of your data was last refreshed {formatRelativeTime(oldest)}
-                </div>
-              );
-            })()}
-            <form onSubmit={handleSubmit} className="max-w-2xl mx-auto flex gap-2 items-end">
-              <input
-                ref={inputRef}
-                value={input}
-                onChange={(e) => setInput(e.target.value)}
-                placeholder="Ask a follow-up…"
-                disabled={loading}
-                autoComplete="off"
-                className="flex-1 font-sans text-[14px] px-[13px] py-[10px] rounded-sm border border-line bg-raised text-ink outline-none transition-all duration-1 ease-observatory placeholder:text-muted-2 focus:border-ocean focus:shadow-[0_0_0_3px_var(--ocean-soft)] disabled:opacity-50"
-              />
-              <button
-                type="submit"
-                disabled={loading || !input.trim()}
-                className="inline-flex items-center gap-2 font-sans font-medium text-[13.5px] leading-none px-4 py-[10px] rounded-sm border bg-ocean text-white border-ocean hover:bg-ocean-hover hover:border-ocean-hover transition-all duration-1 ease-observatory disabled:opacity-50 disabled:cursor-not-allowed focus-visible:outline-none focus-visible:shadow-[0_0_0_3px_var(--ocean-soft)]"
-              >
-                {loading ? (
-                  <Loader2 className="w-3.5 h-3.5 animate-spin" strokeWidth={2} aria-hidden="true" />
-                ) : (
-                  <ArrowRight className="w-3.5 h-3.5" strokeWidth={1.8} aria-hidden="true" />
-                )}
-                {loading ? 'Thinking…' : 'Ask'}
-              </button>
-            </form>
-            {/* Mode hint — shows the auto-detected mode for the current input,
-                lets the user flip it. Investigate requires a product context. */}
-            <div className="max-w-2xl mx-auto mt-2 flex items-center justify-between gap-2">
-              <div className="flex items-center gap-2 text-[11px] font-mono uppercase tracking-[0.08em] text-muted-2">
-                {input.trim() ? (
-                  modeOverride !== 'auto' ? (
-                    <span className="flex items-center gap-1.5">
-                      <span>{modeOverride === 'investigate' ? '🕵️ Investigate' : '💬 Ask'} (forced)</span>
-                      <button
-                        type="button"
-                        onClick={() => setModeOverride('auto')}
-                        className="text-ocean hover:underline normal-case font-sans tracking-normal"
-                      >
-                        reset
-                      </button>
-                    </span>
-                  ) : detectedMode === 'investigate' && canInvestigate ? (
-                    <span className="flex items-center gap-1.5">
-                      <span>🕵️ Investigate mode</span>
-                      <button
-                        type="button"
-                        onClick={() => setModeOverride('ask')}
-                        className="text-ocean hover:underline normal-case font-sans tracking-normal"
-                      >
-                        switch to ask
-                      </button>
-                    </span>
-                  ) : detectedMode === 'investigate' && !canInvestigate ? (
-                    <span className="text-amber-700">
-                      🕵️ Investigate needs a topic ·{' '}
-                      <a href="/investigate" className="underline hover:text-ocean">pick one here</a>
-                      {' '}· ask mode used
-                    </span>
-                  ) : (
-                    <span className="flex items-center gap-1.5">
-                      <span>💬 Ask mode</span>
-                      {canInvestigate && (
-                        <button
-                          type="button"
-                          onClick={() => setModeOverride('investigate')}
-                          className="text-ocean hover:underline normal-case font-sans tracking-normal"
-                        >
-                          switch to investigate
-                        </button>
-                      )}
-                    </span>
-                  )
-                ) : (
-                  <span>&nbsp;</span>
-                )}
+        {/* ── All conversations — slide-over (spec §1: the full-width list is
+              gone from the page; this buys back the horizontal space). ── */}
+        {convListOpen && (
+          <div className="fixed inset-0 z-40" role="dialog" aria-label="All conversations">
+            <div className="absolute inset-0 bg-ink/25" onClick={() => setConvListOpen(false)} />
+            <div className="absolute left-0 top-0 bottom-0 w-[320px] bg-raised border-r border-line shadow-lg flex flex-col">
+              <div className="flex items-center justify-between px-4 py-3 border-b border-line">
+                <span className="font-mono text-[10.5px] uppercase tracking-[0.14em] text-muted">All conversations</span>
+                <button onClick={() => setConvListOpen(false)} className="p-1 rounded text-muted hover:text-ink hover:bg-softer transition-colors" title="Close">
+                  <X className="w-4 h-4" strokeWidth={2} />
+                </button>
               </div>
-              {canSeeSql && (
-                <label className="inline-flex items-center gap-2 cursor-pointer select-none text-[11px] font-mono uppercase tracking-[0.08em] text-muted-2 hover:text-ink-3 transition-colors">
-                  <input
-                    type="checkbox"
-                    checked={useSourceLayer}
-                    onChange={(e) => setUseSourceLayer(e.target.checked)}
-                    className="w-3 h-3 rounded-sm border border-line accent-ocean"
-                  />
-                  Query source data
-                </label>
-              )}
+              <div className="flex-1 min-h-0 overflow-y-auto">
+                <ChatSidebar
+                  conversations={conversations}
+                  activeId={activeId}
+                  onSelect={(id) => { selectConversation(id); setConvListOpen(false); }}
+                  onNew={() => { startNewConversation(); setConvListOpen(false); }}
+                  onDelete={deleteConversation}
+                  onStar={toggleStar}
+                  starFilter={starFilter}
+                  onToggleStarFilter={() => setStarFilter((f) => !f)}
+                />
+              </div>
             </div>
           </div>
         )}

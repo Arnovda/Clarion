@@ -1,6 +1,11 @@
 # Ask AI — the worksheet layout (owner's build brief + implementation mapping)
 
-**Status: owner proposal, assessed — awaiting go-ahead. No code changed yet.**
+**Status: phases 1–4 SHIPPED (2026-08-28, owner go-ahead "Let's go") — step
+model + tree persistence + URL routing, one-step canvas, spine with
+selection/muting/keyboard nav, branching on ask. Phases 5–8 (assumption
+menus + branching on change, re-run/star, collapsing/rename/responsive,
+state polish) are the next slice. See CLAUDE.md Current State for the
+implementation record.**
 
 Part 1 is the owner's build brief (2026-08-28, delivered as
 `clarionworksheetspec.md.pdf` with two mockups), transcribed faithfully.

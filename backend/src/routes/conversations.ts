@@ -167,12 +167,35 @@ router.post('/:id/messages', async (req: Request, res: Response, next: NextFunct
       /** Display metadata bundle — assumptions, sub-scores, clarify options,
        *  visualization hint, forecast, sources, repair summary… (migration 82). */
       meta?: Record<string, unknown>;
+      /** Worksheet step fields (migration 84). */
+      parentMessageId?: number;
+      label?: string;
+      dataAsOf?: string;
     };
 
     if (!msg.role || !msg.content) {
       res.status(400).json({ ok: false, error: 'role and content are required' });
       return;
     }
+
+    // A step's parent must be a message of THIS conversation — a foreign or
+    // cross-conversation id would silently corrupt the tree derivation.
+    let parentMessageId: number | null = null;
+    if (msg.parentMessageId != null) {
+      const parent = await db('conversation_messages')
+        .where({ id: Number(msg.parentMessageId), conversation_id: conversationId })
+        .select('id')
+        .first();
+      if (!parent) {
+        res.status(400).json({ ok: false, error: 'parentMessageId does not belong to this conversation' });
+        return;
+      }
+      parentMessageId = Number(msg.parentMessageId);
+    }
+
+    const dataAsOf = msg.dataAsOf && !Number.isNaN(Date.parse(msg.dataAsOf))
+      ? new Date(msg.dataAsOf).toISOString()
+      : null;
 
     // Cap stored rows to 200 to keep DB size manageable
     const cappedRows = msg.rows ? (msg.rows as unknown[]).slice(0, 200) : null;
@@ -199,6 +222,9 @@ router.post('/:id/messages', async (req: Request, res: Response, next: NextFunct
         reasoning: msg.reasoning ?? null,
         query_layer: msg.queryLayer ?? null,
         meta: msg.meta && typeof msg.meta === 'object' ? JSON.stringify(msg.meta) : null,
+        parent_message_id: parentMessageId,
+        label: typeof msg.label === 'string' && msg.label.trim() ? msg.label.trim().slice(0, 120) : null,
+        data_as_of: dataAsOf,
       })
       .returning('*');
 
@@ -247,10 +273,20 @@ router.patch('/:id/messages/:messageId', validate(updateConversationMessageSchem
       warning?: string | null;
       wasRepaired?: boolean;
       meta?: Record<string, unknown>;
+      /** Worksheet spine edits (migration 84). `label: null` reverts to the
+       *  client-derived auto label. */
+      label?: string | null;
+      starred?: boolean;
     };
 
     const update: Record<string, unknown> = {};
     if (typeof body.content === 'string') update.content = body.content;
+    if ('label' in body) {
+      update.label = typeof body.label === 'string' && body.label.trim()
+        ? body.label.trim().slice(0, 120)
+        : null;
+    }
+    if (typeof body.starred === 'boolean') update.starred = body.starred;
     if (typeof body.sql === 'string') update.sql = body.sql;
     if (Array.isArray(body.rows)) update.rows = JSON.stringify(body.rows.slice(0, 200));
     if (typeof body.confidence === 'number') update.confidence = body.confidence;

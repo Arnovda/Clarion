@@ -139,6 +139,18 @@ export interface Message {
   feedback?:           'up' | 'down' | null;
   feedbackComment?:    string;
   serverId?:           number;             // DB id from conversation_messages table
+  // ── Worksheet step fields (migration 84) ──
+  /** Server id of the step this one branched from (null = thread root or a
+   *  legacy pre-worksheet row — those chain linearly at read time). */
+  parentServerId?:     number | null;
+  /** Session-only: client id of the parent step, for parents that streamed
+   *  in this session and may not have a serverId yet. */
+  parentLocalId?:      number;
+  /** Stored spine label; null/undefined = derive the auto label. */
+  label?:              string | null;
+  starred?:            boolean;
+  /** Warehouse freshness at ask time (oldest source the answer used). */
+  dataAsOf?:           string | null;
   forecast?:           ForecastData;       // forecast visualization data
   visualization?:      VisualizationHint;  // LLM-suggested chart type for the result rows
   /**

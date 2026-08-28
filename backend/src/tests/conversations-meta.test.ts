@@ -194,3 +194,78 @@ describe('feedback gaps reach the admin gaps list', () => {
     expect(mine!.gap_description).toContain('numbers look wrong');
   });
 });
+
+describe('worksheet steps (migration 84)', () => {
+  it('parentMessageId, label and dataAsOf round-trip through append + fetch', async () => {
+    const convId = await createConversation(token);
+    const rootId = await appendMessage(token, convId, {
+      role: 'assistant',
+      content: 'Root answer.',
+      question: 'Total revenue this year?',
+      dataAsOf: '2026-08-21T06:00:00Z',
+    });
+    const childId = await appendMessage(token, convId, {
+      role: 'assistant',
+      content: 'Branch answer.',
+      question: 'Same, drafts included?',
+      parentMessageId: rootId,
+      label: 'Same, drafts included',
+    });
+
+    const agent = await request();
+    const res = await agent
+      .get(`/api/conversations/${convId}`)
+      .set('Authorization', `Bearer ${token}`);
+    expect(res.status).toBe(200);
+    const msgs = res.body.data.messages as Array<Record<string, unknown>>;
+    const root = msgs.find((m) => m.id === rootId)!;
+    const child = msgs.find((m) => m.id === childId)!;
+    expect(root.parent_message_id).toBeNull();
+    expect(root.data_as_of).toBeTruthy();
+    expect(child.parent_message_id).toBe(rootId);
+    expect(child.label).toBe('Same, drafts included');
+    expect(child.starred).toBe(false);
+  });
+
+  it('refuses a parent from another conversation (400) — the tree must stay internal', async () => {
+    const convA = await createConversation(token);
+    const convB = await createConversation(token);
+    const inA = await appendMessage(token, convA, { role: 'assistant', content: 'A.', question: 'a?' });
+
+    const agent = await request();
+    const res = await agent
+      .post(`/api/conversations/${convB}/messages`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ role: 'assistant', content: 'B.', question: 'b?', parentMessageId: inA });
+    expect(res.status).toBe(400);
+  });
+
+  it('PATCH renames and stars a step; label null reverts to the auto label', async () => {
+    const convId = await createConversation(token);
+    const msgId = await appendMessage(token, convId, {
+      role: 'assistant', content: 'X.', question: 'Who are my top 5 customers?',
+    });
+
+    const agent = await request();
+    const rename = await agent
+      .patch(`/api/conversations/${convId}/messages/${msgId}`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ label: 'Top 5 customers', starred: true });
+    expect(rename.status).toBe(200);
+
+    let res = await agent.get(`/api/conversations/${convId}`).set('Authorization', `Bearer ${token}`);
+    let msg = (res.body.data.messages as Array<Record<string, unknown>>).find((m) => m.id === msgId)!;
+    expect(msg.label).toBe('Top 5 customers');
+    expect(msg.starred).toBe(true);
+
+    const revert = await agent
+      .patch(`/api/conversations/${convId}/messages/${msgId}`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ label: null });
+    expect(revert.status).toBe(200);
+    res = await agent.get(`/api/conversations/${convId}`).set('Authorization', `Bearer ${token}`);
+    msg = (res.body.data.messages as Array<Record<string, unknown>>).find((m) => m.id === msgId)!;
+    expect(msg.label).toBeNull();
+    expect(msg.starred).toBe(true); // untouched by the label revert
+  });
+});

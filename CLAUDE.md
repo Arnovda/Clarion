@@ -31,7 +31,73 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-08-28 (ASK AI WORKSHEET — owner's build brief transcribed + implementation mapping; doc only, awaiting go-ahead)
+**Last updated:** 2026-08-28 (ASK AI WORKSHEET PHASES 1–4 SHIPPED — steps as a tree, spine + one-step canvas, branching on ask)
+
+**THE WORKSHEET IS LIVE ON /query — PHASES 1–4 OF THE OWNER'S BRIEF
+(2026-08-28, owner: "Let's go"; brief + mapping in
+`docs/backlog/ask-ai-worksheet.md`, which marks what shipped).** A
+question+answer is a STEP (frozen snapshot) in a TREE; the canvas renders
+ONE step; the 220px spine holds the history. Phases 5–8 (assumption
+option menus + branching on change, re-run/star, collapsing/inline
+rename/responsive breakpoints, state polish) are the NEXT slice.
+- **Migration 84** (`conversation_messages`): `parent_message_id`
+  (self-FK, SET NULL), `label` (NULL = client-derived auto label),
+  `starred`, `data_as_of` (warehouse freshness AT ASK TIME, from the
+  answer's oldest source) + `(conversation_id, parent_message_id)` index.
+  NO ordered array / path column — the brief's §3 rule; tree derives from
+  parentId, siblings order by created_at.
+- **Routes**: POST messages accepts `parentMessageId` (must belong to the
+  SAME conversation → 400, else the tree silently corrupts), `label`,
+  `dataAsOf`; PATCH messages accepts `label` (null reverts to auto) +
+  `starred`. **`/query/think` accepts `parentMessageId`** and switches
+  follow-up context to `loadStepAncestorHistory` — the ancestor path
+  walked via parent_message_id, never the conversation's linear tail
+  (after a branch the tail belongs to a DIFFERENT line of questioning);
+  `historyEntry` (methodology splice) extracted and shared. A branch has
+  history, so it never hits the verified-question fast path — correct.
+- **`app/query/steps.ts` (pure)**: `deriveSteps` — parent resolution
+  stored-server-id → session-local-id → LEGACY CHAINING (a parentless
+  step that isn't its thread's first chains to the previous step: every
+  pre-worksheet conversation opens as a straight spine, zero data
+  rewrite); `flattenSteps` (DFS = spine order), `autoLabel` (drop EN+NL
+  interrogatives, 32-char word-boundary cap — "Why?" can't label as
+  empty), `countBranches`, `oldestSourceDate`. Verified by dry-run:
+  legacy chain, explicit tree, pending-by-local-id, mixed legacy+branch.
+- **`StepSpine.tsx`**: role=tree/treeitem + aria-level/selected, roving
+  tabindex, ↑/↓/Home/End (selection follows focus), indent capped at 3
+  with dashed rule, steps AFTER the selection render muted (descendants
+  never hidden), pulsing dot on the pending step, warn dot on
+  error/blocked steps, "+ branch here" under the selection (focuses the
+  input), "N steps · M branches" footer.
+- **The page** (`app/query/page.tsx`): spine (collapsible, persisted,
+  <1100px starts closed) + canvas (max 880px) + ask input stuck to the
+  canvas column; placeholder flips to "Ask from here — this will branch"
+  and a banner names it on non-leaf steps. **Branching**: the new step is
+  a CHILD of the step selected at send time (captured via ref), on every
+  path — think/forecast/cross-view/investigate AND error steps (which
+  join the tree with a warn dot instead of vanishing). The PENDING step
+  is a synthetic assistant message injected into the derivation so it
+  takes its true tree position; its canvas = question + the live
+  progress timeline (`bare` ThinkingBubble/ThinkingPanel). `landStep`
+  selects the answer when it arrives — including out of the repair
+  hold's three exits. **URL**: `?t=<thread>&s=<step server id>` written
+  with pushState (step moves) / replaceState (thread moves) directly —
+  invisible to Next's router; popstate re-selects, so back walks steps;
+  deep links restore thread + step. **The conversation list left the
+  page** (the brief's space-buying move): ChatSidebar now mounts in an
+  "All conversations" slide-over.
+- **MessageBubble `canvas` prop**: full-width variants, assumptions
+  suppressed in the card — the canvas renders them as the "reading" chip
+  row under the serif-italic question; a chip click re-asks with that
+  assumption changed, which BRANCHES from the selected step by
+  construction. Role model untouched: SQL affordances stay canSeeSql.
+- Validation: backend `npm run check` clean; **suite 41 files / 403
+  passed** (3 new: parent/label/dataAsOf round-trip, cross-conversation
+  parent 400, rename/star + label-null revert); all eight ratchets green
+  (real exit codes, repo root); frontend `tsc` clean, lint clean, `next
+  build` green (`/query` 37.5 kB / 371 kB).
+
+**Prior last updated:** 2026-08-28 (ASK AI WORKSHEET — owner's build brief transcribed + implementation mapping; doc only, awaiting go-ahead)
 
 **NEW DOC: `docs/backlog/ask-ai-worksheet.md` (2026-08-28, doc only; no
 code changed).** The owner delivered a full build brief (PDF + two

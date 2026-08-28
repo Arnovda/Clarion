@@ -248,6 +248,8 @@ export const thinkQuerySchema = z.object({
     conversationId: nullableId,
     dataLayer: dataLayerEnum,
     productId: optionalPositiveInt,
+    // Worksheet: the step being asked FROM (ancestor-path history).
+    parentMessageId: optionalPositiveInt,
   }).passthrough(),
 });
 
@@ -535,6 +537,9 @@ export const updateConversationMessageSchema = z.object({
     warning: nullableOptionalString,
     wasRepaired: z.boolean().optional(),
     meta: jsonObject.optional(),
+    // Worksheet spine edits (migration 84): rename a step / star it.
+    label: z.string().max(120).nullable().optional(),
+    starred: z.boolean().optional(),
   }).passthrough(),
 });
 

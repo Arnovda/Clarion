@@ -59,7 +59,7 @@ function StepDot({ state }: { state: StepState }) {
 }
 
 export function ThinkingBubble({
-  phase, liveText, sql, confidence, tables, canSeeSql,
+  phase, liveText, sql, confidence, tables, canSeeSql, bare,
 }: {
   phase:      string;
   liveText:   string;
@@ -69,6 +69,9 @@ export function ThinkingBubble({
   tables:     string[];
   /** See the SQL VISIBILITY note at the top of this file. */
   canSeeSql:  boolean;
+  /** Worksheet canvas: render the timeline content without the chat
+   *  avatar/width chrome — it IS the pending step's result region. */
+  bare?:      boolean;
 }) {
   // Map the backend's phase strings onto the step sequence. Unknown phases
   // (e.g. 'Generating forecast...') fall back to the first step staying
@@ -114,12 +117,14 @@ export function ThinkingBubble({
   ];
 
   return (
-    <div className="flex justify-start gap-2">
-      <div className="flex-shrink-0 w-7 h-7 mt-1 rounded-full bg-ai-soft border border-line flex items-center justify-center animate-pulse">
-        <span className="text-sm">🧠</span>
-      </div>
+    <div className={bare ? '' : 'flex justify-start gap-2'}>
+      {!bare && (
+        <div className="flex-shrink-0 w-7 h-7 mt-1 rounded-full bg-ai-soft border border-line flex items-center justify-center animate-pulse">
+          <span className="text-sm">🧠</span>
+        </div>
+      )}
 
-      <div className="max-w-[85%] w-full bg-raised border border-line rounded-lg overflow-hidden">
+      <div className={`${bare ? 'w-full' : 'max-w-[85%] w-full'} bg-raised border border-line rounded-lg overflow-hidden`}>
         <div className="px-4 py-3 space-y-2">
           {steps.map((s) => (
             <div key={s.key} className="flex items-start gap-2.5">
@@ -167,12 +172,14 @@ export function ThinkingBubble({
 // ─── Repair panel — "Double-checking", framed as diligence ───────────────────
 
 export function ThinkingPanel({
-  repair, onClarify, canSeeSql,
+  repair, onClarify, canSeeSql, bare,
 }: {
   repair: RepairState;
   onClarify: (answer: string, history: Array<{ role: 'user' | 'assistant'; content: string }>) => void;
   /** See the SQL VISIBILITY note at the top of this file. */
   canSeeSql: boolean;
+  /** Worksheet canvas: full width, no chat alignment wrapper. */
+  bare?: boolean;
 }) {
   const [clarifyInput, setClarifyInput] = useState('');
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -182,8 +189,8 @@ export function ThinkingPanel({
   }, [repair.events.length]);
 
   return (
-    <div className="flex justify-start">
-      <div className="max-w-[85%] w-full">
+    <div className={bare ? '' : 'flex justify-start'}>
+      <div className={bare ? 'w-full' : 'max-w-[85%] w-full'}>
         <div className="bg-raised border border-line rounded-lg overflow-hidden shadow-1 text-[12px]">
 
           {/* Header — diligence vocabulary, never "investigation failed" drama */}

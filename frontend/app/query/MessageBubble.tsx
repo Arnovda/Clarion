@@ -725,10 +725,14 @@ interface MessageBubbleProps {
    *  messages whose steps[] is empty (steps aren't persisted row-by-row;
    *  only the conclusion + investigation_id survive). */
   onReplayInvestigation?: (msgId: number, investigationId: number) => Promise<void> | void;
+  /** Worksheet canvas presentation: full-width variants, and the
+   *  assumption chips are SUPPRESSED here — the canvas renders them as the
+   *  "reading" chip row under the question (same data, same click). */
+  canvas?: boolean;
 }
 
 export default function MessageBubble({
-  msg, showSql, isAdmin, canSeeSql, onSend, onFeedback, onExport, conversationId, connectionId, onReplayInvestigation,
+  msg, showSql, isAdmin, canSeeSql, onSend, onFeedback, onExport, conversationId, connectionId, onReplayInvestigation, canvas,
 }: MessageBubbleProps) {
   const [replayLoading, setReplayLoading] = useState(false);
 
@@ -841,7 +845,7 @@ export default function MessageBubble({
     if (msg.needsClarification && msg.ambiguities && msg.ambiguities.length > 0) {
       return (
         <div className="flex justify-start">
-          <div className="max-w-[90%] space-y-2">
+          <div className={`${canvas ? 'w-full' : 'max-w-[90%]'} space-y-2`}>
             <div className="bg-raised border border-line rounded-lg px-5 py-4 text-[14px] text-ink space-y-4">
               <div className="flex items-start gap-2">
                 <span className="text-ocean mt-0.5 flex-shrink-0">🔎</span>
@@ -916,7 +920,7 @@ export default function MessageBubble({
     if (msg.needsClarification && msg.mismatches && msg.mismatches.length > 0) {
       return (
         <div className="flex justify-start">
-          <div className="max-w-[85%] space-y-2">
+          <div className={`${canvas ? 'w-full' : 'max-w-[85%]'} space-y-2`}>
             <div className="bg-raised border border-line rounded-lg px-5 py-4 text-[14px] text-ink space-y-3">
               <div className="flex items-start gap-2">
                 <span className="text-ocean mt-0.5 flex-shrink-0">🔎</span>
@@ -965,7 +969,7 @@ export default function MessageBubble({
     // numeric detail is admin/analyst material.
     return (
       <div className="flex justify-start">
-        <div className="max-w-[85%] space-y-2">
+        <div className={`${canvas ? 'w-full' : 'max-w-[85%]'} space-y-2`}>
           <div className="bg-warn-soft border border-line rounded-lg px-5 py-4 text-[14px] text-ink-2">
             <div className="flex items-start gap-2">
               <span className="text-warn mt-0.5 flex-shrink-0">⚠</span>
@@ -1001,7 +1005,7 @@ export default function MessageBubble({
   if (msg.error) {
     return (
       <div className="flex justify-start">
-        <div className="max-w-[80%] bg-err-soft border border-line rounded-lg px-5 py-4 text-[14px] text-ink-2">
+        <div className={`${canvas ? 'w-full' : 'max-w-[80%]'} bg-err-soft border border-line rounded-lg px-5 py-4 text-[14px] text-ink-2`}>
           <div className="flex items-start gap-2">
             <span className="flex-shrink-0 mt-0.5 text-err">✕</span>
             <p className="leading-relaxed">{msg.text}</p>
@@ -1066,8 +1070,10 @@ export default function MessageBubble({
           {/* Interpretation chips — the assumptions the model committed to,
               stated where the reader can see AND CHANGE them (QuickSight's
               restatement pattern). Clicking a chip re-asks with that
-              assumption flipped; conversation history carries the context. */}
-          {msg.assumptions && msg.assumptions.length > 0 && (
+              assumption flipped; conversation history carries the context.
+              In canvas mode the chips live in the worksheet's "reading" row
+              under the question instead. */}
+          {!canvas && msg.assumptions && msg.assumptions.length > 0 && (
             <div className="border-t border-line/60 pt-2">
               <span className="font-mono uppercase tracking-[0.08em] text-muted text-[10px] mr-2">Assumed</span>
               <div className="inline-flex flex-wrap gap-1.5 align-middle">

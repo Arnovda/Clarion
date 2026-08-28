@@ -164,6 +164,40 @@ function buildColumnDisambiguationWarning(
 // ---------------------------------------------------------------------------
 // Conversation history loader — fetches the last N messages for follow-up context
 // ---------------------------------------------------------------------------
+
+/** One history entry — assistant rows get a methodology splice (executed SQL
+ *  + a tiny row sample) so the model can answer "how did you calculate X?"
+ *  and keeps regenerating the SAME SQL for the same question. */
+function historyEntry(r: {
+  role: string;
+  content: string;
+  sql: string | null;
+  tables_used: string[] | null;
+  rows: unknown[] | null;
+  confidence: number | null;
+}): { role: string; content: string } {
+  if (r.role !== 'assistant' || !r.sql) {
+    return { role: r.role, content: r.content };
+  }
+  const tables = Array.isArray(r.tables_used) ? r.tables_used.join(', ') : '';
+  const sampleRows = Array.isArray(r.rows) ? r.rows.slice(0, 3) : [];
+  const totalRows = Array.isArray(r.rows) ? r.rows.length : 0;
+  const conf = typeof r.confidence === 'number' ? Math.round(r.confidence * 100) : null;
+  const lines: string[] = [r.content];
+  lines.push(`\n[methodology — for your reference, do not repeat verbatim]`);
+  if (tables) lines.push(`Tables used: ${tables}`);
+  if (conf != null) lines.push(`Confidence: ${conf}%`);
+  lines.push(`SQL executed:\n${r.sql}`);
+  if (sampleRows.length > 0) {
+    lines.push(`Returned ${totalRows} row(s). Sample: ${JSON.stringify(sampleRows)}`);
+  } else if (totalRows === 0) {
+    lines.push(`Returned 0 rows.`);
+  }
+  return { role: r.role, content: lines.join('\n') };
+}
+
+const HISTORY_COLUMNS = ['role', 'content', 'sql', 'tables_used', 'rows', 'confidence'] as const;
+
 async function loadConversationHistory(
   db: Knex | Knex.Transaction,
   conversationId: number,
@@ -174,42 +208,45 @@ async function loadConversationHistory(
       .where({ conversation_id: conversationId })
       .orderBy('created_at', 'desc')
       .limit(limit)
-      .select('role', 'content', 'sql', 'tables_used', 'rows', 'confidence');
-
-    // Reverse to chronological order. For assistant messages, splice in the
-    // executed SQL + a tiny row sample so the model can see what queries it
-    // actually ran on prior turns. Without this it can't answer methodology
-    // follow-ups ("how did you calculate X?") and may regenerate a different
-    // SQL for the same question on the next turn.
-    return rows.reverse().map((r: {
-      role: string;
-      content: string;
-      sql: string | null;
-      tables_used: string[] | null;
-      rows: unknown[] | null;
-      confidence: number | null;
-    }) => {
-      if (r.role !== 'assistant' || !r.sql) {
-        return { role: r.role, content: r.content };
-      }
-      const tables = Array.isArray(r.tables_used) ? r.tables_used.join(', ') : '';
-      const sampleRows = Array.isArray(r.rows) ? r.rows.slice(0, 3) : [];
-      const totalRows = Array.isArray(r.rows) ? r.rows.length : 0;
-      const conf = typeof r.confidence === 'number' ? Math.round(r.confidence * 100) : null;
-      const lines: string[] = [r.content];
-      lines.push(`\n[methodology — for your reference, do not repeat verbatim]`);
-      if (tables) lines.push(`Tables used: ${tables}`);
-      if (conf != null) lines.push(`Confidence: ${conf}%`);
-      lines.push(`SQL executed:\n${r.sql}`);
-      if (sampleRows.length > 0) {
-        lines.push(`Returned ${totalRows} row(s). Sample: ${JSON.stringify(sampleRows)}`);
-      } else if (totalRows === 0) {
-        lines.push(`Returned 0 rows.`);
-      }
-      return { role: r.role, content: lines.join('\n') };
-    });
+      .select(...HISTORY_COLUMNS);
+    return rows.reverse().map(historyEntry);
   } catch {
     // If the conversation doesn't exist or the query fails, return empty — non-blocking
+    return [];
+  }
+}
+
+/**
+ * Worksheet branches: the follow-up context is the ANCESTOR PATH of the step
+ * being branched from — walking `parent_message_id` upward — never the linear
+ * tail of the conversation, which after a branch belongs to a DIFFERENT line
+ * of questioning. Each ancestor contributes its question (as the user turn)
+ * and its answer with the methodology splice. Legacy rows (parent NULL) end
+ * the walk naturally.
+ */
+async function loadStepAncestorHistory(
+  db: Knex | Knex.Transaction,
+  conversationId: number,
+  parentMessageId: number,
+  maxSteps = 4,
+): Promise<Array<{ role: string; content: string }>> {
+  try {
+    const out: Array<{ role: string; content: string }> = [];
+    let id: number | null = parentMessageId;
+    let hops = 0;
+    while (id != null && hops < maxSteps) {
+      const row = await db('conversation_messages')
+        .where({ id, conversation_id: conversationId, role: 'assistant' })
+        .select(...HISTORY_COLUMNS, 'question', 'parent_message_id')
+        .first();
+      if (!row) break;
+      out.unshift(historyEntry(row));
+      if (row.question) out.unshift({ role: 'user', content: row.question as string });
+      id = (row.parent_message_id as number | null) ?? null;
+      hops += 1;
+    }
+    return out;
+  } catch {
     return [];
   }
 }
@@ -1227,15 +1264,23 @@ router.post('/think', requireAuth, validate(thinkQuerySchema), async (req: Reque
 
   try {
     const db = reqDb(req);
-    const { connectionId, question, domains, conversationId, dataLayer: requestedLayer, productId } = req.body as {
+    const { connectionId, question, domains, conversationId, dataLayer: requestedLayer, productId, parentMessageId } = req.body as {
       connectionId: number; question: string; domains?: string[]; conversationId?: number;
       dataLayer?: 'product' | 'source';
       productId?: number;
+      /** Worksheet: the step being asked FROM. Present → follow-up context is
+       *  that step's ancestor path, never the conversation's linear tail
+       *  (which after a branch belongs to a different line of questioning). */
+      parentMessageId?: number;
     };
 
-    // Load conversation history for follow-up context (if conversationId provided)
+    // Load conversation history for follow-up context. A branch follows its
+    // ancestor path; a plain conversation keeps the linear tail; a fresh
+    // question (no parent, no conversation) has none.
     const conversationHistory = conversationId
-      ? await loadConversationHistory(db, conversationId)
+      ? (parentMessageId
+          ? await loadStepAncestorHistory(db, conversationId, Number(parentMessageId))
+          : await loadConversationHistory(db, conversationId))
       : undefined;
 
     // ── VERIFIED SAVED QUESTION — exact match, fresh questions only ────────
