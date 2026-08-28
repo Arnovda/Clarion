@@ -23,7 +23,14 @@ export interface Step {
   msg: Message;
   parentId: number | null;   // client id of the parent step
   children: Step[];
-  /** Indent level; the spine caps the visual indent at MAX_INDENT. */
+  /**
+   * VISUAL indent level — counts FORKS, not tree depth. A follow-up asked
+   * from the leaf is the thread continuing and stays at its parent's level
+   * (a linear conversation renders flat); only a second+ child — asking
+   * again from a step that already has a continuation — indents. This is
+   * what makes indentation MEAN something ("here I went back") instead of
+   * stair-stepping on every question. Capped at MAX_INDENT in the spine.
+   */
   depth: number;
   label: string;
   /** Error / blocked marker for the spine's warning dot. */
@@ -107,7 +114,10 @@ export function deriveSteps(messages: Message[]): Step[] {
 
     if (parent) {
       step.parentId = parent.id;
-      step.depth = parent.depth + 1;
+      // Fork-only indentation: the parent's FIRST child continues the
+      // thread at the same level; a second+ child is a real branch and
+      // indents one level under it.
+      step.depth = parent.depth + (parent.children.length > 0 ? 1 : 0);
       parent.children.push(step);
     } else {
       roots.push(step);
