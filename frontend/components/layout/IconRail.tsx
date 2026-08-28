@@ -35,7 +35,7 @@ type Role = 'admin' | 'analyst' | 'viewer';
 // preview — which is Studio work and needs a direct door.
 type Group = 'workspace' | 'uncover' | 'studio' | 'settings';
 
-const ICON_CLASS = 'w-[14px] h-[14px] shrink-0';
+const ICON_CLASS = 'w-4 h-4 shrink-0';
 
 const ICONS = {
   home:    <HomeIcon      className={ICON_CLASS} strokeWidth={1.5} />,
@@ -74,7 +74,7 @@ const NAV_ITEMS: NavItem[] = [
   // ── Workspace — Home alone, unlabelled, above everything ─────────────────
   { key: 'home',       href: '/home',       label: 'Home',            icon: ICONS.home,    roles: ['admin', 'analyst', 'viewer'],  group: 'workspace' },
   // ── Uncover — the ways you interrogate the data ──────────────────────────
-  { key: 'ask',        href: '/query',      label: 'Ask AI',          icon: ICONS.chat,    roles: ['admin', 'analyst', 'viewer'],  group: 'uncover' },
+  { key: 'ask',        href: '/query',      label: 'Ask',             icon: ICONS.chat,    roles: ['admin', 'analyst', 'viewer'],  group: 'uncover' },
   { key: 'dashboards', href: '/dashboards', label: 'Dashboards',      icon: ICONS.grid,    roles: ['admin', 'analyst', 'viewer'],  group: 'uncover' },
   // The root-cause agent — fully built since months but had ZERO nav links
   // (gap analysis G10). Ask AI's "Why?" chips escalate here too.
@@ -102,7 +102,7 @@ const NAV_ITEMS: NavItem[] = [
   // The curator's working surface: browse both layers, edit definitions,
   // preview data. The one relationship surface stays /relationships — the
   // catalog's own diagram tab was retired the day this entry returned.
-  { key: 'catalog',    href: '/catalog',    label: 'Data Catalog',    icon: ICONS.book,    roles: ['admin', 'analyst'],            group: 'studio' },
+  { key: 'catalog',    href: '/catalog',    label: 'Catalog',         icon: ICONS.book,    roles: ['admin', 'analyst'],            group: 'studio' },
   { key: 'pipelines',  href: '/pipelines',  label: 'Refresh',         icon: ICONS.workflow,roles: ['admin', 'analyst'],            group: 'studio' },
   { key: 'review',     href: '/review',     label: 'Suggestions',     icon: ICONS.inbox,   roles: ['admin', 'analyst'],            group: 'studio', badgeKey: 'review' },
   // ── Settings — admin-only org config ────────────────────────────────────
@@ -301,17 +301,20 @@ export default function IconRail() {
         href={it.href}
         title={collapsed ? `${it.label}${badge > 0 ? ` · ${badge}` : ''}` : undefined}
         className={cn(
-          'group flex items-center rounded-sm text-[13.5px]',
+          // Full-bleed row with a left accent bar rather than an inset pill:
+          // the bar reads as "you are here" from the rail's edge, and it is
+          // the same vocabulary the thread list uses two panels over.
+          'group relative flex items-center border-l-2 text-[14px]',
           'transition-colors duration-1 ease-observatory',
-          'focus-visible:outline-none focus-visible:shadow-[0_0_0_3px_rgba(255,255,255,0.25)]',
-          collapsed ? 'justify-center px-2 py-2' : 'gap-2.5 px-2.5 py-2',
+          'focus-visible:outline-none focus-visible:bg-ocean-softer',
+          collapsed ? 'justify-center px-2 py-2.5' : 'gap-3 pl-3.5 pr-3 py-[9px]',
           active
-            ? 'bg-white/15 text-white font-medium'
-            : 'text-[var(--ocean-soft)] hover:bg-white/10 hover:text-white',
+            ? 'border-ocean bg-ocean-softer text-ink font-medium'
+            : 'border-transparent text-ink-2 hover:bg-softer hover:text-ink',
         )}
         aria-current={active ? 'page' : undefined}
       >
-        <span className={cn(active ? 'text-white' : 'text-[var(--ocean-soft)] group-hover:text-white')}>
+        <span className={cn(active ? 'text-ocean' : 'text-muted group-hover:text-ink-2')}>
           {it.icon}
         </span>
         {!collapsed && (
@@ -319,8 +322,8 @@ export default function IconRail() {
             <span className="truncate flex-1">{it.label}</span>
             {badge > 0 && (
               <span className={cn(
-                'inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 rounded-full text-[10px] font-mono font-medium tabular-nums',
-                active ? 'bg-white text-[var(--ocean)]' : 'bg-[var(--ocean-hover)] text-white',
+                'inline-flex items-center justify-center min-w-[20px] h-[18px] px-1.5 rounded-full text-[10px] font-mono font-medium tabular-nums',
+                active ? 'bg-ocean text-white' : 'bg-soft text-ink-3',
               )}>
                 {badge > 99 ? '99+' : badge}
               </span>
@@ -329,7 +332,7 @@ export default function IconRail() {
         )}
         {collapsed && badge > 0 && (
           <span
-            className="absolute mt-[-12px] ml-[14px] w-[8px] h-[8px] rounded-full bg-white border border-[var(--ocean)]"
+            className="absolute top-1.5 right-2 w-[7px] h-[7px] rounded-full bg-ocean ring-2 ring-[var(--surface)]"
             aria-label={`${badge} pending`}
           />
         )}
@@ -346,16 +349,16 @@ export default function IconRail() {
         aria-label="Primary navigation"
         className={cn(
           'h-full w-full flex flex-col overflow-hidden',
-          // Ocean-blue chrome — same brand colour the rest of the app uses
-          // for primary actions and active states. Sets a clear visual
-          // anchor for the navigation surface.
-          'bg-[var(--ocean)]',
-          // A slightly darker right edge so the rail visually separates
-          // from the main content without a hard line.
-          'border-r border-[var(--ocean-hover)]/70',
+          // Light chrome: the rail is one shade off the page rather than a
+          // block of brand colour, so the eye lands on the content and the
+          // one tinted row (the active page) is the loudest thing in it.
+          'bg-[var(--surface)]',
+          'border-r border-line',
         )}
       >
-        <nav className="flex-1 flex flex-col gap-0.5 px-2 py-3.5 overflow-y-auto scrollbar-thin">
+        {/* No horizontal padding — rows are full-bleed so their accent bar
+            can sit flush against the rail's own edge. */}
+        <nav className="flex-1 flex flex-col gap-0.5 py-2 overflow-y-auto scrollbar-thin">
           {GROUP_ORDER.map((g) => {
             const items = visible.filter((i) => i.group === g);
             if (items.length === 0) return null;
@@ -375,32 +378,38 @@ export default function IconRail() {
                     mode falls back to a plain divider. */}
                 {GROUP_LABELS[g] && (
                   collapsed ? (
-                    <div className="mx-3 my-2 border-t border-white/10" aria-hidden />
+                    <div className="mx-3 my-2 border-t border-line" aria-hidden />
                   ) : isCollapsible ? (
                     <button
                       type="button"
                       onClick={() => toggleGroup(g)}
                       aria-expanded={openGroups.includes(g)}
-                      className="group/disc mt-2 flex items-center gap-1.5 rounded-sm px-2.5 pt-2 pb-1.5 text-left hover:bg-white/5 transition-colors"
+                      className="group/disc mt-3 flex w-full items-center gap-1.5 px-4 pt-1 pb-1.5 text-left"
                     >
+                      <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-muted-2 font-medium group-hover/disc:text-muted transition-colors">
+                        {GROUP_LABELS[g]}
+                      </span>
+                      {/* The chevron is a hover affordance while the section is
+                          open — an open group should read as a plain eyebrow,
+                          not as a control. Closed, it stays visible: it is the
+                          only sign that rows are hidden under it. */}
                       <ChevronDown
                         className={cn(
-                          'w-3 h-3 text-white/45 transition-transform duration-150',
-                          !openGroups.includes(g) && '-rotate-90',
+                          'w-3 h-3 text-muted-2 transition-[transform,opacity] duration-150',
+                          openGroups.includes(g)
+                            ? 'opacity-0 group-hover/disc:opacity-100'
+                            : '-rotate-90 opacity-100',
                         )}
                         strokeWidth={2}
                       />
-                      <span className="font-mono text-[10px] uppercase tracking-[0.12em] text-white/55 font-medium">
-                        {GROUP_LABELS[g]}
-                      </span>
                       {/* Attention dot when the section is closed but something
                           inside needs the user (pending reviews / sources). */}
                       {!openGroups.includes(g) && pending > 0 && (
-                        <span className="ml-1 w-[7px] h-[7px] rounded-full bg-white/80" aria-label={`${pending} pending`} />
+                        <span className="ml-1 w-[7px] h-[7px] rounded-full bg-ocean" aria-label={`${pending} pending`} />
                       )}
                     </button>
                   ) : (
-                    <div className="font-mono text-[10px] uppercase tracking-[0.12em] text-white/55 px-2.5 pt-3 pb-1.5 font-medium">
+                    <div className="font-mono text-[10px] uppercase tracking-[0.14em] text-muted-2 px-4 pt-4 pb-1.5 font-medium">
                       {GROUP_LABELS[g]}
                     </div>
                   )
@@ -411,16 +420,15 @@ export default function IconRail() {
           })}
         </nav>
 
-        {/* Collapse toggle pinned to the bottom. Borders use a faint white
-            overlay so they harmonise with the ocean chrome rather than
-            cutting it with a hard line. */}
-        <div className="px-2 py-2 border-t border-white/10">
+        {/* Collapse toggle pinned to the bottom, kept quiet: it is chrome for
+            the chrome, and should never compete with a nav row. */}
+        <div className="px-2 py-2 border-t border-line">
           <button
             type="button"
             onClick={() => setCollapsed((c) => !c)}
             className={cn(
               'w-full flex items-center rounded-sm py-1.5 text-[12px]',
-              'text-[var(--ocean-soft)] hover:text-white hover:bg-white/10 transition-colors',
+              'text-muted-2 hover:text-ink-2 hover:bg-softer transition-colors',
               collapsed ? 'justify-center px-2' : 'gap-2 px-2.5',
             )}
             title={collapsed ? 'Expand navigation' : 'Collapse navigation'}
@@ -448,7 +456,7 @@ export default function IconRail() {
           className={cn(
             'absolute top-0 right-0 h-full w-1.5 -mr-[2px] cursor-col-resize',
             'transition-colors duration-150',
-            'hover:bg-white/30 active:bg-white/40',
+            'hover:bg-ocean/25 active:bg-ocean/40',
           )}
           title="Drag to resize"
           aria-hidden

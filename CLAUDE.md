@@ -31,7 +31,58 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-08-28 (ASK AI WORKSHEET PHASES 5–8 SHIPPED — the brief is fully implemented; same day as phases 1–4 below)
+**Last updated:** 2026-08-28 (NAV RAIL + THREAD LIST RESTYLED to the owner's
+mockups — frontend presentation only, third slice of the day)
+
+**THE RAIL AND THE THREAD LIST NOW MATCH THE OWNER'S MOCKUPS (2026-08-28,
+frontend-only; two mockups + a screenshot of today, owner: "I want the
+sidebar to look like this and the Ask AI. Don't mind the colour, just how
+it looks compared to today").** Presentation only — no routes, roles, IA or
+data changed, and every nav entry that existed still exists.
+- **`IconRail` is light chrome now** (`--surface`, `border-r border-line`)
+  instead of a block of ocean blue. The mockup's palette is warm cream; the
+  owner said the colour is not the point, so the rail uses the app's own
+  neutral tokens rather than a second palette nobody else in the product
+  speaks.
+- **Full-bleed rows with a LEFT ACCENT BAR** replace the inset white/15
+  pill: `border-l-2 border-ocean` + `bg-ocean-softer` + ink text, rows
+  spanning the rail edge to edge so the bar sits flush against it. This is
+  deliberately the same vocabulary the thread list two panels over already
+  used — the two panels now read as one surface.
+- Icons 14→16px, labels 13.5→14px, group eyebrows in `muted-2` at
+  `tracking-[0.14em]`. **The disclosure chevron on Studio/Settings only
+  shows on hover while the group is OPEN** (an open group should read as a
+  plain eyebrow, not a control) and stays visible when CLOSED — there it is
+  the only sign that rows are hidden. Collapsible groups, persisted
+  width/collapse state, badges and the attention dot all behave as before;
+  the badge is `bg-soft/ink-3` (ocean-on-white when active) and the
+  collapsed-rail dot is now positioned off a `relative` row instead of the
+  old margin hack.
+- **Two labels shortened to the mockup's**: `Ask AI` → **Ask**,
+  `Data Catalog` → **Catalog**. Nothing was removed from the rail — the
+  mockup omits Notebooks / Your tables / Relations / Suggestions / Settings,
+  but those are live pages and dropping their door would strand them.
+- **`ChatSidebar` is the THREAD list**: eyebrow "Threads", a ghost
+  `+ New thread` button (bordered, not a filled ocean block — starting a
+  thread is not the loudest thing on the panel), and **titles wrap to two
+  lines** (`line-clamp-2`, 14px) instead of truncating at one: a thread
+  title is a QUESTION, and "Which suppliers have the highest…" is
+  unidentifiable without its tail. Age moves under the title in the mono
+  eyebrow. The `SHOW STARRED` row is gone as a row — the filter is now a
+  star icon toggle on the eyebrow line (it is a lens on the list, not an
+  action of the same weight as "new thread"); the per-row star/delete
+  actions stay in flow so a wrapping title never runs under them.
+- The mobile threads slide-over lost its own "All conversations" title
+  (ChatSidebar supplies the heading now) — the header is just the close
+  button; the dialog's `aria-label` says "Threads".
+- Validation: frontend `tsc` clean, touched files lint-clean (the one
+  warning is pre-existing on an untouched line of `query/page.tsx`),
+  `next build` green (`/query` 40.5 kB / 374 kB, unchanged). Verified
+  VISUALLY, not just by build: a throwaway `/dev/nav` harness rendered the
+  rail + thread list with fixtures under a faked admin token and was
+  screenshotted in real Chromium (expanded and collapsed), then deleted.
+
+**Prior last updated:** 2026-08-28 (ASK AI WORKSHEET PHASES 5–8 SHIPPED — the brief is fully implemented; same day as phases 1–4 below)
 
 **WORKSHEET PHASES 5–8 ARE BUILT (2026-08-28, second slice of the day; the
 brief in `docs/backlog/ask-ai-worksheet.md` is now FULLY implemented):**

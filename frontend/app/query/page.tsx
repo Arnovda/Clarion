@@ -1836,11 +1836,11 @@ function QueryPageInner() {
         {/* ── Threads slide-over — MOBILE ONLY: on desktop the rail carries
               the thread list. ── */}
         {convListOpen && (
-          <div className="fixed inset-0 z-40 md:hidden" role="dialog" aria-label="All conversations">
+          <div className="fixed inset-0 z-40 md:hidden" role="dialog" aria-label="Threads">
             <div className="absolute inset-0 bg-ink/25" onClick={() => setConvListOpen(false)} />
             <div className="absolute left-0 top-0 bottom-0 w-[320px] bg-raised border-r border-line shadow-lg flex flex-col">
-              <div className="flex items-center justify-between px-4 py-3 border-b border-line">
-                <span className="font-mono text-[10.5px] uppercase tracking-[0.14em] text-muted">All conversations</span>
+              {/* No title here — ChatSidebar carries the "Threads" eyebrow. */}
+              <div className="flex items-center justify-end px-3 py-2">
                 <button onClick={() => setConvListOpen(false)} className="p-1 rounded text-muted hover:text-ink hover:bg-softer transition-colors" title="Close">
                   <X className="w-4 h-4" strokeWidth={2} />
                 </button>
