@@ -729,10 +729,17 @@ interface MessageBubbleProps {
    *  assumption chips are SUPPRESSED here — the canvas renders them as the
    *  "reading" chip row under the question (same data, same click). */
   canvas?: boolean;
+  /** Worksheet §4.4: re-run the same question against current data — a new
+   *  SIBLING step; never overwrites this one. Rendered on the receipt. */
+  onRerun?: () => void;
+  /** The warehouse has refreshed since this snapshot's data_as_of (>24h). */
+  newerDataAvailable?: boolean;
+  /** Error steps: re-ask the same question as a sibling. */
+  onRetry?: () => void;
 }
 
 export default function MessageBubble({
-  msg, showSql, isAdmin, canSeeSql, onSend, onFeedback, onExport, conversationId, connectionId, onReplayInvestigation, canvas,
+  msg, showSql, isAdmin, canSeeSql, onSend, onFeedback, onExport, conversationId, connectionId, onReplayInvestigation, canvas, onRerun, newerDataAvailable, onRetry,
 }: MessageBubbleProps) {
   const [replayLoading, setReplayLoading] = useState(false);
 
@@ -1010,6 +1017,14 @@ export default function MessageBubble({
             <span className="flex-shrink-0 mt-0.5 text-err">✕</span>
             <p className="leading-relaxed">{msg.text}</p>
           </div>
+          {onRetry && msg.question && (
+            <button
+              onClick={onRetry}
+              className="mt-2 ml-5 px-3 py-1.5 text-[12px] font-medium border border-line rounded-md text-ink-3 hover:border-ocean/50 hover:text-ocean transition-colors"
+            >
+              Retry
+            </button>
+          )}
           {/* Backend sends error details to admin AND analyst — the UI used
               to hide them from the analysts it was sending them to. */}
           {canSeeSql && (msg.errorDetail || msg.errorStack) && (
@@ -1066,6 +1081,13 @@ export default function MessageBubble({
                     ? <AnswerKpis row={msg.rows[0]} />
                     : <ResultVisualizer rows={msg.rows} hint={msg.visualization} />
               ))}
+          {/* Empty result (worksheet §5): the assumptions are usually the
+              cause — the chips above the card are where to loosen them. */}
+          {!msg.forecast && msg.sql && msg.rows && msg.rows.length === 0 && !msg.blocked && !msg.error && (
+            <p className="text-[12.5px] text-muted italic border border-dashed border-line rounded-md px-3 py-2.5">
+              No rows matched. Try widening the date range or removing an assumption.
+            </p>
+          )}
 
           {/* Interpretation chips — the assumptions the model committed to,
               stated where the reader can see AND CHANGE them (QuickSight's
@@ -1096,7 +1118,7 @@ export default function MessageBubble({
           )}
 
           {/* Trust line — categorical, all roles, never a percentage. */}
-          <TrustLine msg={msg} />
+          <TrustLine msg={msg} onRerun={onRerun} newerDataAvailable={newerDataAvailable} />
 
           <HowIGotThis msg={msg} canSeeSql={canSeeSql} showSql={showSql} />
 
@@ -1195,7 +1217,11 @@ function answerSources(msg: Message): AnswerSource[] {
       }));
 }
 
-function TrustLine({ msg }: { msg: Message }) {
+function TrustLine({ msg, onRerun, newerDataAvailable }: {
+  msg: Message;
+  onRerun?: () => void;
+  newerDataAvailable?: boolean;
+}) {
   const sources = answerSources(msg);
   const oldest = oldestSourceDate(msg.sources);
   const fStatus = oldest ? getFreshnessStatus(oldest) : 'unknown';
@@ -1238,6 +1264,20 @@ function TrustLine({ msg }: { msg: Message }) {
         {oldest && <span className={freshClass}>· data as of {formatRelativeTime(oldest)}</span>}
         {msg.answeredInMs != null && msg.answeredInMs > 0 && (
           <span className="font-mono text-[10px]">· {Math.max(1, Math.round(msg.answeredInMs / 1000))}s</span>
+        )}
+        {/* Frozen snapshot, honest about time (spec §4.4): say when newer
+            data exists; never silently refresh. */}
+        {newerDataAvailable && (
+          <span className="text-warn">· newer data available</span>
+        )}
+        {onRerun && msg.question && (
+          <button
+            onClick={onRerun}
+            title="Run this question again against current data — a new step; this one is kept"
+            className="ml-auto font-mono text-[10px] lowercase tracking-[0.08em] text-ocean/80 hover:text-ocean transition-colors"
+          >
+            re-run ↻
+          </button>
         )}
       </div>
       {msg.warning && !msg.checking && (

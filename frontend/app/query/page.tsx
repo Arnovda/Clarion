@@ -9,14 +9,16 @@ import { useRole, canCurate } from '@/lib/role';
 import { streamSSE, SSEHttpError } from '@/lib/sse';
 import { getItem, setItem, storageKeys } from '@/lib/storage';
 import { formatRelativeTime, getOverallFreshnessStatus } from '@/lib/freshness';
-import { X, Loader2, ArrowRight, ChevronDown, PanelLeftClose, PanelLeftOpen, History } from 'lucide-react';
+import { X, Loader2, ArrowRight, PanelLeftClose, PanelLeftOpen, History } from 'lucide-react';
 import { type DataSource } from './components';
 import MessageBubble from './MessageBubble';
 import { ThinkingBubble, ThinkingPanel } from './thinking';
 import ChatSidebar from './ChatSidebar';
 import EmptyState from './EmptyState';
 import StepSpine, { PENDING_STEP_ID } from './StepSpine';
-import { deriveSteps, flattenSteps, countBranches, oldestSourceDate } from './steps';
+import { deriveSteps, flattenSteps, countBranches, oldestSourceDate, type Step } from './steps';
+import AssumptionChips from './AssumptionChips';
+import type { AssumptionDetail } from './types';
 import type {
   AnswerSource,
   DebugInfo,
@@ -80,7 +82,7 @@ function QueryPageInner() {
   // CLIENT message id; PENDING_STEP_ID marks the step currently streaming.
   const [selectedStepId, setSelectedStepId] = useState<number | null>(null);
   /** The question in flight — becomes a real step when its answer lands. */
-  const [pendingAsk, setPendingAsk] = useState<{ question: string; parentLocalId: number | null } | null>(null);
+  const [pendingAsk, setPendingAsk] = useState<{ question: string; parentLocalId: number | null; label?: string } | null>(null);
   const [spineOpen, setSpineOpen] = useState(true);
   const [convListOpen, setConvListOpen] = useState(false);
   useEffect(() => {
@@ -158,6 +160,7 @@ function QueryPageInner() {
         id: PENDING_STEP_ID, role: 'assistant' as const, text: '',
         question: pendingAsk.question,
         parentLocalId: pendingAsk.parentLocalId ?? undefined,
+        ...(pendingAsk.label ? { label: pendingAsk.label } : {}),
       }]
     : messages;
   const stepRoots = deriveSteps(spineMessages);
@@ -189,6 +192,77 @@ function QueryPageInner() {
 
   /** Restored from ?s= before the conversation's messages arrive. */
   const pendingUrlStepRef = useRef<number | null>(null);
+
+  // ── Step actions (worksheet §4.3–4.6) ─────────────────────────────────────
+
+  /** Chip menu pick: same question, exactly ONE assumption changed — a new
+   *  child of the step (spec §4.3), auto-labelled by the diff. */
+  function branchWithAssumption(step: Step, a: AssumptionDetail, opt: { value: string; label: string }) {
+    if (!step.msg.question) return;
+    const from = a.options.find((o) => o.value === a.value)?.label ?? a.label;
+    send(step.msg.question, {
+      directive: `Change exactly one assumption: use "${opt.label}" instead of "${from}" for "${a.label}". Keep the question and every other assumption unchanged, and state the changed assumption in your assumptions list.`,
+      labelOverride: `Same, ${opt.label}`,
+      treeParent: { serverId: step.serverId, localId: step.id },
+      historyParentServerId: step.serverId,
+    });
+  }
+
+  /** Legacy chip (no options): the sentence re-ask, still a branch. */
+  function branchWithLegacyAssumption(step: Step, label: string) {
+    send(`Same question, but change this assumption: "${label}". Use a different interpretation and tell me which one you picked.`, {
+      treeParent: { serverId: step.serverId, localId: step.id },
+      historyParentServerId: step.serverId,
+    });
+  }
+
+  /** Re-run ↻ (spec §4.4): same question against current data, as a new
+   *  SIBLING — the model reads THIS step's ancestor path including the step
+   *  itself, so it reproduces the interpretation instead of re-deriving. */
+  function rerunStep(step: Step, allSteps: Step[]) {
+    if (!step.msg.question) return;
+    const parentOfStep = step.parentId != null ? allSteps.find((x) => x.id === step.parentId) ?? null : null;
+    send(step.msg.question, {
+      directive: 'Re-run the same analysis against current data. Keep the interpretation and every assumption exactly as before.',
+      labelOverride: `${step.label} (re-run)`,
+      treeParent: parentOfStep ? { serverId: parentOfStep.serverId, localId: parentOfStep.id } : { serverId: undefined, localId: null },
+      historyParentServerId: step.serverId,
+    });
+  }
+
+  /** Error steps: try again as a SIBLING (the failure stays in the spine
+   *  with its warning dot — spec §5). */
+  function retryStep(step: Step, allSteps: Step[]) {
+    if (!step.msg.question) return;
+    const parentOfStep = step.parentId != null ? allSteps.find((x) => x.id === step.parentId) ?? null : null;
+    send(step.msg.question, {
+      treeParent: parentOfStep ? { serverId: parentOfStep.serverId, localId: parentOfStep.id } : { serverId: undefined, localId: null },
+      historyParentServerId: parentOfStep?.serverId,
+    });
+  }
+
+  function toggleStarStep(step: Step) {
+    if (!step.serverId || !activeId || activeId < 0) return;
+    const next = !step.msg.starred;
+    setMessages((prev) => prev.map((m) => m.id === step.id ? { ...m, starred: next } : m));
+    api.patch(`/conversations/${activeId}/messages/${step.serverId}`, { starred: next }).catch(() => {});
+  }
+
+  /** Inline rename (spec §4.5): null reverts to the auto label. */
+  function renameStep(step: Step, label: string | null) {
+    if (!step.serverId || !activeId || activeId < 0) return;
+    setMessages((prev) => prev.map((m) => m.id === step.id ? { ...m, label } : m));
+    api.patch(`/conversations/${activeId}/messages/${step.serverId}`, { label }).catch(() => {});
+  }
+
+  /** "Newer data available" (spec §4.4): the snapshot's data_as_of lags the
+   *  newest warehouse refresh by more than 24h. */
+  function stepHasNewerData(step: Step): boolean {
+    const asOf = step.msg.dataAsOf ?? oldestSourceDate(step.msg.sources);
+    if (!asOf) return false;
+    const newest = Math.max(0, ...freshnessDates.filter(Boolean).map((d) => new Date(d as string).getTime()));
+    return newest > new Date(asOf).getTime() + 24 * 3600_000;
+  }
 
   // In-flight SSE streams (/think + /repair) — aborted on unmount so a
   // navigated-away chat doesn't keep streaming into dead state setters.
@@ -354,6 +428,7 @@ function QueryPageInner() {
     try {
       const meta: Record<string, unknown> = {
         ...(msg.assumptions?.length ? { assumptions: msg.assumptions } : {}),
+        ...(msg.assumptionDetails?.length ? { assumptionDetails: msg.assumptionDetails } : {}),
         ...(msg.subScores ? { subScores: msg.subScores } : {}),
         ...(msg.uncertaintyNotes?.length ? { uncertaintyNotes: msg.uncertaintyNotes } : {}),
         ...(msg.intent && msg.intent !== 'data' ? { intent: msg.intent } : {}),
@@ -388,9 +463,11 @@ function QueryPageInner() {
         reasoning: msg.reasoning,
         queryLayer: msg.queryLayer,
         ...(Object.keys(meta).length > 0 ? { meta } : {}),
-        // Worksheet step fields (assistant rows only): the tree edge and the
-        // warehouse freshness frozen at ask time.
+        // Worksheet step fields (assistant rows only): the tree edge, the
+        // diff label (assumption flips / re-runs) and the warehouse
+        // freshness frozen at ask time.
         ...(msg.role === 'assistant' && msg.parentServerId != null ? { parentMessageId: msg.parentServerId } : {}),
+        ...(msg.role === 'assistant' && msg.label ? { label: msg.label } : {}),
         ...(msg.role === 'assistant'
           ? (() => { const d = msg.dataAsOf ?? oldestSourceDate(msg.sources); return d ? { dataAsOf: d } : {}; })()
           : {}),
@@ -499,6 +576,7 @@ function QueryPageInner() {
           // Restored meta — assumptions, clarify chips, chart hint, forecast,
           // sources and the repair trail all survive a reload now.
           assumptions: meta.assumptions as string[] | undefined,
+          assumptionDetails: meta.assumptionDetails as AssumptionDetail[] | undefined,
           subScores: meta.subScores as Message['subScores'],
           uncertaintyNotes: meta.uncertaintyNotes as string[] | undefined,
           intent: meta.intent as Message['intent'],
@@ -855,7 +933,20 @@ function QueryPageInner() {
 
   // ── Send a question ──
 
-  const send = useCallback(async (question: string) => {
+  /** Options for a send that is more than a typed question: worksheet
+   *  assumption flips and re-runs (spec §4.3–4.4). `directive` refines HOW
+   *  to re-answer (folded into the generator's text server-side, never
+   *  displayed); `treeParent` overrides where the new step hangs (re-run =
+   *  sibling); `historyParentServerId` overrides which step's ancestor
+   *  path the model reads. */
+  type SendOpts = {
+    directive?: string;
+    labelOverride?: string;
+    treeParent?: { serverId?: number; localId: number | null };
+    historyParentServerId?: number;
+  };
+
+  const send = useCallback(async (question: string, opts?: SendOpts) => {
     const q = question.trim();
     if (!q || loading) return;
 
@@ -894,8 +985,9 @@ function QueryPageInner() {
     // Worksheet branching (spec §4.2): the new step is a CHILD of the step
     // selected at send time. Captured through a ref so this memoised
     // callback reads the live selection.
-    const parent = selectedStepRef.current;
-    setPendingAsk({ question: q, parentLocalId: parent.localId });
+    const parent = opts?.treeParent ?? selectedStepRef.current;
+    const historyParentId = opts?.historyParentServerId ?? parent.serverId;
+    setPendingAsk({ question: q, parentLocalId: parent.localId, ...(opts?.labelOverride ? { label: opts.labelOverride } : {}) });
     setSelectedStepId(PENDING_STEP_ID);
     const userMsgId = nextId.current++;
     setMessages((prev) => [...prev, { id: userMsgId, role: 'user', text: q }]);
@@ -1171,7 +1263,8 @@ function QueryPageInner() {
             connectionId: sourceId,
             question:     q,
             ...(cid && cid > 0 ? { conversationId: cid } : {}),
-            ...(parent.serverId ? { parentMessageId: parent.serverId } : {}),
+            ...(historyParentId ? { parentMessageId: historyParentId } : {}),
+            ...(opts?.directive ? { directive: opts.directive } : {}),
             ...(selectedDomains.length > 0 ? { domains: selectedDomains } : {}),
             ...(useSourceLayer ? { dataLayer: 'source' as const } : {}),
           },
@@ -1205,6 +1298,7 @@ function QueryPageInner() {
               subScores?: { schema?: number; join?: number; formula?: number };
               uncertaintyNotes?: string[];
               assumptions?: string[];
+              assumptionDetails?: AssumptionDetail[];
               intent?: 'data' | 'explain' | 'clarify';
               ambiguity?: string;
               options?: import('./types').ClarifyOption[];
@@ -1221,6 +1315,7 @@ function QueryPageInner() {
               sql: d.sql, tablesUsed: d.tablesUsed, confidence: d.confidence, warning: d.warning,
               blocked: d.blocked, flagReason: d.flagReason, subScores: d.subScores, uncertaintyNotes: d.uncertaintyNotes,
               assumptions: d.assumptions,
+              assumptionDetails: d.assumptionDetails,
               intent: d.intent, ambiguity: d.ambiguity, options: d.options,
               needsClarification: d.needsClarification,
               ambiguities: d.ambiguities, mismatches: d.mismatches, debug: d.debug, rows: d.rows,
@@ -1234,6 +1329,7 @@ function QueryPageInner() {
               verified: d.verified,
               parentServerId: parent.serverId ?? null,
               parentLocalId: parent.localId ?? undefined,
+              ...(opts?.labelOverride ? { label: opts.labelOverride } : {}),
             };
 
             const needsRepair = !!(d.warning && !d.blocked && d.sql && d.rows);
@@ -1490,13 +1586,15 @@ function QueryPageInner() {
       <div className="flex flex-1 min-h-0 relative">
         {/* ── Thread spine ── */}
         {spineOpen && flatSteps.length > 0 && (
-          <div className="w-[220px] flex-shrink-0 border-r border-line bg-raised min-h-0 hidden sm:block">
+          <div className="w-[220px] flex-shrink-0 border-r border-line bg-raised min-h-0 hidden md:block">
             <StepSpine
               steps={flatSteps}
               selectedId={selectedStep?.id ?? null}
               onSelect={(id) => setSelectedStepId(id)}
               onBranchHere={() => inputRef.current?.focus()}
               branchCount={countBranches(stepRoots)}
+              onToggleStar={toggleStarStep}
+              onRename={renameStep}
             />
           </div>
         )}
@@ -1510,7 +1608,7 @@ function QueryPageInner() {
                 <button
                   onClick={toggleSpine}
                   title={spineOpen ? 'Hide the thread' : 'Show the thread'}
-                  className="p-1.5 rounded text-muted hover:text-ink hover:bg-softer transition-colors hidden sm:block"
+                  className="p-1.5 rounded text-muted hover:text-ink hover:bg-softer transition-colors hidden md:block"
                 >
                   {spineOpen ? <PanelLeftClose className="w-4 h-4" strokeWidth={1.6} /> : <PanelLeftOpen className="w-4 h-4" strokeWidth={1.6} />}
                 </button>
@@ -1561,6 +1659,28 @@ function QueryPageInner() {
               )}
             </div>
           </div>
+
+          {/* Below ~768px the spine becomes a top-anchored horizontal
+              scroller of step chips (spec §1 responsive rule). */}
+          {flatSteps.length > 0 && (
+            <div className="md:hidden flex-shrink-0 border-b border-line bg-raised px-3 py-2 overflow-x-auto whitespace-nowrap">
+              {flatSteps.map((st) => (
+                <button
+                  key={st.id}
+                  onClick={() => setSelectedStepId(st.id)}
+                  className={`inline-flex items-center gap-1.5 mr-1.5 px-2.5 py-1 rounded-full border text-[11.5px] transition-colors ${
+                    st.id === (selectedStep?.id ?? null)
+                      ? 'border-ocean/50 bg-ocean-softer text-ink font-medium'
+                      : 'border-line text-ink-3 hover:border-line-strong'
+                  }`}
+                >
+                  {st.id === PENDING_STEP_ID && <span className="w-1.5 h-1.5 rounded-full bg-ocean motion-safe:animate-pulse" aria-hidden="true" />}
+                  {st.warn && <span className="w-1.5 h-1.5 rounded-full bg-warn" aria-hidden="true" />}
+                  {st.label}
+                </button>
+              ))}
+            </div>
+          )}
 
           {/* Canvas */}
           <div ref={canvasRef} className="flex-1 min-h-0 overflow-y-auto">
@@ -1613,25 +1733,19 @@ function QueryPageInner() {
                     <h1 className="font-display italic text-[19px] leading-[1.3] tracking-[-0.01em] text-ink m-0 text-left">
                       {selectedStep.msg.question ?? selectedStep.label}
                     </h1>
-                    {/* "reading" chips — the assumptions in force, clickable.
-                        A click re-asks with that assumption changed, which
-                        branches from THIS step (parent = selection). */}
-                    {(selectedStep.msg.assumptions?.length ?? 0) > 0 && (
-                      <div className="flex flex-wrap items-center gap-1.5 mt-2.5">
-                        <span className="font-mono text-[10px] lowercase tracking-[0.1em] text-muted-2 mr-0.5">reading</span>
-                        {selectedStep.msg.assumptions!.map((a, i) => (
-                          <button
-                            key={i}
-                            onClick={() => send(`Same question, but change this assumption: "${a}". Use a different interpretation and tell me which one you picked.`)}
-                            title="Ask again with this assumption changed — this starts a new branch"
-                            className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full border border-line-strong bg-raised text-[11.5px] text-ink-3 hover:border-ocean/50 hover:text-ocean transition-colors text-left"
-                          >
-                            {a}
-                            <ChevronDown className="w-3 h-3 opacity-50 shrink-0" strokeWidth={2} aria-hidden="true" />
-                          </button>
-                        ))}
-                      </div>
-                    )}
+                    {/* "reading" chips — the assumptions in force, as
+                        CONTROLS (spec §4.3): each opens an option menu;
+                        picking a different option branches from THIS step
+                        with the question unchanged. "+ add" surfaces the
+                        silently-resolved ones. Legacy string assumptions
+                        fall back to the sentence re-ask. */}
+                    <AssumptionChips
+                      details={selectedStep.msg.assumptionDetails?.length
+                        ? selectedStep.msg.assumptionDetails
+                        : (selectedStep.msg.assumptions ?? []).map((label) => ({ label, detail: '', options: [], value: '', silent: false }))}
+                      onPick={(a, opt) => branchWithAssumption(selectedStep, a, opt)}
+                      onLegacy={(label) => branchWithLegacyAssumption(selectedStep, label)}
+                    />
                   </div>
                   {/* The snapshot — restored from stored state, never re-queried. */}
                   <MessageBubble
@@ -1646,6 +1760,9 @@ function QueryPageInner() {
                     conversationId={activeId}
                     connectionId={connectionIdForActions}
                     onReplayInvestigation={handleReplayInvestigation}
+                    onRerun={selectedStep.msg.question && !selectedStep.msg.error ? () => rerunStep(selectedStep, flatSteps) : undefined}
+                    newerDataAvailable={stepHasNewerData(selectedStep)}
+                    onRetry={selectedStep.msg.error ? () => retryStep(selectedStep, flatSteps) : undefined}
                   />
                   {/* The live double-check panel shows only WHILE the loop runs
                       (or waits on a clarification) — the step's receipt is the

@@ -1125,7 +1125,9 @@ export function extractEntitiesFromQuestion(
 // Call Type 2a — Natural Language → SQL + confidence score
 // ---------------------------------------------------------------------------
 
-function defaultSubScores(parsed: Record<string, unknown>): NlToSqlOutput {
+// Exported for the assumption-normalization unit tests — the tolerant
+// parsing IS the contract (model output must never crash a consumer).
+export function defaultSubScores(parsed: Record<string, unknown>): NlToSqlOutput {
   const intentRaw = parsed.intent as string | undefined;
   const intent: 'data' | 'explain' | 'clarify' =
     intentRaw === 'explain' ? 'explain'
@@ -1137,12 +1139,52 @@ function defaultSubScores(parsed: Record<string, unknown>): NlToSqlOutput {
     ?? (intent !== 'data' ? 1 : 0);
   const viz = parsed.visualization as Record<string, unknown> | undefined;
 
-  // Defensive parsing of assumption + clarify fields. The model occasionally
-  // returns a single string instead of an array — coerce.
+  // Defensive parsing of assumption + clarify fields. Assumptions are MODEL
+  // OUTPUT and the contract changed twice (strings → objects, 2026-08-28
+  // worksheet §4.3), so accept BOTH shapes and anything in between: a bare
+  // string becomes a label-only detail, a malformed object degrades to its
+  // usable fields, garbage is dropped. `assumptions` (labels) is kept for
+  // every existing consumer; `assumption_details` carries the structure.
   const rawAssumptions = parsed.assumptions;
-  const assumptions: string[] = Array.isArray(rawAssumptions)
-    ? rawAssumptions.filter((x): x is string => typeof x === 'string').map((s) => s.trim()).filter(Boolean)
-    : (typeof rawAssumptions === 'string' && rawAssumptions.trim() ? [rawAssumptions.trim()] : []);
+  const rawList: unknown[] = Array.isArray(rawAssumptions)
+    ? rawAssumptions
+    : (typeof rawAssumptions === 'string' && rawAssumptions.trim() ? [rawAssumptions] : []);
+  const assumptionDetails = rawList
+    .map((entry): { label: string; detail: string; options: Array<{ value: string; label: string }>; value: string; silent: boolean } | null => {
+      if (typeof entry === 'string') {
+        const label = entry.trim().slice(0, 200);
+        return label ? { label, detail: '', options: [], value: '', silent: false } : null;
+      }
+      if (entry == null || typeof entry !== 'object') return null;
+      const o = entry as Record<string, unknown>;
+      const label = typeof o.label === 'string' ? o.label.trim().slice(0, 200) : '';
+      if (!label) return null;
+      const options = (Array.isArray(o.options) ? o.options : [])
+        .map((op): { value: string; label: string } | null => {
+          if (typeof op === 'string') {
+            const s = op.trim().slice(0, 120);
+            return s ? { value: s, label: s } : null;
+          }
+          if (op == null || typeof op !== 'object') return null;
+          const oo = op as Record<string, unknown>;
+          const olabel = typeof oo.label === 'string' ? oo.label.trim().slice(0, 120) : '';
+          const ovalue = typeof oo.value === 'string' ? oo.value.trim().slice(0, 120) : olabel;
+          return olabel ? { value: ovalue || olabel, label: olabel } : null;
+        })
+        .filter((x): x is { value: string; label: string } => x !== null)
+        .slice(0, 6);
+      return {
+        label,
+        detail: typeof o.detail === 'string' ? o.detail.trim().slice(0, 300) : '',
+        options,
+        value: typeof o.value === 'string' ? o.value.trim().slice(0, 120) : '',
+        silent: o.silent === true,
+      };
+    })
+    .filter((x): x is NonNullable<typeof x> => x !== null)
+    .slice(0, 8);
+  // Legacy labels: the NON-silent assumptions, as before.
+  const assumptions: string[] = assumptionDetails.filter((a) => !a.silent).map((a) => a.label);
 
   const rawOptions = parsed.options;
   const options = Array.isArray(rawOptions)
@@ -1166,6 +1208,7 @@ function defaultSubScores(parsed: Record<string, unknown>): NlToSqlOutput {
     uncertainty_notes:   (parsed.uncertainty_notes as string[]) ?? [],
     tables_used:         (parsed.tables_used as string[]) ?? [],
     assumptions,
+    assumption_details:  assumptionDetails,
     ...(intent === 'clarify' ? {
       ambiguity: typeof parsed.ambiguity === 'string' ? parsed.ambiguity : '',
       options,

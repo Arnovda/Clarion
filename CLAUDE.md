@@ -31,7 +31,66 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-08-28 (ASK AI WORKSHEET PHASES 1–4 SHIPPED — steps as a tree, spine + one-step canvas, branching on ask)
+**Last updated:** 2026-08-28 (ASK AI WORKSHEET PHASES 5–8 SHIPPED — the brief is fully implemented; same day as phases 1–4 below)
+
+**WORKSHEET PHASES 5–8 ARE BUILT (2026-08-28, second slice of the day; the
+brief in `docs/backlog/ask-ai-worksheet.md` is now FULLY implemented):**
+- **STRUCTURED ASSUMPTIONS — chips are CONTROLS now (§4.3).** All four
+  NL→SQL prompts changed contract: `assumptions` entries are OBJECTS
+  `{label, detail, options[{value,label}], value, silent}` — options are
+  the 2–4 plausible interpretations INCLUDING the chosen one; material
+  assumptions `silent:false` (chips), plus up to 3 ROUTINE defaults
+  (time window, status filter) `silent:true` behind **"+ add"**.
+  `AIService.defaultSubScores` (now exported) parses TOLERANTLY — strings,
+  objects, garbage, mixed option shapes; caps 8×6; silent entries are
+  EXCLUDED from the legacy `assumptions` label list so every existing
+  consumer (persisted meta, repair context, exports) is unchanged; the
+  structure rides new `assumption_details` → wire `assumptionDetails` on
+  all four done-payload sites → `Message.assumptionDetails` (persisted in
+  meta, restored on load). 5 new tests in `assumption-normalize.test.ts`.
+- **Branch on change**: `AssumptionChips.tsx` — chip menus (detail as help
+  text, options as menuitemradio, outside-click/Escape close); picking a
+  different option calls `branchWithAssumption`: SAME question text, a new
+  child of the selected step, label auto-set to the DIFF ("Same, drafts
+  included"). The mechanism is `/query/think`'s new **`directive`** field
+  (Zod ≤600): folded into the text the GENERATOR sees only
+  (`effectiveQuestion`) — the stored/displayed question, query_log and the
+  verified-check all keep the user's own words. Chips without options
+  (legacy strings, old persisted answers) fall back to the sentence
+  re-ask. No per-option SQL patches — the re-generate-with-pin approach
+  from the mapping doc.
+- **Re-run ↻ (§4.4)**: on the receipt line — same question against current
+  data as a new SIBLING labelled "{label} (re-run)"; the model reads the
+  RE-RUN STEP's own ancestor path (historyParent = the step, treeParent =
+  its parent — send() gained `SendOpts {directive, labelOverride,
+  treeParent, historyParentServerId}` decoupling the tree edge from the
+  history anchor). **"newer data available"** appears in warn colour when
+  the snapshot's data_as_of lags the newest warehouse refresh by >24h.
+  Never a silent refresh.
+- **Star + inline rename (§4.5)**: spine rows get a hover star (PATCH
+  starred — starred steps are exempt from collapsing) and double-click
+  rename (Enter commits, Escape cancels, empty PATCHes label:null which
+  reverts to the auto label).
+- **Collapsing (§4.6)**: pure `collapseSpine` in steps.ts — above 12
+  steps, keep the first, the selection + its NEAREST TWO ancestors, the
+  last three, starred and pending; consecutive hidden steps fold to one
+  "N earlier steps" row expanding in place. **Recorded deviation:** the
+  brief says "and its ancestors", but in a linear thread EVERY earlier
+  step is an ancestor of the leaf, so keep-all would mean collapsing
+  never fires for the most common shape — contradicting the brief's own
+  example. Verified by dry-run (linear, tree, expand, under-threshold).
+- **Responsive (§1)**: spine + toggle at `md:`; below 768px a horizontal
+  step-chip scroller above the canvas.
+- **States (§5)**: empty result → "No rows matched. Try widening the date
+  range or removing an assumption." (dashed card; the chips above are the
+  cause); error steps get a **Retry** button (re-ask as a SIBLING — the
+  failure stays in the spine with its warn dot).
+- Validation: backend `npm run check` clean; **suite 42 files / 408
+  passed** (5 new); all eight ratchets green (per-ratchet exit codes,
+  repo root); frontend `tsc` clean, lint clean, `next build` green
+  (`/query` 40.2 kB / 374 kB).
+
+**Prior last updated:** 2026-08-28 (ASK AI WORKSHEET PHASES 1–4 SHIPPED — steps as a tree, spine + one-step canvas, branching on ask)
 
 **THE WORKSHEET IS LIVE ON /query — PHASES 1–4 OF THE OWNER'S BRIEF
 (2026-08-28, owner: "Let's go"; brief + mapping in

@@ -5,7 +5,7 @@
  */
 
 // Re-export shared types and user-prompt builders from the SQLite prompt
-export { buildNlToSqlUser, buildNlToSqlCrossUser, type NlToSqlOutput } from './nlToSqlPrompt';
+export { buildNlToSqlUser, buildNlToSqlCrossUser, type NlToSqlOutput, type AssumptionDetail } from './nlToSqlPrompt';
 
 export const NL_TO_SQL_DUCKDB_SYSTEM = (
   semanticContext: string,
@@ -206,22 +206,34 @@ List any remaining uncertainties in "uncertainty_notes" — be specific (e.g. "u
 When the question contains a MATERIAL ambiguity (one whose answer would
 notably change the numbers), do NOT default silently. Default to the most
 reasonable interpretation, write the SQL, AND list the assumption in the
-"assumptions" array so the user can see what you picked.
+"assumptions" array so the user can see — and CHANGE — what you picked.
 
-Examples of MATERIAL assumptions worth listing:
-  - "Revenue excl. VAT (the schema has both columns; excl. is standard reporting default)"
-  - "Counted active customers only (status = 'active')"
-  - "Used full calendar months; current month included as month-to-date"
-  - "Booked revenue, not invoiced (used order_date, not invoice_date)"
+Each assumption is an OBJECT:
+  { "label":   "<the choice you made — one short line, plain language>",
+    "detail":  "<one sentence: why this is the sensible default>",
+    "options": [ { "value": "<snake_case_id>", "label": "<short alternative>" }, ... ],
+    "value":   "<the options[].value you chose>",
+    "silent":  false }
 
-Skip TRIVIAL defaults — do NOT list:
-  - sort order, top-N cutoffs, default formatting
-  - anything explicitly stated by the user
-  - column choices when only one reasonable column exists
+Rules for the objects:
+  - "options" lists the 2–4 plausible interpretations INCLUDING the one
+    you chose. The UI renders them as a menu so the user can flip the
+    assumption without rewriting the question — every option must be
+    genuinely answerable from THIS schema.
+  - MATERIAL assumptions get "silent": false. Examples: revenue incl./
+    excl. VAT, active vs all customers, booked vs invoiced date basis,
+    month-to-date treatment.
+  - ALSO include up to 3 ROUTINE defaults a user might still want to
+    change (the time window applied, a status filter, draft/cancelled
+    exclusion) with "silent": true — the UI keeps these behind a
+    "+ add" control instead of showing chips.
+  - Still OMIT trivia entirely: sort order, top-N cutoffs, formatting,
+    anything the user stated explicitly.
+  - Labels and details in the USER'S language (SQL identifiers stay as
+    they are). Keep labels ONE SHORT line — they render as small chips
+    and must not compete with the answer.
 
-Keep each assumption ONE SHORT line, plain English, no jargon. The list
-is shown as a small footnote under the answer — it must NOT compete with
-the main result. Empty array if no material assumption was made.
+Empty array if no assumption at all was made.
 
 ━━━ CLARIFY — only as a last resort ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -256,7 +268,16 @@ For DATA questions:
   "formula_confidence": 0.90,
   "uncertainty_notes": [],
   "tables_used": ["orders", "customers"],
-  "assumptions": ["Revenue excl. VAT", "Active customers only"]
+  "assumptions": [
+    { "label": "Revenue excl. VAT",
+      "detail": "Both amount columns exist; excl. VAT is the reporting standard",
+      "options": [ { "value": "excl_vat", "label": "excl. VAT" }, { "value": "incl_vat", "label": "incl. VAT" } ],
+      "value": "excl_vat", "silent": false },
+    { "label": "Drafts excluded",
+      "detail": "Only booked invoices are counted",
+      "options": [ { "value": "excl_draft", "label": "drafts excluded" }, { "value": "incl_draft", "label": "drafts included" } ],
+      "value": "excl_draft", "silent": true }
+  ]
 }
 
 For META questions about a prior answer:
@@ -355,10 +376,14 @@ Step 7 — Output for human consumption: SELECT human-readable name columns (e.g
 
 When the question contains a MATERIAL ambiguity, default to the most
 reasonable interpretation, write the SQL, AND list the assumption in the
-"assumptions" array. Examples worth listing: revenue incl./excl. VAT,
-active vs all customers, booked vs invoiced. Skip TRIVIAL defaults
-(sort order, top-N, formatting). Keep each assumption ONE SHORT line in
-plain English. Empty array if no material assumption was made.
+"assumptions" array as OBJECTS: { "label", "detail", "options":
+[{ "value", "label" }, ...], "value", "silent" } — options are the 2-4
+plausible interpretations including the chosen one; material assumptions
+get "silent": false, routine defaults a user might still change (time
+window, status filter) get "silent": true. Examples worth listing:
+revenue incl./excl. VAT, active vs all customers, booked vs invoiced.
+Skip TRIVIAL defaults (sort order, top-N, formatting). Labels ONE SHORT
+line in the user's language. Empty array if no assumption was made.
 
 ━━━ CLARIFY — only as a last resort ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -379,7 +404,16 @@ For DATA questions, return:
   "formula_confidence": 0.90,
   "uncertainty_notes": [],
   "tables_used": ["sales.orders", "hr.employees"],
-  "assumptions": ["Revenue excl. VAT"]
+  "assumptions": [
+    { "label": "Revenue excl. VAT",
+      "detail": "Both amount columns exist; excl. VAT is the reporting standard",
+      "options": [ { "value": "excl_vat", "label": "excl. VAT" }, { "value": "incl_vat", "label": "incl. VAT" } ],
+      "value": "excl_vat", "silent": false },
+    { "label": "Drafts excluded",
+      "detail": "Only booked invoices are counted",
+      "options": [ { "value": "excl_draft", "label": "drafts excluded" }, { "value": "incl_draft", "label": "drafts included" } ],
+      "value": "excl_draft", "silent": true }
+  ]
 }
 
 For genuinely ambiguous questions (rare):

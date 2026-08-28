@@ -177,22 +177,34 @@ If the user explicitly requests a chart type ("in a bar chart", "as a line"), ho
 When the question contains a MATERIAL ambiguity (one whose answer would
 notably change the numbers), do NOT default silently. Default to the most
 reasonable interpretation, write the SQL, AND list the assumption in the
-"assumptions" array so the user can see what you picked.
+"assumptions" array so the user can see — and CHANGE — what you picked.
 
-Examples of MATERIAL assumptions worth listing:
-  - "Revenue excl. VAT (the schema has both columns; excl. is standard reporting default)"
-  - "Counted active customers only (status = 'active')"
-  - "Used full calendar months; current month included as month-to-date"
-  - "Booked revenue, not invoiced (used order_date, not invoice_date)"
+Each assumption is an OBJECT:
+  { "label":   "<the choice you made — one short line, plain language>",
+    "detail":  "<one sentence: why this is the sensible default>",
+    "options": [ { "value": "<snake_case_id>", "label": "<short alternative>" }, ... ],
+    "value":   "<the options[].value you chose>",
+    "silent":  false }
 
-Skip TRIVIAL defaults — do NOT list:
-  - sort order, top-N cutoffs, default formatting
-  - anything explicitly stated by the user
-  - column choices when only one reasonable column exists
+Rules for the objects:
+  - "options" lists the 2–4 plausible interpretations INCLUDING the one
+    you chose. The UI renders them as a menu so the user can flip the
+    assumption without rewriting the question — every option must be
+    genuinely answerable from THIS schema.
+  - MATERIAL assumptions get "silent": false. Examples: revenue incl./
+    excl. VAT, active vs all customers, booked vs invoiced date basis,
+    month-to-date treatment.
+  - ALSO include up to 3 ROUTINE defaults a user might still want to
+    change (the time window applied, a status filter, draft/cancelled
+    exclusion) with "silent": true — the UI keeps these behind a
+    "+ add" control instead of showing chips.
+  - Still OMIT trivia entirely: sort order, top-N cutoffs, formatting,
+    anything the user stated explicitly.
+  - Labels and details in the USER'S language (SQL identifiers stay as
+    they are). Keep labels ONE SHORT line — they render as small chips
+    and must not compete with the answer.
 
-Keep each assumption ONE SHORT line, plain English, no jargon. The list
-is shown as a small footnote under the answer — it must NOT compete with
-the main result. Empty array if no material assumption was made.
+Empty array if no assumption at all was made.
 
 ━━━ CLARIFY — only as a last resort ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -226,7 +238,16 @@ For DATA questions (the default — user wants numbers/rows):
   "formula_confidence": 0.90,
   "uncertainty_notes": [],
   "tables_used": ["orders", "customers"],
-  "assumptions": ["Revenue excl. VAT", "Active customers only"],
+  "assumptions": [
+    { "label": "Revenue excl. VAT",
+      "detail": "Both amount columns exist; excl. VAT is the reporting standard",
+      "options": [ { "value": "excl_vat", "label": "excl. VAT" }, { "value": "incl_vat", "label": "incl. VAT" } ],
+      "value": "excl_vat", "silent": false },
+    { "label": "Drafts excluded",
+      "detail": "Only booked invoices are counted",
+      "options": [ { "value": "excl_draft", "label": "drafts excluded" }, { "value": "incl_draft", "label": "drafts included" } ],
+      "value": "excl_draft", "silent": true }
+  ],
   "visualization": { "type": "bar", "xKey": "customer_name", "yKey": "total_revenue" }
 }
 
@@ -293,6 +314,23 @@ export interface ClarifyOption {
   interpretation: string; // one-sentence plain-English description of what this picks
 }
 
+/**
+ * A structured assumption — the worksheet's chips-as-controls contract
+ * (docs/backlog/ask-ai-worksheet.md §4.3). `options` are the plausible
+ * interpretations INCLUDING the chosen `value`; `silent: true` marks a
+ * routine default kept behind the "+ add" control instead of a chip.
+ * This is MODEL OUTPUT: parse tolerantly at every consumer (the
+ * defaultPreset lesson, 2026-08-27) — a malformed entry degrades to a
+ * plain label, never a crash.
+ */
+export interface AssumptionDetail {
+  label: string;
+  detail: string;
+  options: Array<{ value: string; label: string }>;
+  value: string;
+  silent: boolean;
+}
+
 export interface NlToSqlOutput {
   intent?: NlToSqlIntent;             // defaults to 'data' for backwards compat
   explanation?: string;                // present when intent === 'explain'
@@ -310,8 +348,15 @@ export interface NlToSqlOutput {
    * defaults (e.g. "Assumed revenue excl. VAT", "Counted active customers
    * only"). Empty array when no material assumptions were made — trivial
    * defaults like sort order should NOT be listed.
+   *
+   * Since the worksheet (2026-08-28) these are LABELS derived from the
+   * structured `assumption_details` — kept as strings so every existing
+   * consumer (persisted meta, repair context, exports) stays coherent.
    */
   assumptions?: string[];
+  /** The structured form — see AssumptionDetail. Non-silent entries render
+   *  as chips; silent ones behind "+ add". */
+  assumption_details?: AssumptionDetail[];
   /**
    * Present when intent === 'clarify'. The model uses this only when two
    * legitimate interpretations would change the answer materially AND the
@@ -485,10 +530,14 @@ Step 6 — Apply sensible default filters (exclude cancelled/inactive records wh
 
 When the question contains a MATERIAL ambiguity, default to the most
 reasonable interpretation, write the SQL, AND list the assumption in the
-"assumptions" array. Examples worth listing: revenue incl./excl. VAT,
-active vs all customers, booked vs invoiced. Skip TRIVIAL defaults
-(sort order, top-N, formatting). Keep each assumption ONE SHORT line in
-plain English. Empty array if no material assumption was made.
+"assumptions" array as OBJECTS: { "label", "detail", "options":
+[{ "value", "label" }, ...], "value", "silent" } — options are the 2-4
+plausible interpretations including the chosen one; material assumptions
+get "silent": false, routine defaults a user might still change (time
+window, status filter) get "silent": true. Examples worth listing:
+revenue incl./excl. VAT, active vs all customers, booked vs invoiced.
+Skip TRIVIAL defaults (sort order, top-N, formatting). Labels ONE SHORT
+line in the user's language. Empty array if no assumption was made.
 
 ━━━ CLARIFY — only as a last resort ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -509,7 +558,16 @@ For DATA questions:
   "formula_confidence": 0.90,
   "uncertainty_notes": [],
   "tables_used": ["sales.orders", "hr.employees"],
-  "assumptions": ["Revenue excl. VAT"],
+  "assumptions": [
+    { "label": "Revenue excl. VAT",
+      "detail": "Both amount columns exist; excl. VAT is the reporting standard",
+      "options": [ { "value": "excl_vat", "label": "excl. VAT" }, { "value": "incl_vat", "label": "incl. VAT" } ],
+      "value": "excl_vat", "silent": false },
+    { "label": "Drafts excluded",
+      "detail": "Only booked invoices are counted",
+      "options": [ { "value": "excl_draft", "label": "drafts excluded" }, { "value": "incl_draft", "label": "drafts included" } ],
+      "value": "excl_draft", "silent": true }
+  ],
   "visualization": { "type": "bar", "xKey": "department_name", "yKey": "headcount" }
 }
 

@@ -62,6 +62,22 @@ export interface ClarifyOption {
 }
 
 /**
+ * A structured assumption — the worksheet's chips-as-controls (spec §4.3).
+ * `options` are the plausible interpretations INCLUDING the chosen `value`;
+ * `silent: true` marks a routine default kept behind "+ add" instead of a
+ * chip. Server-normalized (AIService.defaultSubScores) but still treat as
+ * model-shaped data: options may be empty, in which case the chip falls
+ * back to the legacy sentence re-ask.
+ */
+export interface AssumptionDetail {
+  label:   string;
+  detail:  string;
+  options: Array<{ value: string; label: string }>;
+  value:   string;
+  silent:  boolean;
+}
+
+/**
  * One table this answer was computed from, with its own freshness — resolved
  * server-side (routes/query.ts resolveAnswerSources) with zero AI calls.
  * Drives the answer card's "Data as of …" trust line and the "How I got
@@ -94,6 +110,9 @@ export interface Message {
    * result. Examples: "Revenue excl. VAT", "Active customers only".
    */
   assumptions?:        string[];
+  /** Structured assumptions (chips-as-controls). When absent, legacy
+   *  `assumptions` strings render as option-less chips. */
+  assumptionDetails?:  AssumptionDetail[];
   /**
    * Present when intent === 'clarify'. The bubble renders a different
    * shape: ambiguity statement + clickable option chips. No rows/sql.

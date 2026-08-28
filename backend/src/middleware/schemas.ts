@@ -250,6 +250,8 @@ export const thinkQuerySchema = z.object({
     productId: optionalPositiveInt,
     // Worksheet: the step being asked FROM (ancestor-path history).
     parentMessageId: optionalPositiveInt,
+    // Worksheet: bounded re-answer instruction (assumption flip / re-run).
+    directive: z.string().max(600).optional(),
   }).passthrough(),
 });
 

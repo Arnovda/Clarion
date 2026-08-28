@@ -148,6 +148,70 @@ export function countBranches(roots: Step[]): number {
   return n;
 }
 
+// ─── Spine collapsing (spec §4.6) ────────────────────────────────────────────
+//
+// Above COLLAPSE_THRESHOLD steps, collapse everything except: the FIRST
+// step, the SELECTED step and its ancestors, the LAST THREE steps, any
+// STARRED step, and the pending step. Consecutive hidden steps fold into
+// one "N earlier steps" row that expands in place. Built now, per the
+// brief — retrofitting after people have 40-step threads is much harder.
+
+export const COLLAPSE_THRESHOLD = 12;
+
+export type SpineRow =
+  | { kind: 'step'; step: Step }
+  | { kind: 'collapsed'; key: number; steps: Step[] };
+
+export function collapseSpine(
+  flat: Step[],
+  selectedId: number | null,
+  expandedKeys: ReadonlySet<number>,
+  threshold = COLLAPSE_THRESHOLD,
+): SpineRow[] {
+  if (flat.length <= threshold) return flat.map((step) => ({ kind: 'step', step }));
+
+  const keep = new Set<number>();
+  if (flat.length > 0) keep.add(flat[0].id);                      // first
+  for (const s of flat.slice(-3)) keep.add(s.id);                 // last three
+  for (const s of flat) {
+    if (s.msg.starred) keep.add(s.id);                            // starred
+    if (s.id < 0) keep.add(s.id);                                 // pending
+  }
+  // Selected + its NEAREST ancestors. Deliberate deviation from the brief's
+  // letter ("the selected step and its ancestors"): in a linear thread every
+  // earlier step IS an ancestor of the leaf, so keeping them all would mean
+  // collapsing never fires for the most common thread shape — contradicting
+  // the brief's own "5 earlier steps" example. Two hops give the immediate
+  // context; the root survives via the keep-first rule.
+  const byId = new Map(flat.map((s) => [s.id, s]));
+  let cur = selectedId != null ? byId.get(selectedId) ?? null : null;
+  let hops = 0;
+  while (cur && hops <= 2) {
+    keep.add(cur.id);
+    cur = cur.parentId != null ? byId.get(cur.parentId) ?? null : null;
+    hops += 1;
+  }
+
+  const rows: SpineRow[] = [];
+  let run: Step[] = [];
+  const flush = () => {
+    if (run.length === 0) return;
+    const key = run[0].id;
+    if (expandedKeys.has(key)) {
+      for (const s of run) rows.push({ kind: 'step', step: s });
+    } else {
+      rows.push({ kind: 'collapsed', key, steps: run });
+    }
+    run = [];
+  };
+  for (const s of flat) {
+    if (keep.has(s.id)) { flush(); rows.push({ kind: 'step', step: s }); }
+    else run.push(s);
+  }
+  flush();
+  return rows;
+}
+
 /** Oldest source date — the honest "data as of" for a snapshot. */
 export function oldestSourceDate(sources?: Array<{ lastRefreshedAt: string | null }>): string | null {
   const dates = (sources ?? []).map((s) => s.lastRefreshedAt).filter(Boolean) as string[];

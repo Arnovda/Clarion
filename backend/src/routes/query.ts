@@ -540,6 +540,7 @@ router.post('/', requireAuth, validate(askQuestionSchema), async (req: Request, 
           subScores: { schema: nlResult.schema_confidence, join: nlResult.join_confidence, formula: nlResult.formula_confidence },
           uncertaintyNotes: nlResult.uncertainty_notes,
           assumptions: nlResult.assumptions ?? [],
+        assumptionDetails: nlResult.assumption_details ?? [],
           blocked: false, tablesUsed: nlResult.tables_used,
           queryLayer: 'product',
           ...(productPolicyResult.policiesApplied > 0 ? { policyNotice: 'Results filtered by data access policies' } : {}),
@@ -1218,6 +1219,7 @@ router.post('/', requireAuth, validate(askQuestionSchema), async (req: Request, 
         },
         uncertaintyNotes: nlResult.uncertainty_notes,
         assumptions: nlResult.assumptions ?? [],
+        assumptionDetails: nlResult.assumption_details ?? [],
         blocked:     false,
         crossSource: isCrossSourceQuery,
         tablesUsed:  nlResult.tables_used,
@@ -1264,7 +1266,7 @@ router.post('/think', requireAuth, validate(thinkQuerySchema), async (req: Reque
 
   try {
     const db = reqDb(req);
-    const { connectionId, question, domains, conversationId, dataLayer: requestedLayer, productId, parentMessageId } = req.body as {
+    const { connectionId, question, domains, conversationId, dataLayer: requestedLayer, productId, parentMessageId, directive } = req.body as {
       connectionId: number; question: string; domains?: string[]; conversationId?: number;
       dataLayer?: 'product' | 'source';
       productId?: number;
@@ -1272,6 +1274,11 @@ router.post('/think', requireAuth, validate(thinkQuerySchema), async (req: Reque
        *  that step's ancestor path, never the conversation's linear tail
        *  (which after a branch belongs to a different line of questioning). */
       parentMessageId?: number;
+      /** Worksheet §4.3/§4.4: how to re-answer — "change exactly this one
+       *  assumption" (chip menus) or "re-run against current data". Folded
+       *  into the text the GENERATOR sees; the stored and displayed question
+       *  stays the user's own words. Equivalent to the user typing it. */
+      directive?: string;
     };
 
     // Load conversation history for follow-up context. A branch follows its
@@ -1282,6 +1289,13 @@ router.post('/think', requireAuth, validate(thinkQuerySchema), async (req: Reque
           ? await loadStepAncestorHistory(db, conversationId, Number(parentMessageId))
           : await loadConversationHistory(db, conversationId))
       : undefined;
+
+    // The generator sees the directive appended; everything else — the
+    // verified-question check, query_log, the persisted step — keeps the
+    // user's own question text.
+    const effectiveQuestion = typeof directive === 'string' && directive.trim()
+      ? `${question}\n\n(${directive.trim()})`
+      : question;
 
     // ── VERIFIED SAVED QUESTION — exact match, fresh questions only ────────
     // A curator-approved question skips generation entirely and runs its
@@ -1381,7 +1395,7 @@ router.post('/think', requireAuth, validate(thinkQuerySchema), async (req: Reque
       // Vocabulary rule: viewers hear phases too — never "star schema".
       emit({ type: 'phase', text: 'Reasoning about your question…' });
       const nlResult = await generateSqlStreaming(
-        question, thinkProductCtx.semanticContext, thinkProductCtx.relationshipContext, thinkProductCtx.kpiFormulas,
+        effectiveQuestion, thinkProductCtx.semanticContext, thinkProductCtx.relationshipContext, thinkProductCtx.kpiFormulas,
         // Forward ONLY the thinking deltas. The 'text' deltas are the model's
         // raw JSON payload (SQL + confidence) — streaming them shipped the
         // full SQL to every role, which the frontend then silently dropped.
@@ -1498,6 +1512,7 @@ router.post('/think', requireAuth, validate(thinkQuerySchema), async (req: Reque
         answer, confidence: nlResult.confidence,
         subScores: { schema: nlResult.schema_confidence, join: nlResult.join_confidence, formula: nlResult.formula_confidence },
         assumptions: nlResult.assumptions ?? [],
+        assumptionDetails: nlResult.assumption_details ?? [],
         blocked: false, tablesUsed: nlResult.tables_used, queryLayer: 'product',
         ...(validation.ok ? {} : { warning: (validation as { ok: boolean; warning?: string }).warning }),
         ...(thinkPolicyResult.policiesApplied > 0 ? { policyNotice: 'Results filtered by data access policies' } : {}),
@@ -1622,7 +1637,7 @@ router.post('/think', requireAuth, validate(thinkQuerySchema), async (req: Reque
     const dialect = getDialect(connection);
 
     const nlResult = await generateSqlStreaming(
-      question, fullContext, thinkRelCtx, kpiFormulas,
+      effectiveQuestion, fullContext, thinkRelCtx, kpiFormulas,
       // Thinking deltas only — the 'text' deltas are the raw JSON payload
       // (SQL + confidence) and must not stream to every role.
       (type, delta) => { if (type === 'thinking') emit({ type: 'thinking', text: delta }); },
@@ -1816,6 +1831,7 @@ router.post('/think', requireAuth, validate(thinkQuerySchema), async (req: Reque
       subScores: { schema: nlResult.schema_confidence, join: nlResult.join_confidence, formula: nlResult.formula_confidence },
       uncertaintyNotes: nlResult.uncertainty_notes,
       assumptions: nlResult.assumptions ?? [],
+        assumptionDetails: nlResult.assumption_details ?? [],
       blocked: false, tablesUsed: nlResult.tables_used, queryLayer: 'source',
       ...(validation.ok ? {} : { warning: (validation as { ok: boolean; warning?: string }).warning }),
       ...(thinkSrcPolicy.policiesApplied > 0 ? { policyNotice: 'Results filtered by data access policies' } : {}),

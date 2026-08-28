@@ -1,11 +1,16 @@
 # Ask AI — the worksheet layout (owner's build brief + implementation mapping)
 
-**Status: phases 1–4 SHIPPED (2026-08-28, owner go-ahead "Let's go") — step
-model + tree persistence + URL routing, one-step canvas, spine with
-selection/muting/keyboard nav, branching on ask. Phases 5–8 (assumption
-menus + branching on change, re-run/star, collapsing/rename/responsive,
-state polish) are the next slice. See CLAUDE.md Current State for the
-implementation record.**
+**Status: ALL PHASES (1–8) SHIPPED (2026-08-28).** Phases 1–4: step model +
+tree persistence + URL routing, one-step canvas, spine, branching on ask.
+Phases 5–8: structured assumptions with option menus + "+ add" (branch on
+change with the question unchanged, diff labels), re-run as a sibling,
+star, "newer data available", spine collapsing above 12 steps, inline
+rename, responsive chip scroller below 768px, empty-result + retry states.
+One recorded deviation from the brief's letter: collapsing keeps only the
+NEAREST TWO ancestors of the selection (in a linear thread every earlier
+step is an ancestor, so keep-all would mean collapsing never fires —
+contradicting the brief's own "5 earlier steps" example). See CLAUDE.md
+Current State for the implementation record.
 
 Part 1 is the owner's build brief (2026-08-28, delivered as
 `clarionworksheetspec.md.pdf` with two mockups), transcribed faithfully.
