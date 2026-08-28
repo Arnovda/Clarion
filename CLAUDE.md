@@ -39,11 +39,17 @@ frontend-only; two mockups + a screenshot of today, owner: "I want the
 sidebar to look like this and the Ask AI. Don't mind the colour, just how
 it looks compared to today").** Presentation only — no routes, roles, IA or
 data changed, and every nav entry that existed still exists.
-- **`IconRail` is light chrome now** (`--surface`, `border-r border-line`)
+- **`IconRail` is light chrome now** (`bg-soft`, `border-r border-line`)
   instead of a block of ocean blue. The mockup's palette is warm cream; the
   owner said the colour is not the point, so the rail uses the app's own
   neutral tokens rather than a second palette nobody else in the product
-  speaks.
+  speaks. **Second pass, same day, from the owner's live screenshot ("a bit
+  darker … text and icons a bit closer"): the rail went `--surface` →
+  `--soft`, and with a deeper rail the ACTIVE ROW BECAME WHITE
+  (`bg-raised`) instead of an ocean tint** — that inversion is the mockup's
+  actual move, and it is why "you are here" reads at a glance; the badge
+  and the collapsed-rail dot follow it (`bg-raised`, ring on `--soft`,
+  since `bg-soft` is now the rail's own colour). Icon↔label gap 12 → 8px.
 - **Full-bleed rows with a LEFT ACCENT BAR** replace the inset white/15
   pill: `border-l-2 border-ocean` + `bg-ocean-softer` + ink text, rows
   spanning the rail edge to edge so the bar sits flush against it. This is

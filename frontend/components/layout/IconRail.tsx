@@ -306,10 +306,10 @@ export default function IconRail() {
           // the same vocabulary the thread list uses two panels over.
           'group relative flex items-center border-l-2 text-[14px]',
           'transition-colors duration-1 ease-observatory',
-          'focus-visible:outline-none focus-visible:bg-ocean-softer',
-          collapsed ? 'justify-center px-2 py-2.5' : 'gap-3 pl-3.5 pr-3 py-[9px]',
+          'focus-visible:outline-none focus-visible:bg-raised',
+          collapsed ? 'justify-center px-2 py-2.5' : 'gap-2 pl-3.5 pr-3 py-[9px]',
           active
-            ? 'border-ocean bg-ocean-softer text-ink font-medium'
+            ? 'border-ocean bg-raised text-ink font-medium'
             : 'border-transparent text-ink-2 hover:bg-softer hover:text-ink',
         )}
         aria-current={active ? 'page' : undefined}
@@ -323,7 +323,7 @@ export default function IconRail() {
             {badge > 0 && (
               <span className={cn(
                 'inline-flex items-center justify-center min-w-[20px] h-[18px] px-1.5 rounded-full text-[10px] font-mono font-medium tabular-nums',
-                active ? 'bg-ocean text-white' : 'bg-soft text-ink-3',
+                active ? 'bg-ocean text-white' : 'bg-raised text-ink-3',
               )}>
                 {badge > 99 ? '99+' : badge}
               </span>
@@ -332,7 +332,7 @@ export default function IconRail() {
         )}
         {collapsed && badge > 0 && (
           <span
-            className="absolute top-1.5 right-2 w-[7px] h-[7px] rounded-full bg-ocean ring-2 ring-[var(--surface)]"
+            className="absolute top-1.5 right-2 w-[7px] h-[7px] rounded-full bg-ocean ring-2 ring-[var(--soft)]"
             aria-label={`${badge} pending`}
           />
         )}
@@ -349,10 +349,11 @@ export default function IconRail() {
         aria-label="Primary navigation"
         className={cn(
           'h-full w-full flex flex-col overflow-hidden',
-          // Light chrome: the rail is one shade off the page rather than a
-          // block of brand colour, so the eye lands on the content and the
-          // one tinted row (the active page) is the loudest thing in it.
-          'bg-[var(--surface)]',
+          // Light chrome, one step DEEPER than the panels beside it. That
+          // step is what lets the active row be the LIGHTER thing on the rail
+          // (white fill + accent bar) instead of a tint — the mockup's move,
+          // and the reason "you are here" reads at a glance.
+          'bg-soft',
           'border-r border-line',
         )}
       >
