@@ -23,8 +23,17 @@ on:
       - '.ops/operators'
   workflow_dispatch:
 
+# DELIBERATELY THE SAME GROUP AS deploy.yml. Both workflows run
+# `az containerapp update` against the same Container App, and Azure locks the
+# app while it provisions a revision — two at once fails with
+# ContainerAppOperationInProgress. They collide on exactly the push that merges
+# a branch touching both code and this file, which is the first thing anyone
+# does with it. Sharing the group makes the second one queue instead. It also
+# preserves deploy.yml's test-first model: without this, operators.yml could
+# shift 100% traffic to a revision built from the PREVIOUS image while the new
+# one sat at 0%.
 concurrency:
-  group: operators
+  group: deploy-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
