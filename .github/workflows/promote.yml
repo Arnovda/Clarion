@@ -128,3 +128,36 @@ jobs:
             "frontend only") promote "${{ secrets.FRONTEND_APP_NAME }}" ;;
             *)               promote "${{ secrets.BACKEND_APP_NAME }}"; promote "${{ secrets.FRONTEND_APP_NAME }}" ;;
           esac
+
+          # ── The half of "release" that does NOT happen here ────────────────
+          # Promoting shifts TRAFFIC, and one revision serves every tenant —
+          # there is no such thing as promoting to some customers and not
+          # others. Choosing WHO sees a new feature is the flag, and it is a
+          # different act: instant, needing no deploy, and reversible with one
+          # click where this is reversible only by another traffic shift.
+          #
+          # This link exists because those two acts are ONE decision in the
+          # operator's head. Without it, promoting ends on a green tick in
+          # GitHub and the audience choice is somewhere else entirely — so a
+          # feature reaches production and then sits switched off because
+          # nothing said it was waiting. The customer list cannot live on this
+          # page: a workflow_dispatch form is a static list in this file, so
+          # rendering real customer names here would mean editing this
+          # workflow every time one is onboarded.
+          FRONTEND_FQDN=$(az containerapp show \
+            --name "${{ secrets.FRONTEND_APP_NAME }}" \
+            --resource-group "${{ secrets.AZURE_RESOURCE_GROUP }}" \
+            --query 'properties.configuration.ingress.fqdn' -o tsv 2>/dev/null || true)
+          {
+            echo ""
+            echo "### Now choose who sees it"
+            echo ""
+            echo "The new code is live for every tenant, but anything behind a feature flag is still switched OFF until you say otherwise."
+            if [ -n "$FRONTEND_FQDN" ]; then
+              echo ""
+              echo "**[Open \"Who sees what\" →](https://$FRONTEND_FQDN/admin/features)** — tick the customers who should get each new feature, or Everyone."
+            else
+              echo ""
+              echo "Open **Settings → Who sees what** in Clarion and tick the customers who should get each new feature."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

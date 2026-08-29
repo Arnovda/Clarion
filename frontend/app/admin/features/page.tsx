@@ -50,10 +50,30 @@ function audienceSummary(flag: FlagRow, tenants: TenantRow[]): string {
   return `${n} customers`;
 }
 
+/**
+ * A feature nobody can see yet: declared in code, deployed, audience empty.
+ *
+ * This is the state every feature is born in — a flag with no row resolves to
+ * off — so it is not an error, it is the queue. Deriving it here (rather than
+ * from a stored "released" marker) keeps it honest: pulling a feature back to
+ * nobody puts it in the queue again, which is exactly what it is.
+ */
+function isWaitingForAudience(flag: FlagRow): boolean {
+  if (flag.rollout === 'all') return false;
+  return flag.rollout !== 'tenants' || flag.tenants.length === 0;
+}
+
 export default function FeatureFlagsPage() {
   const isOperator = useIsOperator();
   const [flags, setFlags] = useState<FlagRow[]>([]);
   const [tenants, setTenants] = useState<TenantRow[]>([]);
+  // Unreleased features first — that is the decision the page exists for, and
+  // a deploy links straight here. Otherwise stable (registry order), so the
+  // list does not reshuffle under the operator as they tick boxes.
+  const waiting = flags.filter(isWaitingForAudience);
+  const ordered = [...flags].sort(
+    (a, b) => Number(isWaitingForAudience(b)) - Number(isWaitingForAudience(a)),
+  );
   const [loading, setLoading] = useState(true);
   const [denied, setDenied] = useState(false);
   const [saving, setSaving] = useState<string | null>(null);
@@ -164,8 +184,31 @@ export default function FeatureFlagsPage() {
                 <div className="mb-5 rounded-md border border-err bg-err-soft px-4 py-3 text-[13.5px] text-err">{error}</div>
               )}
 
+              {/* Features nobody has been given yet lead the page.
+                  Promoting a build makes code reachable for EVERY tenant at
+                  once — one revision serves them all — so the audience choice
+                  is a separate act, and this screen is where it happens. The
+                  failure that matters is a feature reaching production and
+                  then sitting switched off because nothing said it was
+                  waiting; a deploy links straight here, and this banner is
+                  what it lands on. Counted from the same derived state the
+                  rows use, so it can never disagree with them. */}
+              {waiting.length > 0 && (
+                <div className="mb-5 rounded-md border border-ocean-soft bg-ocean-softer px-4 py-3">
+                  <p className="text-[13.5px] text-ink">
+                    <span className="font-medium">
+                      {waiting.length === 1
+                        ? '1 feature is live but nobody can see it yet'
+                        : `${waiting.length} features are live but nobody can see them yet`}
+                    </span>
+                    {' — '}
+                    {waiting.map((f) => f.name).join(', ')}. Tick the customers who should get each one.
+                  </p>
+                </div>
+              )}
+
               <div className="flex flex-col gap-4">
-                {flags.map((flag) => {
+                {ordered.map((flag) => {
                   const busy = saving === flag.key;
                   const everyone = flag.rollout === 'all';
                   return (

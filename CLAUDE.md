@@ -124,6 +124,25 @@ dashboard.**
   tiered engine — the part that changes HOW an edit is computed — is behind the
   ring. Flag off is therefore not "the old experience": it is the old speed
   with the new honesty and the bugs fixed.
+- **PROMOTING NOW ENDS AT THE AUDIENCE PICKER (same day, owner: "when I
+  trigger Promote to production, I want to have the choice to click on which
+  ones I want to deploy it for").** The ask cannot be met where it was made,
+  and the reason is worth keeping: **promote runs `az containerapp ingress
+  traffic set --revision-weight <rev>=100`, and one revision serves every
+  tenant** — there is no promoting to a subset, and anything that behaves like
+  one IS a flag underneath. Nor can the customer list live on the dispatch
+  form: `workflow_dispatch` inputs are a STATIC list in the workflow file, so
+  real customer names there would mean editing `promote.yml` on every
+  onboarding. So the two acts stay separate and the PATH between them was
+  built instead: promote.yml's job summary and deploy.yml's auto-promote
+  summary both end with a resolved deep link to `/admin/features` (frontend
+  FQDN read via `az containerapp show`, with a plain-text fallback when it
+  cannot be resolved), and the console now LEADS with what is waiting — an
+  "N features are live but nobody can see them yet" banner naming them, and
+  unreleased flags sorted to the top. `isWaitingForAudience` is DERIVED, not a
+  stored released-marker, so pulling a feature back to nobody re-queues it,
+  which is what it is. The failure this closes: a feature reaching production
+  and then sitting switched off because nothing said it was waiting.
 - **Next natural slices**: a zero-AI "+ Add filter" picker on the FilterBar
   (needs a linkable-columns endpoint for dashboards; applyEditOps is ready for
   it), per-widget right-click "change this card" wired to the scoped

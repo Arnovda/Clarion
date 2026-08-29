@@ -616,12 +616,25 @@ jobs:
             shift_traffic "$FRONTEND" "$FRONTEND_REV"
           fi
 
+          # The audience decision is the other half of a release and does NOT
+          # happen here: one revision serves every tenant, so promoting is
+          # all-or-nothing by construction. Link straight to the picker — a
+          # feature that reaches production and then sits switched off because
+          # nothing said it was waiting is the failure this line exists to stop.
+          FRONTEND_FQDN=$(az containerapp show \
+            --name "$FRONTEND" \
+            --resource-group "${{ secrets.AZURE_RESOURCE_GROUP }}" \
+            --query 'properties.configuration.ingress.fqdn' -o tsv 2>/dev/null || true)
           {
             echo "### 🚀 Live"
             echo ""
             echo "This build is now serving customers."
             echo ""
-            echo "- New features ship switched **off**. Open **Who sees what** to choose who gets them."
+            if [ -n "$FRONTEND_FQDN" ]; then
+              echo "- New features ship switched **off**. **[Choose who sees them →](https://$FRONTEND_FQDN/admin/features)**"
+            else
+              echo "- New features ship switched **off**. Open **Settings → Who sees what** to choose who gets them."
+            fi
             echo "- Something wrong? Actions → **Rollback production** → Run workflow."
           } >> "$GITHUB_STEP_SUMMARY"
 
