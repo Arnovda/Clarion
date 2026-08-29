@@ -154,6 +154,24 @@ takes too long."** CLAUDE.md had carried "DuckDB builds natively TWICE here
   `DATABASE_URL` / `JWT_SECRET` / empty `NEO4J_URI` to `$CLAUDE_ENV_FILE` —
   the manual setup every prior session repeated by hand. `.claude/settings.json`
   registers it. Guarded on `CLAUDE_CODE_REMOTE` so local machines are untouched.
+- **Two more things the same investigation turned up, both correcting the
+  record.** (a) **The sandbox runs a different Node than the product.** Both
+  Dockerfiles are `FROM node:20` and all eleven CI jobs pin `node-version: 20`;
+  the image ships Node 22. `.nvmrc` added and both scripts now select 20 — a
+  local run on a Node the product never executes on is not evidence about the
+  product. (b) **THE BACKEND SUITE NEEDS `knex migrate:latest` RUN BEFORE
+  VITEST, and nothing said so.** CI has that step; a local run without it fails
+  24 times with `relation "users" does not exist` PLUS one misleading
+  `SyntaxError: 'knex' does not provide an export named 'Knex'` — which is the
+  knex migrator failing to load a `.ts` migration through vitest's module
+  runner, i.e. `migrateTestDb()` cannot migrate a fresh database from inside
+  the suite. The hook now runs the migration. **Recorded because the wrong
+  diagnosis was reached twice**: the SyntaxError looks like a code or
+  Node-version problem and is neither.
+- **Measured, on this 4-core sandbox**: hook 0.1s warm / 3.4s from a stopped
+  Postgres and a dropped database (73 tables migrated). Full backend suite
+  **43 files / 426 passed / 4 skipped** on Node 20 — the first time this
+  session's work has been run against the suite at all.
 - **The real fix is NOT in this repo**: allowing `npm.duckdb.org` through the
   egress policy makes the download take seconds. Reported, not routed around
   (the proxy README requires that). **The durable repo-side alternative** if the
