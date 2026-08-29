@@ -221,3 +221,28 @@ The report prints **log volume first**, deliberately: a clean report over a
 window in which nobody used the product proves nothing, and this repository's
 recurring failure is exactly the change believed to work while inert. For the
 same reason a query that could not run is reported as *unknown*, never as clean.
+
+---
+
+## `.ops/operators` — who may release features to customers
+
+One email address per line; `#` starts a note. Editing it on `main` applies the
+list to the backend and shifts traffic to the resulting revision (a couple of
+minutes). Removing a line takes the ability away again.
+
+This is the only setup step for the **Who sees what** page, which is where a new
+feature is switched on for a chosen set of customers. It is a `.ops` file rather
+than a role in the database on purpose: an account admin administers *their own
+company*, and if they could also decide which companies see unreleased work,
+"release it to one customer first" would stop meaning anything. Putting the list
+in the deployment means changing *who* decides needs a push (rare, reviewable),
+while changing *what a customer sees* is a click (frequent, instant).
+
+An empty list means **nobody** and the page stays shut — the safe direction, so
+a deployment that forgets to fill this in cannot fall back to "any admin". The
+workflow warns loudly rather than failing, because emptying it deliberately is a
+legitimate act.
+
+Unlike `warehouse-container-mode`, this control re-applies even when the value
+has not changed: doing so is harmless here, and a run that reports success while
+changing nothing is more confusing than a redundant revision.

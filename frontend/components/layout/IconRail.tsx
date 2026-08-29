@@ -117,7 +117,7 @@ const NAV_ITEMS: NavItem[] = [
   { key: 'team',       href: '/users',      label: 'Team & roles',    icon: ICONS.users,   roles: ['admin'],                       group: 'settings' },
   { key: 'policies',   href: '/policies',   label: 'Policies',        icon: ICONS.shield,  roles: ['admin'],                       group: 'settings' },
   { key: 'ai-usage',   href: '/admin/ai-usage', label: 'AI usage',     icon: ICONS.dollar,  roles: ['admin'],                       group: 'settings' },
-  { key: 'features',   href: '/admin/features', label: 'Feature rollout', icon: ICONS.flag,  roles: ['admin', 'analyst', 'viewer'],  group: 'settings', operatorOnly: true },
+  { key: 'features',   href: '/admin/features', label: 'Who sees what', icon: ICONS.flag,  roles: ['admin', 'analyst', 'viewer'],  group: 'settings', operatorOnly: true },
 ];
 
 const ROUTE_ALIASES: Record<string, string[]> = {

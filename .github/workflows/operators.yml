@@ -1,0 +1,129 @@
+# Who may release features to customers — GitOps control for ONE setting.
+#
+#   .ops/operators   contains one email address per line
+#
+# Editing that file on main applies the list to the backend Container App and
+# shifts traffic to the resulting revision. Cloned from
+# warehouse-container-mode.yml, which exists for the same reason: the value
+# lives in an env var that only Terraform/az can change, and no workflow runs
+# Terraform — so without this, changing it needs a manual CLI session on
+# someone's laptop. It fires ONLY when that one file changes, so ordinary code
+# pushes keep deploy.yml's test-first 0%-traffic model untouched.
+#
+# Unlike the container-mode control this one DOES re-apply when the value is
+# unchanged, because re-applying is harmless here and a no-op run that reports
+# success while changing nothing is more confusing than a redundant revision.
+
+name: Operators
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.ops/operators'
+  workflow_dispatch:
+
+concurrency:
+  group: operators
+  cancel-in-progress: false
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read the operator list
+        id: list
+        run: |
+          set -euo pipefail
+          # Strip comments and blank lines, trim whitespace, join with commas.
+          # NOTE the per-line `sed` rather than `tr -d`: tr strips NEWLINES too,
+          # which silently glued two addresses into one unmatchable string —
+          # i.e. the second operator would never have worked. Caught by a
+          # dry-run, not by review.
+          EMAILS=$(sed 's/#.*//' .ops/operators \
+            | sed 's/[[:space:]]//g' \
+            | grep -v '^$' \
+            | paste -sd, -)
+
+          # An empty list is legitimate (it closes the page for everyone), but
+          # it is far more often a mistake — so say so loudly rather than
+          # silently locking the owner out.
+          if [ -z "$EMAILS" ]; then
+            echo "::warning::.ops/operators is empty — nobody will be able to open \"Who sees what\"."
+          fi
+
+          # Every entry must look like an address. A typo that lands a bare
+          # word here would otherwise just silently never match anyone.
+          for e in $(echo "$EMAILS" | tr ',' ' '); do
+            case "$e" in
+              *@*.*) ;;
+              *) echo "::error::'$e' is not an email address"; exit 1 ;;
+            esac
+          done
+
+          echo "emails=$EMAILS" >> "$GITHUB_OUTPUT"
+          echo "Operators: ${EMAILS:-<nobody>}"
+
+      - name: Log in to Azure
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Apply the list and shift traffic
+        env:
+          APP: ${{ secrets.BACKEND_APP_NAME }}
+          RG: ${{ secrets.AZURE_RESOURCE_GROUP }}
+          EMAILS: ${{ steps.list.outputs.emails }}
+        run: |
+          set -euo pipefail
+
+          ENV_QUERY="properties.template.containers[0].env[?name=='PLATFORM_OPERATOR_EMAILS'].value | [0]"
+
+          CURRENT=$(az containerapp show --name "$APP" --resource-group "$RG" \
+            --query "$ENV_QUERY" -o tsv 2>/dev/null || true)
+          echo "Current: ${CURRENT:-<unset>} → target: ${EMAILS:-<empty>}"
+
+          # 0%-traffic revisions require multiple-revision mode (idempotent).
+          az containerapp revision set-mode \
+            --name "$APP" --resource-group "$RG" --mode multiple || true
+
+          # --set-env-vars adds/updates only this variable; every other env var
+          # on the app is left untouched.
+          NEW_REV=$(az containerapp update \
+            --name "$APP" --resource-group "$RG" \
+            --set-env-vars PLATFORM_OPERATOR_EMAILS="$EMAILS" \
+            --query properties.latestRevisionName -o tsv)
+          echo "New revision: $NEW_REV"
+
+          # Wait for THAT revision — never shift traffic to a half-built one.
+          for _ in $(seq 1 30); do
+            STATE=$(az containerapp revision show --name "$APP" --resource-group "$RG" \
+              --revision "$NEW_REV" --query properties.provisioningState -o tsv 2>/dev/null || echo "")
+            echo "  provisioningState=$STATE"
+            case "$STATE" in
+              Provisioned) break ;;
+              Failed|Degraded) echo "::error::revision $NEW_REV failed to provision ($STATE)"; exit 1 ;;
+            esac
+            sleep 10
+          done
+          if [ "$STATE" != "Provisioned" ]; then
+            echo "::error::revision $NEW_REV not provisioned in time (last state: ${STATE:-unknown})"
+            exit 1
+          fi
+
+          az containerapp ingress traffic set --name "$APP" --resource-group "$RG" \
+            --revision-weight "$NEW_REV=100"
+
+          APPLIED=$(az containerapp show --name "$APP" --resource-group "$RG" \
+            --query "$ENV_QUERY" -o tsv)
+
+          {
+            echo "### Operators updated"
+            echo ""
+            echo "- Can now open **Who sees what**: \`${APPLIED:-nobody}\`"
+            echo "- Live revision: \`$NEW_REV\` (100% traffic)"
+            echo "- Previously: \`${CURRENT:-<unset>}\`"
+          } >> "$GITHUB_STEP_SUMMARY"

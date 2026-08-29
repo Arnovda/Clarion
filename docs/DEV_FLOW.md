@@ -51,28 +51,33 @@ immediately and silently break this whole test-first model. Both deploy and
 promote therefore always pin traffic to a named revision; never set
 `latest=100` by hand in the portal.
 
-## Loop 3 — release to one tenant at a time (feature flags)
+## Loop 3 — release to one customer at a time
 
-Loops 1 and 2 get code into production. This one decides **who can see it**,
-which is a separate act — that separation is the whole point.
+Loops 1 and 2 get code into production. This one decides **who can see it** —
+a separate act, and that separation is the point.
 
-1. Add a key to `FEATURE_FLAGS` in `shared/contract.ts` (both copies — the
-   contract-sync ratchet enforces it). It is now off for everyone.
-2. Build the feature behind the flag:
-   - server: `await isFeatureEnabled(tenantId, 'my_flag')`
-   - client: `const on = useFeature('my_flag')`
-3. Merge and deploy normally. The code is live and invisible.
-4. Open **Feature rollout** in the rail (operators only) and switch the flag to
-   your own test tenant. Takes effect within ~20 seconds. No deploy.
-5. Widen it — a friendly customer, then everyone — or pull it back to Nobody
-   the moment it misbehaves. Pulling back is instant and costs no revision.
-6. Once it has been on *Everyone* for a while, **delete the flag and its
-   checks**. A flag nobody will flip again is a dead branch in the code.
+**Once, to switch the page on:** put your email in `.ops/operators` and push.
+A couple of minutes later **Who sees what** appears in the rail under Settings.
 
-Who may flip a flag is `PLATFORM_OPERATOR_EMAILS` in the backend environment —
-deliberately not a tenant role, because a customer's admin must not be able to
-switch on work that has not been released to them. Unset means nobody, so the
-console stays shut on a deployment that has not configured it.
+**Then, for every new feature — your part is one screen:**
+
+1. Open **Who sees what**.
+2. Tick your own test account next to the feature. It is live for you within
+   ~20 seconds. Nobody else sees it.
+3. Happy? Tick a customer. Then more. Then *Everyone*.
+4. Wrong? Untick. It is gone immediately — no release, no rollback, no restart.
+
+**The developer's part** (mine, or whoever writes the feature):
+
+- Add the feature to `FEATURE_FLAGS` in `shared/contract.ts` — both copies, the
+  contract-sync ratchet enforces it. Give it a `name` a non-developer would
+  recognise: that string is what the screen shows.
+- Guard the feature: `await isFeatureEnabled(tenantId, 'my_flag')` on the
+  server, `useFeature('my_flag')` on the client.
+- Ship it. It arrives switched off, so merging it is safe on its own.
+- **Once it has been on *Everyone* for a while, delete the flag and its
+  checks.** This is the step everyone forgets. A switch nobody will ever flip
+  again is a dead branch in the code.
 
 ## The one rule (keep migrations safe)
 The 0%-traffic revision shares the database with the live one, so **migrations

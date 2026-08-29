@@ -123,12 +123,20 @@ describe('flag resolution', () => {
     expect(features).not.toHaveProperty(UNKNOWN);
   });
 
-  it('an orphan row cannot enable anything', async () => {
+  it('an orphan row cannot enable anything, and is not shown', async () => {
     // A row left behind by a flag that was deleted from the code registry.
     await setFlagRollout(getTestDb(), UNKNOWN, 'all', [], 'op@test');
     invalidateFeatureFlagCache();
     const features = await getFeaturesForTenant(tenantA, getTestDb());
     expect(features[UNKNOWN]).toBeUndefined();
+
+    // It also stays off the console: it enables nothing, so showing it would
+    // put a code-cleanup chore on a screen for choosing an audience.
+    const agent = await request();
+    const list = await agent
+      .get('/api/admin/feature-flags')
+      .set('Authorization', `Bearer ${operatorToken}`);
+    expect(list.body.data.flags.some((f: { key: string }) => f.key === UNKNOWN)).toBe(false);
   });
 });
 
@@ -141,7 +149,12 @@ describe('the operator gate', () => {
       .get('/api/admin/feature-flags')
       .set('Authorization', `Bearer ${operatorToken}`);
     expect(list.status).toBe(200);
-    expect(list.body.data.flags.some((f: { key: string }) => f.key === FLAG)).toBe(true);
+    const row = list.body.data.flags.find((f: { key: string }) => f.key === FLAG);
+    expect(row).toBeDefined();
+    // The screen renders `name`; a flag that shipped without one would show a
+    // developer key like `preview_banner` to whoever is choosing an audience.
+    expect(typeof row.name).toBe('string');
+    expect(row.name.length).toBeGreaterThan(0);
 
     const put = await agent
       .put(`/api/admin/feature-flags/${FLAG}`)

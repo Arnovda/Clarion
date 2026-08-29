@@ -1,0 +1,17 @@
+arnovda@telenet.be
+
+# Who may open "Who sees what" and choose which customers get a new feature.
+#
+# One email address per line. Everything after a `#` is a note.
+#
+# Editing this file and pushing it to main applies the list to the running
+# backend — a couple of minutes, no other steps. Remove a line and push to
+# take the ability away again.
+#
+# This is deliberately NOT something an account admin can grant themselves.
+# A customer's admin administers their own company; if they could also decide
+# which companies see unreleased work, "release it to one customer first"
+# would stop meaning anything.
+#
+# An EMPTY list means nobody — the page stays shut. That is the safe direction:
+# a deployment that forgets to fill this in must not fall back to "any admin".

@@ -298,12 +298,30 @@ export interface DataProductDto {
 
 export type FeatureRollout = 'off' | 'tenants' | 'all';
 
-/** Every flag the platform knows about. Adding one here is the only way to create one. */
+/**
+ * Every feature that can be released separately from the code that contains it.
+ *
+ * `name` is what the person choosing an audience reads — write it the way you
+ * would say it out loud, never as a system term. `description` says what
+ * turning it on actually does for a customer.
+ */
 export const FEATURE_FLAGS = {
-  preview_banner: 'Shows a "preview features" chip in the top bar. Use it to confirm a tenant is on the test ring.',
-  brief_email: 'Sends the morning brief to the inbox instead of only rendering it in the app.',
-  metric_thresholds: 'Lets a pulse entry carry a "tell me when it crosses X" threshold.',
-  exception_lists: 'The "what needs action today" list — overdue items, missing entries, things past a limit.',
+  preview_banner: {
+    name: 'Preview marker',
+    description: 'Puts a small "Preview" badge at the top of the screen, so it is obvious this account can see things other customers cannot.',
+  },
+  brief_email: {
+    name: 'Morning brief by email',
+    description: 'Sends the daily brief to the inbox instead of only showing it inside Clarion.',
+  },
+  metric_thresholds: {
+    name: 'Alerts when a number crosses a limit',
+    description: 'Lets someone say "tell me when this goes above X" and be told, instead of having to look.',
+  },
+  exception_lists: {
+    name: 'What needs action today',
+    description: 'A list of the things that are overdue, missing or past a limit — rather than only totals about the past.',
+  },
 } as const;
 
 export type FeatureKey = keyof typeof FEATURE_FLAGS;
@@ -313,6 +331,8 @@ export const FEATURE_KEYS = Object.keys(FEATURE_FLAGS) as FeatureKey[];
 /** One flag's rollout state, as the operator console renders it. */
 export interface FeatureFlagDto {
   key: FeatureKey;
+  /** Human name — what the console shows. */
+  name: string;
   description: string;
   rollout: FeatureRollout;
   /** Tenants that see it while rollout is 'tenants'. Ignored in the other two states. */

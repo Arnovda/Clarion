@@ -93,9 +93,37 @@ withdraw one was a rollback of everything else in that revision.**
   (`operatorOnly` on NavItem, separate from `roles` on purpose). TopBar shows a
   **Preview** chip when `preview_banner` is on — so "is this tenant seeing
   something customers are not?" is answerable from the screen.
-- **New env var**: `PLATFORM_OPERATOR_EMAILS` (in `.env.example`). `docs/DEV_FLOW.md`
-  gained **Loop 3** — the flag lifecycle including the step people skip:
-  delete the flag once it has been on 'all' for a while.
+- **SIMPLIFIED SAME DAY, owner: *"as simple as possible … consider me dumb."***
+  Three things were still developer-shaped and are gone. (a) **The console is
+  ONE control per feature now, not two.** It had a three-way audience selector
+  AND a separate tenant-chip list that only mattered in one of those states —
+  two things to learn, one able to contradict the other. Now: a checkbox list,
+  **Everyone** at the top then a line per customer, and the stored state is
+  DERIVED (nothing ticked = off, some = tenants, Everyone = all). The three
+  states stay in the data model because "everyone, including customers who join
+  later" genuinely differs from "these three accounts" — but nobody has to name
+  that distinction to use the screen. While Everyone is on, the per-customer
+  rows render ticked but inert: unticking one would silently mean "everyone
+  except", which the model cannot express. (b) **Features carry a human
+  `name`** — `FEATURE_FLAGS` went from `{key: description}` to
+  `{key: {name, description}}`, so the screen says "Morning brief by email",
+  never `brief_email`. A test pins that every listed flag has one. Orphan rows
+  (a key deleted from the registry) are FILTERED OUT of the console rather than
+  shown with a Remove button: they enable nothing, so surfacing them put a
+  code-cleanup chore on an audience-picking screen. (c) **`.ops/operators`** —
+  the one setup step was "edit infrastructure config and redeploy"; it is now
+  one email per line in a file, matching the `.ops` GitOps pattern the owner
+  already operates (`operators.yml` cloned from `warehouse-container-mode.yml`,
+  paths-scoped, waits for the specific revision then shifts traffic). **A
+  dry-run of the parser caught a real bug before it shipped**: `tr -d
+  '[:space:]'` strips NEWLINES too, gluing `a@b.com` and `c@d.com` into one
+  unmatchable string — the second operator would never have worked. Per-line
+  `sed` instead. Empty list warns loudly but succeeds (closing the page is a
+  legitimate act). Rail label is **"Who sees what"**.
+- **New env var**: `PLATFORM_OPERATOR_EMAILS` (in `.env.example`), set from
+  `.ops/operators`. `docs/DEV_FLOW.md` **Loop 3** now splits the owner's part
+  (one screen, four steps) from the developer's part — including the step
+  everyone forgets: delete the flag once it has been on Everyone for a while.
 - Validation: all eight ratchets green from the repo root; frontend `tsc` clean,
   touched files lint-clean. Backend typecheck + the new suite: see the session
   note below.

@@ -99,11 +99,14 @@ featureFlagsRouter.get('/', async (_req: Request, res: Response, next: NextFunct
       (tenants as Array<{ id: number; name: string }>).map((t) => [t.id, t.name]),
     );
 
-    const flags = state.map((f) => ({
+    // Orphan rows — a flag deleted from the code registry whose row survives —
+    // are dropped here rather than shown. They enable nothing (resolution only
+    // ever consults registered keys), so surfacing them would put a code-cleanup
+    // chore on a screen whose job is choosing an audience.
+    const flags = state.filter((f) => f.known).map((f) => ({
       key: f.key,
-      description: f.known
-        ? FEATURE_FLAGS[f.key as keyof typeof FEATURE_FLAGS]
-        : 'Left behind by a flag that was removed from the code. Nothing reads it — safe to delete.',
+      name: FEATURE_FLAGS[f.key as keyof typeof FEATURE_FLAGS].name,
+      description: FEATURE_FLAGS[f.key as keyof typeof FEATURE_FLAGS].description,
       known: f.known,
       rollout: f.rollout,
       tenants: f.tenantIds.map((id) => ({
