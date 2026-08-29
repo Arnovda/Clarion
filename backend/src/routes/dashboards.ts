@@ -17,6 +17,7 @@ import { validateWidgetColumns } from '../shared/widgetContracts';
 import { preserveSpecCarryover, diffSpecChanges } from '../services/dashboardSpecMerge';
 import { applyEditOps, pendingSqlEdits, realRefusals, isDeterministicOp, type DashboardEditOp } from '../services/dashboardEditOps';
 import { startSSE } from '../services/sse';
+import { isFeatureEnabled } from '../services/featureFlags';
 import { assertSafeReadQuery, isSafeReadQuery, assertNoExternalAccess } from '../utils/sqlGuard';
 import { logger } from '../utils/logger';
 
@@ -554,6 +555,24 @@ router.post('/refine-spec-stream', requireAuth, validate(refineSpecSchema), asyn
 
     try {
       sse.emit({ type: 'phase', text: 'Reading your request…' });
+
+      // ── AUDIENCE GATE ───────────────────────────────────────────────────
+      // The tiered fast path is a user-visible change, so WHO gets it is the
+      // operator's decision on the "Who sees what" screen, not a consequence
+      // of deploying. Off (the default for a newly declared flag) means this
+      // endpoint behaves exactly like the old /refine-spec — the same
+      // full-spec regeneration, with the same result — so a tenant not on the
+      // ring loses speed and nothing else.
+      //
+      // Deliberately gating ONLY the fast path: the progress events above and
+      // below are emitted either way, because a dashboard edit that reports
+      // what it is doing is strictly better than one that does not, carries no
+      // risk worth an audience decision, and is half of what this endpoint was
+      // built to fix.
+      if (!(await isFeatureEnabled(tenantId, 'dashboard_fast_refine', db))) {
+        await escalate('dashboard_fast_refine off for this tenant');
+        return;
+      }
 
       // ── PLAN ────────────────────────────────────────────────────────────
       let plan;

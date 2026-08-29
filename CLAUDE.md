@@ -110,6 +110,20 @@ dashboard.**
   224→225, new route validated); frontend `tsc` clean, touched files
   lint-clean, `next build` green. NOT yet exercised against a live AI backend
   — the first real refine through the stream endpoint should be watched once.
+- **THE FAST PATH IS FLAG-GATED (same day, owner: "can I now decide for which
+  tenants I want to roll this out?").** It shipped to main unflagged, which
+  broke the owner's own rule that a user-visible change reaches production
+  without reaching a customer — so `dashboard_fast_refine` ("Quicker dashboard
+  changes") joined `FEATURE_FLAGS`, and `/refine-spec-stream` escalates to the
+  full-spec path when it is off for the caller's tenant. **The split is
+  deliberate and is the interesting part**: the two BUG FIXES (filter-value
+  carryover, layout authority) ship UNGATED, because gating a fix means
+  choosing who keeps the broken behaviour; and the STREAMED PROGRESS is ungated
+  too, because an edit that reports what it is doing carries no risk worth an
+  audience decision and is half of what the endpoint was built to fix. Only the
+  tiered engine — the part that changes HOW an edit is computed — is behind the
+  ring. Flag off is therefore not "the old experience": it is the old speed
+  with the new honesty and the bugs fixed.
 - **Next natural slices**: a zero-AI "+ Add filter" picker on the FilterBar
   (needs a linkable-columns endpoint for dashboards; applyEditOps is ready for
   it), per-widget right-click "change this card" wired to the scoped

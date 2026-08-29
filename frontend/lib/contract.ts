@@ -322,6 +322,10 @@ export const FEATURE_FLAGS = {
     name: 'What needs action today',
     description: 'A list of the things that are overdue, missing or past a limit — rather than only totals about the past.',
   },
+  dashboard_fast_refine: {
+    name: 'Quicker dashboard changes',
+    description: 'When you ask to change a dashboard, Clarion works out the smallest set of edits and makes most of them itself, instead of rebuilding every card. Much faster, and it only touches what you asked about. Off means changes still work — they just take the slower route.',
+  },
 } as const;
 
 export type FeatureKey = keyof typeof FEATURE_FLAGS;
