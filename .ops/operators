@@ -1,19 +1,18 @@
-arnovda@telenet.be
+admin@vdaanalytics.com
 
-# Re-applied 2026-08-29: the console reported "This page is not open to you"
-# for an address that IS in this file. The first application (run 1, 11:52)
-# logged `Current: <unset> -> target: arnovda@telenet.be` and promoted
-# revision 0000328, so the value was live. Three deploy.yml runs followed
-# (831ace5, eacdcb6, 1c7d5c8), each creating a revision with
-# `az containerapp update --image`. This re-apply is the diagnostic as much
-# as the fix: its `Current:` line says whether those deploys carried the
-# variable forward. `<unset>` there means --image does NOT preserve it and
-# the operator list needs a home that survives a deploy — otherwise the
-# console would shut itself every time we ship.
-#
 # Who may open "Who sees what" and choose which customers get a new feature.
 #
 # One email address per line. Everything after a `#` is a note.
+#
+# IMPORTANT: this must be the address the person SIGNS INTO CLARION with —
+# the one under their name in the avatar menu — not a personal or work
+# address they happen to use elsewhere. The check compares this list against
+# the email on the logged-in account and nothing else, so a near-miss grants
+# nothing and looks identical to a broken deploy. That cost an afternoon on
+# 2026-08-29: the file said `arnovda@telenet.be` (a personal address), the
+# console correctly answered "This page is not open to you", and the value
+# was confirmed live on the backend the whole time. The account was
+# `admin@vdaanalytics.com`.
 #
 # Editing this file and pushing it to main applies the list to the running
 # backend — a couple of minutes, no other steps. Remove a line and push to
