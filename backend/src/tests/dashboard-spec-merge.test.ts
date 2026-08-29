@@ -75,13 +75,24 @@ describe('preserveSpecCarryover', () => {
     expect(out.widgets[1].layout).toBeUndefined();
   });
 
-  it('leaves a model-echoed layout alone and never invents one for new widgets', () => {
-    const echoed = { x: 0, y: 2, w: 12, h: 3 };
-    const prev = spec([widget('a', { layout: { x: 9, y: 9, w: 3, h: 1 } })]);
-    const next = spec([widget('a', { layout: echoed }), widget('new')]);
+  it('the PREVIOUS layout beats anything the model returned — echoed or invented', () => {
+    // A layout in the model's output is indistinguishable from one it made up,
+    // and an invented layout renders as a silently mangled dashboard (KPI
+    // cards squashed to a sliver). The user's arrangement is the only
+    // authority; the model's copy is discarded either way.
+    const userArranged = { x: 9, y: 9, w: 3, h: 1 };
+    const prev = spec([widget('a', { layout: userArranged })]);
+    const next = spec([widget('a', { layout: { x: 0, y: 2, w: 12, h: 3 } }), widget('new')]);
     const out = preserveSpecCarryover(prev, next);
-    expect(out.widgets[0].layout).toEqual(echoed);
+    expect(out.widgets[0].layout).toEqual(userArranged);
     expect(out.widgets[1].layout).toBeUndefined();
+  });
+
+  it('drops a layout the model invented for a widget the user never arranged', () => {
+    const prev = spec([widget('a')]); // no layout: flow placement
+    const next = spec([widget('a', { layout: { x: 0, y: 0, w: 2, h: 1 } })]);
+    const out = preserveSpecCarryover(prev, next);
+    expect(out.widgets[0].layout).toBeUndefined();
   });
 
   it('inherits productIds and dataLayer, and drops stale insights', () => {

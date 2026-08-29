@@ -61,11 +61,16 @@ export function restoreDroppedWidgets(
 /**
  * Carry app-managed fields across a full-spec regeneration.
  *
- * - `layout` (user-arranged placement) is copied onto every widget the model
- *   kept but returned without one. Prompt rules ask the model to echo layout
- *   verbatim, but the guarantee lives here, deterministically. New widgets
- *   stay layout-less on purpose — the renderer places them below the arranged
- *   ones.
+ * - `layout` (user-arranged placement) is restored from the PREVIOUS spec on
+ *   every widget the model kept — the previous placement always wins, even
+ *   when the model returned a layout of its own. Echoing it back is a prompt
+ *   rule the model breaks in both directions: it drops the field, and it
+ *   INVENTS one. An invented layout is the worse half, because it renders as a
+ *   silently mangled dashboard (KPI cards squashed to a couple of grid
+ *   columns) rather than as a missing arrangement. The model has no business
+ *   changing placement at all, so the previous value is authoritative and this
+ *   is the only place that decides it. New widgets stay layout-less on
+ *   purpose — the renderer places them below the arranged ones.
  * - `productIds` / `dataLayer` are context, not content: the model never sets
  *   them, so they are inherited from the previous spec when absent.
  * - `insights` are dropped: they describe the previous dashboard, and the
@@ -75,7 +80,11 @@ export function preserveSpecCarryover(prev: DashboardSpec, next: DashboardSpec):
   const prevById = new Map(prev.widgets.map((w) => [w.id, w]));
   const widgets = next.widgets.map((w) => {
     const before = prevById.get(w.id);
-    if (before?.layout && !w.layout) return { ...w, layout: before.layout };
+    if (!before) return w;                                  // new widget — app places it
+    if (before.layout) return { ...w, layout: before.layout };
+    // The widget had no arrangement before; a layout the model invented for it
+    // is not one the user chose, so drop it back to flow placement.
+    if (w.layout) { const { layout: _invented, ...rest } = w; return rest as WidgetSpec; }
     return w;
   });
   const out: DashboardSpec = { ...next, widgets };

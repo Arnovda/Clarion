@@ -4,7 +4,7 @@ import { validate } from '../middleware/validate';
 import { createDashboardSchema, updateDashboardSchema, batchExecuteSchema, refineDashboardSchema, fixWidgetSchema, generateDashboardSchema, refineSpecSchema, pinWidgetSchema } from '../middleware/schemas';
 import { semanticDb } from '../db/knex';
 import { createConnector, createProductConnector } from '../connectors/ConnectorFactory';
-import { generateDashboardSpec, generateDashboardRefinement, refineDashboardSpec, validateAndFixDashboardSpec, checkWidgetSemantics, SqlDialect, explainWidget, generateDashboardInsights, planInvestigation, synthesizeInvestigation, narrateDashboard } from '../ai/AIService';
+import { generateDashboardSpec, generateDashboardRefinement, refineDashboardSpec, validateAndFixDashboardSpec, checkWidgetSemantics, SqlDialect, explainWidget, generateDashboardInsights, planInvestigation, synthesizeInvestigation, narrateDashboard, planDashboardEdit, editWidgetSql, generateSingleWidget } from '../ai/AIService';
 import { DashboardSpec, WidgetSpec, RefinementOutput, WidgetExecutionResult } from '../ai/prompts/dashboardPrompt';
 import { buildSemanticContextForQuery } from '../db/semanticGraph';
 import { buildProductSemanticContext, getProductWarehousePath } from '../services/productContext';
@@ -15,6 +15,7 @@ import { getFilterOptionsCache, putFilterOptionsCache } from '../services/filter
 import { reqDb } from '../db/reqDb';
 import { validateWidgetColumns } from '../shared/widgetContracts';
 import { preserveSpecCarryover, diffSpecChanges } from '../services/dashboardSpecMerge';
+import { applyEditOps, pendingSqlEdits, realRefusals, isDeterministicOp, type DashboardEditOp } from '../services/dashboardEditOps';
 import { startSSE } from '../services/sse';
 import { assertSafeReadQuery, isSafeReadQuery, assertNoExternalAccess } from '../utils/sqlGuard';
 import { logger } from '../utils/logger';
@@ -433,6 +434,312 @@ router.post('/refine-spec', requireAuth, validate(refineSpecSchema), async (req:
     const changes = diffSpecChanges(currentSpec, spec);
 
     res.json({ ok: true, data: { spec, changes } });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// POST /api/dashboards/refine-spec-stream — the tiered, VISIBLE refine path
+//
+// The plain /refine-spec above is one opaque full-spec regeneration: slow in
+// proportion to the dashboard rather than to the request, destructive to
+// widgets nobody asked about, and silent for the whole minute it runs (the
+// user saw three dots and nothing else — the complaint that prompted this
+// endpoint). This route replaces it for interactive use; the non-stream
+// endpoint stays for API compatibility.
+//
+// Tiers, cheapest first:
+//   PLAN     — one Haiku call over a SQL-free digest decides WHAT to change
+//              (ai/prompts/dashboardEditPlanPrompt). Milliseconds of tokens.
+//   APPLY    — structural ops (filters, chart-type swaps, renames, removals,
+//              top-N) are executed by the app itself, exactly, with no AI call
+//              (services/dashboardEditOps).
+//   SCOPED   — ops that need a model (rewrite ONE widget's SQL, create ONE
+//              widget) run as small parallel calls that each see one statement.
+//   CHECK    — only the widgets that changed are executed against the real
+//              warehouse; a failure gets ONE scoped repair, then reverts to
+//              its previous working self rather than shipping broken.
+//   ESCALATE — a request the planner can't express as ops ("rebuild this as an
+//              executive overview") falls back to the full-spec path above.
+//
+// Every stage is an SSE event, so the chat can show a live checklist instead
+// of dots — which is the other half of the fix: the same minute feels short
+// when you can watch it, and most requests no longer take a minute at all.
+// ---------------------------------------------------------------------------
+
+/** Business-language label for a plan step (never says SQL/spec/widget-id). */
+function editOpLabel(op: DashboardEditOp, spec: DashboardSpec): string {
+  const widgetTitle = (id: string) => spec.widgets.find((w) => w.id === id)?.title ?? 'a card';
+  switch (op.op) {
+    case 'add_filter': return `Add a ${op.filter.label || op.filter.column} filter`;
+    case 'remove_filter': {
+      const f = spec.filters.find((x) => x.id === op.filterId);
+      return `Remove the ${f?.label ?? op.filterId} filter`;
+    }
+    case 'set_filter_default': {
+      const f = spec.filters.find((x) => x.id === op.filterId);
+      return `Change the default of the ${f?.label ?? op.filterId} filter`;
+    }
+    case 'remove_widget': return `Remove "${widgetTitle(op.widgetId)}"`;
+    case 'retitle_widget': return `Rename "${widgetTitle(op.widgetId)}"`;
+    case 'set_widget_type': return `Change "${widgetTitle(op.widgetId)}" to a ${op.widgetType.replace(/_/g, ' ').replace(' chart', '')} chart`;
+    case 'set_widget_format': return `Show "${widgetTitle(op.widgetId)}" as ${op.format === 'currency' ? 'an amount' : op.format === 'percentage' ? 'a percentage' : 'a number'}`;
+    case 'set_widget_limit': return `Show ${op.limit} rows in "${widgetTitle(op.widgetId)}"`;
+    case 'retitle_dashboard': return 'Update the dashboard title';
+    case 'sql_edit': return `Rework "${widgetTitle(op.widgetId)}"`;
+    case 'add_widget': return `Add ${op.instruction}`;
+  }
+}
+
+router.post('/refine-spec-stream', requireAuth, validate(refineSpecSchema), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const db = reqDb(req);
+    const { connectionId, refinement, currentSpec, productIds, dataLayer } = req.body as {
+      connectionId: number;
+      refinement: string;
+      currentSpec: DashboardSpec;
+      productIds?: number[];
+      dataLayer?: 'product' | 'source';
+    };
+    const tenantId = req.user!.tenantId;
+
+    const effectiveProductIds = productIds?.length ? productIds : currentSpec.productIds;
+    const effectiveLayer = dataLayer ?? currentSpec.dataLayer;
+
+    // Semantic context BEFORE the SSE handshake, so a context failure is a
+    // normal JSON error, not a broken stream.
+    const productCtx = effectiveLayer === 'source'
+      ? null
+      : await buildProductSemanticContext(connectionId, effectiveProductIds, db);
+    const semanticCtx = productCtx
+      ? { semanticContext: productCtx.semanticContext, relationshipContext: productCtx.relationshipContext }
+      : await buildSemanticContext(connectionId);
+
+    const sse = startSSE(res, { headers: { 'Cache-Control': 'no-cache, no-transform' } });
+    const stamp = (spec: DashboardSpec): DashboardSpec => {
+      const out = preserveSpecCarryover(currentSpec, spec);
+      out.dataLayer = effectiveLayer === 'source' ? 'source' : 'product';
+      if (effectiveProductIds?.length) out.productIds = effectiveProductIds;
+      return out;
+    };
+    const finish = (spec: DashboardSpec, notes: string[], refusals: string[]) => {
+      const finalSpec = stamp(spec);
+      sse.emit({ type: 'done', spec: finalSpec, changes: diffSpecChanges(currentSpec, finalSpec), notes, refusals });
+      sse.end();
+    };
+    // The full-spec path — used when the planner asks for it, and as the
+    // safety net when the fast path itself fails.
+    const escalate = async (why: string) => {
+      sse.emit({ type: 'phase', text: 'Reworking the dashboard as a whole — this takes a little longer…' });
+      log.info({ why }, 'refine-spec-stream: escalating to full regeneration');
+      const { insights: _i, validation: _v, ...specForAI } = currentSpec;
+      let spec = await refineDashboardSpec(
+        refinement, specForAI as DashboardSpec,
+        semanticCtx.semanticContext, semanticCtx.relationshipContext,
+        productCtx?.kpiFormulas ?? '',
+      );
+      spec = preserveSpecCarryover(currentSpec, spec);
+      const before = new Map(currentSpec.widgets.map((w) => [w.id, w]));
+      const changedIds = new Set(
+        spec.widgets.filter((w) => {
+          const prev = before.get(w.id);
+          return !prev || prev.sql !== w.sql || prev.type !== w.type;
+        }).map((w) => w.id),
+      );
+      sse.emit({ type: 'phase', text: 'Checking the changed cards against your data…' });
+      spec = await validateAndRepairSpec(spec, connectionId, tenantId, effectiveLayer, semanticCtx, changedIds);
+      finish(spec, [], []);
+    };
+
+    try {
+      sse.emit({ type: 'phase', text: 'Reading your request…' });
+
+      // ── PLAN ────────────────────────────────────────────────────────────
+      let plan;
+      try {
+        plan = await planDashboardEdit(refinement, currentSpec, semanticCtx.semanticContext, semanticCtx.relationshipContext);
+      } catch (planErr) {
+        log.warn({ err: planErr instanceof Error ? planErr.message : String(planErr) }, 'edit planner failed — escalating');
+        await escalate('planner error');
+        return;
+      }
+      const rawOps = Array.isArray(plan.ops) ? (plan.ops as DashboardEditOp[]) : [];
+      if (plan.strategy !== 'ops' || rawOps.length === 0) {
+        await escalate(plan.strategy === 'regenerate' ? 'planner chose regenerate' : 'empty plan');
+        return;
+      }
+      if (sse.closed) return;
+
+      // The plan, as a checklist the user can watch fill in.
+      const steps = rawOps.map((op, i) => ({ id: `s${i}`, label: editOpLabel(op, currentSpec) }));
+      sse.emit({ type: 'plan', summary: plan.summary, steps });
+
+      // ── APPLY (deterministic, instant) ─────────────────────────────────
+      const { spec: appliedSpec, applied } = applyEditOps(currentSpec, rawOps);
+      let spec = appliedSpec;
+      const notes: string[] = [];
+      const refusals = realRefusals(applied);
+      /** Widgets whose SQL gained a textually-injected filter predicate — if
+       *  one fails the check below, the repair hands the model the ORIGINAL
+       *  query and asks it to wire the filter in properly (usually a join). */
+      const filterInjected = new Set<string>();
+      applied.forEach((a, i) => {
+        if (a.op.op === 'add_filter') for (const id of a.changedWidgetIds) filterInjected.add(id);
+        if (isDeterministicOp(a.op)) {
+          sse.emit({
+            type: 'step', id: `s${i}`,
+            status: a.refusal && !a.refusal.startsWith('NEEDS_SQL:') ? 'failed' : 'done',
+            ...(a.refusal && !a.refusal.startsWith('NEEDS_SQL:') ? { note: a.refusal } : {}),
+          });
+        }
+      });
+
+      // ── SCOPED model calls, in parallel ────────────────────────────────
+      const sqlEdits = pendingSqlEdits(applied);
+      const addOps = applied
+        .map((a, i) => ({ a, i }))
+        .filter(({ a }) => a.op.op === 'add_widget');
+
+      await Promise.all([
+        ...sqlEdits.map(async (edit) => {
+          const idx = applied.findIndex((a) =>
+            (a.op.op === 'sql_edit' && a.op.widgetId === edit.widgetId) ||
+            (a.refusal?.startsWith(`NEEDS_SQL:${edit.widgetId}:`)));
+          const stepId = `s${idx}`;
+          const widget = spec.widgets.find((w) => w.id === edit.widgetId);
+          if (!widget) {
+            sse.emit({ type: 'step', id: stepId, status: 'failed', note: 'Could not find that card.' });
+            return;
+          }
+          sse.emit({ type: 'step', id: stepId, status: 'running' });
+          try {
+            const out = await editWidgetSql(edit.instruction, widget, semanticCtx.semanticContext, semanticCtx.relationshipContext);
+            assertSafeReadQuery(out.sql);
+            spec = {
+              ...spec,
+              widgets: spec.widgets.map((w) => w.id === edit.widgetId
+                ? { ...w, sql: out.sql, ...(out.title ? { title: out.title } : {}) }
+                : w),
+            };
+            filterInjected.delete(edit.widgetId); // the model now owns this SQL
+            sse.emit({ type: 'step', id: stepId, status: 'done', note: out.note });
+            if (out.note) notes.push(out.note);
+          } catch (e) {
+            const msg = e instanceof Error ? e.message : String(e);
+            log.warn({ widgetId: edit.widgetId, err: msg }, 'scoped widget edit failed — widget left unchanged');
+            sse.emit({ type: 'step', id: stepId, status: 'failed', note: `Could not change "${widget.title}" — left it as it was.` });
+            refusals.push(`Could not change "${widget.title}" — left it as it was.`);
+          }
+        }),
+        ...addOps.map(async ({ a, i }) => {
+          const stepId = `s${i}`;
+          const instruction = (a.op as Extract<DashboardEditOp, { op: 'add_widget' }>).instruction;
+          sse.emit({ type: 'step', id: stepId, status: 'running' });
+          try {
+            const out = await generateSingleWidget(instruction, spec, semanticCtx.semanticContext, semanticCtx.relationshipContext);
+            assertSafeReadQuery(out.widget.sql);
+            const takenIds = new Set(spec.widgets.map((w) => w.id));
+            const id = takenIds.has(out.widget.id) ? `${out.widget.id}_${Date.now().toString(36)}` : out.widget.id;
+            const widget = { ...out.widget, id } as WidgetSpec;
+            spec = { ...spec, widgets: [...spec.widgets, widget] };
+            sse.emit({ type: 'step', id: stepId, status: 'done', note: out.note });
+            if (out.note) notes.push(out.note);
+          } catch (e) {
+            const msg = e instanceof Error ? e.message : String(e);
+            log.warn({ err: msg }, 'scoped widget add failed');
+            sse.emit({ type: 'step', id: stepId, status: 'failed', note: 'Could not build that card.' });
+            refusals.push(`Could not add "${instruction}".`);
+          }
+        }),
+      ]);
+      if (sse.closed) return;
+
+      // ── CHECK: execute only what changed; repair scoped; never ship broken ─
+      // "Changed" is measured, not tracked: a widget whose SQL is byte-equal
+      // to the pre-edit spec (retitles, in-group type swaps) cannot fail in a
+      // new way and is not re-executed.
+      const beforeById = new Map(currentSpec.widgets.map((w) => [w.id, w]));
+      const changedIds = spec.widgets
+        .filter((w) => beforeById.get(w.id)?.sql !== w.sql)
+        .map((w) => w.id);
+      if (changedIds.length > 0) {
+        sse.emit({ type: 'phase', text: `Checking ${changedIds.length === 1 ? 'the changed card' : `the ${changedIds.length} changed cards`} against your data…` });
+        const idSet = new Set(changedIds);
+        const results = await executeSpecForValidation(
+          { ...spec, widgets: spec.widgets.filter((w) => idSet.has(w.id)) },
+          connectionId, tenantId, effectiveLayer,
+        );
+        for (const r of results) {
+          if (!r.error && r.rowCount > 0) {
+            const issue = validateWidgetColumns(r.type, r.sampleRows);
+            if (issue) r.contractIssue = issue;
+          }
+        }
+        const failing = results.filter((r) => r.error || r.contractIssue);
+        for (const fail of failing) {
+          if (sse.closed) return;
+          const original = currentSpec.widgets.find((w) => w.id === fail.id);
+          const current = spec.widgets.find((w) => w.id === fail.id);
+          if (!current) continue;
+          const cause = filterInjected.has(fail.id) ? 'filter' : 'model';
+          const problem = fail.error ?? fail.contractIssue ?? 'returned no usable data';
+          try {
+            // One scoped repair. For a broken filter injection the model gets
+            // the ORIGINAL query and wires the filter in properly (usually an
+            // added join); for its own edit it gets the error to fix.
+            const filterList = spec.filters
+              .map((f) => `"${f.label}" (id ${f.id}, ${f.type} on ${f.table}.${f.column})`).join('; ');
+            const instruction = cause === 'filter' && original
+              ? `Wire the dashboard filters into this query — the automatic version failed with: ${problem}. Filters: ${filterList}. Add whatever JOIN is needed; if a filter's column genuinely cannot apply to this data, leave that filter out.`
+              : `The previous edit produced a query that failed with: ${problem}. Fix it.`;
+            const base = cause === 'filter' && original ? { ...current, sql: original.sql } : current;
+            const out = await editWidgetSql(instruction, base, semanticCtx.semanticContext, semanticCtx.relationshipContext);
+            assertSafeReadQuery(out.sql);
+            const recheck = await executeSpecForValidation(
+              { ...spec, widgets: [{ ...current, sql: out.sql }] },
+              connectionId, tenantId, effectiveLayer,
+            );
+            const ok = recheck[0] && !recheck[0].error &&
+              !(recheck[0].rowCount > 0 && validateWidgetColumns(recheck[0].type, recheck[0].sampleRows));
+            if (ok) {
+              spec = { ...spec, widgets: spec.widgets.map((w) => w.id === fail.id ? { ...w, sql: out.sql } : w) };
+              continue;
+            }
+            throw new Error('repair did not validate');
+          } catch (repairErr) {
+            log.warn(
+              { widgetId: fail.id, err: repairErr instanceof Error ? repairErr.message : String(repairErr) },
+              'scoped repair failed — reverting widget',
+            );
+            if (original) {
+              // Revert to the last version that worked. An unfiltered-but-
+              // correct card beats a broken one; say so instead of hiding it.
+              spec = { ...spec, widgets: spec.widgets.map((w) => w.id === fail.id ? original : w) };
+              refusals.push(`"${original.title}" could not take this change and was left as it was.`);
+            } else {
+              spec = { ...spec, widgets: spec.widgets.filter((w) => w.id !== fail.id) };
+              refusals.push(`The new "${fail.title}" card did not work against your data and was not added.`);
+            }
+          }
+        }
+      }
+
+      finish(spec, notes, refusals);
+    } catch (err) {
+      // The fast path failed somewhere unrecoverable. If the stream is still
+      // open, fall back to the full-spec path once; if that also fails, say so.
+      const msg = err instanceof Error ? err.message : String(err);
+      log.warn({ err: msg }, 'refine-spec-stream fast path failed');
+      if (!sse.closed) {
+        try {
+          await escalate('fast path error: ' + msg);
+        } catch (escErr) {
+          sse.emit({ type: 'error', error: escErr instanceof Error ? escErr.message : 'Refinement failed' });
+          sse.end();
+        }
+      }
+    }
   } catch (err) {
     next(err);
   }

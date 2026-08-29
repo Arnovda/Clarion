@@ -31,7 +31,97 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-08-29 (PER-TENANT FEATURE FLAGS — deploy and release are
+**Last updated:** 2026-08-29 (DASHBOARD REFINE REBUILT — tiered edits, visible
+progress, and the empty-dashboard-after-refine defect fixed)
+
+**THE DASHBOARD CHAT SHOWS ITS WORK NOW, AND SMALL EDITS ARE SMALL (2026-08-29).
+Owner, with two screenshots: "Make the AI output his answer in the chat when
+asking to alter the dashboard… right now I see the 3 dots but I have no output…
+A lot of the times the dashboards will not be 100% what the user wants. How can
+we make sure adaptations are fast? Maybe not sending everything to the AI?"
+Also: "It does not work at the moment" — his refine produced an all-€0,00
+dashboard.**
+- **THE €0,00 DEFECT WAS FILTER-VALUE LOSS, NOT SQL.** After every refine the
+  client rebuilt filter values from defaults
+  (`setFilterValues(buildDefaultFilters(...))`), so a dashboard being viewed on
+  01/01/2024→now snapped back to the last-12-months default — and the owner's
+  data ends early 2025, so every widget re-queried an empty window. New
+  `frontend/app/dashboards/utils/refineCarryover.ts`: `carryFilterValues` (a
+  filter that SURVIVED the refine keeps the value on screen; only genuinely NEW
+  filters take a default; a filter whose column/type changed counts as new) and
+  `dropChangedFromCache` (only widgets whose SQL changed lose their cached rows
+  — an edit to one card no longer blanks twelve into skeletons; any change to
+  an EXISTING filter value still wipes everything, a NEW key wipes nothing).
+  Dry-run in real Node via esbuild, including the exact production case.
+- **The second half of the screenshot (squashed cards): `preserveSpecCarryover`
+  now makes the PREVIOUS layout authoritative** — the model breaks the
+  echo-layout-verbatim prompt rule in both directions (drops it AND invents
+  one), and an invented layout renders as a silently mangled dashboard. A model
+  layout on a widget the user never arranged is dropped back to flow placement.
+  The old "leaves a model-echoed layout alone" test pinned the buggy semantics
+  and was rewritten.
+- **TIERED EDITS — most adaptations no longer send the dashboard to the AI.**
+  New `services/dashboardEditOps.ts` (pure, 23 tests): a typed
+  `DashboardEditOp` catalogue (add/remove filter, filter defaults, chart-type
+  swap, retitle, remove widget, format, top-N limit, scoped `sql_edit`,
+  `add_widget`) + `applyEditOps`. Filter add/remove is TEXTUAL SQL SURGERY on
+  the same predicate shapes the generation prompt emits
+  (`('{{id}}' = 'all' OR col = '{{id}}')`, `BETWEEN '{{id_from}}' AND
+  '{{id_to}}')`), via `injectWherePredicate` — the cross-filter WHERE-boundary
+  logic generalised; it REFUSES CTEs/set-operators/no-FROM rather than guess,
+  and `stripFilterPredicate` refuses to leave a dangling placeholder (would
+  silently resolve to 'all'). Chart-type swaps allowed only within a
+  column-contract group DERIVED from `REQUIRED_WIDGET_COLUMNS` (bar↔line↔pie↔
+  top_list…); a cross-contract swap hands over to a scoped SQL edit
+  (`NEEDS_SQL:` marker → `pendingSqlEdits`). Every op is total: unknown ids and
+  unsafe identifiers REFUSE (reported to the user), never half-apply.
+  `safeIdentifier` REJECTS rather than sanitises — a stripped identifier is a
+  different identifier.
+- **PLANNER: one Haiku call decides, small Sonnet calls execute.** New
+  `ai/prompts/dashboardEditPlanPrompt.ts` + `AIService.planDashboardEdit` /
+  `editWidgetSql` / `generateSingleWidget`. The planner sees a SQL-FREE DIGEST
+  (`buildSpecDigest`: ids, titles, types, contract columns, which filters each
+  widget is wired to — pinned by test that no SELECT reaches it) and returns
+  `{strategy, summary, ops}`. "Slice by customer" is ONE add_filter op, not
+  twelve rewritten widgets. `strategy:"regenerate"` (subject/audience changes)
+  falls back to the untouched full-spec path — which also remains the safety
+  net when the fast path errors.
+- **`POST /dashboards/refine-spec-stream` (SSE, Zod via refineSpecSchema).**
+  Stages: plan (Haiku) → deterministic ops applied instantly → scoped model
+  calls IN PARALLEL → check: ONLY the widgets whose SQL is byte-different from
+  the pre-edit spec are executed (`executeSpecForValidation` + column
+  contract); a failure gets ONE scoped repair (for a broken filter injection
+  the model gets the ORIGINAL sql + "wire the filter in properly — usually a
+  join"; column binding errors DO surface despite the 'all' short-circuit
+  because DuckDB binds at plan time), then REVERTS to the last working version
+  with a spoken refusal — never ships broken, never silently drops an edit.
+  Events: `phase` / `plan {summary, steps}` / `step {id, status, note}` /
+  `done {spec, changes, notes, refusals}`. The non-stream `/refine-spec` stays
+  for API compatibility.
+- **The chat renders the plan as a live checklist** (ChatMessage gained
+  `working/phase/steps`): summary sentence immediately, steps flipping
+  pending→running→done/failed with per-step notes, refusals appended as ⚠
+  lines to the final message — the three bouncing dots are suppressed while a
+  working bubble exists, and a mid-stream error converts the working bubble
+  instead of stranding it.
+- Validation: backend `npm run check` clean; full suite green incl. 23 new
+  edit-op tests + 4 digest tests + rewritten layout-carryover tests; all eight
+  ratchets green from the repo root (validate-coverage 160/225 — route total
+  224→225, new route validated); frontend `tsc` clean, touched files
+  lint-clean, `next build` green. NOT yet exercised against a live AI backend
+  — the first real refine through the stream endpoint should be watched once.
+- **Next natural slices**: a zero-AI "+ Add filter" picker on the FilterBar
+  (needs a linkable-columns endpoint for dashboards; applyEditOps is ready for
+  it), per-widget right-click "change this card" wired to the scoped
+  `sql_edit` path, and suggestion chips under the chat input.
+- SANDBOX NOTE: `.claude/hooks/session-start.sh` from the 2026-08-29 tooling
+  session is NOT in this checkout (only its CLAUDE.md/docs entry landed) —
+  this session hand-booted Postgres (`service postgresql start`, roles +
+  `databridge_test` + `knex migrate:latest`) and used
+  `.ops/cloud-setup-script.sh` for installs; the connectors DuckDB binary was
+  copied from the backend's per the hook's recipe (versions matched at 1.4.2).
+
+**Prior last updated:** 2026-08-29 (PER-TENANT FEATURE FLAGS — deploy and release are
 two events now)
 
 **FEATURE FLAGS SHIPPED (2026-08-29). Owner: *"So I can release it first to my

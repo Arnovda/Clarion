@@ -35,6 +35,7 @@ import type {
 
 // ─── Extracted utilities ─────────────────────────────────────────────────────
 import { buildDefaultFilters, relTime } from './utils/format';
+import { applyRefineCarryover } from './utils/refineCarryover';
 import { containerVariants, slideUp, shimmerClass } from './utils/motion';
 import { buildDashboardContext } from './utils/dashboardContext';
 
@@ -1091,23 +1092,88 @@ export default function DashboardsPage() {
         // Product scope: the spec's own stamp wins (a reopened dashboard's
         // client state may not carry the original selection).
         const scopeIds = currentSpec.productIds ?? (selectedProductIds.length > 0 ? selectedProductIds : undefined);
-        const res = await api.post('/dashboards/refine-spec', {
-          connectionId: connectionId,
-          refinement: input,
-          currentSpec,
-          ...(scopeIds?.length ? { productIds: scopeIds } : {}),
-          ...(currentSpec.dataLayer === 'source' ? { dataLayer: 'source' as const } : {}),
+
+        // ── Streaming refine ────────────────────────────────────────────
+        // /refine-spec-stream reports its work as it happens: a plan
+        // (checklist), per-step progress, then the finished spec. The
+        // assistant bubble below is created immediately and MUTATED as the
+        // events land, so the user watches the edit instead of three dots.
+        const workingId = Date.now().toString() + '_a';
+        const patchWorking = (patch: Partial<ChatMessage> | ((m: ChatMessage) => ChatMessage)) => {
+          setChatMessages((prev) => prev.map((m) => {
+            if (m.id !== workingId) return m;
+            return typeof patch === 'function' ? patch(m) : { ...m, ...patch };
+          }));
+        };
+        setChatMessages((prev) => [...prev, {
+          id: workingId, role: 'assistant', text: '', type: 'refine',
+          working: true, phase: 'Reading your request…', steps: [],
+        }]);
+
+        interface RefineDoneEvt {
+          spec: DashboardSpec;
+          changes?: { added: string[]; modified: string[]; removed: string[]; filtersChanged: boolean };
+          notes?: string[];
+          refusals?: string[];
+        }
+        // Assigned inside the onEvent callback — TS's flow analysis can't see
+        // that, hence the widening read below instead of the variable itself.
+        let doneEvt: RefineDoneEvt | null = null;
+        let streamError: string | null = null;
+
+        const baseURL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001/api';
+        await streamSSE(`${baseURL}/dashboards/refine-spec-stream`, {
+          body: {
+            connectionId: connectionId,
+            refinement: input,
+            currentSpec,
+            ...(scopeIds?.length ? { productIds: scopeIds } : {}),
+            ...(currentSpec.dataLayer === 'source' ? { dataLayer: 'source' as const } : {}),
+          },
+          onEvent: (evt: {
+            type?: string; text?: string; summary?: string;
+            steps?: Array<{ id: string; label: string }>;
+            id?: string; status?: 'running' | 'done' | 'failed'; note?: string;
+            spec?: DashboardSpec; error?: string;
+            changes?: { added: string[]; modified: string[]; removed: string[]; filtersChanged: boolean };
+            notes?: string[]; refusals?: string[];
+          }) => {
+            if (evt.type === 'phase' && evt.text) {
+              patchWorking({ phase: evt.text });
+            } else if (evt.type === 'plan') {
+              patchWorking({
+                text: evt.summary ?? '',
+                phase: undefined,
+                steps: (evt.steps ?? []).map((st) => ({ ...st, status: 'pending' as const })),
+              });
+            } else if (evt.type === 'step' && evt.id) {
+              patchWorking((m) => ({
+                ...m,
+                steps: (m.steps ?? []).map((st) => st.id === evt.id
+                  ? { ...st, status: evt.status ?? st.status, ...(evt.note ? { note: evt.note } : {}) }
+                  : st),
+              }));
+            } else if (evt.type === 'done' && evt.spec) {
+              doneEvt = { spec: evt.spec, changes: evt.changes, notes: evt.notes, refusals: evt.refusals };
+            } else if (evt.type === 'error') {
+              streamError = evt.error ?? 'Refinement failed';
+            }
+          },
         });
-        const newSpec: DashboardSpec = res.data.data.spec;
-        const changes = res.data.data.changes as
-          | { added: string[]; modified: string[]; removed: string[]; filtersChanged: boolean }
-          | undefined;
+
+        const result = doneEvt as RefineDoneEvt | null;
+        if (!result) throw new Error(streamError ?? 'The refinement stream ended without a result.');
+        const { spec: newSpec, changes, refusals } = result;
         // Preserve the layer across refinements
         newSpec.dataLayer = newSpec.dataLayer ?? currentSpec.dataLayer ?? 'product';
-        const defaults = buildDefaultFilters(newSpec.filters);
-        // Drop the pre-refine rows — keeping the cache made widgets show the
-        // OLD data behind a subtle pulse after every refine.
-        widgetCacheRef.current = {};
+        // The user's live filter values SURVIVE the refinement — see
+        // carryFilterValues. Rebuilding from defaults snapped the date range
+        // back to the last 12 months on every edit, which for a dashboard
+        // opened on an older window meant every widget silently re-queried an
+        // empty period and the whole screen read €0,00.
+        // Rows of untouched widgets are kept (see dropChangedFromCache) so an
+        // edit to one card no longer blanks the whole dashboard into skeletons.
+        const defaults = applyRefineCarryover(currentSpec, newSpec, filterValues, widgetCacheRef.current);
         setCurrentSpec(newSpec);
         setFilterValues(defaults);
         setCrossFilter(null);
@@ -1123,12 +1189,15 @@ export default function DashboardsPage() {
         if (changes?.modified.length) parts.push(`changed ${changes.modified.map((t) => `**${t}**`).join(', ')}`);
         if (changes?.removed.length) parts.push(`removed ${changes.removed.map((t) => `**${t}**`).join(', ')}`);
         if (changes?.filtersChanged) parts.push('updated the filters');
-        const summary = parts.length
+        let summary = parts.length
           ? `Updated — ${parts.join('; ')}.`
           : changes
             ? 'No widgets changed — the request may already be satisfied, or it could not be applied.'
             : `Dashboard updated — "${newSpec.title}"`;
-        setChatMessages((prev) => [...prev, { id: Date.now().toString() + '_a', role: 'assistant', text: summary, type: 'refine' }]);
+        // A change the server could NOT make is said out loud — a silently
+        // dropped edit is exactly the trust-killer this path exists to remove.
+        if (refusals?.length) summary += `\n\n${refusals.map((r) => `⚠ ${r}`).join('\n')}`;
+        patchWorking((m) => ({ ...m, working: false, phase: undefined, text: summary }));
       }
     } catch (err: unknown) {
       // Surface whatever detail the backend was willing to ship.
@@ -1138,13 +1207,19 @@ export default function DashboardsPage() {
       // expander when errorDetail is present.
       const e = err as { response?: { data?: { error?: string } }; message?: string };
       const backendError = e.response?.data?.error ?? e.message ?? 'Unknown error';
-      setChatMessages((prev) => [...prev, {
-        id: Date.now().toString() + '_e',
-        role: 'assistant',
-        text: 'Something went wrong. Please try again.',
-        type: intent,
-        errorDetail: backendError,
-      }]);
+      // A refine that died mid-stream leaves its working bubble behind —
+      // convert it into the error message instead of stacking a second one
+      // under a spinner that never resolves.
+      setChatMessages((prev) => {
+        const withoutWorking = prev.filter((m) => !m.working);
+        return [...withoutWorking, {
+          id: Date.now().toString() + '_e',
+          role: 'assistant',
+          text: 'Something went wrong. Please try again.',
+          type: intent,
+          errorDetail: backendError,
+        }];
+      });
     } finally {
       setChatLoading(false);
     }
@@ -2371,15 +2446,54 @@ export default function DashboardsPage() {
                             msg.errorDetail
                               ? 'bg-warn-soft border-warn/40 text-ink-2'
                               : msg.type === 'refine'
-                                ? 'bg-ok-soft border-line text-ink-2'
+                                ? msg.working
+                                  ? 'bg-ocean-softer border-line text-ink-2'
+                                  : 'bg-ok-soft border-line text-ink-2'
                                 : 'bg-softer border-line text-ink'
                           }`}>
                             {msg.errorDetail ? (
                               <span className="text-[10px] font-mono tracking-[0.08em] uppercase block mb-1 text-warn">Error</span>
                             ) : msg.type === 'refine' && (
-                              <span className="text-[10px] font-mono tracking-[0.08em] uppercase block mb-1 text-ok">Dashboard updated</span>
+                              <span className={`text-[10px] font-mono tracking-[0.08em] uppercase block mb-1 ${msg.working ? 'text-ocean' : 'text-ok'}`}>
+                                {msg.working ? 'Updating the dashboard' : 'Dashboard updated'}
+                              </span>
                             )}
-                            <MarkdownAnswer text={msg.text} />
+                            {msg.text && <MarkdownAnswer text={msg.text} />}
+                            {/* Live plan checklist — the answer to "I see three
+                                dots but have no idea what it's doing". Steps
+                                arrive with the plan and settle one by one; the
+                                finished list stays as the record of the edit. */}
+                            {msg.steps && msg.steps.length > 0 && (
+                              <ul className={`space-y-1 ${msg.text ? 'mt-2' : ''}`}>
+                                {msg.steps.map((st) => (
+                                  <li key={st.id} className="flex items-start gap-2 text-[12.5px] leading-snug">
+                                    <span className="mt-0.5 w-3.5 shrink-0 text-center">
+                                      {st.status === 'done' ? (
+                                        <span className="text-ok">✓</span>
+                                      ) : st.status === 'failed' ? (
+                                        <span className="text-warn">✗</span>
+                                      ) : st.status === 'running' ? (
+                                        <span className="inline-block w-2 h-2 rounded-full bg-ocean animate-pulse" />
+                                      ) : (
+                                        <span className="inline-block w-2 h-2 rounded-full border border-line-strong" />
+                                      )}
+                                    </span>
+                                    <span className={st.status === 'pending' ? 'text-muted' : 'text-ink-2'}>
+                                      {st.label}
+                                      {st.note && st.status !== 'pending' && (
+                                        <span className="text-muted"> — {st.note}</span>
+                                      )}
+                                    </span>
+                                  </li>
+                                ))}
+                              </ul>
+                            )}
+                            {msg.working && msg.phase && (
+                              <p className="text-[12px] text-muted italic mt-1 flex items-center gap-2">
+                                <span className="inline-block w-2 h-2 rounded-full bg-ocean animate-pulse" />
+                                {msg.phase}
+                              </p>
+                            )}
                             {msg.errorDetail && (
                               <div className="mt-2">
                                 <button
@@ -2405,7 +2519,7 @@ export default function DashboardsPage() {
                         )}
                       </div>
                     ))}
-                    {chatLoading && (
+                    {chatLoading && !chatMessages.some((m) => m.working) && (
                       <div className="flex justify-start">
                         <div className="bg-softer border border-line rounded-lg px-4 py-3 flex items-center gap-1.5">
                           <span className="w-1.5 h-1.5 bg-ocean rounded-full animate-bounce" style={{ animationDelay: '0s' }} />

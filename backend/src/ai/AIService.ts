@@ -69,6 +69,18 @@ import {
   buildSemanticCheckUser,
 } from './prompts/dashboardPrompt';
 import {
+  EDIT_PLAN_SYSTEM,
+  buildEditPlanUser,
+  WIDGET_SQL_EDIT_SYSTEM,
+  buildWidgetSqlEditUser,
+  ADD_WIDGET_SYSTEM,
+  buildAddWidgetUser,
+  type EditPlanOutput,
+  type WidgetSqlEditOutput,
+  type AddWidgetOutput,
+} from './prompts/dashboardEditPlanPrompt';
+import { REQUIRED_WIDGET_COLUMNS } from '../shared/widgetContracts';
+import {
   STAR_SCHEMA_DESIGN_SYSTEM,
   buildStarSchemaDesignUser,
   StarSchemaDesignOutput,
@@ -1537,6 +1549,58 @@ export async function refineDashboardSpec(
   }
 
   return refined;
+}
+
+// ---------------------------------------------------------------------------
+// Dashboard edit planning + scoped widget calls — the fast refine path
+// ---------------------------------------------------------------------------
+// See ai/prompts/dashboardEditPlanPrompt.ts for the architecture note. The
+// split is: a cheap Haiku PLAN over a SQL-free digest, deterministic ops
+// applied in-app (services/dashboardEditOps), and small parallel Sonnet calls
+// scoped to single widgets for the ops that genuinely need a model. The old
+// full-spec refineDashboardSpec above stays as the escalation path.
+
+export async function planDashboardEdit(
+  refinement: string,
+  currentSpec: DashboardSpec,
+  semanticContext: string,
+  relationshipContext: string,
+): Promise<EditPlanOutput> {
+  const raw = await callClaude(
+    EDIT_PLAN_SYSTEM,
+    buildEditPlanUser(refinement, currentSpec, semanticContext, relationshipContext),
+    { model: MODEL_HAIKU, maxTokens: 2000, callLabel: 'dashboard_edit_plan', cacheSystem: true, temperature: 0 },
+  );
+  return parseJson<EditPlanOutput>(raw);
+}
+
+export async function editWidgetSql(
+  instruction: string,
+  widget: { id: string; title: string; type: string; sql: string },
+  semanticContext: string,
+  relationshipContext: string,
+): Promise<WidgetSqlEditOutput> {
+  const required = (REQUIRED_WIDGET_COLUMNS as Record<string, string[] | undefined>)[widget.type] ?? [];
+  const raw = await callClaude(
+    WIDGET_SQL_EDIT_SYSTEM,
+    buildWidgetSqlEditUser(instruction, widget, required, semanticContext, relationshipContext),
+    { maxTokens: 3000, callLabel: 'widget_sql_edit', cacheSystem: true, temperature: 0 },
+  );
+  return parseJson<WidgetSqlEditOutput>(raw);
+}
+
+export async function generateSingleWidget(
+  instruction: string,
+  currentSpec: DashboardSpec,
+  semanticContext: string,
+  relationshipContext: string,
+): Promise<AddWidgetOutput> {
+  const raw = await callClaude(
+    ADD_WIDGET_SYSTEM,
+    buildAddWidgetUser(instruction, currentSpec, semanticContext, relationshipContext),
+    { maxTokens: 3000, callLabel: 'dashboard_add_widget', cacheSystem: true, temperature: 0 },
+  );
+  return parseJson<AddWidgetOutput>(raw);
 }
 
 // ---------------------------------------------------------------------------

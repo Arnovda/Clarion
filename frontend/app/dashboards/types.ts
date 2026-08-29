@@ -61,6 +61,15 @@ export interface RefinementQuestion {
   suggestions: string[];
 }
 
+/** One step of a live refine plan, mirrored from the SSE `plan`/`step` events. */
+export interface RefineStep {
+  id: string;
+  label: string;
+  status: 'pending' | 'running' | 'done' | 'failed';
+  /** Short business-language note attached when the step settles. */
+  note?: string;
+}
+
 export interface ChatMessage {
   id: string;
   role: 'user' | 'assistant';
@@ -72,6 +81,16 @@ export interface ChatMessage {
    *  (see errorHandler.ts), so for viewer/analyst roles this will
    *  typically be the same generic "Something went wrong" string. */
   errorDetail?: string;
+  /** True while a refine is streaming into this message. The bubble renders
+   *  the live plan (phase + steps) instead of finished text, so the user can
+   *  watch the edit happen instead of staring at three dots. */
+  working?: boolean;
+  /** Current coarse phase line ("Reading your request…"). */
+  phase?: string;
+  /** The plan checklist — arrives with the SSE `plan` event, then each entry
+   *  flips pending → running → done/failed as `step` events land. Kept on the
+   *  finished message as the record of what was done. */
+  steps?: RefineStep[];
 }
 
 // ─── Shared Widget Component Props ────────────────────────────────────────────
