@@ -29,6 +29,7 @@ import {
   warehouseRoot,
 } from './warehouse';
 import { logger as rootLogger } from '../utils/logger';
+import { removeTenantFromAllFlags } from './featureFlags';
 
 const log = rootLogger.child({ mod: 'account-deletion' });
 
@@ -150,6 +151,11 @@ export async function purgeTenant(db: Knex, tenantId: number): Promise<PurgeTena
         `Tenant purge could not clear: ${[...remaining].join(', ')} (FK cycle or external reference)`,
       );
     }
+
+    // `feature_flags` holds tenant ids inside a jsonb array and has NO
+    // tenant_id column, so the discovery query above cannot see it. Without
+    // this line a purged tenant's id would sit in flag audiences forever.
+    await removeTenantFromAllFlags(trx, tenantId);
 
     // Scrub + tombstone the tenant row (kept, not deleted).
     await trx('tenants').where({ id: tenantId }).update({

@@ -7,10 +7,11 @@ import {
   MessageSquare, LayoutGrid, Code2, BookOpen, Star,
   Plug, Inbox, Users, Shield, Library, Package, Workflow, Search,
   Home as HomeIcon, DollarSign, ChevronLeft, ChevronDown, Share2,
-  Blocks, Sparkles, Layers, Table2,
+  Blocks, Sparkles, Layers, Table2, ToggleRight,
 } from 'lucide-react';
 import { getTokenPayload, TokenPayload } from '@/lib/auth';
 import { cn } from '@/lib/cn';
+import { useIsOperator } from '@/lib/features';
 import api from '@/lib/api';
 import { getItem, setItem, storageKeys } from '@/lib/storage';
 
@@ -58,6 +59,7 @@ const ICONS = {
   sparkles: <Sparkles       className={ICON_CLASS} strokeWidth={1.5} />,
   layers:   <Layers         className={ICON_CLASS} strokeWidth={1.5} />,
   table:    <Table2         className={ICON_CLASS} strokeWidth={1.5} />,
+  flag:     <ToggleRight    className={ICON_CLASS} strokeWidth={1.5} />,
 };
 
 interface NavItem {
@@ -68,6 +70,12 @@ interface NavItem {
   roles: Role[];
   group: Group;
   badgeKey?: 'review' | 'sources';
+  /**
+   * Shown only to platform operators. Deliberately separate from `roles`:
+   * operator is not a tenant role, and a tenant admin must never see the
+   * feature-rollout console (see routes/featureFlags.ts).
+   */
+  operatorOnly?: boolean;
 }
 
 const NAV_ITEMS: NavItem[] = [
@@ -109,6 +117,7 @@ const NAV_ITEMS: NavItem[] = [
   { key: 'team',       href: '/users',      label: 'Team & roles',    icon: ICONS.users,   roles: ['admin'],                       group: 'settings' },
   { key: 'policies',   href: '/policies',   label: 'Policies',        icon: ICONS.shield,  roles: ['admin'],                       group: 'settings' },
   { key: 'ai-usage',   href: '/admin/ai-usage', label: 'AI usage',     icon: ICONS.dollar,  roles: ['admin'],                       group: 'settings' },
+  { key: 'features',   href: '/admin/features', label: 'Feature rollout', icon: ICONS.flag,  roles: ['admin', 'analyst', 'viewer'],  group: 'settings', operatorOnly: true },
 ];
 
 const ROUTE_ALIASES: Record<string, string[]> = {
@@ -236,7 +245,8 @@ export default function IconRail() {
   // Per-topic rows are gone (Option A, 2026-08-20): the Subjects entry under
   // Uncover is the one door, and the hub at /subjects carries the topic list
   // with descriptions and freshness. Shared data lives on the hub too.
-  const visible = NAV_ITEMS.filter((i) => i.roles.includes(role));
+  const isOperator = useIsOperator();
+  const visible = NAV_ITEMS.filter((i) => i.roles.includes(role) && (!i.operatorOnly || isOperator));
 
   function isActive(href: string) {
     const aliases = ROUTE_ALIASES[href] ?? [href];

@@ -68,6 +68,7 @@ import managedGridsRouter    from './routes/managedGrids';
 import savedQuestionsRouter  from './routes/savedQuestions';
 import aiUsageRouter         from './routes/aiUsage';
 import aiRoutingRouter       from './routes/aiRouting';
+import { featuresRouter, featureFlagsRouter } from './routes/featureFlags';
 import { startWorkers, stopWorkers } from './jobs/workers';
 import { closeQueues } from './jobs/queues';
 import { closeRedis } from './jobs/redis';
@@ -250,6 +251,11 @@ app.use('/api/grids',           computeLimiter, managedGridsRouter);
 app.use('/api/saved-questions', savedQuestionsRouter);
 app.use('/api/admin/ai-usage',  aiUsageRouter);
 app.use('/api/admin/ai-routing', aiRoutingRouter);
+// Feature flags. `/api/features` answers "what is on for MY tenant" to any
+// signed-in user; the console under /api/admin is gated to platform operators
+// (an env allowlist), NOT to tenant admins — see routes/featureFlags.ts.
+app.use('/api/features',            featuresRouter);
+app.use('/api/admin/feature-flags', featureFlagsRouter);
 
 // Admin-only: re-run schema profiling for an existing connection
 app.post('/api/connections/:id/profile', requireAuth, requireRole('admin'), async (req, res, next) => {

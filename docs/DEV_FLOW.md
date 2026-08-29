@@ -51,6 +51,29 @@ immediately and silently break this whole test-first model. Both deploy and
 promote therefore always pin traffic to a named revision; never set
 `latest=100` by hand in the portal.
 
+## Loop 3 — release to one tenant at a time (feature flags)
+
+Loops 1 and 2 get code into production. This one decides **who can see it**,
+which is a separate act — that separation is the whole point.
+
+1. Add a key to `FEATURE_FLAGS` in `shared/contract.ts` (both copies — the
+   contract-sync ratchet enforces it). It is now off for everyone.
+2. Build the feature behind the flag:
+   - server: `await isFeatureEnabled(tenantId, 'my_flag')`
+   - client: `const on = useFeature('my_flag')`
+3. Merge and deploy normally. The code is live and invisible.
+4. Open **Feature rollout** in the rail (operators only) and switch the flag to
+   your own test tenant. Takes effect within ~20 seconds. No deploy.
+5. Widen it — a friendly customer, then everyone — or pull it back to Nobody
+   the moment it misbehaves. Pulling back is instant and costs no revision.
+6. Once it has been on *Everyone* for a while, **delete the flag and its
+   checks**. A flag nobody will flip again is a dead branch in the code.
+
+Who may flip a flag is `PLATFORM_OPERATOR_EMAILS` in the backend environment —
+deliberately not a tenant role, because a customer's admin must not be able to
+switch on work that has not been released to them. Unset means nobody, so the
+console stays shut on a deployment that has not configured it.
+
 ## The one rule (keep migrations safe)
 The 0%-traffic revision shares the database with the live one, so **migrations
 must be backward-compatible**: only `CREATE TABLE` / `ADD COLUMN` (additive).

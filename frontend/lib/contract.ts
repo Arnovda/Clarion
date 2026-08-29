@@ -277,3 +277,54 @@ export interface DataProductDto {
   last_refreshed_at?: string | null;
   source?: ProductSourceRef;
 }
+
+// ---------------------------------------------------------------------------
+// Feature flags — the deploy/release split
+// ---------------------------------------------------------------------------
+//
+// A flag EXISTS in code (the registry below) and its ROLLOUT lives in the
+// database. That split is deliberate: adding a flag is a reviewed code change,
+// so a typo can never silently create a second flag that is off forever, and a
+// flag nobody references shows up as dead code. Changing WHO sees it is a row
+// update — instant, no deploy, no revision.
+//
+// Rollout is a ladder, not a boolean:
+//   'off'     — nobody, including you. The state a flag is born in.
+//   'tenants' — only the tenants listed on the flag. The test-tenant ring.
+//   'all'     — everyone. The flag is now dead code: delete it and its checks.
+//
+// Deleting a shipped flag is part of shipping the feature. A flag left on
+// 'all' forever is a branch in the code that no longer means anything.
+
+export type FeatureRollout = 'off' | 'tenants' | 'all';
+
+/** Every flag the platform knows about. Adding one here is the only way to create one. */
+export const FEATURE_FLAGS = {
+  preview_banner: 'Shows a "preview features" chip in the top bar. Use it to confirm a tenant is on the test ring.',
+  brief_email: 'Sends the morning brief to the inbox instead of only rendering it in the app.',
+  metric_thresholds: 'Lets a pulse entry carry a "tell me when it crosses X" threshold.',
+  exception_lists: 'The "what needs action today" list — overdue items, missing entries, things past a limit.',
+} as const;
+
+export type FeatureKey = keyof typeof FEATURE_FLAGS;
+
+export const FEATURE_KEYS = Object.keys(FEATURE_FLAGS) as FeatureKey[];
+
+/** One flag's rollout state, as the operator console renders it. */
+export interface FeatureFlagDto {
+  key: FeatureKey;
+  description: string;
+  rollout: FeatureRollout;
+  /** Tenants that see it while rollout is 'tenants'. Ignored in the other two states. */
+  tenants: Array<{ id: number; name: string }>;
+  updated_at: string | null;
+  updated_by: string | null;
+}
+
+/** What `GET /api/features` answers for the calling user. */
+export interface FeaturesResponse {
+  /** Resolved on/off per flag for the caller's tenant. */
+  features: Record<string, boolean>;
+  /** True when this user may change rollouts (platform operator, not tenant admin). */
+  isOperator: boolean;
+}

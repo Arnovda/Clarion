@@ -869,3 +869,27 @@ export const saveManagedGridRowsSchema = z.object({
     rows: z.array(z.object({ data: jsonObject }).passthrough()).max(10_000),
   }).passthrough(),
 });
+
+// ---------------------------------------------------------------------------
+// Feature flags (operator console)
+// ---------------------------------------------------------------------------
+
+/**
+ * A flag key is an identifier, never free text — it is matched against the
+ * code registry, so anything outside this shape is a client bug, not a flag.
+ */
+const featureKeyParams = z
+  .object({ key: z.string().regex(/^[a-z][a-z0-9_]{1,63}$/, 'Invalid flag key') })
+  .passthrough();
+
+export const featureKeyParamsSchema = z.object({ params: featureKeyParams });
+
+export const setFeatureRolloutSchema = z.object({
+  params: featureKeyParams,
+  body: z.object({
+    rollout: z.enum(['off', 'tenants', 'all']),
+    // The audience is capped: a rollout that names hundreds of tenants
+    // individually is a rollout that should have been 'all'.
+    tenantIds: z.array(z.number().int().positive()).max(200).optional(),
+  }).passthrough(),
+});

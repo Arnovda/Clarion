@@ -70,6 +70,33 @@ export const config = {
  * middleware/auth.ts (so MFA-challenge and WebAuthn tokens signed elsewhere
  * skipped it). Now every JWT operation gets the same check.
  */
+/**
+ * Platform operators — the people who may change feature-flag rollouts.
+ *
+ * Deliberately env config and not a database role. A flag decides which
+ * tenants can see unreleased work, so the ability to flip one must not be
+ * reachable from inside any tenant: a tenant admin is an admin OF THEIR OWN
+ * COMPANY, and if they could grant themselves preview features the flag would
+ * stop being a release mechanism. Putting the list in the environment means
+ * changing WHO is an operator requires a deploy (rare, and reviewable in the
+ * infrastructure), while changing WHAT a flag does is a row update (frequent,
+ * instant).
+ *
+ * Unset means NOBODY is an operator. Fail closed: an empty allowlist that
+ * defaulted to "any admin" would silently hand every customer the console.
+ *
+ * Read on each call rather than frozen at import: the parse is a split on a
+ * short string, and a value captured at import time cannot be varied by a test
+ * — which for the one control with no database-level backstop is the wrong
+ * trade.
+ */
+export function platformOperatorEmails(): string[] {
+  return (str('PLATFORM_OPERATOR_EMAILS') ?? '')
+    .split(',')
+    .map((e) => e.trim().toLowerCase())
+    .filter(Boolean);
+}
+
 export function requireJwtSecret(): string {
   const secret = config.jwt.secret;
   if (!secret) {

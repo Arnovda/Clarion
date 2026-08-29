@@ -4,6 +4,7 @@ import IconRail from './IconRail';
 import ContextPanel from './ContextPanel';
 import TopBar from './TopBar';
 import PillNav, { Pill } from './PillNav';
+import { FeaturesProvider } from '@/lib/features';
 
 interface AppShellProps {
   /** Legacy prop — ignored under Observatory chrome. Page titles live in the page body now. */
@@ -33,6 +34,7 @@ export default function AppShell({
   children,
 }: AppShellProps) {
   return (
+    <FeaturesProvider>
     <div className="flex h-screen flex-col overflow-hidden bg-bg">
       <TopBar showSearch={showSearch} />
       <div className="flex flex-1 min-h-0 overflow-hidden">
@@ -48,5 +50,6 @@ export default function AppShell({
         </div>
       </div>
     </div>
+    </FeaturesProvider>
   );
 }

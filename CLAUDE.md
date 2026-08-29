@@ -31,7 +31,76 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-08-28 (NAV RAIL + THREAD LIST RESTYLED to the owner's
+**Last updated:** 2026-08-29 (PER-TENANT FEATURE FLAGS — deploy and release are
+two events now)
+
+**FEATURE FLAGS SHIPPED (2026-08-29). Owner: *"So I can release it first to my
+own test tenant."* Until now deploy and release were the same act — promoting a
+revision showed every change to every tenant simultaneously, and the only way to
+withdraw one was a rollback of everything else in that revision.**
+- **A flag EXISTS IN CODE, its ROLLOUT lives in the database.** `FEATURE_FLAGS`
+  in `shared/contract.ts` (both byte-identical copies) is the registry; adding a
+  key is a reviewed code change, so a typo can never mint a second flag that is
+  off forever, and an unreferenced flag reads as dead code. `feature_flags`
+  (migration 85) holds only `key` / `rollout` / `tenant_ids`. Rows are created
+  LAZILY — a declared flag with no row is 'off', which is the correct state for
+  something just merged, so nothing needs seeding.
+- **The ladder is `off` → `tenants` → `all`**, and the audience SURVIVES a trip
+  through 'off' (pulling a feature back must not make the operator rebuild the
+  ring to re-release it). Shipped keys: `preview_banner` (live, wired),
+  `brief_email`, `metric_thresholds`, `exception_lists` (declared for the
+  roadmap items, gating nothing yet).
+- **THE TABLE HAS NO `tenant_id`, DELIBERATELY, AND THAT IS THE ONE THING TO
+  KNOW BEFORE TOUCHING IT.** A flag is not tenant-owned data; it is an operator
+  record ABOUT tenants. Under `tenant_isolation` the row would be visible only
+  to the tenant it names, while the operator — whose session var holds their OWN
+  tenant id — would be refused by the WITH CHECK on every insert. So the
+  audience is a jsonb array and **the route gate is the ONLY access control**;
+  unlike everywhere else in this schema there is no database-level second line.
+  Hence `feature-flags.test.ts` asserts the refusal for viewer, analyst AND
+  admin. Two consequences also handled: the console reads/writes through the
+  ROOT pool (`reqDb` would filter the tenant list to the operator's own), and
+  `purgeTenant` — which enumerates by tenant_id COLUMN and therefore cannot see
+  this table — gained an explicit `removeTenantFromAllFlags` call.
+- **OPERATOR IS NOT ADMIN, and reusing 'admin' would have been the bug.** A
+  tenant admin administers their own company; an admin who can grant themselves
+  preview features turns the flag from a release mechanism into a settings
+  screen. `platformOperatorEmails()` reads `PLATFORM_OPERATOR_EMAILS` and
+  answers empty → **nobody**, so a deployment that forgets to configure it has a
+  console no one can open. Read LAZILY per call, not frozen at import: the parse
+  is a string split, and a value captured at import cannot be varied by a test —
+  the wrong trade for the one control with no database backstop. Refusal is
+  **404, not 403** (a 403 confirms the console exists to someone probing).
+- **Routes**: `GET /api/features` (any authed user — resolved flags for THEIR
+  tenant + `isOperator`); `GET|PUT|DELETE /api/admin/feature-flags` (operator).
+  PUT refuses a key not in the registry and a tenant id that does not exist (a
+  stale id is invisible on the switch and reads as "released to someone" when it
+  is released to nobody). Both mutating routes are `validate()`d — the
+  validate-coverage ratchet stayed at 160 while the route total went 222→224.
+- **Reads are cached in module memory for 20s**, so a change reaches every
+  process in seconds without a deploy; a write clears the local cache so the
+  operator sees their own switch immediately. A TTL rather than the Redis cache
+  bus ON PURPOSE: that bus exists for warehouse invalidation where staleness
+  means WRONG NUMBERS, whereas a late flag means a button appears 20s late. An
+  unreadable table (migration not yet run, DB blip) resolves every flag to false
+  and is NOT cached, so the next request retries.
+- **Frontend**: `lib/features.tsx` — one fetch per shell mount, shared via
+  context, `useFeature` / `useFeaturesLoaded` / `useIsOperator`. **Every flag
+  reads false while in flight** (a preview feature must never flash into view
+  for a tenant not on the ring). `/admin/features` is the console — rings as
+  buttons, tenants as chips, orphan rows flagged for removal; gated on
+  `useIsOperator()`, NOT `RequireRole`. Rail gained an operator-only entry
+  (`operatorOnly` on NavItem, separate from `roles` on purpose). TopBar shows a
+  **Preview** chip when `preview_banner` is on — so "is this tenant seeing
+  something customers are not?" is answerable from the screen.
+- **New env var**: `PLATFORM_OPERATOR_EMAILS` (in `.env.example`). `docs/DEV_FLOW.md`
+  gained **Loop 3** — the flag lifecycle including the step people skip:
+  delete the flag once it has been on 'all' for a while.
+- Validation: all eight ratchets green from the repo root; frontend `tsc` clean,
+  touched files lint-clean. Backend typecheck + the new suite: see the session
+  note below.
+
+**Prior last updated:** 2026-08-28 (NAV RAIL + THREAD LIST RESTYLED to the owner's
 mockups — frontend presentation only, third slice of the day)
 
 **THE RAIL AND THE THREAD LIST NOW MATCH THE OWNER'S MOCKUPS (2026-08-28,
