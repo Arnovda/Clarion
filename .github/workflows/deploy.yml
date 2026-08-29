@@ -87,6 +87,12 @@ jobs:
     name: Tests must pass
     runs-on: ubuntu-latest
     if: github.event_name == 'push'
+    # Explicit, because the default GITHUB_TOKEN permission set is a repo/org
+    # setting. If reading Actions were denied the gate would error and block
+    # every deploy — a safe failure, but a baffling one.
+    permissions:
+      actions: read
+      contents: read
     steps:
       - name: Require the Tests workflow to succeed for this commit
         env:
