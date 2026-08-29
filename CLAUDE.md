@@ -128,6 +128,40 @@ withdraw one was a rollback of everything else in that revision.**
   touched files lint-clean. Backend typecheck + the new suite: see the session
   note below.
 
+**BUILD WAIT DIAGNOSED AND CUT (2026-08-29, same day). Owner: "compiling always
+takes too long."** CLAUDE.md had carried "DuckDB builds natively TWICE here
+(~40-60 min each)" as an unexplained fact of life for months. Measured:
+- **Root cause is an EGRESS POLICY DENIAL, not a slow compiler.** `duckdb`'s
+  installer is `node-pre-gyp install --fallback-to-build`, which first tries
+  `npm.duckdb.org` — a host this environment's proxy answers **403** to
+  (`{"kind":"connect_rejected","host":"npm.duckdb.org:443"}` in its own status
+  endpoint). `registry.npmjs.org` is allowed; that one is not. So the fallback
+  fires every time.
+- **node-gyp runs `make` with NO `-j` flag** — verified live: `make
+  BUILDTYPE=Release -C build` with ONE `cc1plus` on a FOUR-core box. Setting
+  `MAKEFLAGS=-j$(nproc)` took it to 5 concurrent compilers (measured, not
+  assumed).
+- **It compiled TWICE** because backend/ and packages/connectors/ are separate
+  installs with separate node_modules (the root has no `workspaces` field).
+- **`.claude/hooks/session-start.sh` (new)** fixes all three: MAKEFLAGS
+  parallelism; the connectors install runs `--ignore-scripts` and COPIES the
+  backend's compiled binary (guarded on both resolving the identical DuckDB
+  version — on divergence it warns and builds properly, because a mismatched
+  binary is worse than a slow one); and it runs at SESSION START, so the
+  container snapshot taken afterwards already holds node_modules and later
+  sessions start ready. It also boots Postgres with the `databridge` /
+  `databridge_app` roles and `databridge_test` DB the suite expects, and writes
+  `DATABASE_URL` / `JWT_SECRET` / empty `NEO4J_URI` to `$CLAUDE_ENV_FILE` —
+  the manual setup every prior session repeated by hand. `.claude/settings.json`
+  registers it. Guarded on `CLAUDE_CODE_REMOTE` so local machines are untouched.
+- **The real fix is NOT in this repo**: allowing `npm.duckdb.org` through the
+  egress policy makes the download take seconds. Reported, not routed around
+  (the proxy README requires that). **The durable repo-side alternative** if the
+  block is permanent: migrate off legacy `duckdb`/`duckdb-async` to
+  `@duckdb/node-api`, whose binaries ship as ordinary npm packages from the
+  ALLOWED registry and never compile — a real migration of the query engine's
+  client library, wanting its own slice. Written up in `docs/DEV_TOOLING.md` §5.
+
 **Prior last updated:** 2026-08-28 (NAV RAIL + THREAD LIST RESTYLED to the owner's
 mockups — frontend presentation only, third slice of the day)
 

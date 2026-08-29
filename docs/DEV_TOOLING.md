@@ -114,6 +114,49 @@ to keep — it's the human "yes, ship it" on a test-in-prod flow.
 
 ---
 
+## 5. Why sessions used to start with a 40-minute wait (and what would remove it)
+
+Measured 2026-08-29 in a Claude Code on the web session, because it had been
+recorded in CLAUDE.md as an unexplained "~40-60 min each" cost for months.
+
+**Root cause, in order:**
+
+1. `duckdb-async` depends on `duckdb`, whose installer is
+   `node-pre-gyp install --fallback-to-build`. It first tries to download a
+   prebuilt binary from **`npm.duckdb.org`**.
+2. **This environment's egress policy denies that host.** The agent proxy
+   answers `403` to the CONNECT, which the proxy's own status endpoint records:
+   `{"kind":"connect_rejected","host":"npm.duckdb.org:443"}`. `registry.npmjs.org`
+   is allowed; `npm.duckdb.org` is a separate host and is not.
+3. So the fallback fires and DuckDB is compiled from C++ source — and node-gyp
+   invokes `make` with **no `-j` flag**, so it compiled on ONE core while three
+   sat idle.
+4. `backend/` and `packages/connectors/` are separate installs with separate
+   `node_modules`, so that single-threaded compile happened **twice**.
+
+**What `.claude/hooks/session-start.sh` does about it:** sets
+`MAKEFLAGS=-j$(nproc)` (measured: 1 → 5 concurrent compiler processes), copies
+the backend's compiled binary into the connectors package instead of building it
+a second time (guarded on both resolving the identical DuckDB version), and runs
+at session start so the container snapshot taken afterwards already contains
+`node_modules` — later sessions start ready. It also brings up Postgres with the
+roles the test suite expects.
+
+**The actual fix is not in this repository.** Allowing `npm.duckdb.org` through
+the egress policy would make `node-pre-gyp` download a binary in seconds and
+make every workaround above unnecessary. That is an infrastructure decision for
+whoever administers the policy. Per the proxy's own README, a policy denial must
+be reported rather than routed around — so it is reported here.
+
+**The deeper repository-side fix, if the block is permanent:** the legacy
+`duckdb` package is superseded by `@duckdb/node-api`, whose platform binaries
+ship as ordinary npm packages (`@duckdb/node-bindings-linux-x64`) from
+`registry.npmjs.org` — a host that IS allowed — and therefore never compile,
+here or in CI or in the Docker build. That is a real migration of the query
+engine's client library (`DuckDBConnector`, the warehouse writer, the query
+runner child, notebooks) and wants to be its own piece of work, not a
+side-effect of a build-speed fix.
+
 ## TL;DR
 
 - **No Obsidian.** Keep knowledge in `CLAUDE.md` + `docs/`; trim CLAUDE.md by
