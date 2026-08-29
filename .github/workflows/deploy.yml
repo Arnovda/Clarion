@@ -8,12 +8,17 @@
 #     next build / pip install are reused unless their inputs change.
 #
 # Deploy model (see docs/DEV_FLOW.md):
-#   • Push to main → build (cached), run migrations (only if a migration file
-#     changed), then deploy backend + frontend as NEW revisions at 0% TRAFFIC.
-#     They do NOT serve users — test them on the FIXED staging-label URLs
-#     (https://<app>---staging.<env-domain>, bookmarkable, printed in the job
-#     summary), then run the "Promote to production" workflow. "Rollback
-#     production" shifts traffic back to the previous revision if needed.
+#   • Push to main → the TESTS MUST PASS (`gate`), then build (cached), run
+#     migrations (only if a migration file changed), deploy backend + frontend
+#     as NEW revisions at 0% TRAFFIC, and finally `promote` shifts traffic to
+#     them once the new backend answers /api/health through its staging label.
+#     The staging URLs (https://<app>---staging.<env-domain>, printed in the
+#     job summary) stay available for looking at a build yourself.
+#   • What keeps automatic promotion honest is that a user-visible change ships
+#     behind a feature flag that is OFF, so reaching production is not the same
+#     as reaching a customer — the audience is chosen on the "Who sees what"
+#     screen. "Rollback production" shifts traffic back if needed, and
+#     "Promote to production" remains as a manual override.
 #
 # IMPORTANT: migrations must stay backward-compatible (additive: CREATE/ADD,
 # never DROP/RENAME in the same deploy) — the 0%-traffic revision shares the DB
@@ -60,6 +65,87 @@ env:
   ACR_REGISTRY: ${{ secrets.ACR_LOGIN_SERVER }}
 
 jobs:
+
+  # ── Tests must pass before ANYTHING touches production ────────────────────
+  #
+  # test.yml and deploy.yml both trigger on a push to main, and until now they
+  # simply raced: a commit with a failing test still built, still migrated the
+  # database and still produced a deployable revision. The only thing between a
+  # red suite and customers was whether a human happened to look at the Actions
+  # tab. That was tolerable while every change went through a reviewed PR. It is
+  # not tolerable now that pushes land on main directly and promotion is
+  # automatic, so this job is the gate that replaces the human.
+  #
+  # It gates `migrate-sql` and `deploy` only, NOT the image builds. Builds are
+  # side-effect free — an image nobody deploys costs a few runner-minutes — so
+  # letting them run alongside the suite keeps the deploy fast without letting
+  # anything reach production early.
+  #
+  # A workflow_dispatch run is a manual redeploy of an already-tested commit
+  # (see the `force` input), so it does not wait.
+  gate:
+    name: Tests must pass
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push'
+    steps:
+      - name: Require the Tests workflow to succeed for this commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+
+          # NO RUN AT ALL is a failure, not a pass. "Tests did not run" and
+          # "tests passed" must never be the same outcome — that conflation is
+          # exactly how a red suite reaches production unnoticed.
+          deadline_no_run=$(( SECONDS + 300 ))
+          deadline_total=$(( SECONDS + 1800 ))
+
+          while : ; do
+            RUN=$(gh api \
+              "repos/$REPO/actions/workflows/test.yml/runs?head_sha=$SHA&per_page=1" \
+              --jq '.workflow_runs[0] | "\(.status)|\(.conclusion // "")|\(.html_url)"' 2>/dev/null || echo "")
+
+            if [ -z "$RUN" ] || [ "$RUN" = "null||" ]; then
+              if [ "$SECONDS" -gt "$deadline_no_run" ]; then
+                echo "::error::No Tests run found for $SHA after 5 minutes. Refusing to deploy an untested commit."
+                exit 1
+              fi
+              echo "waiting for the Tests workflow to appear..."
+              sleep 15
+              continue
+            fi
+
+            STATUS="${RUN%%|*}"
+            REST="${RUN#*|}"
+            CONCLUSION="${REST%%|*}"
+            URL="${REST#*|}"
+
+            if [ "$STATUS" = "completed" ]; then
+              if [ "$CONCLUSION" = "success" ]; then
+                echo "Tests passed: $URL"
+                echo "### ✅ Tests passed — deploying" >> "$GITHUB_STEP_SUMMARY"
+                exit 0
+              fi
+              echo "::error::Tests concluded '$CONCLUSION' for $SHA — not deploying. $URL"
+              {
+                echo "### ❌ Not deployed — the tests did not pass"
+                echo ""
+                echo "Nothing reached production. Fix the failure and push again."
+                echo ""
+                echo "[See what failed]($URL)"
+              } >> "$GITHUB_STEP_SUMMARY"
+              exit 1
+            fi
+
+            if [ "$SECONDS" -gt "$deadline_total" ]; then
+              echo "::error::Tests still '$STATUS' after 30 minutes. Refusing to deploy without a result. $URL"
+              exit 1
+            fi
+            echo "tests $STATUS — waiting..."
+            sleep 15
+          done
   # ── Detect which areas changed ────────────────────────────────────────────
   changes:
     runs-on: ubuntu-latest
@@ -194,7 +280,7 @@ jobs:
 
   # ── SQL migrations (only when a migration file changed) ───────────────────
   migrate-sql:
-    needs: [changes, build-backend]
+    needs: [changes, gate, build-backend]
     if: ${{ !cancelled() && !failure() && needs.changes.outputs.migrations == 'true' }}
     runs-on: ubuntu-latest
     environment: ${{ github.ref_name == 'main' && 'production' || 'staging' }}
@@ -216,7 +302,7 @@ jobs:
 
   # ── Deploy changed services as 0%-traffic revisions ───────────────────────
   deploy:
-    needs: [changes, build-frontend, build-etl, build-backend, build-worker, migrate-sql]
+    needs: [changes, gate, build-frontend, build-etl, build-backend, build-worker, migrate-sql]
     if: ${{ !cancelled() && !failure() && (needs.changes.outputs.frontend == 'true' || needs.changes.outputs.backend == 'true' || needs.changes.outputs.etl == 'true' || needs.changes.outputs.worker == 'true') }}
     runs-on: ubuntu-latest
     environment: ${{ github.ref_name == 'main' && 'production' || 'staging' }}
@@ -284,10 +370,10 @@ jobs:
           FQDN=$(az containerapp show --name "$APP" --resource-group "$RG" \
             --query properties.configuration.ingress.fqdn -o tsv)
           {
-            echo "### 🧪 Backend test version deployed (not live yet)";
+            echo "### 🧪 Backend built and deployed (traffic not shifted yet)";
             echo "Fixed test API URL: \`https://${FQDN/./---staging.}/api\`";
             echo "";
-            echo "When it works → Actions tab → **Promote to production** → Run workflow.";
+            echo "The **Go live** job promotes this automatically once it answers /api/health.";
           } >> "$GITHUB_STEP_SUMMARY"
 
       # The jobs-worker runs the SAME image as the backend with ROLE=worker.
@@ -360,11 +446,11 @@ jobs:
           FQDN=$(az containerapp show --name "$APP" --resource-group "$RG" \
             --query properties.configuration.ingress.fqdn -o tsv)
           {
-            echo "### 🧪 Frontend test version deployed (not live yet)";
+            echo "### 🧪 Frontend built and deployed (traffic not shifted yet)";
             echo "Fixed test URL (bookmark this): \`https://${FQDN/./---staging.}\`";
             echo "";
-            echo "This URL always shows the newest pushed version. When it looks good →";
-            echo "Actions tab → **Promote to production** → Run workflow.";
+            echo "This URL always shows the newest pushed version.";
+            echo "The **Go live** job promotes it automatically once the backend is healthy.";
           } >> "$GITHUB_STEP_SUMMARY"
 
       # ETL is internal plumbing (backend calls it) and stays auto-live on
@@ -402,6 +488,136 @@ jobs:
             --image ${{ env.ACR_REGISTRY }}/databridge-sync-worker:$TAG
           echo "### 🔧 Sync-worker pinned to \`$TAG\`" >> "$GITHUB_STEP_SUMMARY"
           echo "The next sync run pulls exactly this build — no stale-cache risk." >> "$GITHUB_STEP_SUMMARY"
+
+  # ── Go live, once the new revision proves it works ────────────────────────
+  #
+  # Replaces the manual "Promote to production" click. The click existed so a
+  # human could look at the staging URL before customers saw anything; this job
+  # keeps the check and drops the waiting. What makes that a fair trade is the
+  # rest of the machinery, not optimism:
+  #
+  #   • the suite gated this deploy (see `gate`)
+  #   • the revision has to boot AND answer /api/health before traffic moves
+  #   • user-visible changes ship behind a feature flag that is OFF, so being
+  #     in production is not the same as being visible to a customer
+  #   • "Rollback production" is still one click
+  #
+  # The health check is the load-bearing part. `Provisioned` only means Azure
+  # started the container; a revision that boots and then 500s on every request
+  # is Provisioned too. Hitting the real endpoint through the staging label is
+  # the same thing a person did by eye, done reliably.
+  promote:
+    name: Go live
+    needs: [changes, deploy]
+    if: ${{ !cancelled() && !failure() && github.ref_name == 'main' && (needs.changes.outputs.frontend == 'true' || needs.changes.outputs.backend == 'true') }}
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Log in to Azure
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - id: tag
+        run: echo "tag=${{ github.ref_name }}-$(echo ${{ github.sha }} | cut -c1-7)" >> "$GITHUB_OUTPUT"
+
+      - name: Health-check the new backend, then shift traffic
+        env:
+          RG: ${{ secrets.AZURE_RESOURCE_GROUP }}
+          BACKEND: ${{ secrets.BACKEND_APP_NAME }}
+          FRONTEND: ${{ secrets.FRONTEND_APP_NAME }}
+          TAG: ${{ steps.tag.outputs.tag }}
+          BACKEND_CHANGED: ${{ needs.changes.outputs.backend }}
+          FRONTEND_CHANGED: ${{ needs.changes.outputs.frontend }}
+        run: |
+          set -euo pipefail
+
+          # Wait for a revision to be Provisioned. Azure reports Failed and
+          # Degraded as terminal, so those stop the promotion immediately
+          # rather than burning the full timeout.
+          wait_provisioned() {
+            local app="$1" rev="$2" state
+            for _ in $(seq 1 40); do
+              state=$(az containerapp revision show --name "$app" --resource-group "$RG" \
+                --revision "$rev" --query properties.provisioningState -o tsv 2>/dev/null || echo "")
+              case "$state" in
+                Provisioned) return 0 ;;
+                Failed|Degraded)
+                  echo "::error::$app revision $rev is $state — not promoting."
+                  return 1 ;;
+              esac
+              sleep 10
+            done
+            echo "::error::$app revision $rev never reached Provisioned."
+            return 1
+          }
+
+          # Shift ALL traffic to one named revision. Never `latest=100`: a
+          # traffic entry pinned to "latest" auto-follows every future
+          # revision, which would make the next push go live before this job
+          # ever got a say.
+          shift_traffic() {
+            local app="$1" rev="$2" attempt
+            # Azure locks the app while a revision provisions, so a promote
+            # arriving too soon fails with ContainerAppOperationInProgress.
+            for attempt in $(seq 1 15); do
+              if az containerapp ingress traffic set --name "$app" --resource-group "$RG" \
+                   --revision-weight "$rev=100" >/dev/null 2>&1; then
+                echo "$app -> $rev at 100%"
+                return 0
+              fi
+              sleep 20
+            done
+            echo "::error::could not shift traffic on $app after 5 minutes."
+            return 1
+          }
+
+          BACKEND_REV="$BACKEND--$TAG"
+          FRONTEND_REV="$FRONTEND--$TAG"
+
+          if [ "$BACKEND_CHANGED" = "true" ]; then
+            wait_provisioned "$BACKEND" "$BACKEND_REV"
+
+            # The real smoke test: ask the NEW revision, through its staging
+            # label, whether it is actually serving. A revision can be
+            # Provisioned and still fail every request.
+            FQDN=$(az containerapp show --name "$BACKEND" --resource-group "$RG" \
+              --query properties.configuration.ingress.fqdn -o tsv)
+            HEALTH="https://${FQDN/./---staging.}/api/health"
+
+            OK=""
+            for _ in $(seq 1 20); do
+              CODE=$(curl -sS -o /dev/null -w '%{http_code}' -m 15 "$HEALTH" || echo 000)
+              echo "  health $HEALTH -> $CODE"
+              if [ "$CODE" = "200" ]; then OK=1; break; fi
+              sleep 10
+            done
+            if [ -z "$OK" ]; then
+              echo "::error::the new backend never answered 200 on /api/health — leaving traffic where it is."
+              {
+                echo "### 🛑 Not promoted — the new version did not come up healthy"
+                echo ""
+                echo "Your customers are still on the previous version. Nothing changed for them."
+              } >> "$GITHUB_STEP_SUMMARY"
+              exit 1
+            fi
+
+            shift_traffic "$BACKEND" "$BACKEND_REV"
+          fi
+
+          if [ "$FRONTEND_CHANGED" = "true" ]; then
+            wait_provisioned "$FRONTEND" "$FRONTEND_REV"
+            shift_traffic "$FRONTEND" "$FRONTEND_REV"
+          fi
+
+          {
+            echo "### 🚀 Live"
+            echo ""
+            echo "This build is now serving customers."
+            echo ""
+            echo "- New features ship switched **off**. Open **Who sees what** to choose who gets them."
+            echo "- Something wrong? Actions → **Rollback production** → Run workflow."
+          } >> "$GITHUB_STEP_SUMMARY"
 
   # ── Neo4j constraints (only when neo4j.ts itself changed; idempotent) ─────
   # This job consistently takes ~7 minutes (slow connection to the Neo4j

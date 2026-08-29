@@ -128,6 +128,51 @@ withdraw one was a rollback of everything else in that revision.**
   touched files lint-clean. Backend typecheck + the new suite: see the session
   note below.
 
+**PUSH-TO-MAIN IS THE RELEASE PROCESS NOW (2026-08-29, same day). Owner: "I
+want you to always push things to main, and all I have to do is decide for
+which tenants the change goes through."** Trunk-based + continuous deploy, with
+the feature flag as the only control the owner operates. Two workflow changes
+make it defensible rather than reckless:
+- **`gate` job in deploy.yml — THE TESTS ARE A GATE AT LAST.** test.yml and
+  deploy.yml both trigger on push to main and simply RACED: a commit with a red
+  suite still built, still ran `migrate-sql`, still produced a deployable
+  revision. The only thing between a failing test and production was whether
+  someone looked at the Actions tab — tolerable behind reviewed PRs, not
+  tolerable once pushes land directly and promotion is automatic. `gate` polls
+  the Tests run for THIS sha; `migrate-sql` and `deploy` need it. **It gates
+  those two only, NOT the image builds** — an image nobody deploys is
+  side-effect free, so builds still run alongside the suite and the deploy
+  stays fast. **No run at all is a FAILURE, not a pass** (5-min appearance
+  deadline, 30-min total) — conflating "did not run" with "passed" is precisely
+  how a red suite reaches production unnoticed. `workflow_dispatch` skips the
+  gate (a manual redeploy is re-shipping an already-tested commit). Decision
+  logic dry-run over all seven states before shipping.
+- **`promote` job replaces the manual click.** Waits for the revision to be
+  `Provisioned`, then — the load-bearing part — **curls `/api/health` on the
+  new revision through its staging label** before shifting traffic.
+  `Provisioned` only means Azure started the container; a revision that boots
+  and 500s on every request is Provisioned too. Never `latest=100` (that
+  auto-follows every future revision and would make the NEXT push go live
+  unreviewed). Unhealthy → traffic stays put and the run fails loudly.
+  Frontend-only changes promote without the health check (no endpoint to ask).
+- **What makes it safe is the flag, not optimism**: a user-visible change ships
+  behind a flag that is OFF, so reaching production ≠ reaching a customer.
+  **The rule this depends on: anything a customer can see goes behind a flag.**
+  What CANNOT be flagged — migrations, fixes to existing behaviour, dependency
+  upgrades — is exactly where deploy still equals release, and those still want
+  care before the push. Said plainly in `docs/DEV_FLOW.md` Loop 2.
+- **`operators.yml` now shares deploy.yml's concurrency group.** Both run
+  `az containerapp update` on the same app; Azure locks it while provisioning,
+  so they would collide on exactly the push that first merges `.ops/operators`
+  — and operators.yml would have shifted 100% traffic to a revision built from
+  the PREVIOUS image while the new one sat at 0%, inverting the test-first
+  model. The other `.ops` controls have the same latent hazard, still handled
+  by procedure ("touch the file only AFTER deploy.yml finished").
+- **Still missing, and it matters more now**: there is no alerting. Automatic
+  promotion means nobody is watching a deploy by eye, so the absence of a
+  "production is unhealthy" signal is the next thing to fix (gap analysis item,
+  ~half a day). Rollback stays one click.
+
 **BUILD WAIT DIAGNOSED AND CUT (2026-08-29, same day). Owner: "compiling always
 takes too long."** CLAUDE.md had carried "DuckDB builds natively TWICE here
 (~40-60 min each)" as an unexplained fact of life for months. Measured:

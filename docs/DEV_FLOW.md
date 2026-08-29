@@ -18,38 +18,33 @@ npm run dev                          # http://localhost:3000
   `CORS_ORIGIN` env var (comma-separated) so the browser may call it.
 - Use this for all UI/UX work — you see changes in <1s instead of in prod.
 
-## Loop 2 — fixed test URL on Azure (backend / migrations / full-stack)
-For changes you can't see purely in the browser (backend logic, migrations):
+## Loop 2 — push to main, it ships itself
 
-1. Merge to `main`. CI builds images, runs **additive** migrations, and deploys
-   backend + frontend as **new revisions at 0% traffic** — they do NOT serve
-   users yet. Ready to test ~5–6 min after push (the slow Neo4j-constraints
-   job now only runs when `backend/src/db/neo4j.ts` changes).
-2. Open the **fixed test URL** — it never changes, so bookmark it once:
-   `https://<frontend-app>---staging.<env-domain>` (the deploy job summary
-   prints the exact URL on every run; same pattern for the backend API).
-   The `staging` label is moved to each new revision automatically, so this
-   URL always shows the newest pushed version.
-3. When happy, Actions tab → **"Promote to production"** → Run workflow →
-   green "Run workflow" button. This shifts 100% traffic to the newest
-   revision (by name). That's go-live, ~30 seconds.
+There is no branch-and-PR step and no promote click. A push to `main` runs:
 
-If something's wrong, just don't promote (users stay on the previous revision).
-If you already promoted and it's broken: Actions tab → **"Rollback
-production"** → Run workflow — shifts traffic back to the previous revision
-in ~30 seconds, no rebuild.
+1. **Tests** — and they are a GATE now. A red suite means no migration runs, no
+   revision is deployed and nothing is promoted. "Tests did not run" counts as
+   a failure, not a pass.
+2. **Build + migrate + deploy** — the new revision goes up at 0% traffic.
+3. **Go live** — the new backend must answer `/api/health` through its staging
+   label before traffic moves. If it never comes up healthy, traffic stays on
+   the previous version and the run fails loudly.
 
-**Caveat to know:** the test frontend calls the **live** backend (the API URL
-is baked in at build time). So the frontend bookmark shows new UI against the
-currently-live backend. To exercise a backend change before users see broken
-UI: promote **"backend only"** first, check the live app, then promote the
-frontend — and Rollback is the safety net either way.
+What makes that safe is not optimism, it is that **a user-visible change ships
+behind a feature flag that is off**. Reaching production is not the same as
+reaching a customer; the audience is chosen in Loop 3.
 
-**Why traffic is always pinned by revision NAME:** a traffic entry set to
-`latest` auto-follows every future revision — the next push would go live
-immediately and silently break this whole test-first model. Both deploy and
-promote therefore always pin traffic to a named revision; never set
-`latest=100` by hand in the portal.
+**Escape hatches, unchanged:** *Rollback production* shifts traffic back to the
+previous revision in one click. *Promote to production* still exists for a
+manual promote. The staging URL
+(`https://<app>---staging.<env-domain>`, printed in the job summary) still
+shows the newest build if you want to look before it goes live.
+
+**The rule that keeps this honest:** anything a customer can see goes behind a
+flag. Things that cannot be flagged — database migrations, bug fixes to
+existing behaviour, dependency upgrades — are exactly the changes that still
+deserve a careful look before the push, because for those, deploy really is
+release.
 
 ## Loop 3 — release to one customer at a time
 
