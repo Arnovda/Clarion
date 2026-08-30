@@ -1,4 +1,4 @@
-3h
+4h
 
 # How far back to look in production logs.
 #
@@ -30,7 +30,11 @@
 #                     means it is rejecting legitimate requests — a graph entity
 #                     whose Postgres mirror row is missing — not that someone is
 #                     probing.
-#   server-error      any request the API answered with a 5xx. Added 2026-08-29
+#   server-error      any request the API answered with a 5xx — matched on the
+#                     literal 'request failed', which is what requestLogger
+#                     emits at >=500 (4xx says 'request error'; the first
+#                     version of this signature looked for the wrong one of
+#                     the two and so could never have matched). Added 2026-08-29
 #                     while chasing a console that refused its own operator:
 #                     the frontend renders EVERY failure of that endpoint as
 #                     "this page is not open to you", so a 500 and a refusal
