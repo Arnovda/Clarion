@@ -172,6 +172,39 @@ dashboard.**
   the banner's credibility gone on its first render. Hence `isWaitingForAudience`
   is scoped to `kind === 'release'` too: a standing feature is switched on when
   someone wants it, never queued for a decision.
+- **"WHO SEES WHAT" REFUSED ITS OWN OPERATOR FOR AN AFTERNOON, AND EVERY STEP
+  OF THE DIAGNOSIS WAS WRONG BEFORE IT WAS RIGHT.** Worth keeping in full,
+  because each wrong turn is a reusable lesson. (1) The file said
+  `arnovda@telenet.be` — the owner's PERSONAL address; he signs into Clarion as
+  `admin@vdaanalytics.com`. The check compares the list against the logged-in
+  account and nothing else, so **a near-miss grants nothing and looks EXACTLY
+  like a broken deploy** — same blank console, same silence, no error anywhere
+  saying "that address matches no account". `.ops/operators` now says outright
+  that it must be the sign-in address. (2) Chasing it, I assumed
+  `az containerapp update --image` had dropped the env var across deploys. The
+  re-apply DISPROVED that (`Current: arnovda@telenet.be → target:
+  arnovda@telenet.be`) — `--image` does preserve env vars, and the value had
+  survived three deploys. Worth knowing: the opposite would have shut the
+  console on every release. (3) After the address was fixed the page STILL
+  refused while the rail entry beside it rendered — and that entry only renders
+  when the server says isOperator, so the refusal was a lie. Cause: the page's
+  ONE blanket `catch` rendered every failure as "not open to you", so a fault
+  wore a refusal's clothes. Now 404 alone is the refusal; anything else says it
+  is a fault and shows the status. (4) The production logs finally settled it —
+  `statusCode: 200, contentLength: 874` for the owner's own userId on
+  `main-a5b530c`. The endpoint had been fine; the screen was stale client
+  state. **The moral for the next person: when a screen and its own nav
+  disagree, believe neither and go read the logs.**
+- **`.ops/prod-logs` GAINED A `server-error` SIGNATURE (any 5xx), AND ITS FIRST
+  VERSION COULD NOT MATCH ANYTHING.** It looked for `'request error'` AND a
+  5xx status — but `requestLogger` emits `'request error'` at >=400 and
+  **`'request failed'` at >=500**, so the conjunction was empty by
+  construction. It came back clean and I read that as evidence the console was
+  not faulting; it was evidence of nothing. **A check that cannot fail reports
+  exactly what a healthy system reports** — the precise failure this control
+  exists to stop the platform making, made inside the control itself on its
+  first extension. Fixed to match `'request failed'`. Keep it: with no alerting
+  anywhere, it is the closest thing this platform has.
 - **Next natural slices**: a zero-AI "+ Add filter" picker on the FilterBar
   (needs a linkable-columns endpoint for dashboards; applyEditOps is ready for
   it), per-widget right-click "change this card" wired to the scoped
