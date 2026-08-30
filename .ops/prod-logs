@@ -1,6 +1,9 @@
-24h
+2h
 
 # How far back to look in production logs.
+#
+# Set to 2h on 2026-08-29 to read the errors behind "Who sees what" refusing
+# the operator it had just been configured for.
 #
 #   <number>h  or  <number>d   — e.g. 24h, 7d. Log Analytics keeps 30 days.
 #
@@ -27,6 +30,13 @@
 #                     means it is rejecting legitimate requests — a graph entity
 #                     whose Postgres mirror row is missing — not that someone is
 #                     probing.
+#   server-error      any request the API answered with a 5xx. Added 2026-08-29
+#                     while chasing a console that refused its own operator:
+#                     the frontend renders EVERY failure of that endpoint as
+#                     "this page is not open to you", so a 500 and a refusal
+#                     look identical from the screen. This is the signature
+#                     that tells them apart — and more generally it is the
+#                     closest thing to alerting this platform has.
 #   runner-active     POSITIVE signal. The child-process query runner announcing
 #                     itself once per boot. Its absence, with DUCKDB_RUNNER set
 #                     to `child`, means it silently fell back in-process.

@@ -97,11 +97,25 @@ export default function FeatureFlagsPage() {
       setFlags(d?.flags ?? []);
       setTenants(d?.tenants ?? []);
       setDenied(false);
-    } catch {
-      // The server answers 404 rather than 403 for a non-operator, so there is
-      // nothing here to tell "no such page" from "not for you" — which is the
-      // point. Show the same explanation either way.
-      setDenied(true);
+    } catch (e) {
+      // 404 is the deliberate refusal (the server answers 404 rather than 403
+      // for a non-operator, so a probing tenant admin learns nothing). ANYTHING
+      // ELSE is a fault, and must not wear the refusal's clothes: this page
+      // spent an afternoon telling its own operator he was not allowed in while
+      // the real answer was a server error, because every failure landed in one
+      // blanket catch. A wrong explanation is worse than no explanation — it
+      // sends you to fix the thing that was never broken.
+      const status = (e as { response?: { status?: number } })?.response?.status;
+      if (status === 404) {
+        setDenied(true);
+      } else {
+        const msg = (e as { response?: { data?: { error?: string } }; message?: string })
+          ?.response?.data?.error ?? (e as { message?: string })?.message;
+        setError(
+          `Could not load the releases${status ? ` (server said ${status})` : ''}. `
+          + `This is a fault, not a permission problem.${msg ? ` ${msg}` : ''}`,
+        );
+      }
     } finally {
       setLoading(false);
     }
