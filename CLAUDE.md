@@ -143,6 +143,35 @@ dashboard.**
   stored released-marker, so pulling a feature back to nobody re-queues it,
   which is what it is. The failure this closes: a feature reaching production
   and then sitting switched off because nothing said it was waiting.
+- **THE UNIT OF ROLLOUT IS A RELEASE, NOT A FEATURE (same day, owner: "I don't
+  want it per feature. Just the latest version I promoted").** He first asked
+  for tenant selection at promote time; told that one revision serves every
+  tenant, he restated the underlying want, which is the useful form: ONE switch
+  per batch of shipped work. So `FEATURE_FLAGS` entries gained
+  `kind: 'release' | 'feature'`, and everything user-visible now hangs off
+  **`CURRENT_RELEASE`** (`release_2026_08`, "August 2026") rather than a key of
+  its own — `dashboard_fast_refine` is GONE, and `/refine-spec-stream` calls
+  `isCurrentReleaseEnabled()` so opening the next train is one edit to that
+  constant, not a hunt for stale strings. A test pins that CURRENT_RELEASE
+  exists AND is a release: pointing it at a missing key would resolve false for
+  every tenant, i.e. a total silent rollout failure with nothing on screen.
+  **`kind: 'feature'` survives as the deliberate exception** — a standing
+  capability not tied to a train (only `preview_banner` today).
+- **PER-TENANT CODE VERSIONS WERE CONSIDERED AND REFUSED, which is why the
+  above is the answer.** Genuinely running old and new side by side needs a
+  JWT-decoding proxy in front of both apps (ACA traffic weights are
+  percentages, random per request — there is no routing by tenant), an
+  always-on replica per live version, and — the killer — every future migration
+  compatible with every version any tenant still sits on, forever. The current
+  rule is only "backward-compatible within a deploy window".
+- **Three placeholder flags were DELETED and that was a live bug, not tidying.**
+  `brief_email` / `metric_thresholds` / `exception_lists` were declared for
+  roadmap items and gated nothing. The new "waiting for an audience" banner
+  counts flags with an empty audience, so it would have announced "4 features
+  are live but nobody can see them yet" naming three things that DO NOT EXIST —
+  the banner's credibility gone on its first render. Hence `isWaitingForAudience`
+  is scoped to `kind === 'release'` too: a standing feature is switched on when
+  someone wants it, never queued for a decision.
 - **Next natural slices**: a zero-AI "+ Add filter" picker on the FilterBar
   (needs a linkable-columns endpoint for dashboards; applyEditOps is ready for
   it), per-widget right-click "change this card" wired to the scoped

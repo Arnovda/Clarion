@@ -36,7 +36,7 @@
 import type { Knex } from 'knex';
 import { semanticDb } from '../db/knex';
 import { platformOperatorEmails } from '../config';
-import { FEATURE_KEYS, type FeatureKey, type FeatureRollout } from '../shared/contract';
+import { CURRENT_RELEASE, FEATURE_KEYS, type FeatureKey, type FeatureRollout } from '../shared/contract';
 import { logger as rootLogger } from '../utils/logger';
 
 const log = rootLogger.child({ mod: 'feature-flags' });
@@ -237,6 +237,20 @@ export async function removeTenantFromAllFlags(db: Knex | Knex.Transaction, tena
 export function isPlatformOperator(email: string | undefined): boolean {
   if (!email) return false;
   return platformOperatorEmails().includes(email.toLowerCase());
+}
+
+/**
+ * Is the CURRENT release train switched on for this tenant?
+ *
+ * The one call site shape for gating new user-visible work. Naming the key
+ * inline would mean every call site becomes stale the moment the next train
+ * opens; this way opening one is a single edit to CURRENT_RELEASE.
+ */
+export async function isCurrentReleaseEnabled(
+  tenantId: number | undefined,
+  db?: Knex | Knex.Transaction,
+): Promise<boolean> {
+  return isFeatureEnabled(tenantId, CURRENT_RELEASE as FeatureKey, db);
 }
 
 /** True when the deployment has no operators configured at all. */

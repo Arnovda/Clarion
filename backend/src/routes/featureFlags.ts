@@ -105,6 +105,7 @@ featureFlagsRouter.get('/', async (_req: Request, res: Response, next: NextFunct
     // chore on a screen whose job is choosing an audience.
     const flags = state.filter((f) => f.known).map((f) => ({
       key: f.key,
+      kind: FEATURE_FLAGS[f.key as keyof typeof FEATURE_FLAGS].kind,
       name: FEATURE_FLAGS[f.key as keyof typeof FEATURE_FLAGS].name,
       description: FEATURE_FLAGS[f.key as keyof typeof FEATURE_FLAGS].description,
       known: f.known,

@@ -34,6 +34,7 @@ import {
   invalidateFeatureFlagCache,
   isPlatformOperator,
 } from '../services/featureFlags';
+import { CURRENT_RELEASE, FEATURE_FLAGS } from '../shared/contract';
 
 const FLAG = 'preview_banner';       // a key that exists in the registry
 const UNKNOWN = 'not_a_real_flag';   // a key that does not
@@ -155,6 +156,10 @@ describe('the operator gate', () => {
     // developer key like `preview_banner` to whoever is choosing an audience.
     expect(typeof row.name).toBe('string');
     expect(row.name.length).toBeGreaterThan(0);
+    // `kind` drives which rows the console queues for an audience decision.
+    // Missing or misspelled, a shipped release stops appearing in the "live
+    // but nobody can see it" banner — the one thing that says work is waiting.
+    expect(['release', 'feature']).toContain(row.kind);
 
     const put = await agent
       .put(`/api/admin/feature-flags/${FLAG}`)
@@ -164,6 +169,17 @@ describe('the operator gate', () => {
 
     invalidateFeatureFlagCache();
     expect(await isFeatureEnabled(tenantA, FLAG, getTestDb())).toBe(true);
+  });
+
+  it('CURRENT_RELEASE names a real release in the registry', () => {
+    // Server code gates new work on CURRENT_RELEASE without naming a key.
+    // If it pointed at a key that does not exist, isFeatureEnabled would
+    // answer false for every tenant and the release could never be switched
+    // on — a silent, total rollout failure with nothing on screen to explain
+    // it. Cheap to pin, so pin it.
+    const entry = (FEATURE_FLAGS as Record<string, { kind: string } | undefined>)[CURRENT_RELEASE];
+    expect(entry).toBeDefined();
+    expect(entry!.kind).toBe('release');
   });
 
   it.each([

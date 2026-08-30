@@ -30,6 +30,8 @@ import type { FeatureRollout } from '@/lib/contract';
 
 interface FlagRow {
   key: string;
+  /** 'release' = a batch of shipped work awaiting an audience; 'feature' = a standing capability. */
+  kind: 'release' | 'feature';
   name: string;
   description: string;
   rollout: FeatureRollout;
@@ -51,14 +53,20 @@ function audienceSummary(flag: FlagRow, tenants: TenantRow[]): string {
 }
 
 /**
- * A feature nobody can see yet: declared in code, deployed, audience empty.
+ * Something nobody can see yet: shipped, deployed, audience still empty.
  *
- * This is the state every feature is born in — a flag with no row resolves to
- * off — so it is not an error, it is the queue. Deriving it here (rather than
- * from a stored "released" marker) keeps it honest: pulling a feature back to
- * nobody puts it in the queue again, which is exactly what it is.
+ * This is the state every release is born in — a key with no row resolves to
+ * off — so it is not an error, it is the queue. Derived rather than read from
+ * a stored "released" marker, so pulling a release back to nobody puts it in
+ * the queue again, which is exactly what it is.
+ *
+ * Scoped to RELEASES on purpose. A standing feature (the preview marker) is
+ * switched on when someone wants it, not queued for a decision, and counting
+ * it here would put a permanent number in a banner whose whole job is to mean
+ * "there is something new to decide about".
  */
 function isWaitingForAudience(flag: FlagRow): boolean {
+  if (flag.kind !== 'release') return false;
   if (flag.rollout === 'all') return false;
   return flag.rollout !== 'tenants' || flag.tenants.length === 0;
 }
@@ -67,13 +75,14 @@ export default function FeatureFlagsPage() {
   const isOperator = useIsOperator();
   const [flags, setFlags] = useState<FlagRow[]>([]);
   const [tenants, setTenants] = useState<TenantRow[]>([]);
-  // Unreleased features first — that is the decision the page exists for, and
-  // a deploy links straight here. Otherwise stable (registry order), so the
-  // list does not reshuffle under the operator as they tick boxes.
   const waiting = flags.filter(isWaitingForAudience);
-  const ordered = [...flags].sort(
-    (a, b) => Number(isWaitingForAudience(b)) - Number(isWaitingForAudience(a)),
-  );
+  // Releases first (that is the decision this page exists for, and a deploy
+  // links straight here), unreleased ones at the very top; standing features
+  // last. Stable within each group so the list does not reshuffle under the
+  // operator as they tick boxes.
+  const rank = (f: FlagRow) =>
+    (isWaitingForAudience(f) ? 0 : 1) + (f.kind === 'release' ? 0 : 2);
+  const ordered = [...flags].sort((a, b) => rank(a) - rank(b));
   const [loading, setLoading] = useState(true);
   const [denied, setDenied] = useState(false);
   const [saving, setSaving] = useState<string | null>(null);
@@ -153,9 +162,10 @@ export default function FeatureFlagsPage() {
 
           <h1 className="font-display text-[28px] leading-tight text-ink mb-2">Who sees what</h1>
           <p className="text-[14.5px] text-ink-3 max-w-[62ch] mb-8">
-            New features arrive switched off. Tick the customers who should see one — start with your own
-            test account — and untick to take it away again. Changes apply within about 20 seconds.
-            Nothing here needs a release or a restart.
+            Each release arrives switched off. Tick the customers who should get it — start with your own
+            test account — and untick to take it away again. One tick covers everything in that release,
+            so there is nothing to decide feature by feature. Changes apply within about 20 seconds;
+            nothing here needs a deploy or a restart.
           </p>
 
           {loading && (
@@ -198,8 +208,8 @@ export default function FeatureFlagsPage() {
                   <p className="text-[13.5px] text-ink">
                     <span className="font-medium">
                       {waiting.length === 1
-                        ? '1 feature is live but nobody can see it yet'
-                        : `${waiting.length} features are live but nobody can see them yet`}
+                        ? 'A new release is live but nobody can see it yet'
+                        : `${waiting.length} releases are live but nobody can see them yet`}
                     </span>
                     {' — '}
                     {waiting.map((f) => f.name).join(', ')}. Tick the customers who should get each one.

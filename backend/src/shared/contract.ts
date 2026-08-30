@@ -299,34 +299,53 @@ export interface DataProductDto {
 export type FeatureRollout = 'off' | 'tenants' | 'all';
 
 /**
- * Every feature that can be released separately from the code that contains it.
+ * What can be released to a chosen set of customers, separately from the code
+ * that contains it.
+ *
+ * THE UNIT IS A RELEASE, NOT A FEATURE. Everything user-visible that ships in
+ * one batch hangs off ONE key — `CURRENT_RELEASE` below — so the person
+ * choosing an audience ticks a customer once per release and gets the whole
+ * batch, instead of hunting through a switch per feature. That was the owner's
+ * ask in as many words: "I don't want it per feature, just the latest version
+ * I promoted."
+ *
+ * `kind: 'feature'` is the exception, not the rule: a standing capability that
+ * is deliberately NOT tied to a release train and stays switchable on its own
+ * (today only the preview marker). Reach for it rarely — every extra entry is
+ * another switch the operator has to reason about.
+ *
+ * WHAT DOES NOT BELONG BEHIND ANY OF THESE: a bug fix. Gating a fix means
+ * choosing who keeps the broken behaviour, so fixes to existing behaviour ship
+ * to everyone and always have. The release gate is for behaviour that is NEW.
  *
  * `name` is what the person choosing an audience reads — write it the way you
  * would say it out loud, never as a system term. `description` says what
  * turning it on actually does for a customer.
+ *
+ * Deleting a shipped release is part of finishing it: once it has been on
+ * Everyone for a while, remove the key and the checks that read it.
  */
 export const FEATURE_FLAGS = {
+  release_2026_08: {
+    kind: 'release',
+    name: 'August 2026',
+    description: 'Quicker dashboard changes: when you ask to alter a dashboard, Clarion works out the smallest set of edits and makes most of them itself instead of rebuilding every card — faster, and it only touches what you asked about. Off means dashboard changes still work; they just take the slower route.',
+  },
   preview_banner: {
+    kind: 'feature',
     name: 'Preview marker',
     description: 'Puts a small "Preview" badge at the top of the screen, so it is obvious this account can see things other customers cannot.',
   },
-  brief_email: {
-    name: 'Morning brief by email',
-    description: 'Sends the daily brief to the inbox instead of only showing it inside Clarion.',
-  },
-  metric_thresholds: {
-    name: 'Alerts when a number crosses a limit',
-    description: 'Lets someone say "tell me when this goes above X" and be told, instead of having to look.',
-  },
-  exception_lists: {
-    name: 'What needs action today',
-    description: 'A list of the things that are overdue, missing or past a limit — rather than only totals about the past.',
-  },
-  dashboard_fast_refine: {
-    name: 'Quicker dashboard changes',
-    description: 'When you ask to change a dashboard, Clarion works out the smallest set of edits and makes most of them itself, instead of rebuilding every card. Much faster, and it only touches what you asked about. Off means changes still work — they just take the slower route.',
-  },
 } as const;
+
+/**
+ * The release new user-visible work is gated on RIGHT NOW.
+ *
+ * Server code calls `isCurrentReleaseEnabled()` rather than naming a key, so
+ * opening the next train is one edit here plus one new entry above — not a
+ * search through call sites for a stale string.
+ */
+export const CURRENT_RELEASE = 'release_2026_08';
 
 export type FeatureKey = keyof typeof FEATURE_FLAGS;
 
@@ -335,6 +354,8 @@ export const FEATURE_KEYS = Object.keys(FEATURE_FLAGS) as FeatureKey[];
 /** One flag's rollout state, as the operator console renders it. */
 export interface FeatureFlagDto {
   key: FeatureKey;
+  /** 'release' = a batch of work; 'feature' = a standing capability. */
+  kind: 'release' | 'feature';
   /** Human name — what the console shows. */
   name: string;
   description: string;
