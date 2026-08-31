@@ -97,6 +97,19 @@ export interface HttpRequest {
   body?: unknown;
   /** Per-request timeout override. */
   timeoutMs?: number;
+
+  /**
+   * Shape to decode the response into. Defaults to `json`.
+   *
+   * `arraybuffer` exists for connectors that fetch FILES (a spreadsheet out of
+   * a document library, an export a source renders on demand). Routing those
+   * through this client rather than a bare axios call is deliberate: a
+   * download is exactly the request that most wants the retry/backoff, the
+   * 429 pacing, the 401-refresh and — above all — the egress allow-list. A
+   * connector that reaches for axios to get bytes silently opts out of all
+   * four.
+   */
+  responseType?: 'json' | 'arraybuffer';
 }
 
 export interface HttpResponse<T = unknown> {
@@ -315,8 +328,10 @@ export class HttpClient {
     if (this.currentAuthHeader && !headers.Authorization) {
       headers.Authorization = this.currentAuthHeader;
     }
+    const binary = req.responseType === 'arraybuffer';
     if (!headers.Accept) {
-      headers.Accept = 'application/json';
+      // Asking for JSON on a file download makes some APIs answer 406.
+      headers.Accept = binary ? '*/*' : 'application/json';
     }
     return {
       method: req.method ?? 'GET',
@@ -325,6 +340,7 @@ export class HttpClient {
       params: cleanQuery(req.query),
       data: req.body,
       timeout: req.timeoutMs ?? this.opts.timeoutMs ?? 60_000,
+      ...(binary ? { responseType: 'arraybuffer' as const } : {}),
     };
   }
 
@@ -410,10 +426,20 @@ function stringifyHeaders(h: unknown): Record<string, string> {
 function excerptOfBody(body: unknown, max = 500): string | undefined {
   if (body == null) return undefined;
   let s: string;
-  try {
-    s = typeof body === 'string' ? body : JSON.stringify(body);
-  } catch {
-    s = String(body);
+  // A failed `arraybuffer` request still carries the API's error body, just as
+  // bytes. Without this branch it stringifies to `{}` and the one useful piece
+  // of diagnostic information in the whole error is thrown away.
+  if (body instanceof ArrayBuffer || ArrayBuffer.isView(body)) {
+    const view = body instanceof ArrayBuffer
+      ? new Uint8Array(body)
+      : new Uint8Array((body as ArrayBufferView).buffer, (body as ArrayBufferView).byteOffset, (body as ArrayBufferView).byteLength);
+    s = new TextDecoder('utf-8', { fatal: false }).decode(view.subarray(0, max * 2));
+  } else {
+    try {
+      s = typeof body === 'string' ? body : JSON.stringify(body);
+    } catch {
+      s = String(body);
+    }
   }
   return s.length > max ? `${s.slice(0, max)}…` : s;
 }

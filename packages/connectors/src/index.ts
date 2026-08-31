@@ -42,6 +42,27 @@ export {
   type TemplateKpi,
 } from './starSchema';
 
+// ─── Spreadsheet core (shared by every file-backed connector) ─────────────
+export {
+  readXlsx,
+  SpreadsheetReadError,
+  XLSX_DEFAULT_MAX_COLS,
+  XLSX_DEFAULT_MAX_ROWS,
+  type XlsxCellValue,
+  type XlsxSheet,
+  type XlsxWorkbook,
+} from './spreadsheet/xlsxReader';
+export {
+  coerceCell,
+  deriveColumnNames,
+  inferSqlType,
+  sanitiseEntityName,
+  sanitiseIdentifier,
+  sheetToTable,
+  type SheetTable,
+  type TabularColumn,
+} from './spreadsheet/tabular';
+
 // ─── Registry ─────────────────────────────────────────────────────────────
 export {
   registerConnector,
@@ -61,6 +82,7 @@ export {
 // Each connector subfolder's index.ts calls `registerConnector(...)` on import.
 import './exactonline';
 import './odoo';
+import './sharepoint';
 // import './netsuite';     // future
 // import './quickbooks';   // future
 // import './airbyte';      // future

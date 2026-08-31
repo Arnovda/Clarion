@@ -13,6 +13,7 @@ import { describe, expect, it } from 'vitest';
 // warehouse writers — conformance is pure metadata + catalog checks.
 import './exactonline';
 import './odoo';
+import './sharepoint';
 import { getConnector, listConnectorTypes } from './registry';
 import { validateConnectorMetadata, validateEntityCatalog, validateKnownRelationships } from './conformance';
 import { validateStarSchemaTemplate } from './starSchema';
@@ -26,6 +27,7 @@ describe('connector conformance — metadata (all registered connectors)', () =>
   it('registers at least the known connectors', () => {
     expect(types).toContain('exactonline');
     expect(types).toContain('odoo');
+    expect(types).toContain('sharepoint');
   });
 
   it.each(types)('connector "%s" passes metadata invariants', (type) => {
