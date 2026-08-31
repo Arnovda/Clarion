@@ -31,7 +31,68 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-08-31 (NOTHING IS GATED — the August train was retired and
+**Last updated:** 2026-08-31 (SOURCE TILES — real brand marks, and Exact Online
+stopped appearing twice; the preview marker is gone with the trains it described)
+
+**Owner, looking at `/sources` and the flag console: *"I don't want preview and
+I don't want ExactOnline there 2 times. And I want the correct icons for the
+source systems."* Three separate defects, one screen.**
+- **EXACT ONLINE RENDERED TWICE — a greyed-out "Coming soon" tile beside the
+  live one.** `CONNECTORS` in `app/sources/page.tsx` still carried a hardcoded
+  `exactonline` entry with `available: false` from before the connector shipped,
+  while the live tile comes from the `/source-types` fetch. Both lists rendered
+  into the same grid. Deleted — and `staticConnectors` now filters any static
+  tile whose id appears in the registry, so the collision cannot come back for
+  the next connector that graduates from placeholder to real.
+- **NEW `frontend/lib/connectorIcons.tsx` — one map, ten brand marks.** The
+  tiles were a coloured square with the product's initial, which tells the
+  reader nothing. Provenance is recorded per mark because it matters both
+  legally and for accuracy: **postgres / mysql / sqlite / odoo / googlesheets
+  from Simple Icons (CC0, official paths and the brand's own hex), salesforce +
+  the MySQL dolphin from SVG Logos (CC0), excel / sharepoint / sqlserver from
+  Material Design Icons (Apache-2.0) tinted to each product's documented brand
+  colour.** Microsoft's own Fluent icons are trademarked and their brand
+  guidelines do not permit shipping them, so those three are recognisable
+  stand-ins, not reproductions — naming a product you integrate with is
+  nominative use, copying its logo asset is not.
+- **`exactonline` is the one HAND-DRAWN mark and the one to replace.** Exact
+  publishes no open icon and this environment's egress policy blocks both
+  Wikimedia Commons and Brandfetch, so it is a monogram in Exact red rather
+  than their logo. Stated in the file header; dropping in their real SVG is a
+  one-entry change.
+- **Every mark renders as a single-colour glyph on a wash of its own colour**
+  (`${color}14` fill, `${color}2E` border) so ten tiles read as one set instead
+  of ten logo treatments at ten weights. **Verified by rendering, not by
+  compiling**: a throwaway HTML harness was screenshotted in real Chromium,
+  which caught two things the type checker cannot — Simple Icons' MySQL mark
+  includes the wordmark and is illegible at 20px (swapped for the dolphin), and
+  the first Exact mark was a solid red block that shouted over the other nine
+  (redrawn as an outline).
+- **The sidebar's "?" avatar over the caption "DUCKDB" is fixed too** — a
+  registry connection stores `type: 'duckdb'` with the real product in
+  `connector_type`, and the sidebar keyed off `type` alone. It now shows the
+  product's mark and its name (`CONNECTOR_LABELS`).
+- **`preview_banner` is DELETED and `FEATURE_FLAGS` is now EMPTY.** A badge
+  whose whole job is to say "this account sees things customers cannot" is
+  noise once every account sees everything; it went with the gates it
+  described. The console honestly renders "nothing waiting to be released".
+- **Two changes that empty registry forced, both improvements.**
+  (a) `featureMeta(key)` replaces direct `FEATURE_FLAGS[key]` indexing in the
+  console route — with an empty registry that expression narrows to `never` and
+  every field access is a compile error. (b) `FEATURE_KEYS` became
+  **`featureKeys()`**, derived at call time: a snapshot taken at import is the
+  same information twice and the two can disagree.
+- **The flag suite now REGISTERS ITS OWN KEY** (`test_release`, added in
+  `beforeAll`, removed in `afterAll`) instead of borrowing `preview_banner`.
+  Retiring a product flag used to take the whole flag-machinery suite with it —
+  the tests were coupled to whatever happened to be shipping rather than to the
+  mechanism under test. 23 tests, all still green with zero flags declared.
+- Validation: backend **47 files / 476 passed**, all eight ratchets green from
+  the repo root, frontend `tsc` clean, touched files lint-clean (the four
+  findings in `sources/page.tsx` are pre-existing — verified by re-running the
+  linter against `HEAD`), `next build` green 40/40.
+
+**Prior last updated:** 2026-08-31 (NOTHING IS GATED — the August train was retired and
 the platform ships to everyone, on purpose, until the first customer)
 
 **Owner: *"Kunnen we voorlopig alles gwn laten doorkomen en automatisch voor

@@ -43,7 +43,7 @@ import {
   isPlatformOperator,
   operatorsConfigured,
 } from '../services/featureFlags';
-import { FEATURE_FLAGS, type FeatureRollout } from '../shared/contract';
+import { FEATURE_FLAGS, featureMeta, type FeatureRollout } from '../shared/contract';
 
 // ───────────────────────── the tenant-facing router ─────────────────────────
 
@@ -105,9 +105,9 @@ featureFlagsRouter.get('/', async (_req: Request, res: Response, next: NextFunct
     // chore on a screen whose job is choosing an audience.
     const flags = state.filter((f) => f.known).map((f) => ({
       key: f.key,
-      kind: FEATURE_FLAGS[f.key as keyof typeof FEATURE_FLAGS].kind,
-      name: FEATURE_FLAGS[f.key as keyof typeof FEATURE_FLAGS].name,
-      description: FEATURE_FLAGS[f.key as keyof typeof FEATURE_FLAGS].description,
+      kind: featureMeta(f.key)!.kind,
+      name: featureMeta(f.key)!.name,
+      description: featureMeta(f.key)!.description,
       known: f.known,
       rollout: f.rollout,
       tenants: f.tenantIds.map((id) => ({

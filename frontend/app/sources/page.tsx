@@ -4,6 +4,7 @@ import { useState, useEffect, Suspense, Fragment } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import AppShell from '@/components/layout/AppShell';
 import RequireRole from '@/components/RequireRole';
+import { connectorMark } from '@/lib/connectorIcons';
 import IngestionWizard from '@/components/IngestionWizard';
 import api from '@/lib/api';
 import { getToken } from '@/lib/auth';
@@ -148,19 +149,13 @@ const CONNECTORS: Connector[] = [
       { key: 'ssl', label: 'SSL', placeholder: 'false', type: 'text', hint: 'Enter true for SSL connections.' },
     ],
   },
-  {
-    id: 'exactonline',
-    name: 'Exact Online',
-    description: 'Belgian & Dutch ERP platform',
-    available: false,
-    color: 'bg-teal-500',
-    iconLetter: 'E',
-    formFields: [],
-  },
-  // NOTE: Odoo is a registry source connector (packages/connectors/src/odoo).
-  // Its live tile is rendered from the /source-types fetch below (see
-  // REGISTRY_* maps), so there is no hardcoded entry here — same pattern as
-  // Exact Online.
+  // NOTE: Exact Online, Odoo, Excel and SharePoint are REGISTRY connectors
+  // (packages/connectors/src/*). Their tiles come from the /source-types fetch
+  // below, so they must not be listed here — a hardcoded "coming soon" Exact
+  // Online entry sat in this list long after the connector shipped, and the
+  // page drew it twice: once greyed out, once live. `STATIC_CONNECTORS` filters
+  // that collision out now, but the real rule is that a connector belongs in
+  // exactly one of the two lists.
   {
     id: 'salesforce',
     name: 'Salesforce',
@@ -215,6 +210,27 @@ function getConfig(conn: Connection): Record<string, string> {
   return (conn.config as Record<string, string>) ?? {};
 }
 
+/**
+ * The product's own name for a connector id, used where only the id is to
+ * hand. Registry tiles carry their `displayName` from the backend; a connection
+ * row does not, and printing its storage engine ("DUCKDB") told the user
+ * nothing about what they connected.
+ */
+const CONNECTOR_LABELS: Record<string, string> = {
+  exactonline: 'Exact Online',
+  odoo: 'Odoo',
+  excel: 'Excel',
+  sharepoint: 'SharePoint',
+  postgres: 'PostgreSQL',
+  mysql: 'MySQL',
+  sqlserver: 'SQL Server',
+  sqlite: 'SQLite',
+};
+
+function connectorLabel(id: string): string | undefined {
+  return CONNECTOR_LABELS[id];
+}
+
 function connectorForType(type: string): Connector | undefined {
   return CONNECTORS.find((c) => c.id === type);
 }
@@ -225,6 +241,25 @@ function connectorForType(type: string): Connector | undefined {
 
 function ConnectorIcon({ connector, size = 'md' }: { connector: Connector; size?: 'sm' | 'md' | 'lg' }) {
   const sizes = { sm: 'w-8 h-8 text-sm', md: 'w-10 h-10 text-base', lg: 'w-12 h-12 text-lg' };
+  const glyphs = { sm: 'w-4 h-4', md: 'w-5 h-5', lg: 'w-6 h-6' };
+  const mark = connectorMark(connector.id);
+
+  // The product's own mark on a wash of its own colour. Recognised before the
+  // label is read, and quiet enough that ten of them in a grid do not shout.
+  if (mark) {
+    return (
+      <div
+        className={`${sizes[size]} rounded-lg flex items-center justify-center shrink-0 border`}
+        style={{ backgroundColor: `${mark.color}14`, borderColor: `${mark.color}2E` }}
+      >
+        <svg viewBox={mark.viewBox} className={glyphs[size]} fill={mark.color} aria-hidden="true">
+          {mark.art}
+        </svg>
+      </div>
+    );
+  }
+
+  // No mark for this connector yet — the initial on its colour, as before.
   return (
     <div className={`${sizes[size]} ${connector.color} rounded-lg flex items-center justify-center text-white font-bold shrink-0`}>
       {connector.iconLetter}
@@ -2027,6 +2062,12 @@ function SourcesPageInner() {
   // Fetched from the backend so adding a new connector to the registry makes it
   // show up here automatically — no frontend change per connector.
   const [registryConnectors, setRegistryConnectors] = useState<Connector[]>([]);
+  // A live registry connector always wins over a hardcoded tile of the same id.
+  // Without this the two lists can each render the same product — which is
+  // exactly what happened to Exact Online: a stale "coming soon" placeholder
+  // beside the working tile.
+  const registryIds = new Set(registryConnectors.map((c) => c.id));
+  const staticConnectors = CONNECTORS.filter((c) => !registryIds.has(c.id));
 
   useEffect(() => {
     api.get('/connections')
@@ -2193,19 +2234,38 @@ function SourcesPageInner() {
       <div className="flex-1 overflow-y-auto scrollbar-thin pb-2">
         <p className="text-[10px] font-mono tracking-[0.12em] uppercase text-muted-2 px-4 py-1.5">Connected</p>
         {connections.map((conn) => {
-          const connector = connectorForType(conn.type);
+          // A registry connection stores `type: 'duckdb'` with the real product
+          // in `connector_type`, so keying off `type` alone drew a "?" avatar
+          // over the caption "DUCKDB" for every Exact Online and Odoo source.
+          // The product the user connected is the one to show.
+          const productId = conn.connector_type ?? conn.type;
+          const connector = connectorForType(productId) ?? connectorForType(conn.type);
+          const mark = connectorMark(productId);
           return (
             <button
               key={conn.id}
               onClick={() => openEdit(conn)}
               className="w-full text-left flex items-center gap-2.5 px-4 py-2 border-l-2 border-transparent hover:bg-softer transition-colors"
             >
-              <div className={`w-7 h-7 rounded-md ${connector?.color ?? 'bg-softer'} text-white flex items-center justify-center text-[11px] font-medium shrink-0`}>
-                {connector?.iconLetter ?? '?'}
-              </div>
+              {mark ? (
+                <div
+                  className="w-7 h-7 rounded-md flex items-center justify-center shrink-0 border"
+                  style={{ backgroundColor: `${mark.color}14`, borderColor: `${mark.color}2E` }}
+                >
+                  <svg viewBox={mark.viewBox} className="w-3.5 h-3.5" fill={mark.color} aria-hidden="true">
+                    {mark.art}
+                  </svg>
+                </div>
+              ) : (
+                <div className={`w-7 h-7 rounded-md ${connector?.color ?? 'bg-softer'} text-white flex items-center justify-center text-[11px] font-medium shrink-0`}>
+                  {connector?.iconLetter ?? productId.charAt(0).toUpperCase()}
+                </div>
+              )}
               <div className="min-w-0">
                 <p className="text-[13px] text-ink-2 truncate leading-snug">{conn.name}</p>
-                <p className="text-[10px] font-mono tracking-[0.06em] uppercase text-muted-2 mt-0.5">{conn.type}</p>
+                <p className="text-[10px] font-mono tracking-[0.06em] uppercase text-muted-2 mt-0.5">
+                  {connectorLabel(productId) ?? conn.type}
+                </p>
               </div>
             </button>
           );
@@ -2319,7 +2379,7 @@ function SourcesPageInner() {
           </div>
 
           <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
-            {CONNECTORS.map((connector) => (
+            {staticConnectors.map((connector) => (
               <ConnectorTile
                 key={connector.id}
                 connector={connector}

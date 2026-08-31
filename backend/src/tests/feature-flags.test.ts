@@ -34,10 +34,15 @@ import {
   invalidateFeatureFlagCache,
   isPlatformOperator,
 } from '../services/featureFlags';
-import { CURRENT_RELEASE, FEATURE_FLAGS, daysFullyReleased, gateIsRemovable } from '../shared/contract';
+import { CURRENT_RELEASE, FEATURE_FLAGS, featureMeta, daysFullyReleased, gateIsRemovable, type FeatureKey } from '../shared/contract';
 
-const FLAG = 'preview_banner';       // a key that exists in the registry
-const UNKNOWN = 'not_a_real_flag';   // a key that does not
+// THE SUITE REGISTERS ITS OWN KEY rather than borrowing a real product flag.
+// It used to use `preview_banner`, which meant retiring that flag took the
+// whole flag-machinery suite with it — the tests were coupled to what happened
+// to be shipping rather than to the mechanism they test. The registry is empty
+// today (nothing is gated), and these still run.
+const FLAG = 'test_release' as FeatureKey;
+const UNKNOWN = 'not_a_real_flag';   // a key nothing ever declares
 
 let operatorToken: string;
 let adminToken: string;
@@ -73,9 +78,21 @@ beforeAll(async () => {
 
   savedEnv = process.env.PLATFORM_OPERATOR_EMAILS;
   process.env.PLATFORM_OPERATOR_EMAILS = operatorEmail;
+
+  // Declare the suite's own flag for the duration of the run. The console
+  // route refuses any key that is not in the registry — correctly, since a
+  // typo must never mint a flag that is off forever — so the routes need a
+  // real entry to exercise. Registering one here rather than borrowing a
+  // product flag keeps the mechanism tested no matter what is shipping.
+  (FEATURE_FLAGS as Record<string, unknown>)[FLAG] = {
+    kind: 'release',
+    name: 'Test release',
+    description: 'Only exists while this suite runs.',
+  };
 });
 
 afterAll(async () => {
+  delete (FEATURE_FLAGS as Record<string, unknown>)[FLAG];
   if (savedEnv === undefined) delete process.env.PLATFORM_OPERATOR_EMAILS;
   else process.env.PLATFORM_OPERATOR_EMAILS = savedEnv;
   await closeTestDb();

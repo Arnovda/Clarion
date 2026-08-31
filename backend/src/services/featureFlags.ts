@@ -36,7 +36,7 @@
 import type { Knex } from 'knex';
 import { semanticDb } from '../db/knex';
 import { platformOperatorEmails } from '../config';
-import { FEATURE_KEYS, type FeatureKey, type ReleaseKey, type FeatureRollout } from '../shared/contract';
+import { featureKeys, type FeatureKey, type ReleaseKey, type FeatureRollout } from '../shared/contract';
 import { logger as rootLogger } from '../utils/logger';
 
 const log = rootLogger.child({ mod: 'feature-flags' });
@@ -136,7 +136,7 @@ export async function getFeaturesForTenant(
 ): Promise<Record<string, boolean>> {
   const rows = await loadRows(db);
   const out: Record<string, boolean> = {};
-  for (const key of FEATURE_KEYS) out[key] = resolve(rows.get(key), tenantId);
+  for (const key of featureKeys()) out[key] = resolve(rows.get(key), tenantId);
   return out;
 }
 
@@ -145,7 +145,7 @@ export async function listFlagState(
   db?: Knex | Knex.Transaction,
 ): Promise<Array<{ key: string; rollout: FeatureRollout; tenantIds: number[]; updatedBy: string | null; updatedAt: string | null; known: boolean }>> {
   const rows = await loadRows(db);
-  const known = FEATURE_KEYS.map((key) => {
+  const known = featureKeys().map((key) => {
     const row = rows.get(key);
     return {
       key: key as string,
@@ -159,7 +159,7 @@ export async function listFlagState(
   // Orphans: rows whose flag was deleted from the registry. Surfaced so they
   // can be cleaned up rather than lingering invisibly.
   const orphans = [...rows.values()]
-    .filter((r) => !(FEATURE_KEYS as string[]).includes(r.key))
+    .filter((r) => !(featureKeys() as string[]).includes(r.key))
     .map((r) => ({
       key: r.key,
       rollout: r.rollout,

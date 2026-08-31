@@ -10,7 +10,6 @@ import { removeSessionItem, storageKeys } from '@/lib/storage';
 import { cn } from '@/lib/cn';
 import NotificationBell from '../NotificationBell';
 import CommandPalette from './CommandPalette';
-import { useFeature } from '@/lib/features';
 
 interface TopBarProps {
   /** Legacy prop — ignored under Observatory chrome (page title lives in the page body header). */
@@ -34,11 +33,6 @@ function initialsOf(name?: string, email?: string): string {
 
 export default function TopBar({ showSearch = true }: TopBarProps) {
   const router = useRouter();
-  // Marks a tenant that is on a pre-release ring. Worth a permanent slot in
-  // the chrome: without it, "which tenant am I looking at, and is it seeing
-  // something customers are not?" is unanswerable from the screen — which is
-  // how a preview feature ends up demoed to a customer by accident.
-  const previewOn = useFeature('preview_banner');
   const [payload, setPayload] = useState<TokenPayload | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement | null>(null);
@@ -101,15 +95,6 @@ export default function TopBar({ showSearch = true }: TopBarProps) {
           <span>Clarion</span>
         </Link>
 
-        {previewOn && (
-          <span
-            title="This tenant is on a pre-release ring — it can see features other customers cannot."
-            className="hidden sm:inline-flex items-center gap-1.5 h-6 pl-2 pr-2.5 rounded-full border border-warn bg-warn-soft text-warn font-mono text-[10px] tracking-[0.1em] uppercase"
-          >
-            <span className="w-1.5 h-1.5 rounded-full bg-warn" aria-hidden="true" />
-            Preview
-          </span>
-        )}
 
         <div className="flex-1" />
 

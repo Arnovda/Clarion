@@ -352,14 +352,35 @@ export type FeatureRollout = 'off' | 'tenants' | 'all';
  * back to a switch per feature.
  */
 export const FEATURE_FLAGS = {
-  preview_banner: {
-    kind: 'feature',
-    name: 'Preview marker',
-    description: 'Puts a small "Preview" badge at the top of the screen, so it is obvious this account can see things other customers cannot.',
-  },
+  // Empty, and that is the current state of the product rather than an
+  // oversight: nothing is gated, so there is nothing for anyone to switch.
+  // The console renders "nothing waiting to be released", which is true.
+  //
+  // The preview marker lived here until the last train was retired. A badge
+  // whose whole job is to say "this account sees things customers cannot" is
+  // noise once every account sees everything, so it went with the gates it
+  // described. Bring it back with the first ring.
 } as const;
 
 export type FeatureKey = keyof typeof FEATURE_FLAGS;
+
+/** One flag's declaration, or undefined for a key the code does not know. */
+export interface FeatureMeta {
+  kind: 'release' | 'feature';
+  name: string;
+  description: string;
+}
+
+/**
+ * Look up a flag's declaration by a key that is only known at run time — a row
+ * read from the database, say. Typed rather than indexed directly, because
+ * with an empty registry `FEATURE_FLAGS[k]` narrows to `never` and every field
+ * access becomes a compile error; this keeps the console compiling whether
+ * there are no flags, one, or ten.
+ */
+export function featureMeta(key: string): FeatureMeta | undefined {
+  return (FEATURE_FLAGS as Record<string, FeatureMeta | undefined>)[key];
+}
 
 /**
  * Just the release trains — the only keys a release gate may name. With no
@@ -440,7 +461,18 @@ export function gateIsRemovable(flag: FlagLifecycleInput, now: Date = new Date()
   return days !== null && days >= RELEASE_STALE_AFTER_DAYS;
 }
 
-export const FEATURE_KEYS = Object.keys(FEATURE_FLAGS) as FeatureKey[];
+/**
+ * Every declared key, read at call time rather than snapshotted at import.
+ *
+ * A frozen copy of `Object.keys(FEATURE_FLAGS)` is the same information twice
+ * and the two can disagree — which is exactly what happens in the flag suite,
+ * where the tests declare their own key so the mechanism stays testable when
+ * nothing is shipping behind a flag. Deriving costs a handful of string keys
+ * per call and cannot go stale.
+ */
+export function featureKeys(): FeatureKey[] {
+  return Object.keys(FEATURE_FLAGS) as FeatureKey[];
+}
 
 /** One flag's rollout state, as the operator console renders it. */
 export interface FeatureFlagDto {
