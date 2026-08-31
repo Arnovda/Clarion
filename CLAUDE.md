@@ -31,7 +31,87 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-08-31 (SOURCE TILES — real brand marks, and Exact Online
+**Last updated:** 2026-08-31 (DASHBOARD EDITING — the filter that never reached
+the KPI cards, an assistant that gets out of the way, and one card at a time)
+
+**Owner, from a live dashboard whose Customer filter said "Commerce 5 Sa" while
+the four headline numbers showed everybody: *"I still get too little
+information along the way. I don't know if it's working or stuck… the kpi cards
+on top don't filter, why? Also the chat box at the bottom takes up a lot of the
+screen… wouldn't it also be an idea to just be able to change or alter 1
+visual?"* Four complaints, two of which are the same missing mechanism.**
+- **THE KPI CARDS COULD NOT BE FILTERED, BY CONSTRUCTION, AND THE SCREEN SAID
+  SO IN WORDS NOBODY COULD ACT ON.** `dashboardPrompt.ts:129` REQUIRES every
+  `kpi_card` to compute its prior-period delta with `WITH curr AS (…), prev AS
+  (…)`, and `injectWherePredicate` refuses `WITH` on purpose — a predicate
+  landed in the wrong arm of a CTE is a wrong number. So `add_filter` wired the
+  charts, skipped every KPI, and reported *"4 widget(s) need a closer look …
+  because their query shape can't take a filter automatically"*. **The filter
+  bar was lying about the four biggest numbers on the page** — the worst
+  outcome available, because it renders.
+- **The fix is a HANDOVER, not a better regex.** `AppliedEdit` gained a
+  structured `handovers: SqlHandover[]` (replacing the `NEEDS_SQL:<id>:<text>`
+  string encoding, which could only ever carry ONE — and one `add_filter` needs
+  four). A card the app cannot edit textually is now handed to a scoped
+  `editWidgetSql` call with the exact predicate and an instruction to put it
+  inside EVERY arm that reads the rows, not just the final SELECT. The existing
+  CHECK stage then executes those widgets and reverts any that fail, so a
+  handover can still refuse — visibly — but it can no longer go silent.
+- **`MAX_FILTER_HANDOVERS = 12`**, because each handover is its own Sonnet call
+  and "add a filter" must not silently become forty of them. Past the cap it is
+  a stated refusal naming the cards. Correctness first, cost second: a filter
+  that quietly does not apply is worth more than 12 model calls to avoid.
+- **THE PROGRESS NOW NAMES EACH CARD.** `step` events gained `label` +
+  `parentId`, and a step whose id the client has not seen APPENDS rather than
+  being dropped — so work the server only discovers while applying the plan
+  ("Add a Customer filter" → four cards to rewrite) becomes four visible lines
+  nested under it, each flipping pending → running → done. The parent stays
+  `running` until its last child settles, so a tick means the whole thing.
+  Plus a per-step and per-message ELAPSED COUNTER: "is it working or is it
+  stuck" is not answerable from a spinner, and it is the only question being
+  asked during the wait.
+- **`scopeWidgetId` on `/refine-spec-stream` — change ONE visual.** The planner
+  is shown only that widget, **every returned op is filtered to it in code**
+  (not by prompt hope), and if nothing survives it falls back to a single
+  `sql_edit` carrying the user's words. **Escalation is DISABLED while scoped**
+  — regenerating a whole dashboard is the one thing "change this card" must
+  never do. Deterministic ops still apply: "show 20 rows" and "make it a bar
+  chart" stay instant and cost no model call at all.
+- **NEW `frontend/app/dashboards/components/AssistantPanel.tsx` — the chat is a
+  panel now, not a plinth.** The old bar was a `shrink-0` sibling of the grid:
+  **~98px of the dashboard permanently, ~306px once it had any history, with no
+  way to put it away.** The panel is absolutely positioned against the viewing
+  container (`relative` on it is load-bearing), so it OVERLAYS the charts and
+  closing it returns every pixel. Collapsed it is a pill that still reports
+  progress ("Writing 4 queries… 56s") so closing it never means losing the run.
+- **Two rules keep it from becoming what it replaced**: only the newest
+  exchange is expanded (older ones collapse to a one-line summary you can click
+  open — three stacked checklists is a wall, and the wall is why people stop
+  reading the one that matters), and anything running states its elapsed time.
+- **"Change this card" is a wand on every widget** — in the chart header's
+  hover toolbar and, for KPI cards which have no toolbar, beside the provenance
+  button. It sets the scope, opens the panel and focuses the input; the scope
+  renders as a chip above the composer with an × (a scope you cannot see is a
+  scope you get stuck in) and is RELEASED after one submit.
+- **A real bug the render check caught that the type checker could not**:
+  `Elapsed` read `Date.now()` during render, which tears hydration. Now read in
+  an effect, null until the first tick. Found by screenshotting a throwaway
+  `/dev/assistant` harness in real Chromium (deleted after) — the same
+  discipline as the source-tile marks, and it also showed the scoped kicker
+  wrapping to three shouting uppercase lines, now just "Card updated".
+- Validation: backend **47 files / 478 passed** (2 new: the CTE handover with
+  its predicate, the cap), all eight ratchets green from the repo root,
+  frontend `tsc` clean, touched files lint-clean, `next build` green 40/40
+  (`/dashboards` 62.8 kB / 212 kB).
+- **NOT done, deliberately**: the handover path has NOT been exercised against
+  a live AI backend — watch the first real "add a filter" on a dashboard with
+  KPI cards, since that is where four parallel scoped calls now fire. And
+  `injectCrossFilter` (`routes/dashboards.ts`) is still a SECOND copy of the
+  injection logic with its own boundary regex and a sanitising identifier
+  check; the comment in `dashboardEditOps.ts` claiming it is a caller has been
+  wrong since the file was written.
+
+**Prior last updated:** 2026-08-31 (SOURCE TILES — real brand marks, and Exact Online
 stopped appearing twice; the preview marker is gone with the trains it described)
 
 **Owner, looking at `/sources` and the flag console: *"I don't want preview and

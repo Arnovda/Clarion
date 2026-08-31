@@ -82,12 +82,29 @@ export function isDeterministicOp(op: DashboardEditOp): boolean {
   return op.op !== 'sql_edit' && op.op !== 'add_widget';
 }
 
+/** One widget's SQL, handed to the model because the app could not do it itself. */
+export interface SqlHandover {
+  widgetId: string;
+  /** What the model is being asked to do, in its own scoped instruction. */
+  instruction: string;
+  /** Business-language label for the progress checklist. */
+  label: string;
+}
+
 export interface AppliedEdit {
   op: DashboardEditOp;
   /** Widget ids whose `sql`, `type` or `title` this op changed. */
   changedWidgetIds: string[];
   /** Present when the op could NOT be applied — shown to the user verbatim. */
   refusal?: string;
+  /**
+   * Work this op could not do deterministically and is handing to a scoped
+   * model call. NOT a refusal — the user asked for something achievable and
+   * will get it, one AI call per widget, so these are deliberately kept out
+   * of `realRefusals`. An op may produce SEVERAL: one `add_filter` on a
+   * dashboard of KPI cards hands over every card it could not inject into.
+   */
+  handovers?: SqlHandover[];
 }
 
 export interface ApplyEditOpsResult {
@@ -187,6 +204,44 @@ export function filterPredicate(filter: FilterSpec): string | null {
     ? dateFilterPredicate(filter.id, filter.column)
     : selectFilterPredicate(filter.id, filter.column);
 }
+
+/**
+ * The scoped instruction for wiring a filter into a query the textual
+ * injection could not touch.
+ *
+ * Worth stating what this fixes, because the failure was invisible: the
+ * dashboard generation prompt REQUIRES every `kpi_card` to compute its
+ * prior-period delta with a `WITH curr AS (…), prev AS (…)` — and
+ * `injectWherePredicate` refuses `WITH` on purpose, since a predicate landed
+ * in the wrong arm of a CTE is a wrong number. So adding a filter to a
+ * dashboard used to wire up the charts and silently leave every headline KPI
+ * unfiltered: the filter bar said "Customer: Commerce 5 Sa" above four numbers
+ * for ALL customers. The card is not unfilterable — the predicate just has to
+ * go inside each arm that scans the fact table, which is a judgement about
+ * that query, so it goes to the model rather than to a regex.
+ */
+export function filterWireInstruction(filter: FilterSpec, predicate: string): string {
+  const placeholders = filter.type === 'date_range'
+    ? `{{${filter.id}_from}} and {{${filter.id}_to}}`
+    : `{{${filter.id}}} (the literal value 'all' means "no filtering" and must still return every row)`;
+  return [
+    `Apply the dashboard filter "${filter.label || filter.column}" to this query, so this card responds to it like the rest of the dashboard.`,
+    `Use exactly this predicate: ${predicate}`,
+    `It references ${placeholders}.`,
+    'The query has a shape the app could not edit safely on its own — most often a CTE. Put the predicate inside EVERY branch that reads the underlying rows (each CTE arm, each side of a UNION), not only the final SELECT, or the comparison periods will disagree with each other.',
+    `Add whatever JOIN is needed to reach ${filter.column}. Keep every other {{placeholder}} that is already in the query, and keep the exact same output columns.`,
+  ].join(' ');
+}
+
+/**
+ * Ceiling on how many widgets one filter may hand to the model at once.
+ *
+ * Each handover is a separate Sonnet call. They run in parallel, so the cost
+ * is tokens rather than time, but "add a filter" must not silently become
+ * forty AI calls on a large dashboard. Past the cap the remainder is a real,
+ * VISIBLE refusal — the user can then ask for those cards by name.
+ */
+export const MAX_FILTER_HANDOVERS = 12;
 
 /**
  * Strip every predicate that references `{{filterId}}` back out of a SQL
@@ -329,8 +384,13 @@ export function applyEditOps(spec: DashboardSpec, ops: DashboardEditOp[]): Apply
   const byId = () => new Map(widgets.map((w, i) => [w.id, i]));
 
   for (const op of ops) {
-    const record = (changedWidgetIds: string[], refusal?: string) =>
-      applied.push({ op, changedWidgetIds, ...(refusal ? { refusal } : {}) });
+    const record = (changedWidgetIds: string[], refusal?: string, handovers?: SqlHandover[]) =>
+      applied.push({
+        op,
+        changedWidgetIds,
+        ...(refusal ? { refusal } : {}),
+        ...(handovers?.length ? { handovers } : {}),
+      });
 
     switch (op.op) {
       case 'sql_edit':
@@ -364,21 +424,32 @@ export function applyEditOps(spec: DashboardSpec, ops: DashboardEditOp[]): Apply
         // that only moves half the charts is worse than no filter at all.
         const targets = op.widgetIds?.length ? new Set(op.widgetIds) : new Set(widgets.map((w) => w.id));
         const changed: string[] = [];
-        const skipped: string[] = [];
+        const skipped: WidgetSpec[] = [];
         widgets = widgets.map((w) => {
           if (!targets.has(w.id)) return w;
           if (w.sql.includes(`{{${f.id}`)) return w; // already wired
           const next = injectWherePredicate(w.sql, predicate);
-          if (next === null) { skipped.push(w.title); return w; }
+          if (next === null) { skipped.push(w); return w; }
           changed.push(w.id);
           return { ...w, sql: next };
         });
         filters = [...filters, f];
+        // A card the app could not edit textually is HANDED OVER, not skipped.
+        // Leaving it alone was the old behaviour and it produced the worst
+        // outcome available: a filter on screen that a headline number quietly
+        // ignores. Beyond the cap it becomes a stated refusal instead.
+        const handedOver = skipped.slice(0, MAX_FILTER_HANDOVERS);
+        const overflow = skipped.slice(MAX_FILTER_HANDOVERS);
         record(
           changed,
-          skipped.length
-            ? `Added the ${f.label} filter. ${skipped.length} widget(s) need a closer look — ${skipped.join(', ')} — because their query shape can't take a filter automatically.`
+          overflow.length
+            ? `Added the ${f.label} filter, but ${overflow.length} more card(s) — ${overflow.map((w) => `"${w.title}"`).join(', ')} — need their queries rewritten to use it. Ask me to apply it to those cards and I will.`
             : undefined,
+          handedOver.map((w) => ({
+            widgetId: w.id,
+            instruction: filterWireInstruction(f, predicate),
+            label: `Apply the ${f.label || f.column} filter to "${w.title}"`,
+          })),
         );
         break;
       }
@@ -444,8 +515,14 @@ export function applyEditOps(spec: DashboardSpec, ops: DashboardEditOp[]): Apply
         const w = widgets[i];
         if (!canSwapType(w.type, op.widgetType)) {
           // Not a refusal of the request — a handover. The caller turns this
-          // into a scoped sql_edit, because the SQL genuinely has to change.
-          record([], `NEEDS_SQL:${op.widgetId}:change "${w.title}" to a ${op.widgetType.replace(/_/g, ' ')}`);
+          // into a scoped model call, because the SQL genuinely has to change:
+          // the target type wants columns this one does not return.
+          const asType = op.widgetType.replace(/_/g, ' ');
+          record([], undefined, [{
+            widgetId: op.widgetId,
+            instruction: `Change "${w.title}" to a ${asType} — return the columns that chart type needs.`,
+            label: `Rewrite "${w.title}" for a ${asType.replace(' chart', '')} chart`,
+          }]);
           break;
         }
         widgets = widgets.map((x, k) => (k === i ? { ...x, type: op.widgetType } : x));
@@ -466,7 +543,11 @@ export function applyEditOps(spec: DashboardSpec, ops: DashboardEditOp[]): Apply
         if (i === undefined) { record([], `Could not find the widget to change.`); break; }
         const next = setLimit(widgets[i].sql, op.limit);
         if (next === null) {
-          record([], `NEEDS_SQL:${op.widgetId}:show ${op.limit} rows in "${widgets[i].title}"`);
+          record([], undefined, [{
+            widgetId: op.widgetId,
+            instruction: `Show ${op.limit} rows in "${widgets[i].title}" — this query has no top-level LIMIT to change.`,
+            label: `Rewrite "${widgets[i].title}" to return ${op.limit} rows`,
+          }]);
           break;
         }
         widgets = widgets.map((x, k) => (k === i ? { ...x, sql: next } : x));
@@ -486,26 +567,34 @@ export function applyEditOps(spec: DashboardSpec, ops: DashboardEditOp[]): Apply
 }
 
 /**
- * Ops the deterministic pass handed back for the model to do — either declared
- * `sql_edit` ops, or type/limit changes that turned out to need SQL after all
- * (the `NEEDS_SQL:` handover). Returned as a flat list of scoped instructions.
+ * Work the deterministic pass handed to the model — declared `sql_edit` ops,
+ * plus everything an op discovered it could not do itself (a filter that would
+ * not inject, a cross-contract chart swap, a limit with nowhere to go).
+ *
+ * `planIndex` is the index in `applied` of the op that produced the handover,
+ * so the caller can hang each one under the right line of the plan the user is
+ * already watching. One op can produce many: `add_filter` on a dashboard of
+ * KPI cards hands over each card separately, and each gets its own step.
  */
-export function pendingSqlEdits(applied: AppliedEdit[]): Array<{ widgetId: string; instruction: string }> {
-  const out: Array<{ widgetId: string; instruction: string }> = [];
-  for (const a of applied) {
-    if (a.op.op === 'sql_edit') { out.push({ widgetId: a.op.widgetId, instruction: a.op.instruction }); continue; }
-    if (a.refusal?.startsWith('NEEDS_SQL:')) {
-      const rest = a.refusal.slice('NEEDS_SQL:'.length);
-      const sep = rest.indexOf(':');
-      if (sep > 0) out.push({ widgetId: rest.slice(0, sep), instruction: rest.slice(sep + 1) });
+export function pendingSqlEdits(
+  applied: AppliedEdit[],
+): Array<{ widgetId: string; instruction: string; label: string; planIndex: number }> {
+  const out: Array<{ widgetId: string; instruction: string; label: string; planIndex: number }> = [];
+  applied.forEach((a, planIndex) => {
+    if (a.op.op === 'sql_edit') {
+      out.push({ widgetId: a.op.widgetId, instruction: a.op.instruction, label: '', planIndex });
     }
-  }
+    for (const h of a.handovers ?? []) out.push({ ...h, planIndex });
+  });
   return out;
 }
 
-/** User-facing refusals (the NEEDS_SQL handovers are internal, not refusals). */
+/**
+ * Refusals to show the user verbatim. A handover is deliberately NOT one: the
+ * request is being carried out, just by the model instead of by a regex, and
+ * telling someone their edit "could not be made" while it is being made is the
+ * bug this whole path exists to remove.
+ */
 export function realRefusals(applied: AppliedEdit[]): string[] {
-  return applied
-    .map((a) => a.refusal)
-    .filter((r): r is string => !!r && !r.startsWith('NEEDS_SQL:'));
+  return applied.map((a) => a.refusal).filter((r): r is string => !!r);
 }

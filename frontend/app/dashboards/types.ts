@@ -68,6 +68,15 @@ export interface RefineStep {
   status: 'pending' | 'running' | 'done' | 'failed';
   /** Short business-language note attached when the step settles. */
   note?: string;
+  /**
+   * Set on steps the server APPENDED after planning, when applying the plan
+   * turned up work it could only name then — one "add a filter" can mean four
+   * named cards having their queries rewritten. Rendered indented under the
+   * step whose id this is, so the checklist shows the real shape of the work.
+   */
+  parentId?: string;
+  /** When this step started running — drives the elapsed counter beside it. */
+  startedAt?: number;
 }
 
 export interface ChatMessage {
@@ -91,6 +100,11 @@ export interface ChatMessage {
    *  flips pending → running → done/failed as `step` events land. Kept on the
    *  finished message as the record of what was done. */
   steps?: RefineStep[];
+  /** When this message started working — drives the "working, 14s" counter,
+   *  which is what actually answers "is it running or is it stuck?". */
+  startedAt?: number;
+  /** Title of the single card this message was scoped to, if any. */
+  scopeTitle?: string;
 }
 
 // ─── Shared Widget Component Props ────────────────────────────────────────────

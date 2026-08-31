@@ -380,6 +380,10 @@ export const refineSpecSchema = z.object({
     }).passthrough(),
     productIds: z.array(z.number().int()).optional(),
     dataLayer: dataLayerEnum,
+    // Set when the user is editing ONE card ("change this card") rather than
+    // the dashboard. The route checks the id against the submitted spec and
+    // filters every planned op down to that widget.
+    scopeWidgetId: z.string().min(1).max(200).optional(),
   }).passthrough(),
 });
 

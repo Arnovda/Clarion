@@ -8,6 +8,7 @@ import {
   canSwapType,
   pendingSqlEdits,
   realRefusals,
+  MAX_FILTER_HANDOVERS,
   type DashboardEditOp,
 } from '../services/dashboardEditOps';
 import type { DashboardSpec, FilterSpec, WidgetSpec } from '../shared/contract';
@@ -140,7 +141,13 @@ describe('applyEditOps', () => {
     expect(realRefusals(applied)).toEqual([]);
   });
 
-  it('add_filter reports widgets whose shape it could not wire, and wires the rest', () => {
+  // The defect this replaced: every kpi_card's SQL is a `WITH curr … prev …`
+  // (the generation prompt requires it for the prior-period delta), and
+  // injectWherePredicate refuses WITH. So adding a filter used to wire up the
+  // charts and leave every headline number unfiltered — with the filter bar
+  // above it saying otherwise. The card is not unfilterable; the predicate
+  // just has to go inside each arm, which is the model's job, not a regex's.
+  it('add_filter hands over the widgets it cannot wire, and wires the rest', () => {
     const cte = widget('w2', { sql: `WITH x AS (SELECT 1) SELECT label, 1 AS value FROM x` });
     const s = spec([widget('w1'), cte]);
     const { spec: out, applied } = applyEditOps(s, [{
@@ -149,7 +156,41 @@ describe('applyEditOps', () => {
     }]);
     expect(out.widgets[0].sql).toContain('{{customer}}');
     expect(out.widgets[1].sql).not.toContain('{{customer}}');
-    expect(realRefusals(applied)[0]).toContain('Widget w2');
+    // Not a refusal — the request is being carried out, by the model.
+    expect(realRefusals(applied)).toEqual([]);
+    const pending = pendingSqlEdits(applied);
+    expect(pending).toHaveLength(1);
+    expect(pending[0].widgetId).toBe('w2');
+    expect(pending[0].instruction).toContain(`('{{customer}}' = 'all' OR customer_name = '{{customer}}')`);
+    expect(pending[0].label).toContain('Widget w2');
+    expect(pending[0].planIndex).toBe(0);
+  });
+
+  it('add_filter hands over a date range with both placeholders', () => {
+    const cte = widget('w1', { sql: `WITH x AS (SELECT 1) SELECT label, 1 AS value FROM x` });
+    const { applied } = applyEditOps(spec([cte]), [{
+      op: 'add_filter',
+      filter: { id: 'period', type: 'date_range', label: 'Period', table: 'f', column: 'invoice_date' },
+    }]);
+    const [pending] = pendingSqlEdits(applied);
+    expect(pending.instruction).toContain(`invoice_date BETWEEN '{{period_from}}' AND '{{period_to}}'`);
+    expect(pending.instruction).toContain('{{period_from}}');
+    expect(pending.instruction).toContain('{{period_to}}');
+  });
+
+  it('add_filter caps how many cards one filter may hand to the model', () => {
+    // Each handover is its own model call; "add a filter" must not silently
+    // become forty of them. Past the cap it is a stated, visible refusal.
+    const many = Array.from({ length: MAX_FILTER_HANDOVERS + 3 }, (_, i) =>
+      widget(`w${i}`, { sql: `WITH x AS (SELECT 1) SELECT label, 1 AS value FROM x` }));
+    const { applied } = applyEditOps(spec(many), [{
+      op: 'add_filter',
+      filter: { id: 'customer', type: 'select', label: 'Customer', table: 'd', column: 'customer_name' },
+    }]);
+    expect(pendingSqlEdits(applied)).toHaveLength(MAX_FILTER_HANDOVERS);
+    const refusals = realRefusals(applied);
+    expect(refusals).toHaveLength(1);
+    expect(refusals[0]).toContain('3 more card(s)');
   });
 
   it('add_filter refuses a duplicate id and an unsafe column', () => {
@@ -212,7 +253,12 @@ describe('applyEditOps', () => {
     expect(out.widgets.map((w) => w.id)).toEqual(['w1']);
     expect(out.widgets[0].title).toBe('Revenue by region');
     expect(out.title).toBe('New title');
-    expect(pendingSqlEdits(applied)).toEqual([{ widgetId: 'w1', instruction: 'group by month' }]);
+    // A declared sql_edit carries no label: it already owns a line of the
+    // plan the user is watching, so the route reuses that step rather than
+    // appending a second one saying the same thing.
+    expect(pendingSqlEdits(applied)).toEqual([
+      { widgetId: 'w1', instruction: 'group by month', label: '', planIndex: 3 },
+    ]);
   });
 
   it('never mutates the input spec', () => {

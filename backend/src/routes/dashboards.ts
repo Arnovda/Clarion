@@ -466,6 +466,18 @@ router.post('/refine-spec', requireAuth, validate(refineSpecSchema), async (req:
 // Every stage is an SSE event, so the chat can show a live checklist instead
 // of dots — which is the other half of the fix: the same minute feels short
 // when you can watch it, and most requests no longer take a minute at all.
+//
+// Events: `phase {text}` · `plan {summary, steps[]}` · `step {id, status,
+// note?, label?, parentId?}` · `done {spec, changes, notes, refusals}` ·
+// `error {error}`. A `step` carrying a `label` for an id the client has not
+// seen APPENDS a step — the server discovers work during APPLY (one filter
+// can need N cards rewritten) and each of those gets its own visible line
+// under the op that caused it, rather than one line sitting silent.
+//
+// `scopeWidgetId` in the body narrows the whole pipeline to a single card:
+// the planner is shown only that widget, every returned op is filtered to it
+// in code, and escalation is disabled — regenerating a dashboard is the one
+// thing "change this card" must never do.
 // ---------------------------------------------------------------------------
 
 /** Business-language label for a plan step (never says SQL/spec/widget-id). */
@@ -495,14 +507,28 @@ function editOpLabel(op: DashboardEditOp, spec: DashboardSpec): string {
 router.post('/refine-spec-stream', requireAuth, validate(refineSpecSchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const db = reqDb(req);
-    const { connectionId, refinement, currentSpec, productIds, dataLayer } = req.body as {
+    const { connectionId, refinement, currentSpec, productIds, dataLayer, scopeWidgetId } = req.body as {
       connectionId: number;
       refinement: string;
       currentSpec: DashboardSpec;
       productIds?: number[];
       dataLayer?: 'product' | 'source';
+      /** Set when the user is editing ONE card rather than the dashboard. */
+      scopeWidgetId?: string;
     };
     const tenantId = req.user!.tenantId;
+
+    // Scoped edit: "change this card". The scope is enforced in CODE below —
+    // the prompt is told about it, but every op the planner returns is filtered
+    // against this widget id, because a request aimed at one card must not be
+    // able to rearrange the dashboard around it.
+    const scopeWidget = scopeWidgetId
+      ? currentSpec.widgets.find((w) => w.id === scopeWidgetId)
+      : undefined;
+    if (scopeWidgetId && !scopeWidget) {
+      res.status(400).json({ ok: false, error: 'That card is no longer on this dashboard.' });
+      return;
+    }
 
     const effectiveProductIds = productIds?.length ? productIds : currentSpec.productIds;
     const effectiveLayer = dataLayer ?? currentSpec.dataLayer;
@@ -531,6 +557,13 @@ router.post('/refine-spec-stream', requireAuth, validate(refineSpecSchema), asyn
     // The full-spec path — used when the planner asks for it, and as the
     // safety net when the fast path itself fails.
     const escalate = async (why: string) => {
+      // A scoped edit must never escalate: regenerating the whole dashboard is
+      // the opposite of what "change just this card" asked for.
+      if (scopeWidget) {
+        log.warn({ why, widgetId: scopeWidget.id }, 'scoped edit failed — refusing to regenerate the dashboard');
+        finish(currentSpec, [], [`Could not change "${scopeWidget.title}" — it was left as it was.`]);
+        return;
+      }
       sse.emit({ type: 'phase', text: 'Reworking the dashboard as a whole — this takes a little longer…' });
       log.info({ why }, 'refine-spec-stream: escalating to full regeneration');
       const { insights: _i, validation: _v, ...specForAI } = currentSpec;
@@ -553,7 +586,10 @@ router.post('/refine-spec-stream', requireAuth, validate(refineSpecSchema), asyn
     };
 
     try {
-      sse.emit({ type: 'phase', text: 'Reading your request…' });
+      sse.emit({
+        type: 'phase',
+        text: scopeWidget ? `Reading your request for "${scopeWidget.title}"…` : 'Reading your request…',
+      });
 
       // The tiered fast path used to sit behind the August release, so that an
       // operator chose who got it. That gate is gone with the train: everyone
@@ -562,16 +598,39 @@ router.post('/refine-spec-stream', requireAuth, validate(refineSpecSchema), asyn
       // the full-spec regeneration, which is the same result, slower.
 
       // ── PLAN ────────────────────────────────────────────────────────────
+      // A scoped edit shows the planner ONLY the card in question, so it
+      // cannot propose changes to cards it cannot see, and keeps the cheap
+      // deterministic ops available: "show 20 rows" and "make it a bar chart"
+      // stay instant, and only a genuine query change costs a model call.
+      const planSpec = scopeWidget ? { ...currentSpec, widgets: [scopeWidget] } : currentSpec;
+      const planRequest = scopeWidget
+        ? `The user is editing ONLY the card titled "${scopeWidget.title}" (widget id ${scopeWidget.id}). `
+          + 'Every op must target that widget id. Do not add or remove filters, do not add or remove cards, '
+          + `do not retitle the dashboard.\n\nTheir request: ${refinement}`
+        : refinement;
+
       let plan;
       try {
-        plan = await planDashboardEdit(refinement, currentSpec, semanticCtx.semanticContext, semanticCtx.relationshipContext);
+        plan = await planDashboardEdit(planRequest, planSpec, semanticCtx.semanticContext, semanticCtx.relationshipContext);
       } catch (planErr) {
         log.warn({ err: planErr instanceof Error ? planErr.message : String(planErr) }, 'edit planner failed — escalating');
         await escalate('planner error');
         return;
       }
-      const rawOps = Array.isArray(plan.ops) ? (plan.ops as DashboardEditOp[]) : [];
-      if (plan.strategy !== 'ops' || rawOps.length === 0) {
+      let rawOps = Array.isArray(plan.ops) ? (plan.ops as DashboardEditOp[]) : [];
+      let summary = plan.summary;
+
+      if (scopeWidget) {
+        // Enforce the scope rather than trusting the prompt: drop anything
+        // aimed elsewhere or at the dashboard as a whole.
+        rawOps = rawOps.filter((op) => 'widgetId' in op && op.widgetId === scopeWidget.id);
+        if (rawOps.length === 0) {
+          // Either the planner asked to regenerate, or its whole plan was out
+          // of scope. Both mean the same thing here: rewrite this one query.
+          rawOps = [{ op: 'sql_edit', widgetId: scopeWidget.id, instruction: refinement }];
+          summary = `Updating "${scopeWidget.title}".`;
+        }
+      } else if (plan.strategy !== 'ops' || rawOps.length === 0) {
         await escalate(plan.strategy === 'regenerate' ? 'planner chose regenerate' : 'empty plan');
         return;
       }
@@ -579,7 +638,7 @@ router.post('/refine-spec-stream', requireAuth, validate(refineSpecSchema), asyn
 
       // The plan, as a checklist the user can watch fill in.
       const steps = rawOps.map((op, i) => ({ id: `s${i}`, label: editOpLabel(op, currentSpec) }));
-      sse.emit({ type: 'plan', summary: plan.summary, steps });
+      sse.emit({ type: 'plan', summary, steps });
 
       // ── APPLY (deterministic, instant) ─────────────────────────────────
       const { spec: appliedSpec, applied } = applyEditOps(currentSpec, rawOps);
@@ -590,32 +649,81 @@ router.post('/refine-spec-stream', requireAuth, validate(refineSpecSchema), asyn
        *  one fails the check below, the repair hands the model the ORIGINAL
        *  query and asks it to wire the filter in properly (usually a join). */
       const filterInjected = new Set<string>();
-      applied.forEach((a, i) => {
-        if (a.op.op === 'add_filter') for (const id of a.changedWidgetIds) filterInjected.add(id);
-        if (isDeterministicOp(a.op)) {
-          sse.emit({
-            type: 'step', id: `s${i}`,
-            status: a.refusal && !a.refusal.startsWith('NEEDS_SQL:') ? 'failed' : 'done',
-            ...(a.refusal && !a.refusal.startsWith('NEEDS_SQL:') ? { note: a.refusal } : {}),
-          });
-        }
-      });
 
       // ── SCOPED model calls, in parallel ────────────────────────────────
+      // Each handover gets its OWN step, appended under the op that produced
+      // it. That is the difference between "Add a Customer filter ⟳" sitting
+      // silent for half a minute and watching four named cards be rewritten
+      // one by one — the same wait, legible.
       const sqlEdits = pendingSqlEdits(applied);
+      const perOpHandovers = new Map<number, number>(); // planIndex → count still open
+      const stepIdFor = new Map<typeof sqlEdits[number], string>();
+      const subCounter = new Map<number, number>();
+      for (const edit of sqlEdits) {
+        if (!edit.label) { stepIdFor.set(edit, `s${edit.planIndex}`); continue; } // declared sql_edit owns its plan line
+        const n = subCounter.get(edit.planIndex) ?? 0;
+        subCounter.set(edit.planIndex, n + 1);
+        stepIdFor.set(edit, `s${edit.planIndex}h${n}`);
+        perOpHandovers.set(edit.planIndex, (perOpHandovers.get(edit.planIndex) ?? 0) + 1);
+      }
+
+      applied.forEach((a, i) => {
+        if (a.op.op === 'add_filter') for (const id of a.changedWidgetIds) filterInjected.add(id);
+        if (!isDeterministicOp(a.op)) return;
+        if (a.refusal) {
+          sse.emit({ type: 'step', id: `s${i}`, status: 'failed', note: a.refusal });
+          return;
+        }
+        // An op with handovers is not finished — it stays running until every
+        // card it handed over has settled, so the tick means the whole thing.
+        if (perOpHandovers.get(i)) {
+          sse.emit({ type: 'step', id: `s${i}`, status: 'running' });
+          return;
+        }
+        sse.emit({ type: 'step', id: `s${i}`, status: 'done' });
+      });
+
+      /** Settle a parent step once its last handover lands. */
+      const handoverFailures = new Map<number, number>();
+      const settleParent = (planIndex: number, ok: boolean) => {
+        if (!ok) handoverFailures.set(planIndex, (handoverFailures.get(planIndex) ?? 0) + 1);
+        const left = (perOpHandovers.get(planIndex) ?? 1) - 1;
+        perOpHandovers.set(planIndex, left);
+        if (left > 0) return;
+        const failed = handoverFailures.get(planIndex) ?? 0;
+        sse.emit({
+          type: 'step', id: `s${planIndex}`,
+          status: failed === 0 ? 'done' : 'failed',
+          ...(failed ? { note: `${failed} card(s) could not take it` } : {}),
+        });
+      };
+
       const addOps = applied
         .map((a, i) => ({ a, i }))
         .filter(({ a }) => a.op.op === 'add_widget');
 
+      if (sqlEdits.length + addOps.length > 0) {
+        // Announce the sub-steps before the calls start, so the checklist is
+        // complete on screen while it fills in rather than growing under you.
+        for (const edit of sqlEdits) {
+          if (!edit.label) continue;
+          sse.emit({
+            type: 'step', id: stepIdFor.get(edit)!, parentId: `s${edit.planIndex}`,
+            label: edit.label, status: 'pending',
+          });
+        }
+        const n = sqlEdits.length + addOps.length;
+        sse.emit({ type: 'phase', text: `Writing ${n === 1 ? 'the query' : `${n} queries`}…` });
+      }
+
       await Promise.all([
         ...sqlEdits.map(async (edit) => {
-          const idx = applied.findIndex((a) =>
-            (a.op.op === 'sql_edit' && a.op.widgetId === edit.widgetId) ||
-            (a.refusal?.startsWith(`NEEDS_SQL:${edit.widgetId}:`)));
-          const stepId = `s${idx}`;
+          const stepId = stepIdFor.get(edit)!;
+          const isSub = !!edit.label;
           const widget = spec.widgets.find((w) => w.id === edit.widgetId);
           if (!widget) {
             sse.emit({ type: 'step', id: stepId, status: 'failed', note: 'Could not find that card.' });
+            if (isSub) settleParent(edit.planIndex, false);
             return;
           }
           sse.emit({ type: 'step', id: stepId, status: 'running' });
@@ -631,11 +739,13 @@ router.post('/refine-spec-stream', requireAuth, validate(refineSpecSchema), asyn
             filterInjected.delete(edit.widgetId); // the model now owns this SQL
             sse.emit({ type: 'step', id: stepId, status: 'done', note: out.note });
             if (out.note) notes.push(out.note);
+            if (isSub) settleParent(edit.planIndex, true);
           } catch (e) {
             const msg = e instanceof Error ? e.message : String(e);
             log.warn({ widgetId: edit.widgetId, err: msg }, 'scoped widget edit failed — widget left unchanged');
             sse.emit({ type: 'step', id: stepId, status: 'failed', note: `Could not change "${widget.title}" — left it as it was.` });
             refusals.push(`Could not change "${widget.title}" — left it as it was.`);
+            if (isSub) settleParent(edit.planIndex, false);
           }
         }),
         ...addOps.map(async ({ a, i }) => {
