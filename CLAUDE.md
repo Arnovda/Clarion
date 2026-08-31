@@ -31,7 +31,69 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-08-29 (DASHBOARD REFINE REBUILT — tiered edits, visible
+**Last updated:** 2026-08-31 (COMPETITIVE ANALYSIS vs PELIQAN — doc only, no code
+changed)
+
+**NEW DOC: `docs/backlog/clarion-vs-peliqan.md` (2026-08-31, doc only).** Owner
+asked what Peliqan.io can do, what Clarion can do, and what each has that the
+other lacks — reasoned from someone CHOOSING a data platform, not building one.
+Clarion's side is measured against this codebase (absences verified by
+repo-wide grep, not assumed); **Peliqan's side is their own marketing plus
+third-party reviews and is NOT verified** — `peliqan.io` is blocked by this
+environment's egress policy (`EGRESS_BLOCKED`, a policy block, not a network
+fault; not routed around), so the picture is built from search results that read
+their pages. Every claim in the doc is marked *(gemeten)* or *(claim)*.
+- **The shape of the difference: Peliqan sells the plumbing plus an ACTIVATION
+  layer; Clarion sells UNDERSTANDING and TRUST in the answer.** They overlap in
+  the middle (sources → warehouse → semantics → plain-language questions →
+  dashboards) and diverge at both ends.
+- **Measured asymmetry at the input end: 250–300+ connectors (claim) vs
+  Clarion's 6** — 2 SaaS (Exact Online, Odoo) + 4 direct DBs. And Clarion has
+  **no file/spreadsheet connector at all** (verified: nothing matching
+  excel/csv/sheet in `packages/connectors/src/`), which is the cheapest possible
+  second source and already sits as P1 in `multi-source-strategy.md`.
+- **A whole output side Clarion does not have, verified by grep returning
+  nothing**: reverse ETL / writeback (zero hits repo-wide), an MCP endpoint or
+  public API for external agents (zero), embedding / white-label / external share
+  links, low-code data apps. Plus federated cross-source query (they use Trino)
+  where **Clarion's query layer is still connection-scoped** (`routes/query.ts`
+  takes one `connectionId`) — the P4 debt, now with a competitor selling exactly
+  what it blocks.
+- **What Clarion has that they don't, and it is not nothing**: the model is
+  designed FOR the user (bus-matrix / connector templates, one button on
+  `/build`) rather than BY the user (their SQL + Python + spreadsheet). **Their
+  own G2 reviews say steep learning curve and that SQL/Python knowledge is
+  needed** — that is the only independent evidence in the document, and it names
+  precisely the gap Clarion exists to fill. Plus per-answer trust display,
+  the worksheet/step-tree Ask AI, morning briefs, the measured relationship
+  canvas with source-laid vs manually-laid, linked grids with coverage, release
+  trains. And a cost base orders below their €350/month floor — **the segment
+  under that floor is unreachable for them and serviceable for Clarion**.
+- **THE FINDING THAT MATTERS IS NOT A FEATURE LIST: they are already on this
+  lawn.** Peliqan explicitly targets **Benelux accountancy firms running dozens
+  of Exact Online tenants**, with per-tenant isolation, white-label dashboards
+  and cross-tenant aggregation, plus an "Exact Online + Claude CFO playbook" and
+  an Odoo MCP for Odoo partners (all claims). Same two ERPs, same geography, and
+  **the same channel** — the accounting firm — that `warehouse-value-for-smb.md`
+  §2.4 has as Clarion's channel strategy with the above-tenant tier still
+  PLANNED. So G12 (portfolio tier) is more urgent than its position in the gap
+  analysis suggests — but the doc argues explicitly AGAINST chasing them on
+  breadth: 6 vs 300 connectors is unwinnable and unnecessary, and their
+  technical-user requirement is structural to what they sell, not a bug they
+  patch next quarter.
+- **Re-ordered build advice (does not replace the gap analysis, re-ranks it):**
+  spreadsheet connector → un-scope the query layer → MCP/public API → external
+  share + white-label; and start the SOC 2 Type II clock, since the engineering
+  exists and only the certificate (with its lead time) does not. **Explicit
+  do-not-build list**: no connector-count race, no writeback yet (different risk
+  class — writing into a customer's accounting system), no low-code app
+  platform, and above all do not thin the trust layer to buy breadth.
+- **Honest limits stated in the doc**: no Peliqan feature was verified, no price
+  comparison is possible (Clarion has no pricing), their text-to-SQL quality is
+  unmeasured — and a real bake-off (same Exact Online dataset, same ten
+  questions, both products) would be worth more than the whole document.
+
+**Prior last updated:** 2026-08-29 (DASHBOARD REFINE REBUILT — tiered edits, visible
 progress, and the empty-dashboard-after-refine defect fixed)
 
 **THE DASHBOARD CHAT SHOWS ITS WORK NOW, AND SMALL EDITS ARE SMALL (2026-08-29).
