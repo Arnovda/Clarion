@@ -270,14 +270,15 @@ app.use('/api/grids',           computeLimiter, managedGridsRouter);
 app.use('/api/saved-questions', savedQuestionsRouter);
 app.use('/api/admin/ai-usage',  aiUsageRouter);
 app.use('/api/admin/ai-routing', aiRoutingRouter);
-// Feature flags. `/api/features` answers "what is on for MY tenant" to any
-// signed-in user; the console under /api/admin is gated to platform operators
-// (an env allowlist), NOT to tenant admins — see routes/featureFlags.ts.
 // Personal API tokens, and the one surface that accepts them. The add-in
 // router is compute-limited like the other query paths — a token lives on a
 // laptop, so it should not be able to run unbounded queries by accident.
 app.use('/api/api-tokens',          apiTokensRouter);
 app.use('/api/addin',               computeLimiter, addinRouter);
+
+// Feature flags. `/api/features` answers "what is on for MY tenant" to any
+// signed-in user; the console under /api/admin is gated to platform operators
+// (an env allowlist), NOT to tenant admins — see routes/featureFlags.ts.
 app.use('/api/features',            featuresRouter);
 app.use('/api/admin/feature-flags', featureFlagsRouter);
 

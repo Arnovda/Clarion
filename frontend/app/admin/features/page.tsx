@@ -17,13 +17,26 @@
  * and that is exactly wrong here — a customer's admin must not be able to
  * grant themselves unreleased features. Visibility keys off `useIsOperator()`;
  * the API refuses non-operators regardless of what the client renders.
+ *
+ * TO SOMEONE WHO IS NOT AN OPERATOR, THIS PAGE DOES NOT EXIST. It renders the
+ * ordinary not-found screen — no title, no description, no explanation of what
+ * the page decides or how access is granted. The API already answers 404
+ * rather than 403 for exactly this reason, and the screen used to undo that
+ * care by printing a card that told any signed-in customer the page was here
+ * and how to get into it.
+ *
+ * The one thing that must NOT be hidden is a FAULT. A failed request is not a
+ * refusal, and telling someone they lack access when the truth is that nothing
+ * could be asked sends them to fix what was never broken — it cost an
+ * afternoon once. So there are three outcomes here, never two: allowed,
+ * not-found, and a fault that says so with its status.
  */
 
 import { useCallback, useEffect, useState } from 'react';
 import { Loader2, Check, Users } from 'lucide-react';
 import api from '@/lib/api';
 import AppShell from '@/components/layout/AppShell';
-import { useIsOperator } from '@/lib/features';
+import { useIsOperator, useFeaturesFailed, useFeaturesLoaded } from '@/lib/features';
 import { formatRelative } from '@/lib/dates';
 import { cn } from '@/lib/cn';
 import type { FeatureRollout } from '@/lib/contract';
@@ -71,6 +84,17 @@ function isWaitingForAudience(flag: FlagRow): boolean {
   return flag.rollout !== 'tenants' || flag.tenants.length === 0;
 }
 
+/** The page's chrome, shared by all three outcomes so they cannot drift apart. */
+function Shell({ children }: { children: React.ReactNode }) {
+  return (
+    <AppShell>
+      <div className="flex-1 overflow-y-auto">
+        <div className="max-w-3xl mx-auto px-6 py-8">{children}</div>
+      </div>
+    </AppShell>
+  );
+}
+
 export default function FeatureFlagsPage() {
   const isOperator = useIsOperator();
   const [flags, setFlags] = useState<FlagRow[]>([]);
@@ -87,7 +111,14 @@ export default function FeatureFlagsPage() {
   const [denied, setDenied] = useState(false);
   const [saving, setSaving] = useState<string | null>(null);
   const [savedKey, setSavedKey] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  // Two different failures that must not share one variable. A LOAD fault
+  // means the page cannot be shown at all; a SAVE failure happens with the
+  // console already on screen and must leave it there — folding them together
+  // would blank the whole page because one checkbox failed to save.
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const featuresFailed = useFeaturesFailed();
+  const featuresLoaded = useFeaturesLoaded();
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -97,6 +128,7 @@ export default function FeatureFlagsPage() {
       setFlags(d?.flags ?? []);
       setTenants(d?.tenants ?? []);
       setDenied(false);
+      setLoadError(null);
     } catch (e) {
       // 404 is the deliberate refusal (the server answers 404 rather than 403
       // for a non-operator, so a probing tenant admin learns nothing). ANYTHING
@@ -111,7 +143,7 @@ export default function FeatureFlagsPage() {
       } else {
         const msg = (e as { response?: { data?: { error?: string } }; message?: string })
           ?.response?.data?.error ?? (e as { message?: string })?.message;
-        setError(
+        setLoadError(
           `Could not load the releases${status ? ` (server said ${status})` : ''}. `
           + `This is a fault, not a permission problem.${msg ? ` ${msg}` : ''}`,
         );
@@ -125,7 +157,7 @@ export default function FeatureFlagsPage() {
 
   async function save(key: string, rollout: FeatureRollout, tenantIds: number[]) {
     setSaving(key);
-    setError(null);
+    setSaveError(null);
     // Optimistic: ticking a box must feel instant. A failure reloads from the
     // server rather than guessing at what the previous state was.
     setFlags((prev) => prev.map((f) => (
@@ -146,7 +178,7 @@ export default function FeatureFlagsPage() {
       window.setTimeout(() => setSavedKey((k) => (k === key ? null : k)), 2000);
     } catch (e) {
       const msg = (e as { response?: { data?: { error?: string } } })?.response?.data?.error;
-      setError(msg ?? 'That change could not be saved. Nothing was altered.');
+      setSaveError(msg ?? 'That change could not be saved. Nothing was altered.');
       await load();
     } finally {
       setSaving(null);
@@ -169,6 +201,65 @@ export default function FeatureFlagsPage() {
     void save(flag.key, ids.length > 0 ? 'tenants' : 'off', ids);
   }
 
+  // A fault must never wear a refusal's clothes. `error` is set only for a
+  // non-404 answer from the console endpoint; `featuresFailed` covers the other
+  // half — the /features request that decides `isOperator` erroring, which
+  // would otherwise read as "not an operator" and be indistinguishable from it.
+  const faulted = Boolean(loadError) || featuresFailed;
+  const refused = !faulted && (denied || !isOperator);
+
+  // `isOperator` is false until /api/features answers, so deciding anything
+  // before `featuresLoaded` would flash "Page not found" at the very person
+  // this console belongs to. Wait for BOTH requests.
+  const checking = loading || !featuresLoaded;
+
+  // Nothing describing the page renders while we are still deciding who is
+  // reading it — otherwise a customer who guesses the URL sees what it is for
+  // in the moment before being told it does not exist.
+  if (checking) {
+    return (
+      <Shell>
+        <div className="flex items-center gap-2 text-muted text-sm py-10">
+          <Loader2 className="w-4 h-4 animate-spin" aria-hidden="true" /> Loading…
+        </div>
+      </Shell>
+    );
+  }
+
+  // Not an operator: the page is not here. Nothing about what it does, and
+  // nothing about how to be let in — the API's 404 exists to keep exactly that
+  // from a signed-in customer, and printing it on screen gave it back.
+  if (refused) {
+    return (
+      <Shell>
+        <h1 className="font-display text-[28px] leading-tight text-ink mb-2">Page not found</h1>
+        <p className="text-[14.5px] text-ink-3 max-w-[62ch]">
+          That page does not exist. Check the address, or head back to{' '}
+          <a href="/home" className="text-ocean hover:underline">your home page</a>.
+        </p>
+      </Shell>
+    );
+  }
+
+  // A fault gets its own screen too, and deliberately says nothing about what
+  // this page is for: while the check itself is broken we do not know who is
+  // reading it, and a description of the release console is exactly what the
+  // 404 above exists to withhold from a customer.
+  if (faulted) {
+    return (
+      <Shell>
+        <h1 className="font-display text-[28px] leading-tight text-ink mb-2">Something went wrong</h1>
+        <div className="rounded-md border border-err bg-err-soft px-4 py-3 text-[13.5px] text-err max-w-[62ch]">
+          {loadError ?? (
+            'Could not check your access — the request for your release settings failed. '
+            + 'This is a fault, not a permission problem. Reload; if it keeps happening, '
+            + 'check the backend logs.'
+          )}
+        </div>
+      </Shell>
+    );
+  }
+
   return (
     <AppShell>
       <div className="flex-1 overflow-y-auto">
@@ -182,30 +273,10 @@ export default function FeatureFlagsPage() {
             nothing here needs a deploy or a restart.
           </p>
 
-          {loading && (
-            <div className="flex items-center gap-2 text-muted text-sm py-10">
-              <Loader2 className="w-4 h-4 animate-spin" aria-hidden="true" /> Loading…
-            </div>
-          )}
-
-          {!loading && (denied || !isOperator) && (
-            <div className="rounded-md border border-line bg-raised p-5">
-              <h2 className="font-display text-[17px] text-ink mb-1.5">This page is not open to you</h2>
-              <p className="text-[14px] text-ink-3 max-w-[60ch]">
-                Deciding which customers see a new feature is kept separate from managing an account, so
-                that no customer can switch on work that has not been released to them.
-              </p>
-              <p className="text-[14px] text-ink-3 max-w-[60ch] mt-2.5">
-                To open it, put your email address in the <code className="font-mono text-[12.5px] bg-softer px-1 py-0.5 rounded-sm">.ops/operators</code>{' '}
-                file and push it. It takes a couple of minutes to apply.
-              </p>
-            </div>
-          )}
-
-          {!loading && !denied && isOperator && (
+          {isOperator && (
             <>
-              {error && (
-                <div className="mb-5 rounded-md border border-err bg-err-soft px-4 py-3 text-[13.5px] text-err">{error}</div>
+              {saveError && (
+                <div className="mb-5 rounded-md border border-err bg-err-soft px-4 py-3 text-[13.5px] text-err">{saveError}</div>
               )}
 
               {/* Features nobody has been given yet lead the page.

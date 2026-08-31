@@ -14,6 +14,15 @@
  * Use `featuresLoaded` when a page needs to tell "off" from "not known yet"
  * — for example to hold a skeleton rather than render the old layout first.
  *
+ * A FAILED FETCH IS NOT AN ANSWER, and this file has to say which it got.
+ * Everything reading false because the request errored looks identical to
+ * everything being switched off — and for `isOperator` that difference is the
+ * whole story: it is the difference between "you may not open this" and "we
+ * could not ask". That conflation cost an afternoon once already, one layer
+ * up, and the fix there does not help while this layer still swallows it. So
+ * `failed` is carried alongside, and a screen whose refusal would be a lie
+ * checks it.
+ *
  * There is no client-side cache on purpose. The response is a few dozen bytes,
  * the shell mounts once per navigation session, and caching it in
  * sessionStorage would mean a rollout change needs the tab closed to take
@@ -28,16 +37,21 @@ interface FeaturesState {
   features: Record<string, boolean>;
   isOperator: boolean;
   loaded: boolean;
+  /** The request errored. Flags read false, but nothing here was answered. */
+  failed: boolean;
 }
 
 const FeaturesContext = createContext<FeaturesState>({
   features: {},
   isOperator: false,
   loaded: false,
+  failed: false,
 });
 
 export function FeaturesProvider({ children }: { children: ReactNode }) {
-  const [state, setState] = useState<FeaturesState>({ features: {}, isOperator: false, loaded: false });
+  const [state, setState] = useState<FeaturesState>({
+    features: {}, isOperator: false, loaded: false, failed: false,
+  });
 
   useEffect(() => {
     let cancelled = false;
@@ -50,13 +64,16 @@ export function FeaturesProvider({ children }: { children: ReactNode }) {
           features: data?.features ?? {},
           isOperator: !!data?.isOperator,
           loaded: true,
+          failed: false,
         });
       })
       .catch(() => {
         // Signed out, offline, or the endpoint is unavailable. Everything stays
-        // off and the app renders as it did before flags existed. `loaded` is
-        // set so pages waiting on it are released rather than stuck.
-        if (!cancelled) setState({ features: {}, isOperator: false, loaded: true });
+        // off and the app renders as it did before flags existed — but `failed`
+        // records that this is silence, not an answer, so a screen that would
+        // otherwise tell someone they are not allowed in can say the truth
+        // instead.
+        if (!cancelled) setState({ features: {}, isOperator: false, loaded: true, failed: true });
       });
     return () => { cancelled = true; };
   }, []);
@@ -77,4 +94,14 @@ export function useFeaturesLoaded(): boolean {
 /** True when this user may change rollouts. Gates the operator console only. */
 export function useIsOperator(): boolean {
   return useContext(FeaturesContext).isOperator;
+}
+
+/**
+ * True when the flags request ERRORED, so `isOperator` and every flag are
+ * defaults rather than answers. Only screens whose behaviour would be a
+ * false statement need this — chiefly the operator console, which must not
+ * tell someone they lack access when the truth is that nothing was asked.
+ */
+export function useFeaturesFailed(): boolean {
+  return useContext(FeaturesContext).failed;
 }
