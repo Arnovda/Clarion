@@ -30,6 +30,17 @@
  * could be asked sends them to fix what was never broken — it cost an
  * afternoon once. So there are three outcomes here, never two: allowed,
  * not-found, and a fault that says so with its status.
+ *
+ * WHY THIS FILE IS TWO COMPONENTS. `FeaturesProvider` lives inside AppShell, so
+ * a page that reads a flag in its own body reads it ABOVE the provider — and
+ * for a whole afternoon this page did exactly that. It got the context default
+ * (`isOperator: false`) and refused its own operator, while the nav entry two
+ * panels over, which lives inside the shell, rendered correctly. Every other
+ * explanation was chased first: the email allowlist, the deploy pipeline, the
+ * production logs. The chrome is therefore the default export and every hook
+ * lives in `FeatureFlagsConsole`, one level inside `<AppShell>`. The hooks now
+ * throw outside the provider (see `lib/features.tsx`) so this cannot recur
+ * silently — but keep the split: a throwing page is still a broken page.
  */
 
 import { useCallback, useEffect, useState } from 'react';
@@ -84,18 +95,7 @@ function isWaitingForAudience(flag: FlagRow): boolean {
   return flag.rollout !== 'tenants' || flag.tenants.length === 0;
 }
 
-/** The page's chrome, shared by all three outcomes so they cannot drift apart. */
-function Shell({ children }: { children: React.ReactNode }) {
-  return (
-    <AppShell>
-      <div className="flex-1 overflow-y-auto">
-        <div className="max-w-3xl mx-auto px-6 py-8">{children}</div>
-      </div>
-    </AppShell>
-  );
-}
-
-export default function FeatureFlagsPage() {
+function FeatureFlagsConsole() {
   const isOperator = useIsOperator();
   const [flags, setFlags] = useState<FlagRow[]>([]);
   const [tenants, setTenants] = useState<TenantRow[]>([]);
@@ -218,11 +218,9 @@ export default function FeatureFlagsPage() {
   // in the moment before being told it does not exist.
   if (checking) {
     return (
-      <Shell>
-        <div className="flex items-center gap-2 text-muted text-sm py-10">
-          <Loader2 className="w-4 h-4 animate-spin" aria-hidden="true" /> Loading…
-        </div>
-      </Shell>
+      <div className="flex items-center gap-2 text-muted text-sm py-10">
+        <Loader2 className="w-4 h-4 animate-spin" aria-hidden="true" /> Loading…
+      </div>
     );
   }
 
@@ -231,13 +229,13 @@ export default function FeatureFlagsPage() {
   // from a signed-in customer, and printing it on screen gave it back.
   if (refused) {
     return (
-      <Shell>
+      <>
         <h1 className="font-display text-[28px] leading-tight text-ink mb-2">Page not found</h1>
         <p className="text-[14.5px] text-ink-3 max-w-[62ch]">
           That page does not exist. Check the address, or head back to{' '}
           <a href="/home" className="text-ocean hover:underline">your home page</a>.
         </p>
-      </Shell>
+      </>
     );
   }
 
@@ -247,7 +245,7 @@ export default function FeatureFlagsPage() {
   // 404 above exists to withhold from a customer.
   if (faulted) {
     return (
-      <Shell>
+      <>
         <h1 className="font-display text-[28px] leading-tight text-ink mb-2">Something went wrong</h1>
         <div className="rounded-md border border-err bg-err-soft px-4 py-3 text-[13.5px] text-err max-w-[62ch]">
           {loadError ?? (
@@ -256,156 +254,167 @@ export default function FeatureFlagsPage() {
             + 'check the backend logs.'
           )}
         </div>
-      </Shell>
+      </>
     );
   }
 
   return (
+    <>
+    <h1 className="font-display text-[28px] leading-tight text-ink mb-2">Who sees what</h1>
+    <p className="text-[14.5px] text-ink-3 max-w-[62ch] mb-8">
+      Each release arrives switched off. Tick the customers who should get it — start with your own
+      test account — and untick to take it away again. One tick covers everything in that release,
+      so there is nothing to decide feature by feature. Changes apply within about 20 seconds;
+      nothing here needs a deploy or a restart.
+    </p>
+
+    {isOperator && (
+      <>
+        {saveError && (
+          <div className="mb-5 rounded-md border border-err bg-err-soft px-4 py-3 text-[13.5px] text-err">{saveError}</div>
+        )}
+
+        {/* Features nobody has been given yet lead the page.
+            Promoting a build makes code reachable for EVERY tenant at
+            once — one revision serves them all — so the audience choice
+            is a separate act, and this screen is where it happens. The
+            failure that matters is a feature reaching production and
+            then sitting switched off because nothing said it was
+            waiting; a deploy links straight here, and this banner is
+            what it lands on. Counted from the same derived state the
+            rows use, so it can never disagree with them. */}
+        {waiting.length > 0 && (
+          <div className="mb-5 rounded-md border border-ocean-soft bg-ocean-softer px-4 py-3">
+            <p className="text-[13.5px] text-ink">
+              <span className="font-medium">
+                {waiting.length === 1
+                  ? 'A new release is live but nobody can see it yet'
+                  : `${waiting.length} releases are live but nobody can see them yet`}
+              </span>
+              {' — '}
+              {waiting.map((f) => f.name).join(', ')}. Tick the customers who should get each one.
+            </p>
+          </div>
+        )}
+
+        <div className="flex flex-col gap-4">
+          {ordered.map((flag) => {
+            const busy = saving === flag.key;
+            const everyone = flag.rollout === 'all';
+            return (
+              <section key={flag.key} className="rounded-md border border-line bg-raised overflow-hidden">
+                <header className="px-5 pt-4 pb-3.5">
+                  <div className="flex items-start justify-between gap-4">
+                    <h2 className="font-display text-[17px] text-ink leading-snug">{flag.name}</h2>
+                    <div className="flex items-center gap-2 shrink-0 pt-0.5">
+                      {savedKey === flag.key && (
+                        <span className="flex items-center gap-1 text-ok text-[12px]">
+                          <Check className="w-3.5 h-3.5" aria-hidden="true" /> Saved
+                        </span>
+                      )}
+                      {busy && <Loader2 className="w-3.5 h-3.5 animate-spin text-muted" aria-hidden="true" />}
+                    </div>
+                  </div>
+                  <p className="text-[13.5px] text-ink-3 max-w-[60ch] mt-1">{flag.description}</p>
+                  <p className="flex items-center gap-1.5 text-[12.5px] text-muted mt-2.5">
+                    <Users className="w-3.5 h-3.5" aria-hidden="true" />
+                    Currently seen by: <span className="text-ink-3">{audienceSummary(flag, tenants)}</span>
+                  </p>
+                </header>
+
+                <div className="border-t border-line bg-surface px-5 py-3">
+                  <ul className="flex flex-col">
+                    <li>
+                      <label
+                        className={cn(
+                          'flex items-center gap-3 py-2 cursor-pointer select-none',
+                          busy && 'opacity-60 pointer-events-none',
+                        )}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={everyone}
+                          disabled={busy}
+                          onChange={() => toggleEveryone(flag)}
+                          className="w-4 h-4 accent-[color:var(--ocean)] cursor-pointer"
+                        />
+                        <span className="text-[14px] text-ink">Everyone</span>
+                        <span className="text-[12.5px] text-muted">including customers who join later</span>
+                      </label>
+                    </li>
+
+                    {tenants.map((t) => {
+                      const on = everyone || flag.tenants.some((x) => x.id === t.id);
+                      return (
+                        <li key={t.id} className="border-t border-line first:border-t-0">
+                          <label
+                            className={cn(
+                              'flex items-center gap-3 py-2 cursor-pointer select-none',
+                              (busy || everyone) && 'opacity-60',
+                              busy && 'pointer-events-none',
+                              // While Everyone is on, the individual rows show as
+                              // ticked but are not the control — unticking one would
+                              // silently mean "everyone except". Turn Everyone off first.
+                              everyone && 'pointer-events-none',
+                            )}
+                          >
+                            <input
+                              type="checkbox"
+                              checked={on}
+                              disabled={busy || everyone}
+                              onChange={() => toggleCustomer(flag, t.id)}
+                              className="w-4 h-4 accent-[color:var(--ocean)] cursor-pointer"
+                            />
+                            <span className="text-[14px] text-ink">{t.name}</span>
+                          </label>
+                        </li>
+                      );
+                    })}
+
+                    {tenants.length === 0 && (
+                      <li className="py-2 text-[13.5px] text-muted">No customer accounts yet.</li>
+                    )}
+                  </ul>
+
+                  {/* A customer removed after being picked still counts toward the
+                      audience — show it so the summary line above adds up. */}
+                  {flag.tenants.some((t) => !tenants.find((x) => x.id === t.id)) && (
+                    <p className="text-[12.5px] text-muted pt-2 border-t border-line mt-1">
+                      Also on: {flag.tenants.filter((t) => !tenants.find((x) => x.id === t.id)).map((t) => t.name).join(', ')}
+                    </p>
+                  )}
+                </div>
+
+                {flag.updated_at && (
+                  <p className="px-5 py-2.5 border-t border-line text-[12px] text-muted-2">
+                    Last changed {formatRelative(flag.updated_at)}
+                    {flag.updated_by ? ` by ${flag.updated_by}` : ''}
+                  </p>
+                )}
+              </section>
+            );
+          })}
+
+          {flags.length === 0 && (
+            <p className="text-[14px] text-muted">Nothing is waiting to be released right now.</p>
+          )}
+        </div>
+      </>
+    )}
+    </>
+  );
+}
+
+/**
+ * The chrome only. Nothing here reads a flag, describes the page, or decides
+ * anything — the console one level in does all of it, inside the provider.
+ */
+export default function FeatureFlagsPage() {
+  return (
     <AppShell>
       <div className="flex-1 overflow-y-auto">
         <div className="max-w-3xl mx-auto px-6 py-8">
-
-          <h1 className="font-display text-[28px] leading-tight text-ink mb-2">Who sees what</h1>
-          <p className="text-[14.5px] text-ink-3 max-w-[62ch] mb-8">
-            Each release arrives switched off. Tick the customers who should get it — start with your own
-            test account — and untick to take it away again. One tick covers everything in that release,
-            so there is nothing to decide feature by feature. Changes apply within about 20 seconds;
-            nothing here needs a deploy or a restart.
-          </p>
-
-          {isOperator && (
-            <>
-              {saveError && (
-                <div className="mb-5 rounded-md border border-err bg-err-soft px-4 py-3 text-[13.5px] text-err">{saveError}</div>
-              )}
-
-              {/* Features nobody has been given yet lead the page.
-                  Promoting a build makes code reachable for EVERY tenant at
-                  once — one revision serves them all — so the audience choice
-                  is a separate act, and this screen is where it happens. The
-                  failure that matters is a feature reaching production and
-                  then sitting switched off because nothing said it was
-                  waiting; a deploy links straight here, and this banner is
-                  what it lands on. Counted from the same derived state the
-                  rows use, so it can never disagree with them. */}
-              {waiting.length > 0 && (
-                <div className="mb-5 rounded-md border border-ocean-soft bg-ocean-softer px-4 py-3">
-                  <p className="text-[13.5px] text-ink">
-                    <span className="font-medium">
-                      {waiting.length === 1
-                        ? 'A new release is live but nobody can see it yet'
-                        : `${waiting.length} releases are live but nobody can see them yet`}
-                    </span>
-                    {' — '}
-                    {waiting.map((f) => f.name).join(', ')}. Tick the customers who should get each one.
-                  </p>
-                </div>
-              )}
-
-              <div className="flex flex-col gap-4">
-                {ordered.map((flag) => {
-                  const busy = saving === flag.key;
-                  const everyone = flag.rollout === 'all';
-                  return (
-                    <section key={flag.key} className="rounded-md border border-line bg-raised overflow-hidden">
-                      <header className="px-5 pt-4 pb-3.5">
-                        <div className="flex items-start justify-between gap-4">
-                          <h2 className="font-display text-[17px] text-ink leading-snug">{flag.name}</h2>
-                          <div className="flex items-center gap-2 shrink-0 pt-0.5">
-                            {savedKey === flag.key && (
-                              <span className="flex items-center gap-1 text-ok text-[12px]">
-                                <Check className="w-3.5 h-3.5" aria-hidden="true" /> Saved
-                              </span>
-                            )}
-                            {busy && <Loader2 className="w-3.5 h-3.5 animate-spin text-muted" aria-hidden="true" />}
-                          </div>
-                        </div>
-                        <p className="text-[13.5px] text-ink-3 max-w-[60ch] mt-1">{flag.description}</p>
-                        <p className="flex items-center gap-1.5 text-[12.5px] text-muted mt-2.5">
-                          <Users className="w-3.5 h-3.5" aria-hidden="true" />
-                          Currently seen by: <span className="text-ink-3">{audienceSummary(flag, tenants)}</span>
-                        </p>
-                      </header>
-
-                      <div className="border-t border-line bg-surface px-5 py-3">
-                        <ul className="flex flex-col">
-                          <li>
-                            <label
-                              className={cn(
-                                'flex items-center gap-3 py-2 cursor-pointer select-none',
-                                busy && 'opacity-60 pointer-events-none',
-                              )}
-                            >
-                              <input
-                                type="checkbox"
-                                checked={everyone}
-                                disabled={busy}
-                                onChange={() => toggleEveryone(flag)}
-                                className="w-4 h-4 accent-[color:var(--ocean)] cursor-pointer"
-                              />
-                              <span className="text-[14px] text-ink">Everyone</span>
-                              <span className="text-[12.5px] text-muted">including customers who join later</span>
-                            </label>
-                          </li>
-
-                          {tenants.map((t) => {
-                            const on = everyone || flag.tenants.some((x) => x.id === t.id);
-                            return (
-                              <li key={t.id} className="border-t border-line first:border-t-0">
-                                <label
-                                  className={cn(
-                                    'flex items-center gap-3 py-2 cursor-pointer select-none',
-                                    (busy || everyone) && 'opacity-60',
-                                    busy && 'pointer-events-none',
-                                    // While Everyone is on, the individual rows show as
-                                    // ticked but are not the control — unticking one would
-                                    // silently mean "everyone except". Turn Everyone off first.
-                                    everyone && 'pointer-events-none',
-                                  )}
-                                >
-                                  <input
-                                    type="checkbox"
-                                    checked={on}
-                                    disabled={busy || everyone}
-                                    onChange={() => toggleCustomer(flag, t.id)}
-                                    className="w-4 h-4 accent-[color:var(--ocean)] cursor-pointer"
-                                  />
-                                  <span className="text-[14px] text-ink">{t.name}</span>
-                                </label>
-                              </li>
-                            );
-                          })}
-
-                          {tenants.length === 0 && (
-                            <li className="py-2 text-[13.5px] text-muted">No customer accounts yet.</li>
-                          )}
-                        </ul>
-
-                        {/* A customer removed after being picked still counts toward the
-                            audience — show it so the summary line above adds up. */}
-                        {flag.tenants.some((t) => !tenants.find((x) => x.id === t.id)) && (
-                          <p className="text-[12.5px] text-muted pt-2 border-t border-line mt-1">
-                            Also on: {flag.tenants.filter((t) => !tenants.find((x) => x.id === t.id)).map((t) => t.name).join(', ')}
-                          </p>
-                        )}
-                      </div>
-
-                      {flag.updated_at && (
-                        <p className="px-5 py-2.5 border-t border-line text-[12px] text-muted-2">
-                          Last changed {formatRelative(flag.updated_at)}
-                          {flag.updated_by ? ` by ${flag.updated_by}` : ''}
-                        </p>
-                      )}
-                    </section>
-                  );
-                })}
-
-                {flags.length === 0 && (
-                  <p className="text-[14px] text-muted">Nothing is waiting to be released right now.</p>
-                )}
-              </div>
-            </>
-          )}
+          <FeatureFlagsConsole />
         </div>
       </div>
     </AppShell>

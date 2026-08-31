@@ -41,14 +41,53 @@ interface FeaturesState {
   failed: boolean;
 }
 
-const FeaturesContext = createContext<FeaturesState>({
-  features: {},
-  isOperator: false,
-  loaded: false,
-  failed: false,
-});
+/**
+ * NO DEFAULT VALUE, AND THAT IS THE POINT.
+ *
+ * This context used to default to `{isOperator: false, loaded: false}`, which
+ * is a perfectly plausible-looking answer — and a component rendered OUTSIDE
+ * the provider got it silently. It cost the operator console: the page read
+ * `useIsOperator()` in its own body, above the `<AppShell>` that owns the
+ * provider, so it read the default and refused its own operator while the nav
+ * entry beside it (inside the shell) rendered correctly. An afternoon went into
+ * the email allowlist, the deploy pipeline and the production logs before the
+ * scope was the answer.
+ *
+ * So there is no default. Reading a flag outside the provider throws, loudly,
+ * at first render — including during `next build`'s prerender, which makes it
+ * a merge gate rather than a thing to remember. Every one of these hooks
+ * answers a visibility question; a wrong answer hides a feature forever or
+ * locks someone out of their own console, and neither announces itself.
+ */
+const FeaturesContext = createContext<FeaturesState | null>(null);
 
+function useFeaturesState(): FeaturesState {
+  const state = useContext(FeaturesContext);
+  if (!state) {
+    throw new Error(
+      'Feature flags were read outside <FeaturesProvider>. The provider lives in '
+      + 'AppShell, so a page cannot read a flag in its own body — it renders above '
+      + 'the shell. Move the read into a child component rendered inside <AppShell>.',
+    );
+  }
+  return state;
+}
+
+/**
+ * Mount the provider. Nesting is a no-op ON PURPOSE: the chrome is mounted by
+ * two components (AppShell and ShellLayout) and a page under one of them may
+ * later render the other, at which point a second provider would fire a second
+ * request and — far worse — hand its subtree a different answer than the rail
+ * above it is reading. The outermost provider wins; an inner one passes
+ * through.
+ */
 export function FeaturesProvider({ children }: { children: ReactNode }) {
+  const outer = useContext(FeaturesContext);
+  if (outer) return <>{children}</>;
+  return <FetchingFeaturesProvider>{children}</FetchingFeaturesProvider>;
+}
+
+function FetchingFeaturesProvider({ children }: { children: ReactNode }) {
   const [state, setState] = useState<FeaturesState>({
     features: {}, isOperator: false, loaded: false, failed: false,
   });
@@ -83,17 +122,17 @@ export function FeaturesProvider({ children }: { children: ReactNode }) {
 
 /** Is this feature on for the signed-in tenant? False until the answer arrives. */
 export function useFeature(key: FeatureKey): boolean {
-  return useContext(FeaturesContext).features[key] === true;
+  return useFeaturesState().features[key] === true;
 }
 
 /** True once the answer has arrived — lets a page distinguish "off" from "unknown". */
 export function useFeaturesLoaded(): boolean {
-  return useContext(FeaturesContext).loaded;
+  return useFeaturesState().loaded;
 }
 
 /** True when this user may change rollouts. Gates the operator console only. */
 export function useIsOperator(): boolean {
-  return useContext(FeaturesContext).isOperator;
+  return useFeaturesState().isOperator;
 }
 
 /**
@@ -103,5 +142,5 @@ export function useIsOperator(): boolean {
  * tell someone they lack access when the truth is that nothing was asked.
  */
 export function useFeaturesFailed(): boolean {
-  return useContext(FeaturesContext).failed;
+  return useFeaturesState().failed;
 }
