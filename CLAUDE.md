@@ -31,7 +31,129 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-08-31 (COMPETITIVE ANALYSIS vs PELIQAN — doc only, no code
+**Last updated:** 2026-08-31 (SPREADSHEET SOURCES — Excel + SharePoint
+connectors, and an Excel add-in with the platform's first machine auth)
+
+**THE OWNER ASKED FOR AN EXCEL CONNECTOR, A SHAREPOINT CONNECTOR AND AN EXCEL
+ADD-IN, with a standing instruction: *"Kijk naar de ExactOnline connector. Ik
+wil dat alles dezelfde wijze volgt… Consistentie, Robuustheid, Best practice."*
+All three are built. ExactOnline is the shape every file follows.**
+- **NEW SHARED CORE `packages/connectors/src/spreadsheet/`** — `xlsxReader.ts`
+  (ported from `frontend/lib/xlsxRead.ts`; the frontend cannot import this
+  package because its entry pulls DuckDB, the same reason `writeRowsParquet`
+  was ported — **keep the two in step**) + `tabular.ts` (headers → warehouse
+  identifiers, conservative type inference, rows → records). Both connectors
+  go through it, so the same workbook lands IDENTICALLY whether uploaded or
+  read out of SharePoint. First committed tests for this reader ever: a
+  fixture builder in `__fixtures__/xlsxFixture.ts` writes REAL .xlsx (zip
+  framing, CRC32s, content types), because a parser tested only on input its
+  own author shaped proves nothing.
+- **THE ONE BEHAVIOUR TO KNOW: THE READER REPORTS ITS ROW CAP, IT DOES NOT
+  OBEY IT.** The grid importer truncates, which is right for a hand-kept
+  mapping table. A SOURCE must never: silently ingesting the first N rows
+  produces a table that LOOKS complete and answers questions with wrong
+  numbers. `assertSheetComplete` (shared, so the rule and its wording exist
+  once) fails the entity before anything is written. Losing a table is
+  visible and recoverable; losing rows is neither.
+- **SharePoint connector** (`sharepoint/`: schema · oauth · graph · entities ·
+  connector) — Microsoft identity v2, read-only scopes (`Files.Read.All`,
+  `Sites.Read.All`, `offline_access`), refresh via `onCredentialRotated`.
+  **Its comments deliberately DIVERGE from EO's on one point**: EO invalidates
+  the old refresh token instantly so a lost rotation bricks the connection;
+  Microsoft's stays valid ~90 days, so this connector does NOT hard-fail when
+  the persist hook is absent — that would turn a recoverable state into an
+  outage. Entities are DISCOVERED (a library holds whatever the customer put
+  there), every traversal in `graph.ts` is capped, and a cap being hit is
+  REPORTED. `probeEntities` deliberately absent: a file we could list is a
+  file we can read.
+- **Excel connector** (`excel/`) — **the workbook rides INSIDE the connector
+  config, and that is the deliberate part.** The platform decrypts a config in
+  FIVE places (sync launch, profiling, three connection routes); a separate
+  file store needs a hydration step in each and missing one fails deep inside
+  a sync. As an ordinary config field all five already work. Cost: a bigger
+  encrypted row (Postgres TOASTs it) and a ~15 MB cap the reader's memory
+  profile wants anyway.
+- **NAMING DIFFERS BETWEEN THE TWO AND IT IS THE SAME RULE, NOT AN
+  INCONSISTENCY**: an entity is named by what identifies the sheet WITHIN ITS
+  SOURCE. A library has many workbooks → `file__sheet`. An upload IS one file
+  → `sheet`. Which also means re-uploading `Budget 2026 v2.xlsx` keeps the
+  existing tables instead of orphaning them behind renamed ones. Neither is
+  incremental: a worksheet has no row-level stamp and no business key, and a
+  cursor without one makes the writer wipe the table on every delta.
+- **Three framework fixes the work forced out, each closing a real hazard.**
+  (a) `HttpClient` gained binary responses so a file download keeps the retry,
+  pacing, 401-refresh and egress allow-list a bare axios call bypasses; its
+  error excerpt now decodes byte bodies instead of stringifying them to `{}`.
+  (b) **An EMPTY `egressAllowList` now means "reaches nothing", not "no
+  policy"** — it previously disabled enforcement, inverting the safest
+  declaration into the least safe one; conformance accepts `[]` for a
+  connector that makes no network calls (the Excel one). (c) **The local
+  launcher hands the worker its config as a 0600 temp file, not an env var** —
+  Linux caps one env var at 128 KB so a config carrying a workbook could not
+  be passed at all, and `/proc/<pid>/environ` is readable by anything running
+  as the same user. Mirrors what the Azure launcher already does with a
+  staged blob.
+- **A defect this change would otherwise have introduced, caught and fixed**:
+  `GET /connections/:id/source-config` redacted by FIELD NAME, and
+  `fileContent` matches no credential word — so opening the edit dialog would
+  have shipped the customer's whole workbook to the browser. Redaction is now
+  SCHEMA-DRIVEN (anything the connector declares `contentEncoding: 'base64'`),
+  so the next file-backed connector is covered the day it registers. PATCH
+  already skips the `••••••••` placeholder, so a round trip leaves the file
+  intact.
+- **Body limit is scoped, not raised globally**: `/api/connections` and
+  `/api/source-types` get 32 MB, everything else keeps 2 MB.
+- **Wizard**: booleans render as CHECKBOXES (they fell through to a text input,
+  so users typed the word "true") and any base64 schema property renders as a
+  FILE PICKER — so a file-backed connector needs no frontend code of its own.
+  Excel + SharePoint tiles registered on `/sources`.
+- **EXCEL ADD-IN + THE PLATFORM'S FIRST MACHINE AUTHENTICATION.** Everything
+  until now authenticated with a JWT from a person signing in; Excel has no
+  Clarion session. **Migration 86 `api_tokens`** — a token belongs to a USER,
+  carries their tenant and role RESOLVED LIVE from the `users` row (so a role
+  change or deactivation takes effect immediately, and no token ever outranks
+  its owner), stores only a SHA-256 hash (fast hash on purpose — the opposite
+  of the password rule — because the secret is 256 bits of machine randomness
+  with no dictionary, and this runs on every add-in request).
+  `middleware/apiToken.ts` verifies the token, mints a short-lived JWT,
+  REPLACES the header and steps aside so `requireAuth` runs unchanged — the
+  two auth paths cannot drift apart. Accepted on `/api/addin` ONLY (three
+  read-only endpoints); widening it later, e.g. for MCP, is a deliberate act.
+  Data policies are re-applied and the saved SQL is re-guarded AT RUN TIME.
+  Task pane at `frontend/app/excel-addin/` (served by the frontend, no second
+  deployment), token UI on `/profile`, manifest + sideloading guide in
+  `excel-addin/`.
+- **⚠ A PRODUCTION FINDING THIS WORK TURNED UP, MEASURED AND NOT FIXED — worth
+  reading before touching auth.** `unauthQuery`'s header, `tenantScopedWrite`
+  and `routes/auth.ts` all describe an **`auth_lookup` RLS policy** that lets
+  an unauthenticated SELECT find a user. **IT EXISTS NOWHERE** — not in any
+  migration (74 creates only `tenant_isolation`), and not in a migrated
+  database. Measured locally 2026-08-31: with a real user row present, a
+  NOBYPASSRLS role running `SET LOCAL app.current_tenant = ''` — exactly what
+  `unauthQuery` does — reads **0 rows**. If production truly connects as
+  `databridge_app`, login cannot work; since it demonstrably does, production
+  and the documented state disagree (the role flip did not take, the policy
+  was made outside migrations, or the role has BYPASSRLS). **The 2026-08-06
+  verification `health=200 login=401` cannot tell those apart** — a 401 is
+  equally what a totally broken login returns. Not chased here: it is
+  production auth, it needs evidence from production, and it is not what was
+  asked for. `api_tokens` therefore carries its OWN explicit `token_lookup`
+  policy (SELECT, only while there is no tenant context) rather than
+  inheriting an assumption now known to be false.
+- Validation: connectors **223 tests** (was 132) · backend **46 files / 469
+  passed** (14 new in `api-tokens.test.ts`, mostly refusals: revoked, expired,
+  deactivated owner, cross-tenant question, no role escalation) · all eight
+  ratchets green from the repo root · backend/worker/frontend typecheck clean ·
+  `next build` green (`/excel-addin` 3.56 kB) · new frontend files lint-clean.
+- **NOT done, deliberately**: no CSV/`.xls`/`.xlsb` (different formats — a
+  clear refusal at listing beats a confusing parse failure); no SharePoint
+  Lists (document libraries only); no writeback anywhere; the add-in inserts
+  saved-question results only, not arbitrary tables. **Neither connector has
+  been exercised against a live Microsoft tenant or a real upload** — the
+  SharePoint OAuth path in particular needs an Entra ID app registration the
+  owner must create, and should be watched on its first real run.
+
+**Prior last updated:** 2026-08-31 (COMPETITIVE ANALYSIS vs PELIQAN — doc only, no code
 changed)
 
 **NEW DOC: `docs/backlog/clarion-vs-peliqan.md` (2026-08-31, doc only).** Owner

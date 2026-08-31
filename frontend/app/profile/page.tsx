@@ -7,6 +7,7 @@ import AppShell from '@/components/layout/AppShell';
 import api from '@/lib/api';
 import { clearToken, getRefreshToken, getTokenPayload } from '@/lib/auth';
 import { useToast } from '@/components/ui/Toast';
+import ApiTokensSection from './ApiTokensSection';
 
 const inputCls =
   'w-full px-3 py-2 rounded-md text-[13px] bg-raised border border-line text-ink-2 placeholder-muted-2 ' +
@@ -178,6 +179,8 @@ export default function ProfilePage() {
 
           {/* Security keys / passkeys */}
           <WebauthnSection />
+
+          <ApiTokensSection />
 
           {/* Password */}
           <div className="bg-raised border border-line rounded-lg overflow-hidden">

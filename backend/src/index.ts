@@ -66,6 +66,8 @@ import briefsRouter          from './routes/briefs';
 import investigationsRouter  from './routes/investigations';
 import managedGridsRouter    from './routes/managedGrids';
 import savedQuestionsRouter  from './routes/savedQuestions';
+import apiTokensRouter from './routes/apiTokens';
+import addinRouter from './routes/addin';
 import aiUsageRouter         from './routes/aiUsage';
 import aiRoutingRouter       from './routes/aiRouting';
 import { featuresRouter, featureFlagsRouter } from './routes/featureFlags';
@@ -271,6 +273,11 @@ app.use('/api/admin/ai-routing', aiRoutingRouter);
 // Feature flags. `/api/features` answers "what is on for MY tenant" to any
 // signed-in user; the console under /api/admin is gated to platform operators
 // (an env allowlist), NOT to tenant admins — see routes/featureFlags.ts.
+// Personal API tokens, and the one surface that accepts them. The add-in
+// router is compute-limited like the other query paths — a token lives on a
+// laptop, so it should not be able to run unbounded queries by accident.
+app.use('/api/api-tokens',          apiTokensRouter);
+app.use('/api/addin',               computeLimiter, addinRouter);
 app.use('/api/features',            featuresRouter);
 app.use('/api/admin/feature-flags', featureFlagsRouter);
 

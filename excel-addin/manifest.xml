@@ -1,0 +1,112 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Clarion for Excel — Office Add-in manifest.
+
+  BEFORE USING THIS FILE, replace every occurrence of https://clarion.example.com
+  with the address of your Clarion frontend. Office requires HTTPS and refuses
+  to load a task pane from a host that is not listed under <AppDomains>, so the
+  address has to be correct in both places.
+
+  The add-in is READ-ONLY: it asks Clarion for the result of a question you
+  saved and writes it into the active worksheet. `ReadWriteDocument` is the
+  permission needed to write into the sheet the user is looking at; it grants
+  nothing outside the open workbook.
+
+  The Id is a GUID identifying THIS add-in. Generate a fresh one if you fork
+  this for your own distribution, or two builds will collide in the same
+  Office catalog.
+-->
+<OfficeApp
+  xmlns="http://schemas.microsoft.com/office/appforoffice/1.1"
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  xmlns:bt="http://schemas.microsoft.com/office/officeappbasictypes/1.0"
+  xmlns:ov="http://schemas.microsoft.com/office/taskpaneappversionoverrides"
+  xsi:type="TaskPaneApp">
+
+  <Id>4f2b1c8e-7d3a-4a51-9c62-1f0e8b5d2a77</Id>
+  <Version>1.0.0.0</Version>
+  <ProviderName>Clarion</ProviderName>
+  <DefaultLocale>en-US</DefaultLocale>
+  <DisplayName DefaultValue="Clarion" />
+  <Description DefaultValue="Bring answers from Clarion into your spreadsheet." />
+  <IconUrl DefaultValue="https://clarion.example.com/logo.svg" />
+  <HighResolutionIconUrl DefaultValue="https://clarion.example.com/logo.svg" />
+  <SupportUrl DefaultValue="https://clarion.example.com" />
+
+  <!-- Office refuses to load anything from a host not listed here. -->
+  <AppDomains>
+    <AppDomain>https://clarion.example.com</AppDomain>
+  </AppDomains>
+
+  <Hosts>
+    <Host Name="Workbook" />
+  </Hosts>
+
+  <DefaultSettings>
+    <SourceLocation DefaultValue="https://clarion.example.com/excel-addin" />
+  </DefaultSettings>
+
+  <!-- Write into the workbook the user has open. Nothing beyond it. -->
+  <Permissions>ReadWriteDocument</Permissions>
+
+  <VersionOverrides xmlns="http://schemas.microsoft.com/office/taskpaneappversionoverrides" xsi:type="VersionOverridesV1_0">
+    <Hosts>
+      <Host xsi:type="Workbook">
+        <DesktopFormFactor>
+          <GetStarted>
+            <Title resid="GetStarted.Title" />
+            <Description resid="GetStarted.Description" />
+            <LearnMoreUrl resid="Clarion.Url" />
+          </GetStarted>
+          <ExtensionPoint xsi:type="PrimaryCommandSurface">
+            <OfficeTab id="TabHome">
+              <Group id="Clarion.Group">
+                <Label resid="Clarion.GroupLabel" />
+                <Icon>
+                  <bt:Image size="16" resid="Clarion.Icon" />
+                  <bt:Image size="32" resid="Clarion.Icon" />
+                  <bt:Image size="80" resid="Clarion.Icon" />
+                </Icon>
+                <Control xsi:type="Button" id="Clarion.OpenPane">
+                  <Label resid="Clarion.ButtonLabel" />
+                  <Supertip>
+                    <Title resid="Clarion.ButtonLabel" />
+                    <Description resid="Clarion.ButtonTip" />
+                  </Supertip>
+                  <Icon>
+                    <bt:Image size="16" resid="Clarion.Icon" />
+                    <bt:Image size="32" resid="Clarion.Icon" />
+                    <bt:Image size="80" resid="Clarion.Icon" />
+                  </Icon>
+                  <Action xsi:type="ShowTaskpane">
+                    <TaskpaneId>Clarion.Taskpane</TaskpaneId>
+                    <SourceLocation resid="Clarion.PaneUrl" />
+                  </Action>
+                </Control>
+              </Group>
+            </OfficeTab>
+          </ExtensionPoint>
+        </DesktopFormFactor>
+      </Host>
+    </Hosts>
+
+    <Resources>
+      <bt:Images>
+        <bt:Image id="Clarion.Icon" DefaultValue="https://clarion.example.com/logo.svg" />
+      </bt:Images>
+      <bt:Urls>
+        <bt:Url id="Clarion.PaneUrl" DefaultValue="https://clarion.example.com/excel-addin" />
+        <bt:Url id="Clarion.Url" DefaultValue="https://clarion.example.com" />
+      </bt:Urls>
+      <bt:ShortStrings>
+        <bt:String id="Clarion.GroupLabel" DefaultValue="Clarion" />
+        <bt:String id="Clarion.ButtonLabel" DefaultValue="Clarion" />
+        <bt:String id="GetStarted.Title" DefaultValue="Clarion is ready." />
+      </bt:ShortStrings>
+      <bt:LongStrings>
+        <bt:String id="Clarion.ButtonTip" DefaultValue="Insert the answer to a saved question into this sheet." />
+        <bt:String id="GetStarted.Description" DefaultValue="Open the Clarion pane from the Home tab, paste an access token once, and insert answers into your sheet." />
+      </bt:LongStrings>
+    </Resources>
+  </VersionOverrides>
+</OfficeApp>

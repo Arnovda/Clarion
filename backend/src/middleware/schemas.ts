@@ -893,3 +893,33 @@ export const setFeatureRolloutSchema = z.object({
     tenantIds: z.array(z.number().int().positive()).max(200).optional(),
   }).passthrough(),
 });
+
+// ---------------------------------------------------------------------------
+// Personal API tokens (Excel add-in and other non-browser clients)
+// ---------------------------------------------------------------------------
+
+const tokenIdParams = z
+  .object({ id: z.coerce.number().int().positive() })
+  .passthrough();
+
+export const createApiTokenSchema = z.object({
+  body: z.object({
+    // Shown back to the user in the token list; this is the only thing that
+    // makes a year-old credential identifiable, so it is required.
+    name: z.string().trim().min(1).max(80),
+    // Bounded rather than optional-forever: a token with no expiry is a
+    // credential nobody ever revisits. One year is the ceiling.
+    ttlDays: z.number().int().min(1).max(365).optional(),
+  }).passthrough(),
+});
+
+export const revokeApiTokenSchema = z.object({ params: tokenIdParams });
+
+export const runSavedQuestionSchema = z.object({
+  params: tokenIdParams,
+  body: z.object({
+    // The add-in pages results into a worksheet; the cap is what one sheet
+    // can sensibly hold and what one response should carry.
+    limit: z.number().int().min(1).max(10_000).optional(),
+  }).passthrough().optional(),
+});
