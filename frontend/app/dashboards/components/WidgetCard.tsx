@@ -2,7 +2,7 @@
 
 import { useRef, useState, type ReactNode } from 'react';
 import { motion } from 'framer-motion';
-import { Lightbulb, Search, X, HelpCircle } from 'lucide-react';
+import { Lightbulb, Search, X, HelpCircle, Wand2 } from 'lucide-react';
 import { widgetVariants } from '../utils/motion';
 import type { WidgetSpec, WidgetData } from '../types';
 import api from '../../../lib/api';
@@ -31,6 +31,11 @@ interface WidgetCardProps {
    * POST /dashboards/fix-widget and patches the spec in place. */
   onFixWidget?: () => void;
   fixing?: boolean;
+  /** Aim the assistant at THIS card — "sort it descending", "show margin %
+   *  instead". Scoping the edit is what keeps it fast and safe: the planner
+   *  sees one widget, so it cannot rearrange the dashboard around it, and the
+   *  request costs one small model call instead of a whole-spec rewrite. */
+  onEditWidget?: () => void;
   /** Explicit CSS-grid placement (user-arranged layout). Wins over colSpan. */
   gridPlacement?: { x: number; y: number; w: number; h: number };
   /** Fill the parent's height (arrange-mode grid cells are fixed-size). */
@@ -53,6 +58,7 @@ export function WidgetCard({
   isAdminOrAnalyst,
   onFixWidget,
   fixing,
+  onEditWidget,
   gridPlacement,
   fillHeight,
 }: WidgetCardProps) {
@@ -163,7 +169,17 @@ export function WidgetCard({
             )}
           </div>
           <div className="flex items-center gap-1 shrink-0">
-            <span className="flex items-center gap-0.5 overflow-hidden max-w-0 opacity-0 group-hover/widget:max-w-[160px] group-hover/widget:opacity-100 transition-all duration-200">
+            <span className="flex items-center gap-0.5 overflow-hidden max-w-0 opacity-0 group-hover/widget:max-w-[200px] group-hover/widget:opacity-100 transition-all duration-200">
+              {onEditWidget && (
+                <button
+                  onClick={onEditWidget}
+                  className="p-1.5 rounded text-muted-2 hover:text-ocean hover:bg-ocean-softer transition-colors"
+                  title="Change this card"
+                  aria-label="Change this card"
+                >
+                  <Wand2 className="w-3.5 h-3.5" strokeWidth={2} />
+                </button>
+              )}
               {onExportCsv && (
                 <button
                   onClick={onExportCsv}
@@ -250,14 +266,26 @@ export function WidgetCard({
            appears on hover. KPIs are the most trust-sensitive thing on
            the dashboard — this is the headline number a CFO will quote. */}
         {isKpi && (
-          <button
-            onClick={() => setShowProvenance(true)}
-            className="absolute top-2 right-2 p-1.5 rounded text-muted-2 hover:text-ink-2 hover:bg-softer transition-colors opacity-0 group-hover/widget:opacity-100"
-            title="How was this computed?"
-            aria-label="How was this computed?"
-          >
-            <HelpCircle className="w-3.5 h-3.5" strokeWidth={2} />
-          </button>
+          <span className="absolute top-2 right-2 flex items-center gap-0.5 opacity-0 group-hover/widget:opacity-100 transition-opacity">
+            {onEditWidget && (
+              <button
+                onClick={onEditWidget}
+                className="p-1.5 rounded text-muted-2 hover:text-ocean hover:bg-ocean-softer transition-colors"
+                title="Change this card"
+                aria-label="Change this card"
+              >
+                <Wand2 className="w-3.5 h-3.5" strokeWidth={2} />
+              </button>
+            )}
+            <button
+              onClick={() => setShowProvenance(true)}
+              className="p-1.5 rounded text-muted-2 hover:text-ink-2 hover:bg-softer transition-colors"
+              title="How was this computed?"
+              aria-label="How was this computed?"
+            >
+              <HelpCircle className="w-3.5 h-3.5" strokeWidth={2} />
+            </button>
+          </span>
         )}
         {children}
       </div>

@@ -144,7 +144,7 @@ function completeLayouts(
   return map;
 }
 import { FilterBar } from './components/FilterBar';
-import { MarkdownAnswer } from './components/MarkdownAnswer';
+import AssistantPanel from './components/AssistantPanel';
 import { CreateInput } from './components/CreateInput';
 import { EmptyDashboardHero } from './components/EmptyDashboardHero';
 import { EmailSchedulePanel } from './components/EmailSchedulePanel';
@@ -186,9 +186,6 @@ export default function DashboardsPage() {
   const [refineInput, setRefineInput] = useState('');
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [chatLoading, setChatLoading] = useState(false);
-  // Which error-bubble IDs are currently showing their technical
-  // detail. Empty set = all errors collapsed to the friendly message.
-  const [expandedErrorIds, setExpandedErrorIds] = useState<Set<string>>(new Set());
   // Mode for the chat input. Default is 'refine' because the user is
   // ON an open dashboard, so the most likely intent is to edit it.
   // The previous regex-based intent detection was unreliable and led
@@ -196,6 +193,15 @@ export default function DashboardsPage() {
   // /query which has no dashboard context). Explicit toggle removes
   // the ambiguity.
   const [chatMode, setChatMode] = useState<'refine' | 'query'>('refine');
+  // The assistant is a floating panel, not a strip welded to the bottom of
+  // the screen — a dashboard's whole job is to show charts, and the chat cost
+  // up to ~300px of that permanently with no way to put it away. Closed by
+  // default; opened by asking for it, or by a card's "Change this card".
+  const [assistantOpen, setAssistantOpen] = useState(false);
+  // The single card the next edit is aimed at, if any. Held as id + title:
+  // the id is what the server scopes on, the title is what the user sees, and
+  // resolving the title later would break if the edit renamed the card.
+  const [editScope, setEditScope] = useState<{ id: string; title: string } | null>(null);
   // (Removed: availableDomains/selectedDomains — dead state. The setter was
   // never called, nothing rendered the options, and the backend discarded the
   // `domains` field they fed.)
@@ -242,7 +248,6 @@ export default function DashboardsPage() {
   const [investigationTarget, setInvestigationTarget] = useState<{ spec: WidgetSpec; data: WidgetData } | null>(null);
   const [storyOpen, setStoryOpen] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
-  const chatEndRef = useRef<HTMLDivElement>(null);
   const dashboardGridRef = useRef<HTMLDivElement>(null);
   const widgetCacheRef = useRef<Record<string, WidgetData>>({});
   // AI-summary triggers — see the "AI summary" section below. The pending
@@ -661,6 +666,8 @@ export default function DashboardsPage() {
       setFilterValues(defaults);
       setCrossFilter(null);
       setChatMessages([]);
+      setEditScope(null);
+      setAssistantOpen(false);
       setIsUnsaved(true);
       setMode('viewing');
       // The one automatic AI summary: fires after the creation execution
@@ -757,6 +764,8 @@ export default function DashboardsPage() {
       setActiveId(id);
       setMode('viewing');
       setChatMessages([]);
+      setEditScope(null);
+      setAssistantOpen(false);
       setSettingsOpen(false);
       // Render the STORED summary — opening a dashboard makes no AI call.
       setInsights(spec.insights?.items ?? null);
@@ -1056,8 +1065,15 @@ export default function DashboardsPage() {
 
     // Intent is set by the explicit pill toggle above the input, not
     // inferred from the text. See chatMode state declaration for the
-    // rationale.
-    const intent = chatMode;
+    // rationale. A card scope forces 'refine': "change this card" is an edit,
+    // and the scope chip is shown instead of the toggle while it is set.
+    const scopeWidget = editScope && currentSpec.widgets.some((w) => w.id === editScope.id)
+      ? editScope
+      : null;
+    const intent: 'refine' | 'query' = scopeWidget ? 'refine' : chatMode;
+    // Captured for this submit, then released: the next thing typed is about
+    // the dashboard again unless the user aims it at a card once more.
+    setEditScope(null);
     const userMsg: ChatMessage = { id: Date.now().toString(), role: 'user', text: input, type: intent };
     setChatMessages((prev) => [...prev, userMsg]);
     setChatLoading(true);
@@ -1108,6 +1124,8 @@ export default function DashboardsPage() {
         setChatMessages((prev) => [...prev, {
           id: workingId, role: 'assistant', text: '', type: 'refine',
           working: true, phase: 'Reading your request…', steps: [],
+          startedAt: Date.now(),
+          ...(scopeWidget ? { scopeTitle: `"${scopeWidget.title}"` } : {}),
         }]);
 
         interface RefineDoneEvt {
@@ -1129,11 +1147,13 @@ export default function DashboardsPage() {
             currentSpec,
             ...(scopeIds?.length ? { productIds: scopeIds } : {}),
             ...(currentSpec.dataLayer === 'source' ? { dataLayer: 'source' as const } : {}),
+            ...(scopeWidget ? { scopeWidgetId: scopeWidget.id } : {}),
           },
           onEvent: (evt: {
             type?: string; text?: string; summary?: string;
             steps?: Array<{ id: string; label: string }>;
-            id?: string; status?: 'running' | 'done' | 'failed'; note?: string;
+            id?: string; status?: 'pending' | 'running' | 'done' | 'failed'; note?: string;
+            label?: string; parentId?: string;
             spec?: DashboardSpec; error?: string;
             changes?: { added: string[]; modified: string[]; removed: string[]; filtersChanged: boolean };
             notes?: string[]; refusals?: string[];
@@ -1147,12 +1167,37 @@ export default function DashboardsPage() {
                 steps: (evt.steps ?? []).map((st) => ({ ...st, status: 'pending' as const })),
               });
             } else if (evt.type === 'step' && evt.id) {
-              patchWorking((m) => ({
-                ...m,
-                steps: (m.steps ?? []).map((st) => st.id === evt.id
-                  ? { ...st, status: evt.status ?? st.status, ...(evt.note ? { note: evt.note } : {}) }
-                  : st),
-              }));
+              patchWorking((m) => {
+                const steps = m.steps ?? [];
+                const known = steps.some((st) => st.id === evt.id);
+                // A step carrying a `label` for an id we have not seen is one
+                // the server DISCOVERED while applying the plan — one filter
+                // can mean four named cards being rewritten. Append it rather
+                // than dropping it, so the checklist shows the real work.
+                if (!known) {
+                  if (!evt.label) return m;
+                  return {
+                    ...m,
+                    steps: [...steps, {
+                      id: evt.id!, label: evt.label,
+                      status: evt.status ?? 'pending',
+                      ...(evt.parentId ? { parentId: evt.parentId } : {}),
+                      ...(evt.status === 'running' ? { startedAt: Date.now() } : {}),
+                    }],
+                  };
+                }
+                return {
+                  ...m,
+                  steps: steps.map((st) => st.id === evt.id
+                    ? {
+                      ...st,
+                      status: evt.status ?? st.status,
+                      ...(evt.note ? { note: evt.note } : {}),
+                      ...(evt.status === 'running' && !st.startedAt ? { startedAt: Date.now() } : {}),
+                    }
+                    : st),
+                };
+              });
             } else if (evt.type === 'done' && evt.spec) {
               doneEvt = { spec: evt.spec, changes: evt.changes, notes: evt.notes, refusals: evt.refusals };
             } else if (evt.type === 'error') {
@@ -1276,10 +1321,6 @@ export default function DashboardsPage() {
   }, [isUnsaved]);
 
   useEffect(() => {
-    chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [chatMessages]);
-
-  useEffect(() => {
     if (!settingsOpen) return;
     const handler = () => setSettingsOpen(false);
     document.addEventListener('click', handler);
@@ -1297,6 +1338,8 @@ export default function DashboardsPage() {
     setWidgetData({});
     setCrossFilter(null);
     setChatMessages([]);
+    setEditScope(null);
+    setAssistantOpen(false);
   }
 
   // ── Load folders + templates ────────────────────────────────────────────
@@ -1566,6 +1609,13 @@ export default function DashboardsPage() {
       // Self-heal — only offered when the widget actually errored
       onFixWidget: data.error ? () => handleFixWidget(widget.id) : undefined,
       fixing: fixingWidgets.has(widget.id),
+      // Aim the assistant at this one card. Suppressed while arranging —
+      // there the cards are being moved, not edited.
+      onEditWidget: editLayout ? undefined : () => {
+        setEditScope({ id: widget.id, title: widget.title });
+        setChatMode('refine');
+        setAssistantOpen(true);
+      },
       // Layout: explicit CSS-grid placement when the user has arranged the
       // dashboard; height-fill inside the arrange grid.
       gridPlacement: !editLayout && layoutPlacements ? layoutPlacements.get(widget.id) : undefined,
@@ -2082,9 +2132,11 @@ export default function DashboardsPage() {
             </div>
           )}
 
-          {/* Dashboard view */}
+          {/* Dashboard view. `relative` is load-bearing: the assistant panel
+              is absolutely positioned against this box so it overlays the
+              dashboard instead of taking a slice of its height. */}
           {mode === 'viewing' && currentSpec && (
-            <div className="flex-1 flex flex-col overflow-hidden">
+            <div className="relative flex-1 flex flex-col overflow-hidden">
               {/* Top bar */}
               <div className="px-6 py-4 flex items-center justify-between gap-4 shrink-0 border-b border-line bg-raised">
                 <div className="min-w-0">
@@ -2430,161 +2482,25 @@ export default function DashboardsPage() {
                 )}
               </div>
 
-              {/* Bottom chat bar */}
-              <div className="bg-raised border-t border-line shrink-0">
-                {/* Chat history */}
-                {chatMessages.length > 0 && (
-                  <div className="px-6 pt-3 pb-1 max-h-52 overflow-y-auto space-y-2">
-                    {chatMessages.map((msg) => (
-                      <div key={msg.id} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-                        {msg.role === 'user' ? (
-                          <p className="max-w-[75%] text-[14px] text-right text-ink-2 font-display italic leading-relaxed py-1.5">
-                            {msg.text}
-                          </p>
-                        ) : (
-                          <div className={`max-w-[85%] px-4 py-2.5 rounded-lg border text-[13px] ${
-                            msg.errorDetail
-                              ? 'bg-warn-soft border-warn/40 text-ink-2'
-                              : msg.type === 'refine'
-                                ? msg.working
-                                  ? 'bg-ocean-softer border-line text-ink-2'
-                                  : 'bg-ok-soft border-line text-ink-2'
-                                : 'bg-softer border-line text-ink'
-                          }`}>
-                            {msg.errorDetail ? (
-                              <span className="text-[10px] font-mono tracking-[0.08em] uppercase block mb-1 text-warn">Error</span>
-                            ) : msg.type === 'refine' && (
-                              <span className={`text-[10px] font-mono tracking-[0.08em] uppercase block mb-1 ${msg.working ? 'text-ocean' : 'text-ok'}`}>
-                                {msg.working ? 'Updating the dashboard' : 'Dashboard updated'}
-                              </span>
-                            )}
-                            {msg.text && <MarkdownAnswer text={msg.text} />}
-                            {/* Live plan checklist — the answer to "I see three
-                                dots but have no idea what it's doing". Steps
-                                arrive with the plan and settle one by one; the
-                                finished list stays as the record of the edit. */}
-                            {msg.steps && msg.steps.length > 0 && (
-                              <ul className={`space-y-1 ${msg.text ? 'mt-2' : ''}`}>
-                                {msg.steps.map((st) => (
-                                  <li key={st.id} className="flex items-start gap-2 text-[12.5px] leading-snug">
-                                    <span className="mt-0.5 w-3.5 shrink-0 text-center">
-                                      {st.status === 'done' ? (
-                                        <span className="text-ok">✓</span>
-                                      ) : st.status === 'failed' ? (
-                                        <span className="text-warn">✗</span>
-                                      ) : st.status === 'running' ? (
-                                        <span className="inline-block w-2 h-2 rounded-full bg-ocean animate-pulse" />
-                                      ) : (
-                                        <span className="inline-block w-2 h-2 rounded-full border border-line-strong" />
-                                      )}
-                                    </span>
-                                    <span className={st.status === 'pending' ? 'text-muted' : 'text-ink-2'}>
-                                      {st.label}
-                                      {st.note && st.status !== 'pending' && (
-                                        <span className="text-muted"> — {st.note}</span>
-                                      )}
-                                    </span>
-                                  </li>
-                                ))}
-                              </ul>
-                            )}
-                            {msg.working && msg.phase && (
-                              <p className="text-[12px] text-muted italic mt-1 flex items-center gap-2">
-                                <span className="inline-block w-2 h-2 rounded-full bg-ocean animate-pulse" />
-                                {msg.phase}
-                              </p>
-                            )}
-                            {msg.errorDetail && (
-                              <div className="mt-2">
-                                <button
-                                  type="button"
-                                  onClick={() => setExpandedErrorIds((prev) => {
-                                    const next = new Set(prev);
-                                    if (next.has(msg.id)) next.delete(msg.id);
-                                    else next.add(msg.id);
-                                    return next;
-                                  })}
-                                  className="text-[10px] font-mono tracking-[0.06em] uppercase text-warn hover:text-warn/80 underline underline-offset-2 cursor-pointer"
-                                >
-                                  {expandedErrorIds.has(msg.id) ? 'Hide details' : 'View error'}
-                                </button>
-                                {expandedErrorIds.has(msg.id) && (
-                                  <pre className="mt-2 text-[11px] font-mono text-ink-2 bg-raised border border-line rounded p-2 max-h-40 overflow-auto whitespace-pre-wrap break-words">
-                                    {msg.errorDetail}
-                                  </pre>
-                                )}
-                              </div>
-                            )}
-                          </div>
-                        )}
-                      </div>
-                    ))}
-                    {chatLoading && !chatMessages.some((m) => m.working) && (
-                      <div className="flex justify-start">
-                        <div className="bg-softer border border-line rounded-lg px-4 py-3 flex items-center gap-1.5">
-                          <span className="w-1.5 h-1.5 bg-ocean rounded-full animate-bounce" style={{ animationDelay: '0s' }} />
-                          <span className="w-1.5 h-1.5 bg-ocean rounded-full animate-bounce" style={{ animationDelay: '0.15s' }} />
-                          <span className="w-1.5 h-1.5 bg-ocean rounded-full animate-bounce" style={{ animationDelay: '0.3s' }} />
-                        </div>
-                      </div>
-                    )}
-                    <div ref={chatEndRef} />
-                  </div>
-                )}
-                {/* Mode toggle: explicit pill that decides whether the
-                    submit goes to /api/dashboards/refine-spec (edits
-                    the open dashboard) or /api/query (answers a data
-                    question with no dashboard context). Replaces the
-                    earlier regex-based detectIntent which produced
-                    user-facing surprises. */}
-                <div className="px-6 pt-3 pb-1 flex items-center gap-1.5">
-                  <button
-                    type="button"
-                    onClick={() => setChatMode('refine')}
-                    className={`px-2.5 py-0.5 text-[10px] font-mono tracking-[0.08em] uppercase rounded-full border transition-colors ${
-                      chatMode === 'refine'
-                        ? 'bg-ocean-softer border-ocean-soft text-ocean'
-                        : 'bg-transparent border-line text-muted hover:text-ink-2 hover:border-line-strong'
-                    }`}
-                    aria-pressed={chatMode === 'refine'}
-                  >
-                    Edit dashboard
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setChatMode('query')}
-                    className={`px-2.5 py-0.5 text-[10px] font-mono tracking-[0.08em] uppercase rounded-full border transition-colors ${
-                      chatMode === 'query'
-                        ? 'bg-ocean-softer border-ocean-soft text-ocean'
-                        : 'bg-transparent border-line text-muted hover:text-ink-2 hover:border-line-strong'
-                    }`}
-                    aria-pressed={chatMode === 'query'}
-                  >
-                    Ask AI
-                  </button>
-                </div>
-                {/* Input row */}
-                <div className="px-6 py-3 flex gap-2">
-                  <input
-                    type="text"
-                    value={refineInput}
-                    onChange={(e) => setRefineInput(e.target.value)}
-                    onKeyDown={(e) => e.key === 'Enter' && handleChatSubmit()}
-                    placeholder={chatMode === 'refine'
-                      ? 'Say how to improve this dashboard…'
-                      : 'Ask a question about the data…'}
-                    disabled={chatLoading}
-                    className="flex-1 px-3 py-2 text-[13px] rounded-md border border-line bg-raised text-ink-2 placeholder-muted-2 focus:outline-none focus:border-ocean focus:ring-1 focus:ring-ocean/30 disabled:opacity-50 transition-colors"
-                  />
-                  <button
-                    onClick={handleChatSubmit}
-                    disabled={chatLoading || !refineInput.trim()}
-                    className="px-4 py-2 text-[13px] font-medium text-white rounded-md bg-ocean hover:bg-ocean-hover disabled:opacity-50 disabled:cursor-not-allowed transition-colors whitespace-nowrap"
-                  >
-                    {chatLoading ? '…' : 'Send'}
-                  </button>
-                </div>
-              </div>
+              {/* The assistant floats OVER the dashboard rather than sitting
+                  in its layout, so closing it returns every pixel to the
+                  charts. See components/AssistantPanel.tsx. */}
+              <AssistantPanel
+                messages={chatMessages}
+                loading={chatLoading}
+                open={assistantOpen}
+                onOpenChange={(next) => {
+                  setAssistantOpen(next);
+                  if (!next) setEditScope(null);
+                }}
+                mode={chatMode}
+                onModeChange={setChatMode}
+                input={refineInput}
+                onInputChange={setRefineInput}
+                onSubmit={handleChatSubmit}
+                scope={editScope}
+                onClearScope={() => setEditScope(null)}
+              />
             </div>
           )}
         </main>
