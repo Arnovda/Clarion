@@ -395,6 +395,37 @@ dashboard.**
   `main-a5b530c`. The endpoint had been fine; the screen was stale client
   state. **The moral for the next person: when a screen and its own nav
   disagree, believe neither and go read the logs.**
+- **⚠ THE ENTRY ABOVE ENDED ON THE WRONG ANSWER. THE REAL CAUSE, FOUND
+  2026-08-31: THE PAGE READ THE FLAGS ABOVE ITS OWN PROVIDER.**
+  `FeaturesProvider` is mounted inside `AppShell`, and
+  `app/admin/features/page.tsx` called `useIsOperator()` in its own body — one
+  level ABOVE the `<AppShell>` it returns. React resolves context by position
+  in the tree, so the page got the context DEFAULT (`isOperator: false`) and
+  refused, forever, for everyone. The nav entry beside it rendered because
+  IconRail lives INSIDE the shell. Every observation in the entry above is
+  therefore consistent and none of it was the cause: the 200/874 log line was
+  real, the env var was fine, and "stale client state" was a guess that
+  happened to end the search. Then the fault/refusal split shipped the next
+  day turned the wrong refusal into a **permanent spinner**, because
+  `featuresLoaded` came from the same default and could never become true.
+  **The durable lesson is not about logs: a context with a plausible default
+  cannot report that it was read from the wrong place.** So the four hooks now
+  THROW outside the provider, which fires during `next build`'s prerender and
+  is therefore a merge gate; the page is split so the chrome is the default
+  export and every hook sits in `FeatureFlagsConsole` inside the shell.
+- **THE GATE CAUGHT A SECOND, LARGER BUG ON ITS FIRST RUN, AND THIS ONE HAD
+  NEVER BEEN NOTICED AT ALL.** `ShellLayout` — the OTHER copy of the app
+  chrome, used by twelve routes (Home, Dashboards, Catalog, Build, Subjects,
+  Grids, Notebooks, Pipelines, Products, Relations, Shared data, Topics) —
+  mounted `TopBar` and `IconRail` with **no `FeaturesProvider`**. So on most of
+  the app the rail's `useIsOperator()` and the top bar's `preview_banner` read
+  the default: an operator had no operator entry in the nav, and no error was
+  ever raised. `next build` went red on exactly those twelve pages, which is
+  what the throw is for. ShellLayout now provides the flags, and **nesting a
+  provider is a deliberate no-op** (the outermost wins) so the two copies of
+  the chrome can never fire two requests or hand a subtree a different answer
+  than the rail above it. **Rule: two components rendering the same chrome must
+  provide the same context.**
 - **`.ops/prod-logs` GAINED A `server-error` SIGNATURE (any 5xx), AND ITS FIRST
   VERSION COULD NOT MATCH ANYTHING.** It looked for `'request error'` AND a
   5xx status — but `requestLogger` emits `'request error'` at >=400 and
