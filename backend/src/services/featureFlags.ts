@@ -36,7 +36,7 @@
 import type { Knex } from 'knex';
 import { semanticDb } from '../db/knex';
 import { platformOperatorEmails } from '../config';
-import { CURRENT_RELEASE, FEATURE_KEYS, type FeatureKey, type FeatureRollout } from '../shared/contract';
+import { FEATURE_KEYS, type FeatureKey, type ReleaseKey, type FeatureRollout } from '../shared/contract';
 import { logger as rootLogger } from '../utils/logger';
 
 const log = rootLogger.child({ mod: 'feature-flags' });
@@ -240,17 +240,28 @@ export function isPlatformOperator(email: string | undefined): boolean {
 }
 
 /**
- * Is the CURRENT release train switched on for this tenant?
+ * Is the release this gate belongs to switched on for this tenant?
  *
- * The one call site shape for gating new user-visible work. Naming the key
- * inline would mean every call site becomes stale the moment the next train
- * opens; this way opening one is a single edit to CURRENT_RELEASE.
+ * THE CALLER NAMES ITS RELEASE, and that is load-bearing. This function used to
+ * be `isCurrentReleaseEnabled()`, reading whatever `CURRENT_RELEASE` pointed at,
+ * so that opening the next train would be one edit. It would also, in that same
+ * edit, have taken the previous train's work offline everywhere: every live gate
+ * would have started asking about a release whose audience is empty on the day
+ * it opens. Features would have disappeared for tenants that already had them,
+ * silently, with nothing logged. A gate answers for the release it shipped in
+ * until a person deletes it.
+ *
+ * `ReleaseKey` is the enforcement, not this comment: `CURRENT_RELEASE` is typed
+ * `string` and therefore cannot be passed here, and deleting a finished train
+ * from the registry turns every gate that named it into a compile error — which
+ * is exactly the list of branches that now need removing.
  */
-export async function isCurrentReleaseEnabled(
+export async function isReleaseEnabled(
   tenantId: number | undefined,
+  release: ReleaseKey,
   db?: Knex | Knex.Transaction,
 ): Promise<boolean> {
-  return isFeatureEnabled(tenantId, CURRENT_RELEASE as FeatureKey, db);
+  return isFeatureEnabled(tenantId, release, db);
 }
 
 /** True when the deployment has no operators configured at all. */

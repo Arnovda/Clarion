@@ -50,7 +50,7 @@ import AppShell from '@/components/layout/AppShell';
 import { useIsOperator, useFeaturesFailed, useFeaturesLoaded } from '@/lib/features';
 import { formatRelative } from '@/lib/dates';
 import { cn } from '@/lib/cn';
-import type { FeatureRollout } from '@/lib/contract';
+import { daysFullyReleased, gateIsRemovable, RELEASE_STALE_AFTER_DAYS, type FeatureRollout } from '@/lib/contract';
 
 interface FlagRow {
   key: string;
@@ -100,12 +100,18 @@ function FeatureFlagsConsole() {
   const [flags, setFlags] = useState<FlagRow[]>([]);
   const [tenants, setTenants] = useState<TenantRow[]>([]);
   const waiting = flags.filter(isWaitingForAudience);
-  // Releases first (that is the decision this page exists for, and a deploy
-  // links straight here), unreleased ones at the very top; standing features
-  // last. Stable within each group so the list does not reshuffle under the
-  // operator as they tick boxes.
+  // The other end of a release's life: everyone has had it long enough that the
+  // switch is now dead code. Unremoved release toggles are the standard way a
+  // flag system rots — a screen that only ever says "switch this on" grows a
+  // list nobody prunes — so this page reports both ends.
+  const finished = flags.filter((f) => gateIsRemovable(f));
+  // Both ends of the lifecycle lead: waiting for an audience first (that is the
+  // decision this page exists for, and a deploy links straight here), then
+  // finished ones, then everything mid-rollout; standing features last. Stable
+  // within each group so the list does not reshuffle under the operator as they
+  // tick boxes.
   const rank = (f: FlagRow) =>
-    (isWaitingForAudience(f) ? 0 : 1) + (f.kind === 'release' ? 0 : 2);
+    (isWaitingForAudience(f) ? 0 : gateIsRemovable(f) ? 1 : 2) + (f.kind === 'release' ? 0 : 3);
   const ordered = [...flags].sort((a, b) => rank(a) - rank(b));
   const [loading, setLoading] = useState(true);
   const [denied, setDenied] = useState(false);
@@ -297,10 +303,25 @@ function FeatureFlagsConsole() {
           </div>
         )}
 
+        {/* The far end of the same lifecycle. Deliberately quieter than the
+            banner above: this is not an audience decision, it is a note that
+            some code has finished its job. Saying it on screen is the only
+            thing that reliably gets it said — every flag system that leaves
+            this to memory ends up carrying switches nobody dares touch. */}
+        {finished.length > 0 && (
+          <p className="mb-5 text-[13px] text-muted">
+            {finished.length === 1 ? 'One release has' : `${finished.length} releases have`}
+            {' '}been on Everyone for over {RELEASE_STALE_AFTER_DAYS} days
+            {' — '}{finished.map((f) => f.name).join(', ')}. Nothing to do here: mention it
+            and the switch comes out of the code, which is how a release finishes.
+          </p>
+        )}
+
         <div className="flex flex-col gap-4">
           {ordered.map((flag) => {
             const busy = saving === flag.key;
             const everyone = flag.rollout === 'all';
+            const fullyOutFor = daysFullyReleased(flag);
             return (
               <section key={flag.key} className="rounded-md border border-line bg-raised overflow-hidden">
                 <header className="px-5 pt-4 pb-3.5">
@@ -320,6 +341,12 @@ function FeatureFlagsConsole() {
                     <Users className="w-3.5 h-3.5" aria-hidden="true" />
                     Currently seen by: <span className="text-ink-3">{audienceSummary(flag, tenants)}</span>
                   </p>
+                  {fullyOutFor !== null && (
+                    <p className="text-[12.5px] text-muted mt-1">
+                      Everyone has had this for {fullyOutFor} day{fullyOutFor === 1 ? '' : 's'}
+                      {gateIsRemovable(flag) ? ' — the switch has done its job and can come out of the code.' : '.'}
+                    </p>
+                  )}
                 </header>
 
                 <div className="border-t border-line bg-surface px-5 py-3">

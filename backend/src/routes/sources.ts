@@ -25,7 +25,7 @@ import { requireAuth, requireRole } from '../middleware/auth';
 import { config } from '../config';
 import { validate } from '../middleware/validate';
 import { reqDb } from '../db/reqDb';
-import { isCurrentReleaseEnabled } from '../services/featureFlags';
+import { isReleaseEnabled } from '../services/featureFlags';
 import { encryptCredentials, decryptCredentials } from '../utils/crypto';
 import { logger } from '../utils/logger';
 
@@ -48,10 +48,19 @@ const router = Router();
  */
 const RELEASE_GATED_CONNECTORS = new Set(['excel', 'sharepoint']);
 
+/**
+ * The train these two shipped in — named, never "whatever is current". When
+ * the next train opens this gate must go on answering for August's audience;
+ * reading a moving pointer would have made these tiles vanish for tenants that
+ * already had them. Deleting `release_2026_08` from the registry turns this
+ * line into a compile error, which is the removal checklist.
+ */
+const RELEASE_GATED_IN = 'release_2026_08';
+
 router.get('/', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
   try {
   const tenantId = req.user?.tenantId;
-  const released = await isCurrentReleaseEnabled(tenantId, reqDb(req));
+  const released = await isReleaseEnabled(tenantId, RELEASE_GATED_IN, reqDb(req));
 
   let catalog = listConnectorCatalog();
   if (!released) {

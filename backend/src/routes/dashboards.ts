@@ -17,7 +17,7 @@ import { validateWidgetColumns } from '../shared/widgetContracts';
 import { preserveSpecCarryover, diffSpecChanges } from '../services/dashboardSpecMerge';
 import { applyEditOps, pendingSqlEdits, realRefusals, isDeterministicOp, type DashboardEditOp } from '../services/dashboardEditOps';
 import { startSSE } from '../services/sse';
-import { isCurrentReleaseEnabled } from '../services/featureFlags';
+import { isReleaseEnabled } from '../services/featureFlags';
 import { assertSafeReadQuery, isSafeReadQuery, assertNoExternalAccess } from '../utils/sqlGuard';
 import { logger } from '../utils/logger';
 
@@ -571,8 +571,8 @@ router.post('/refine-spec-stream', requireAuth, validate(refineSpecSchema), asyn
       // what it is doing is strictly better than one that does not, carries no
       // risk worth an audience decision, and is half of what this endpoint was
       // built to fix.
-      if (!(await isCurrentReleaseEnabled(tenantId, db))) {
-        await escalate('current release not switched on for this tenant');
+      if (!(await isReleaseEnabled(tenantId, 'release_2026_08', db))) {
+        await escalate('release_2026_08 not switched on for this tenant');
         return;
       }
 

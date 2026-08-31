@@ -54,25 +54,49 @@ a separate act, and that separation is the point.
 **Once, to switch the page on:** put your email in `.ops/operators` and push.
 A couple of minutes later **Who sees what** appears in the rail under Settings.
 
-**Then, for every new feature — your part is one screen:**
+**The unit is a RELEASE, not a feature.** A month's new work hangs off one
+switch — `release_2026_08` — so there is one decision per batch instead of one
+per feature. That is deliberate, and it has a cost worth knowing: switching a
+release off withdraws *everything* in it. That is fine while a month is one or
+two changes you would happily withdraw together, and it is the signal to give
+something its own key (`kind: 'feature'`) the moment it is not.
+
+**Then, for every new release — your part is one screen:**
 
 1. Open **Who sees what**.
-2. Tick your own test account next to the feature. It is live for you within
+2. Tick your own test account next to the release. It is live for you within
    ~20 seconds. Nobody else sees it.
 3. Happy? Tick a customer. Then more. Then *Everyone*.
 4. Wrong? Untick. It is gone immediately — no release, no rollback, no restart.
 
+The screen tells you both ends of the lifecycle: a banner for work that is live
+but has no audience yet, and a quieter line for a release that has been on
+*Everyone* long enough that its switch is now dead code. The second one is a
+message for whoever writes the code — mention it and it gets removed.
+
 **The developer's part** (mine, or whoever writes the feature):
 
-- Add the feature to `FEATURE_FLAGS` in `shared/contract.ts` — both copies, the
-  contract-sync ratchet enforces it. Give it a `name` a non-developer would
-  recognise: that string is what the screen shows.
-- Guard the feature: `await isFeatureEnabled(tenantId, 'my_flag')` on the
-  server, `useFeature('my_flag')` on the client.
-- Ship it. It arrives switched off, so merging it is safe on its own.
-- **Once it has been on *Everyone* for a while, delete the flag and its
-  checks.** This is the step everyone forgets. A switch nobody will ever flip
-  again is a dead branch in the code.
+- **Joining the current train** is the normal case: guard the new behaviour with
+  `await isReleaseEnabled(tenantId, 'release_2026_08')`. Nothing else to
+  declare — the key already exists and the operator already has one switch for
+  it.
+- **Opening a new train** (once a month, roughly): add an entry to
+  `FEATURE_FLAGS` in `shared/contract.ts` — both copies, the contract-sync
+  ratchet enforces it — and move `CURRENT_RELEASE` to it. Give it a `name` a
+  non-developer would recognise: that string is what the screen shows.
+  **Existing gates are not touched and must not be**: they go on naming the
+  train they shipped in, or opening September would take August offline for
+  everyone who already had it.
+- A gate names its release literally. `CURRENT_RELEASE` is typed `string` for
+  exactly this reason: passing it to `isReleaseEnabled` does not compile.
+- Ship it. A new release arrives switched off, so merging it is safe on its own.
+- **Finishing a release is deleting it.** Once the console says a release has
+  been on *Everyone* for more than 14 days, delete its key from `FEATURE_FLAGS`
+  and run `npm run check`: every gate that named it is now a compile error, and
+  that list is the cleanup. Remove those branches, keep the new behaviour. This
+  is the step every team forgets, which is why the screen now says it out loud.
+- **Never gate a bug fix.** Gating a fix means choosing who keeps the broken
+  behaviour. Fixes to existing behaviour ship to everyone.
 
 ## The one rule (keep migrations safe)
 The 0%-traffic revision shares the database with the live one, so **migrations
@@ -89,6 +113,8 @@ deploy, after the new code is live everywhere.
 ## Tips
 - Keep merging straight to `main` (light process) — the safety is the
   0%-traffic revision + manual promote, not PRs.
-- CI (`tsc` + lint + tests) runs on push as a signal; fix reds, but they don't
-  block you.
+- CI tests are a GATE, not a signal: `deploy.yml`'s `gate` job waits for the
+  Tests run for that commit, and `migrate-sql` and `deploy` need it. A red suite
+  does not reach production. (Image builds still run alongside — an image nobody
+  deploys is harmless.) `tsc` and lint run in `check.yml` and do NOT block.
 - `git revert <sha>` remains the escape hatch for any single change.

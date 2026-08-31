@@ -34,7 +34,7 @@ import {
   invalidateFeatureFlagCache,
   isPlatformOperator,
 } from '../services/featureFlags';
-import { CURRENT_RELEASE, FEATURE_FLAGS } from '../shared/contract';
+import { CURRENT_RELEASE, FEATURE_FLAGS, daysFullyReleased, gateIsRemovable } from '../shared/contract';
 
 const FLAG = 'preview_banner';       // a key that exists in the registry
 const UNKNOWN = 'not_a_real_flag';   // a key that does not
@@ -172,14 +172,61 @@ describe('the operator gate', () => {
   });
 
   it('CURRENT_RELEASE names a real release in the registry', () => {
-    // Server code gates new work on CURRENT_RELEASE without naming a key.
-    // If it pointed at a key that does not exist, isFeatureEnabled would
-    // answer false for every tenant and the release could never be switched
-    // on — a silent, total rollout failure with nothing on screen to explain
-    // it. Cheap to pin, so pin it.
+    // CURRENT_RELEASE is the key the NEXT gate should name. It is no longer
+    // read at run time — a gate names its own release, so that opening the
+    // next train cannot take the previous one offline — but pointing it at a
+    // key that does not exist would send the next person to write a gate that
+    // resolves false for every tenant, i.e. a silent, total rollout failure
+    // with nothing on screen to explain it. Cheap to pin, so pin it.
     const entry = (FEATURE_FLAGS as Record<string, { kind: string } | undefined>)[CURRENT_RELEASE];
     expect(entry).toBeDefined();
     expect(entry!.kind).toBe('release');
+  });
+
+  // ── the end of a release's life ───────────────────────────────────────────
+  //
+  // A release toggle that is never removed is the standard way a flag system
+  // rots, and the only reliable defence is for the console to SAY when one is
+  // finished rather than trust anyone to notice. These are the rules it says
+  // it by. Pure, so they run without touching the database.
+  describe('lifecycle reporting', () => {
+    const daysAgo = (n: number) => new Date(Date.now() - n * 86_400_000).toISOString();
+
+    it('reports how long everyone has had a release, and when the gate is dead code', () => {
+      const old = { kind: 'release' as const, rollout: 'all' as const, updated_at: daysAgo(30) };
+      expect(daysFullyReleased(old)).toBe(30);
+      expect(gateIsRemovable(old)).toBe(true);
+
+      const fresh = { kind: 'release' as const, rollout: 'all' as const, updated_at: daysAgo(2) };
+      expect(daysFullyReleased(fresh)).toBe(2);
+      expect(gateIsRemovable(fresh)).toBe(false);
+    });
+
+    it('says nothing about a release that is not out to everyone', () => {
+      // Mid-rollout is not "finished slowly" — it is a different state, and
+      // advising removal there would delete a gate still doing its job.
+      for (const rollout of ['off', 'tenants'] as const) {
+        const f = { kind: 'release' as const, rollout, updated_at: daysAgo(90) };
+        expect(daysFullyReleased(f)).toBeNull();
+        expect(gateIsRemovable(f)).toBe(false);
+      }
+    });
+
+    it('never advises removing a standing feature', () => {
+      // `kind: 'feature'` is a permanent capability, not scaffolding. Counting
+      // it here would put a permanent "this can be deleted" note against
+      // something that must not be.
+      const f = { kind: 'feature' as const, rollout: 'all' as const, updated_at: daysAgo(365) };
+      expect(daysFullyReleased(f)).toBeNull();
+      expect(gateIsRemovable(f)).toBe(false);
+    });
+
+    it('treats a missing or unparseable timestamp as "do not know"', () => {
+      // A row written before this column meant anything, or a corrupted value.
+      // Guessing would be worse than staying quiet.
+      expect(daysFullyReleased({ kind: 'release', rollout: 'all', updated_at: null })).toBeNull();
+      expect(daysFullyReleased({ kind: 'release', rollout: 'all', updated_at: 'not a date' })).toBeNull();
+    });
   });
 
   it.each([

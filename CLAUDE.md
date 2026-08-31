@@ -31,7 +31,65 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-08-31 (SPREADSHEET SOURCES — Excel + SharePoint
+**Last updated:** 2026-08-31 (RELEASE MECHANICS HARDENED — a gate names its own
+train, and the console reports the END of a release's life)
+
+**THE RELEASE TRAIN HAD A SUCCESSION BUG THAT WOULD HAVE FIRED ON THE FIRST DAY
+OF SEPTEMBER, silently.** Owner: *"think deep and hard if this is the way
+(semi-)professional software companies roll out features."* Measured against
+the standard taxonomy (release / experiment / ops / permission toggles) most of
+this platform is already right — deploy is separated from release, tenant-list
+targeting is the correct granularity for B2B (percentage rollout would show two
+colleagues different products), flags fail closed, both sides of the gate are
+tested, and the audience survives a trip through 'off'. Three things were not.
+- **A gate must name the release it shipped in, and did not.** Both live gates
+  called `isCurrentReleaseEnabled()`, which read whatever `CURRENT_RELEASE`
+  pointed at. The comment on it argued this was the benefit: opening the next
+  train would be one edit. It would ALSO, in that same edit, have taken August
+  offline everywhere — every live gate would have started reading September's
+  audience, which is empty by definition on the day it opens. The Excel and
+  SharePoint tiles would have vanished for tenants that already had them, the
+  fast dashboard edits would have reverted to the slow path, and nothing would
+  have logged a thing. Now: `isReleaseEnabled(tenantId, 'release_2026_08', db)`.
+  **The owner's ask is untouched** — one switch per batch, not one per feature —
+  because every gate from a batch names the same key.
+- **The fix is enforced by the type system, and both directions were PROVEN by
+  making the compiler fail before restoring.** `CURRENT_RELEASE` is deliberately
+  typed `string` (not the literal), so passing it to `isReleaseEnabled`, which
+  takes a `ReleaseKey`, does not compile — the old mistake cannot be made by
+  hand again. And deleting a finished train from `FEATURE_FLAGS` narrows
+  `ReleaseKey` to `never`, so `tsc` names EVERY gate that referenced it: the
+  removal checklist is generated, not remembered. That is Uber's Piranha idea at
+  1/1000th the cost, using only the type checker.
+- **The console reports the END of a release's life, not just the start.** An
+  unremoved release toggle is the standard way a flag system rots. The rule is
+  the industry default — 14 days at 100% — and it is computable from data
+  already stored (`kind==='release' && rollout==='all' && updated_at`). Pure
+  helpers `daysFullyReleased` / `gateIsRemovable` live in `contract.ts` (both
+  copies) so the rule exists once; the console shows a per-row line and a quiet
+  secondary note, deliberately QUIETER than the waiting-for-an-audience banner
+  because this is not an audience decision, it is a message to whoever writes
+  the code. 5 new pure tests pin the edges: mid-rollout says nothing (advising
+  removal there would delete a gate still doing its job), `kind:'feature'` is
+  never reported (a standing capability is not scaffolding), an unparseable
+  timestamp is "do not know" rather than a guess.
+- **DELIBERATELY NOT ADDED: a per-feature kill switch.** With a train, switching
+  off withdraws the whole batch. That is acceptable while a month is one or two
+  changes you would withdraw together, and the escape hatch already exists —
+  give the risky thing `kind: 'feature'`. Adding an `ops` kind now would be
+  speculative. The registry comment names the trigger for revisiting it.
+- **`docs/DEV_FLOW.md` Loop 3 rewritten** around joining a train vs opening one,
+  and a stale claim was corrected: it said CI "runs on push as a signal … they
+  don't block you", which stopped being true when the `gate` job landed. Tests
+  ARE a gate on migrate-sql and deploy.
+- **STILL THE LARGEST GAP, unchanged and now more visible: there is no
+  alerting.** Progressive delivery without a health signal is just hoping — the
+  ring exists to catch a problem with one tenant before ten, and nothing tells
+  anyone a problem occurred. Rollback is one click; noticing is manual.
+- Validation: backend **47 files / 477 passed** (5 new), all eight ratchets green
+  from the repo root, frontend `tsc` + lint clean, `next build` green.
+
+**Prior last updated:** 2026-08-31 (SPREADSHEET SOURCES — Excel + SharePoint
 connectors, and an Excel add-in with the platform's first machine auth)
 
 **THE OWNER ASKED FOR AN EXCEL CONNECTOR, A SHAREPOINT CONNECTOR AND AN EXCEL

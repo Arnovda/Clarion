@@ -322,8 +322,20 @@ export type FeatureRollout = 'off' | 'tenants' | 'all';
  * would say it out loud, never as a system term. `description` says what
  * turning it on actually does for a customer.
  *
- * Deleting a shipped release is part of finishing it: once it has been on
- * Everyone for a while, remove the key and the checks that read it.
+ * DELETING A SHIPPED RELEASE IS PART OF FINISHING IT, and the console tells you
+ * when: once a train has been on Everyone for `RELEASE_STALE_AFTER_DAYS` it is
+ * reported as removable. The removal is mechanical rather than a hunt — delete
+ * the key here and `tsc` names every gate that referenced it, because
+ * `isReleaseEnabled` takes a `ReleaseKey`. Delete those branches, keep the new
+ * behaviour, and the row in `feature_flags` is left behind as a harmless orphan
+ * the console already ignores.
+ *
+ * WHEN ONE FEATURE IN A TRAIN NEEDS ITS OWN SWITCH, declare it as
+ * `kind: 'feature'` instead. A train is a batch, so switching it off withdraws
+ * everything in it — fine while a month's work is one or two changes you would
+ * happily withdraw together, wrong the moment it carries something you would
+ * not. That is the signal to give that one thing a key of its own, not to go
+ * back to a switch per feature.
  */
 export const FEATURE_FLAGS = {
   release_2026_08: {
@@ -338,16 +350,77 @@ export const FEATURE_FLAGS = {
   },
 } as const;
 
-/**
- * The release new user-visible work is gated on RIGHT NOW.
- *
- * Server code calls `isCurrentReleaseEnabled()` rather than naming a key, so
- * opening the next train is one edit here plus one new entry above — not a
- * search through call sites for a stale string.
- */
-export const CURRENT_RELEASE = 'release_2026_08';
-
 export type FeatureKey = keyof typeof FEATURE_FLAGS;
+
+/** Just the release trains — the only keys a release gate may name. */
+export type ReleaseKey = {
+  [K in FeatureKey]: (typeof FEATURE_FLAGS)[K]['kind'] extends 'release' ? K : never;
+}[FeatureKey];
+
+/**
+ * The train NEW work joins. It is documentation for the next person writing a
+ * gate, and it is NOT what a running gate reads.
+ *
+ * That distinction is the whole point, and the first version got it backwards.
+ * Gates used to call `isCurrentReleaseEnabled()` — no key named — on the
+ * reasoning that opening the next train should then be a single edit here. It
+ * would have been, and it would have taken August's already-released work
+ * offline in the same edit: every live gate would have started reading
+ * September's audience, which is empty by definition on the day it opens. The
+ * Excel and SharePoint tiles would have vanished for tenants that already had
+ * them, the fast dashboard edits would have reverted to the slow path, and
+ * nothing anywhere would have raised an error. A gate must go on answering for
+ * the release it shipped in, forever, until someone deletes it on purpose.
+ *
+ * So a gate names its own release: `isReleaseEnabled(tenantId, 'release_2026_08')`.
+ * That keeps the property the owner actually asked for — one switch per batch,
+ * not one per feature — because every gate from the same batch names the same
+ * key.
+ *
+ * THE TYPE HERE IS WIDENED TO `string` DELIBERATELY. `isReleaseEnabled` takes a
+ * `ReleaseKey`, so passing this constant fails to compile. The mistake above
+ * cannot be made again by hand; it is not a rule anyone has to remember.
+ */
+export const CURRENT_RELEASE: string = 'release_2026_08';
+
+/**
+ * How long a release may sit on Everyone before its gate counts as dead code.
+ *
+ * Fourteen days is the industry default for calling a flag stale, and it is the
+ * right shape of number here: long enough that a monthly train has been through
+ * a full cycle of real use, short enough that the branch is still fresh in
+ * mind. The console says so out loud rather than trusting anyone to remember —
+ * unremoved release toggles are the standard way a flag system rots.
+ */
+export const RELEASE_STALE_AFTER_DAYS = 14;
+
+/** The shape both halves of the app already have for a flag row. */
+interface FlagLifecycleInput {
+  kind: 'release' | 'feature';
+  rollout: FeatureRollout;
+  updated_at: string | null;
+}
+
+/**
+ * Days this release has been switched on for EVERYONE, or null when it is not.
+ *
+ * Any change to the rollout restarts the clock, because `updated_at` is the
+ * only timestamp there is. That errs toward waiting longer before advising
+ * removal, which is the safe direction: the cost of advising too early is
+ * deleting a gate someone still wanted.
+ */
+export function daysFullyReleased(flag: FlagLifecycleInput, now: Date = new Date()): number | null {
+  if (flag.kind !== 'release' || flag.rollout !== 'all' || !flag.updated_at) return null;
+  const since = new Date(flag.updated_at).getTime();
+  if (Number.isNaN(since)) return null;
+  return Math.max(0, Math.floor((now.getTime() - since) / 86_400_000));
+}
+
+/** Everyone has had it long enough that the gate is now just dead code. */
+export function gateIsRemovable(flag: FlagLifecycleInput, now: Date = new Date()): boolean {
+  const days = daysFullyReleased(flag, now);
+  return days !== null && days >= RELEASE_STALE_AFTER_DAYS;
+}
 
 export const FEATURE_KEYS = Object.keys(FEATURE_FLAGS) as FeatureKey[];
 
