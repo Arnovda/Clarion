@@ -140,9 +140,25 @@ All three are built. ExactOnline is the shape every file follows.**
   asked for. `api_tokens` therefore carries its OWN explicit `token_lookup`
   policy (SELECT, only while there is no tenant context) rather than
   inheriting an assumption now known to be false.
-- Validation: connectors **223 tests** (was 132) · backend **46 files / 469
+- **BOTH NEW CONNECTORS SHIP BEHIND `CURRENT_RELEASE`** (owner's call before
+  merging: "eerst achter de release-vlag"). `GET /api/source-types` filters
+  `RELEASE_GATED_CONNECTORS` (`excel`, `sharepoint`) out of the catalog for a
+  tenant not on the train, so deploying is not releasing — the tiles appear
+  when the operator ticks the tenant on `/admin/features`. **The carve-out is
+  load-bearing, not a nicety**: the EDIT dialog reads an existing connection's
+  config schema from this same catalog, so a gated type the tenant already
+  uses is always kept — otherwise switching the flag back off would make an
+  already-created source unmanageable. The gate covers ADDING only; existing
+  connections keep syncing. Migration 86 and the three behaviour changes
+  (launcher config file, empty-egress semantics, schema-driven redaction)
+  CANNOT be flagged and go live with the deploy, which is the category
+  `DEV_FLOW.md` says to look at before pushing. Pinned by
+  `source-types-release-gate.test.ts`, and the gate was removed once to
+  confirm the test actually goes red.
+- Validation: connectors **223 tests** (was 132) · backend **47 files / 473
   passed** (14 new in `api-tokens.test.ts`, mostly refusals: revoked, expired,
-  deactivated owner, cross-tenant question, no role escalation) · all eight
+  deactivated owner, cross-tenant question, no role escalation; 4 in
+  `source-types-release-gate.test.ts`) · all eight
   ratchets green from the repo root · backend/worker/frontend typecheck clean ·
   `next build` green (`/excel-addin` 3.56 kB) · new frontend files lint-clean.
 - **NOT done, deliberately**: no CSV/`.xls`/`.xlsb` (different formats — a

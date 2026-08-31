@@ -25,14 +25,48 @@ import { requireAuth, requireRole } from '../middleware/auth';
 import { config } from '../config';
 import { validate } from '../middleware/validate';
 import { reqDb } from '../db/reqDb';
+import { isCurrentReleaseEnabled } from '../services/featureFlags';
 import { encryptCredentials, decryptCredentials } from '../utils/crypto';
 import { logger } from '../utils/logger';
 
 const router = Router();
 
 // ─── GET /api/source-types ────────────────────────────────────────────────
-router.get('/', requireAuth, (_req: Request, res: Response) => {
-  const catalog = listConnectorCatalog();
+/**
+ * Connectors that are part of the current release train and therefore only
+ * offered to tenants the operator has switched it on for.
+ *
+ * This is a ROLLOUT decision, not a property of the connector, which is why it
+ * lives here rather than in the connector package: the list empties itself the
+ * day the train opens to everyone, and the connectors do not change.
+ *
+ * It gates ADDING a source, nothing else. A connection that already exists
+ * keeps syncing, and stays fully manageable — see the carve-out below, which
+ * is not optional: the edit dialog reads a connection's config schema from
+ * this same catalog, so filtering a type away unconditionally would break
+ * editing an existing source the moment the flag was switched back off.
+ */
+const RELEASE_GATED_CONNECTORS = new Set(['excel', 'sharepoint']);
+
+router.get('/', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+  const tenantId = req.user?.tenantId;
+  const released = await isCurrentReleaseEnabled(tenantId, reqDb(req));
+
+  let catalog = listConnectorCatalog();
+  if (!released) {
+    // Keep any gated type this tenant already uses, so an existing connection
+    // never becomes unmanageable because a flag moved.
+    const inUse = new Set(
+      (await reqDb(req)('connections')
+        .where({ tenant_id: tenantId })
+        .whereNotNull('connector_type')
+        .distinct('connector_type')
+        .pluck('connector_type')) as string[],
+    );
+    catalog = catalog.filter((c) => !RELEASE_GATED_CONNECTORS.has(c.type) || inUse.has(c.type));
+  }
+
   res.json({
     ok: true,
     data: catalog.map((c) => ({
@@ -46,6 +80,9 @@ router.get('/', requireAuth, (_req: Request, res: Response) => {
       oauth: c.oauth ? { preAuthFields: [...c.oauth.preAuthFields] } : undefined,
     })),
   });
+  } catch (err) {
+    next(err);
+  }
 });
 
 // ─── Shared validation ────────────────────────────────────────────────────
