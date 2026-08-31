@@ -24,6 +24,9 @@
  */
 
 import { spawn, type ChildProcess } from 'child_process';
+import { mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 import path from 'path';
 import {
   EXIT_CANCELLED,
@@ -92,6 +95,16 @@ export class LocalProcessJobLauncher implements JobLauncher {
 
   launch(spec: JobSpec, onEvent: (event: WorkerEvent) => void): JobHandle {
     const entryPath = this.workerEntryPath ?? defaultWorkerEntry();
+
+    // Config goes to a 0600 temp file, not an env var. Two reasons, and the
+    // first one is hard: Linux caps a single env var at 128 KB, and a
+    // spreadsheet source's config carries the workbook's own bytes, so an env
+    // var cannot hold it at all. The second is that `/proc/<pid>/environ` is
+    // readable by anything running as the same user, whereas this file is
+    // owner-only and is unlinked by the worker the moment it has been read.
+    // Mirrors what the Azure launcher already does with a staged blob.
+    const { path: configPath, dir: configDir } = writeConfigFile(spec);
+
     const child: ChildProcess = spawn(process.execPath, [entryPath], {
       env: {
         // Inherit the minimum from the parent — PATH so child can find duckdb
@@ -103,7 +116,7 @@ export class LocalProcessJobLauncher implements JobLauncher {
         // Worker contract — mirrors what Container Apps Job env will look
         // like in production.
         WORKER_CONNECTOR_TYPE: spec.connectorType,
-        WORKER_CONNECTOR_CONFIG: JSON.stringify(spec.connectorConfig),
+        WORKER_CONFIG_FILE: configPath,
         WORKER_ENTITIES: spec.entities.join(','),
         WORKER_TENANT_ID: spec.tenantId,
         WORKER_CONNECTION_ID: spec.connectionId,
@@ -176,6 +189,10 @@ export class LocalProcessJobLauncher implements JobLauncher {
 
     const done = new Promise<{ exitCode: number }>((resolve) => {
       child.on('close', (code, signal) => {
+        // The worker unlinks the config itself after reading; removing the
+        // whole directory covers both that case and a worker that died
+        // before getting that far, and leaves no temp dir behind per sync.
+        rmSync(configDir, { recursive: true, force: true });
         if (killTimer) { clearTimeout(killTimer); killTimer = null; }
         const exitCode = code ?? (signal === 'SIGTERM' || signal === 'SIGINT' || signal === 'SIGKILL' ? EXIT_CANCELLED : 1);
         // If the worker died without emitting a terminal event, synthesise one
@@ -196,6 +213,7 @@ export class LocalProcessJobLauncher implements JobLauncher {
       });
       // ENOENT etc. — emitted before close.
       child.on('error', (err) => {
+        rmSync(configDir, { recursive: true, force: true });
         if (!terminalEventEmitted) {
           onEvent({
             type: 'error',
@@ -242,4 +260,19 @@ function tryParseJSON(s: string): unknown | null {
 
 function truncate(s: string, max: number): string {
   return s.length <= max ? s : `${s.slice(0, max)}…`;
+}
+
+
+/**
+ * Write the connector config where only this user can read it.
+ *
+ * `mkdtemp` gives a 0700 directory with an unguessable name, and the file
+ * itself is written 0600 — so the config is unreadable to other users on the
+ * host even in the instant between writing and the worker consuming it.
+ */
+function writeConfigFile(spec: JobSpec): { path: string; dir: string } {
+  const dir = mkdtempSync(join(tmpdir(), 'clarion-sync-'));
+  const file = join(dir, 'connector-config.json');
+  writeFileSync(file, JSON.stringify(spec.connectorConfig), { encoding: 'utf-8', mode: 0o600 });
+  return { path: file, dir };
 }

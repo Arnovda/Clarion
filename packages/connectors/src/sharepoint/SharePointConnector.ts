@@ -51,7 +51,7 @@ import {
   type TestResult,
 } from '../types';
 import { readXlsx, SpreadsheetReadError, type XlsxWorkbook } from '../spreadsheet/xlsxReader';
-import { sheetToTable } from '../spreadsheet/tabular';
+import { assertSheetComplete, sheetToTable } from '../spreadsheet/tabular';
 import { asSharePointConfig, sharePointConfigSchema, type SharePointConfig } from './schema';
 import { AuthRefreshError, getOrRefreshAccessToken, refreshAccessToken, sharePointOAuth } from './oauth';
 import {
@@ -234,16 +234,8 @@ export class SharePointConnector extends BaseSourceConnector implements SourceCo
     const sheet = workbook.sheets.find((s) => s.name === entity.sheetName);
     if (!sheet) throw new Error(`worksheet '${entity.sheetName}' is no longer in the workbook`);
 
-    // The reader reports rather than obeys its row cap; a partial sheet must
-    // never reach the warehouse, because the resulting table looks complete
-    // and answers questions with wrong numbers.
-    if (sheet.truncated) {
-      throw new Error(
-        `the worksheet has more rows than a spreadsheet source can carry. `
-        + `Nothing was written, so no partial data is in your warehouse. `
-        + `Split the sheet, or load this data from a database instead.`,
-      );
-    }
+    // Throws before anything is written when the reader hit its row ceiling.
+    assertSheetComplete(sheet);
 
     const table = sheetToTable(sheet, { headerRow });
     if (table.columns.length === 0) {

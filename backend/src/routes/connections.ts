@@ -446,11 +446,22 @@ router.get('/:id/source-config', requireAuth, requireRole('admin'), async (req: 
     }
     const decrypted = JSON.parse(decryptCredentials(row.connector_config_encrypted));
     const redacted = { ...decrypted };
+    // Field-name heuristic for credentials, plus a SCHEMA-DRIVEN rule for
+    // uploaded files. The name rule alone would ship a spreadsheet source's
+    // whole workbook — tens of megabytes of the customer's data — to the
+    // browser every time someone opens the edit dialog, because `fileContent`
+    // matches none of the credential words. Asking the connector's own schema
+    // which properties hold a file is both correct today and correct for the
+    // next connector that carries one.
+    const fileFields = base64Fields(row.connector_type);
     for (const key of Object.keys(redacted)) {
-      if (/(secret|password|token|apikey|api_key)/i.test(key)) {
-        if (redacted[key]) redacted[key] = '••••••••';
+      const isCredential = /(secret|password|token|apikey|api_key)/i.test(key);
+      if ((isCredential || fileFields.has(key)) && redacted[key]) {
+        redacted[key] = '••••••••';
       }
     }
+    // PATCH skips this placeholder, so a round trip through the edit dialog
+    // leaves the stored file and credentials untouched.
     res.json({ ok: true, data: redacted });
   } catch (err) {
     next(err);
@@ -1112,5 +1123,29 @@ router.delete('/:id', requireAuth, requireRole('admin'), async (req: Request, re
     next(err);
   }
 });
+
+/**
+ * Config properties a connector declares as base64-encoded file content.
+ *
+ * Read from the connector's own JSON Schema (`contentEncoding: 'base64'`,
+ * draft-07's standard marker) rather than from a list kept here, so a new
+ * file-backed connector is covered the day it is registered instead of the
+ * day someone remembers to add it.
+ */
+function base64Fields(connectorType: string): Set<string> {
+  try {
+    const schema = getConnector(connectorType).configSchema as {
+      properties?: Record<string, { contentEncoding?: string }>;
+    };
+    return new Set(
+      Object.entries(schema.properties ?? {})
+        .filter(([, prop]) => prop?.contentEncoding === 'base64')
+        .map(([key]) => key),
+    );
+  } catch {
+    // Unknown connector type — redact nothing extra rather than fail the read.
+    return new Set();
+  }
+}
 
 export default router;

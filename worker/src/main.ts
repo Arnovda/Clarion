@@ -44,6 +44,7 @@ import {
 // Side-effect import — registers all connectors in the registry.
 import '@databridge/connectors';
 import { AnonymousCredential, AppendBlobClient } from '@azure/storage-blob';
+import * as fs from 'fs/promises';
 import { parseEnv } from './env';
 
 async function main(): Promise<void> {
@@ -51,9 +52,12 @@ async function main(): Promise<void> {
 
   // ─── Resolve connector config ──────────────────────────────────────────
   // Two delivery paths:
-  //   • Local launcher → WORKER_CONNECTOR_CONFIG (JSON in env var). Fine
-  //     for dev where the worker is a child of the backend on the same
-  //     host and there's no log-retention exposure path.
+  //   • Local launcher → WORKER_CONFIG_FILE (path to a 0600 JSON file the
+  //     worker reads once and deletes). A file rather than an env var
+  //     because a config can exceed the 128 KB env-var ceiling — a
+  //     spreadsheet source carries the workbook — and because env vars are
+  //     world-readable via /proc to anything running as the same user.
+  //     `WORKER_CONNECTOR_CONFIG` still works and is the legacy path.
   //   • Azure launcher → WORKER_CONFIG_BLOB_URL (read SAS to a private
   //     blob containing the JSON). The credential never appears in the
   //     Container Apps Job execution env, which Azure retains for ~30 days.
@@ -206,11 +210,31 @@ async function resolveConnectorConfig(env: ReturnType<typeof parseEnv>): Promise
       throw new Error(`Staged config blob is not valid JSON: ${(e as Error).message}`);
     }
   }
+  if (env.WORKER_CONFIG_FILE) {
+    let text: string;
+    try {
+      text = await fs.readFile(env.WORKER_CONFIG_FILE, 'utf-8');
+    } catch (e) {
+      throw new Error(`Failed to read the staged config file: ${(e as Error).message}`);
+    } finally {
+      // Read once, then remove it. The orchestrator also cleans up when the
+      // child exits; doing it here as well means the window in which the
+      // config sits on disk is the shortest it can be, and a worker that
+      // crashes after this point leaves nothing behind.
+      await fs.unlink(env.WORKER_CONFIG_FILE).catch(() => undefined);
+    }
+    try {
+      return JSON.parse(text) as Record<string, unknown>;
+    } catch (e) {
+      throw new Error(`Staged config file is not valid JSON: ${(e as Error).message}`);
+    }
+  }
   if (env.WORKER_CONNECTOR_CONFIG) {
     return env.WORKER_CONNECTOR_CONFIG;
   }
   throw new Error(
-    'Missing connector config — set either WORKER_CONFIG_BLOB_URL (Azure) or WORKER_CONNECTOR_CONFIG (local).',
+    'Missing connector config — set WORKER_CONFIG_BLOB_URL (Azure), WORKER_CONFIG_FILE (local) '
+    + 'or WORKER_CONNECTOR_CONFIG (legacy).',
   );
 }
 

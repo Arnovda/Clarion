@@ -193,11 +193,15 @@ const CONNECTORS: Connector[] = [
 const REGISTRY_DESCRIPTIONS: Record<string, string> = {
   exactonline: 'Sync GL, sales and master data from Exact Online.',
   odoo: 'Sync accounting, sales and inventory from Odoo (ERP & CRM).',
+  excel: 'Upload a spreadsheet — budgets, mappings, anything you keep in Excel.',
+  sharepoint: 'Read spreadsheets straight from a SharePoint or OneDrive library.',
 };
 
 const REGISTRY_COLORS: Record<string, string> = {
   exactonline: 'bg-orange-500',
   odoo: 'bg-purple-500',
+  excel: 'bg-emerald-600',
+  sharepoint: 'bg-sky-600',
 };
 
 // ---------------------------------------------------------------------------

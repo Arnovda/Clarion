@@ -46,6 +46,18 @@ const envSchema = z.object({
    * the orchestrator deletes the blob.
    */
   WORKER_CONFIG_BLOB_URL: z.string().url().optional(),
+  /**
+   * Absolute path to a file containing the connector config as JSON. Used by
+   * the LOCAL launcher in place of `WORKER_CONNECTOR_CONFIG`.
+   *
+   * Two reasons it is a file rather than an env var. A config can be large —
+   * a spreadsheet source carries the workbook's bytes, and Linux caps a
+   * single env var at 128 KB, so an env var cannot hold one at all. And an
+   * env var is readable from `/proc/<pid>/environ` by anything running as the
+   * same user, whereas the file is written 0600 and deleted when the child
+   * exits. The orchestrator writes it; the worker deletes it after reading.
+   */
+  WORKER_CONFIG_FILE: z.string().optional(),
   WORKER_ENTITIES: z
     .string()
     .min(1)

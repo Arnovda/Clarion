@@ -53,6 +53,8 @@ export {
   type XlsxWorkbook,
 } from './spreadsheet/xlsxReader';
 export {
+  assertSheetComplete,
+  SheetTooLargeError,
   coerceCell,
   deriveColumnNames,
   inferSqlType,
@@ -80,6 +82,7 @@ export {
 // ─── Self-register all connectors (side-effect imports) ───────────────────
 // Adding a new connector: add an `import './<vendor>';` line below.
 // Each connector subfolder's index.ts calls `registerConnector(...)` on import.
+import './excel';
 import './exactonline';
 import './odoo';
 import './sharepoint';

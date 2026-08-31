@@ -42,8 +42,14 @@ export function validateConnectorMetadata(c: SourceConnector): string[] {
     errs.push(`${p} displayName must be a non-empty string`);
   }
 
-  if (!Array.isArray(c.egressAllowList) || c.egressAllowList.length === 0) {
-    errs.push(`${p} egressAllowList must be a non-empty array`);
+  // An EMPTY list is allowed and meaningful: it declares a connector that
+  // performs no network I/O at all (a file the customer uploaded is already
+  // inside Clarion). HttpClient refuses every request under an empty list, so
+  // a connector that does reach out but forgot to declare it fails loudly on
+  // its first call rather than quietly bypassing the policy. What is NOT
+  // allowed is omitting the declaration.
+  if (!Array.isArray(c.egressAllowList)) {
+    errs.push(`${p} egressAllowList must be an array (use [] for a connector that makes no network calls)`);
   }
 
   // configSchema must be a compilable JSON Schema.

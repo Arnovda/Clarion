@@ -67,7 +67,9 @@ export interface HttpClientOptions {
    * whose host is user-configured (e.g. self-hosted Odoo), pass the single
    * configured host rather than a static list.
    *
-   * Default: unset → no enforcement (legacy behaviour).
+   * Default: unset → no enforcement (legacy behaviour). An explicitly EMPTY
+   * array is not the same thing: it declares a connector that reaches no
+   * network at all, and every request is refused.
    */
   egressAllowList?: readonly string[];
 
@@ -299,7 +301,19 @@ export class HttpClient {
    */
   private assertEgressAllowed(req: HttpRequest): void {
     const allow = this.opts.egressAllowList;
-    if (!allow || allow.length === 0) return;
+    // Absent = no policy declared (legacy behaviour). PRESENT BUT EMPTY = a
+    // connector that declared it reaches nothing, so every request is refused.
+    // Reading an empty list as "allow everything" would invert the safest
+    // possible declaration into the least safe one.
+    if (!allow) return;
+    if (allow.length === 0) {
+      throw new HttpError(
+        'Refused: this connector declares no outbound hosts (egress policy)',
+        0,
+        this.safeUrl(req),
+        undefined,
+      );
+    }
     let host: string;
     try {
       host = new URL(this.absoluteUrl(req.url)).host;

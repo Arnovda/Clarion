@@ -229,6 +229,35 @@ export function sheetToTable(sheet: XlsxSheet, opts: SheetTableOptions = {}): Sh
   return { columns, rows };
 }
 
+/**
+ * Refuse a worksheet the reader could not read in full.
+ *
+ * The reader reports its row cap rather than obeying it, and this is the guard
+ * that turns that report into a refusal. Both spreadsheet connectors call it
+ * before writing anything, so the rule — and its wording — exists once.
+ *
+ * Why a refusal and not a truncated table: a partial table looks complete.
+ * Nothing downstream can tell that rows are missing, so every dashboard and
+ * every answer built on it is quietly wrong. Losing the table is recoverable
+ * and visible; losing rows is neither.
+ */
+export function assertSheetComplete(sheet: XlsxSheet): void {
+  if (!sheet.truncated) return;
+  throw new SheetTooLargeError(
+    'the worksheet has more rows than a spreadsheet source can carry. '
+    + 'Nothing was written, so no partial data is in your warehouse. '
+    + 'Split the sheet, or load this data from a database instead.',
+  );
+}
+
+/** A worksheet exceeded the reader's row ceiling and was refused whole. */
+export class SheetTooLargeError extends Error {
+  constructor(msg: string) {
+    super(msg);
+    this.name = 'SheetTooLargeError';
+  }
+}
+
 // ─── Entity naming ────────────────────────────────────────────────────────
 // Entity names become warehouse TABLE names, whose allow-list is wider than
 // the column one (hyphens are permitted). Kept separate from

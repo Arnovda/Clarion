@@ -52,7 +52,17 @@ interface JsonSchemaProperty {
   enum?: string[];
   default?: unknown;
   minLength?: number;
+  maxLength?: number;
   pattern?: string;
+  /**
+   * Draft-07's standard way for a schema to say "this string is a
+   * base64-encoded file". A property carrying it renders as a file picker
+   * rather than a text box, which is what lets a file-backed connector need
+   * no frontend code of its own.
+   */
+  contentEncoding?: 'base64';
+  /** MIME type the picker should accept, when the schema names one. */
+  contentMediaType?: string;
 }
 
 interface EntityDescriptor {
@@ -739,6 +749,7 @@ function SchemaForm(props: {
           required={required.has(key)}
           value={props.value[key]}
           onChange={(v) => props.onChange(key, v)}
+          onChangeField={props.onChange}
         />
       ))}
     </div>
@@ -751,12 +762,52 @@ function SchemaField(props: {
   required: boolean;
   value: unknown;
   onChange: (v: unknown) => void;
+  /** Set a sibling field — the file picker fills in the file name too. */
+  onChangeField: (key: string, value: unknown) => void;
 }) {
-  const { fieldKey, prop, required, value, onChange } = props;
+  const { fieldKey, prop, required, value, onChange, onChangeField } = props;
   // Sensitive field detection — render as <input type="password">.
   // Field-name based; backend already enforces redaction in logs.
   const isSensitive = /(secret|password|token|apikey|api_key)/i.test(fieldKey);
   const label = prop.title ?? humanise(fieldKey);
+
+  // A base64 property is a file, not a string somebody types.
+  if (prop.contentEncoding === 'base64') {
+    return (
+      <FileField
+        fieldKey={fieldKey}
+        prop={prop}
+        required={required}
+        value={value}
+        onChange={onChange}
+        onChangeField={onChangeField}
+      />
+    );
+  }
+
+  // A boolean is a checkbox. Without this it fell through to the text input
+  // below and the user typed the word "true" into a boolean field.
+  if (prop.type === 'boolean') {
+    const checked = value === undefined || value === null ? prop.default === true : value === true;
+    return (
+      <div>
+        <label className="flex items-start gap-2.5 cursor-pointer">
+          <input
+            type="checkbox"
+            checked={checked}
+            onChange={(e) => onChange(e.target.checked)}
+            className="mt-0.5 h-4 w-4 rounded border-line text-ocean focus:ring-1 focus:ring-ocean/30"
+          />
+          <span>
+            <span className="block text-[13px] text-ink">{label}</span>
+            {prop.description && (
+              <span className="block text-[11px] text-muted-2 mt-0.5">{prop.description}</span>
+            )}
+          </span>
+        </label>
+      </div>
+    );
+  }
 
   return (
     <div>
@@ -798,6 +849,105 @@ function SchemaField(props: {
       )}
     </div>
   );
+}
+
+/**
+ * File picker for a schema property declared as base64.
+ *
+ * Reads the file in the browser and puts its base64 into the config, so the
+ * upload rides the ordinary connection-create request — there is no separate
+ * upload endpoint to keep in step, and the bytes are encrypted at rest with
+ * the rest of the connector config.
+ *
+ * The size check happens HERE as well as in the connector's schema, on
+ * purpose. Server-side validation is what makes it safe; this check is what
+ * makes it kind — a 40 MB workbook fails in the picker with a sentence about
+ * the file, instead of after a long upload with a 413.
+ */
+function FileField(props: {
+  fieldKey: string;
+  prop: JsonSchemaProperty;
+  required: boolean;
+  value: unknown;
+  onChange: (v: unknown) => void;
+  onChangeField: (key: string, value: unknown) => void;
+}) {
+  const { prop, required, value, onChange, onChangeField } = props;
+  const [name, setName] = useState<string>('');
+  const [size, setSize] = useState<number>(0);
+  const [error, setError] = useState<string>('');
+  const label = prop.title ?? humanise(props.fieldKey);
+
+  // maxLength bounds the BASE64 string, so the byte ceiling is three quarters
+  // of it. Deriving it here keeps one number in the schema instead of two that
+  // can drift apart.
+  const maxBytes = prop.maxLength ? Math.floor((prop.maxLength / 4) * 3) : undefined;
+
+  async function pick(file: File | undefined) {
+    if (!file) return;
+    setError('');
+    if (maxBytes && file.size > maxBytes) {
+      setError(
+        `${file.name} is ${(file.size / 1024 / 1024).toFixed(1)} MB. The limit is `
+        + `${Math.round(maxBytes / 1024 / 1024)} MB — split the file, or load this data from a database instead.`,
+      );
+      onChange('');
+      setName('');
+      setSize(0);
+      return;
+    }
+    try {
+      const base64 = await readAsBase64(file);
+      onChange(base64);
+      setName(file.name);
+      setSize(file.size);
+      // Fill the sibling that names the file, so the catalog can tell two
+      // spreadsheet sources apart without the user typing the name twice.
+      onChangeField('filename', file.name);
+    } catch {
+      setError('That file could not be read. Try selecting it again.');
+    }
+  }
+
+  const chosen = typeof value === 'string' && value.length > 0;
+
+  return (
+    <div>
+      <label className="block text-[11px] font-mono uppercase tracking-[0.06em] text-muted mb-1.5">
+        {label}
+        {required && <span className="text-rose-500 ml-1">*</span>}
+      </label>
+      <input
+        type="file"
+        accept=".xlsx,.xlsm"
+        onChange={(e) => void pick(e.target.files?.[0])}
+        className="w-full text-[13px] text-ink file:mr-3 file:rounded-md file:border-0 file:bg-ocean file:px-3 file:py-2 file:text-[12px] file:font-medium file:text-white hover:file:bg-ocean/90 cursor-pointer"
+      />
+      {chosen && name && (
+        <p className="text-[11px] text-muted mt-1.5 font-mono">
+          {name} · {(size / 1024).toFixed(0)} KB
+        </p>
+      )}
+      {error && <p className="text-[11px] text-rose-600 mt-1.5">{error}</p>}
+      {prop.description && !error && (
+        <p className="text-[11px] text-muted-2 mt-1">{prop.description}</p>
+      )}
+    </div>
+  );
+}
+
+/** Read a File into base64, without the `data:` prefix the reader adds. */
+function readAsBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(reader.error ?? new Error('read failed'));
+    reader.onload = () => {
+      const result = String(reader.result ?? '');
+      const comma = result.indexOf(',');
+      resolve(comma >= 0 ? result.slice(comma + 1) : result);
+    };
+    reader.readAsDataURL(file);
+  });
 }
 
 function humanise(key: string): string {

@@ -113,8 +113,25 @@ app.use(helmet({
 // CORS — locked to configured origins
 app.use(cors({ origin: config.corsOrigins, credentials: true }));
 
-// Body parsing with size limits
-app.use(express.json({ limit: '2mb' }));
+// Body parsing with size limits.
+//
+// 2 MB everywhere, EXCEPT the two route groups through which a spreadsheet
+// source arrives. The Excel connector carries the uploaded workbook inside its
+// connector config (see `packages/connectors/src/excel/schema.ts` for why the
+// bytes live there rather than in a separate store), so creating or testing
+// one of those connections legitimately posts a body far past the default.
+//
+// Scoped by path rather than raised globally on purpose: every other endpoint
+// keeps the small ceiling, so the larger one is reachable on two prefixes
+// instead of the whole API. The connector's own schema caps the file at ~15 MB;
+// this ceiling only has to clear that plus base64's third and the surrounding
+// JSON.
+const SPREADSHEET_UPLOAD_ROUTES = /^\/api\/(connections|source-types)(\/|$)/;
+const jsonDefault = express.json({ limit: '2mb' });
+const jsonUpload = express.json({ limit: '32mb' });
+app.use((req, res, next) => (
+  SPREADSHEET_UPLOAD_ROUTES.test(req.path) ? jsonUpload : jsonDefault
+)(req, res, next));
 
 // Structured request logging + request ID tracing
 app.use(requestLogger);

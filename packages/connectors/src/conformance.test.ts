@@ -11,6 +11,7 @@ import { describe, expect, it } from 'vitest';
 // Register connectors via their side-effect modules directly (rather than
 // './index') so this suite doesn't transitively load the DuckDB-backed
 // warehouse writers — conformance is pure metadata + catalog checks.
+import './excel';
 import './exactonline';
 import './odoo';
 import './sharepoint';
@@ -28,6 +29,7 @@ describe('connector conformance — metadata (all registered connectors)', () =>
     expect(types).toContain('exactonline');
     expect(types).toContain('odoo');
     expect(types).toContain('sharepoint');
+    expect(types).toContain('excel');
   });
 
   it.each(types)('connector "%s" passes metadata invariants', (type) => {
