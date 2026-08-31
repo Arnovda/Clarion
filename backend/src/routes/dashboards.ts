@@ -670,14 +670,17 @@ router.post('/refine-spec-stream', requireAuth, validate(refineSpecSchema), asyn
       applied.forEach((a, i) => {
         if (a.op.op === 'add_filter') for (const id of a.changedWidgetIds) filterInjected.add(id);
         if (!isDeterministicOp(a.op)) return;
-        if (a.refusal) {
-          sse.emit({ type: 'step', id: `s${i}`, status: 'failed', note: a.refusal });
-          return;
-        }
         // An op with handovers is not finished — it stays running until every
         // card it handed over has settled, so the tick means the whole thing.
+        // Checked BEFORE the refusal, because an op can do both: a filter can
+        // hand over its first twelve cards and refuse the rest, and settling
+        // it as failed here would be overwritten by the handovers landing.
         if (perOpHandovers.get(i)) {
           sse.emit({ type: 'step', id: `s${i}`, status: 'running' });
+          return;
+        }
+        if (a.refusal) {
+          sse.emit({ type: 'step', id: `s${i}`, status: 'failed', note: a.refusal });
           return;
         }
         sse.emit({ type: 'step', id: `s${i}`, status: 'done' });
@@ -691,10 +694,17 @@ router.post('/refine-spec-stream', requireAuth, validate(refineSpecSchema), asyn
         perOpHandovers.set(planIndex, left);
         if (left > 0) return;
         const failed = handoverFailures.get(planIndex) ?? 0;
+        // An op that also refused (the cap) reports that as its note, so the
+        // partial outcome is on the line the user is watching, not only in
+        // the refusal list at the end.
+        const ownRefusal = applied[planIndex]?.refusal;
+        const note = failed
+          ? `${failed} card(s) could not take it`
+          : ownRefusal;
         sse.emit({
           type: 'step', id: `s${planIndex}`,
-          status: failed === 0 ? 'done' : 'failed',
-          ...(failed ? { note: `${failed} card(s) could not take it` } : {}),
+          status: failed || ownRefusal ? 'failed' : 'done',
+          ...(note ? { note } : {}),
         });
       };
 
