@@ -171,13 +171,16 @@ describe('the operator gate', () => {
     expect(await isFeatureEnabled(tenantA, FLAG, getTestDb())).toBe(true);
   });
 
-  it('CURRENT_RELEASE names a real release in the registry', () => {
-    // CURRENT_RELEASE is the key the NEXT gate should name. It is no longer
-    // read at run time — a gate names its own release, so that opening the
-    // next train cannot take the previous one offline — but pointing it at a
-    // key that does not exist would send the next person to write a gate that
-    // resolves false for every tenant, i.e. a silent, total rollout failure
-    // with nothing on screen to explain it. Cheap to pin, so pin it.
+  it('CURRENT_RELEASE is either null or names a real release', () => {
+    // Two legitimate states, and the test has to allow both. NULL means no
+    // train is open, which is where this deployment sits deliberately while it
+    // has no customers: work ships to everyone. A STRING means a train is open
+    // and it is the key the next gate should name — pointing it at a key that
+    // does not exist would send the next person to write a gate that resolves
+    // false for every tenant, i.e. a silent, total rollout failure with nothing
+    // on screen to explain it. What must never happen is the third state: a
+    // name that looks real and is not.
+    if (CURRENT_RELEASE === null) return;
     const entry = (FEATURE_FLAGS as Record<string, { kind: string } | undefined>)[CURRENT_RELEASE];
     expect(entry).toBeDefined();
     expect(entry!.kind).toBe('release');

@@ -17,7 +17,6 @@ import { validateWidgetColumns } from '../shared/widgetContracts';
 import { preserveSpecCarryover, diffSpecChanges } from '../services/dashboardSpecMerge';
 import { applyEditOps, pendingSqlEdits, realRefusals, isDeterministicOp, type DashboardEditOp } from '../services/dashboardEditOps';
 import { startSSE } from '../services/sse';
-import { isReleaseEnabled } from '../services/featureFlags';
 import { assertSafeReadQuery, isSafeReadQuery, assertNoExternalAccess } from '../utils/sqlGuard';
 import { logger } from '../utils/logger';
 
@@ -556,25 +555,11 @@ router.post('/refine-spec-stream', requireAuth, validate(refineSpecSchema), asyn
     try {
       sse.emit({ type: 'phase', text: 'Reading your request…' });
 
-      // ── AUDIENCE GATE ───────────────────────────────────────────────────
-      // The tiered fast path is a user-visible change, so WHO gets it is the
-      // operator's decision on the "Who sees what" screen, not a consequence
-      // of deploying. It rides the CURRENT RELEASE rather than a flag of its
-      // own: the operator ticks a customer once per release and gets the whole
-      // batch. Off (the default for a newly declared release) means this
-      // endpoint behaves exactly like the old /refine-spec — the same
-      // full-spec regeneration, with the same result — so a tenant not yet on
-      // this release loses speed and nothing else.
-      //
-      // Deliberately gating ONLY the fast path: the progress events above and
-      // below are emitted either way, because a dashboard edit that reports
-      // what it is doing is strictly better than one that does not, carries no
-      // risk worth an audience decision, and is half of what this endpoint was
-      // built to fix.
-      if (!(await isReleaseEnabled(tenantId, 'release_2026_08', db))) {
-        await escalate('release_2026_08 not switched on for this tenant');
-        return;
-      }
+      // The tiered fast path used to sit behind the August release, so that an
+      // operator chose who got it. That gate is gone with the train: everyone
+      // takes this path now. `escalate()` below is unchanged and still the
+      // safety net — any failure in the planner or a scoped edit falls back to
+      // the full-spec regeneration, which is the same result, slower.
 
       // ── PLAN ────────────────────────────────────────────────────────────
       let plan;

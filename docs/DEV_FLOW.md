@@ -46,57 +46,56 @@ existing behaviour, dependency upgrades — are exactly the changes that still
 deserve a careful look before the push, because for those, deploy really is
 release.
 
-## Loop 3 — release to one customer at a time
+## Loop 3 — who can see it
 
-Loops 1 and 2 get code into production. This one decides **who can see it** —
-a separate act, and that separation is the point.
+**Right now: everyone, automatically. Nothing is gated.**
 
-**Once, to switch the page on:** put your email in `.ops/operators` and push.
-A couple of minutes later **Who sees what** appears in the rail under Settings.
+There are no customers yet, so there is no audience to protect. Every change
+ships to every account the moment its deploy goes live — push to `main`, tests
+pass, the revision health-checks, traffic shifts, done. That is the fastest
+correct setup for a product before its first customer, and it is a deliberate
+standing decision rather than an oversight: a switch guarding nobody is a second
+code path that can only ever be wrong, plus one more thing to remember on every
+change.
 
-**The unit is a RELEASE, not a feature.** A month's new work hangs off one
-switch — `release_2026_08` — so there is one decision per batch instead of one
-per feature. That is deliberate, and it has a cost worth knowing: switching a
-release off withdraws *everything* in it. That is fine while a month is one or
-two changes you would happily withdraw together, and it is the signal to give
-something its own key (`kind: 'feature'`) the moment it is not.
+The machinery for doing it the other way is built, tested and idle: the
+**Who sees what** console, the off → some customers → everyone ladder, the
+audience that survives being switched off, and the lifecycle reporting. Only the
+audience is missing.
 
-**Then, for every new release — your part is one screen:**
+**On the day the first customer signs — four steps, about an hour:**
 
-1. Open **Who sees what**.
-2. Tick your own test account next to the release. It is live for you within
-   ~20 seconds. Nobody else sees it.
-3. Happy? Tick a customer. Then more. Then *Everyone*.
-4. Wrong? Untick. It is gone immediately — no release, no rollback, no restart.
+1. Declare a train in `FEATURE_FLAGS` (`shared/contract.ts`, both copies — the
+   contract-sync ratchet enforces it), e.g. `release_2026_09` with a `name` a
+   non-developer would recognise: that string is what the console shows.
+2. Point `CURRENT_RELEASE` at it. It is `null` today, which is what "no train is
+   open" means.
+3. Gate the next user-visible change with
+   `await isReleaseEnabled(tenantId, 'release_2026_09')`. A gate names its
+   release literally — `CURRENT_RELEASE` is typed to make passing it a compile
+   error, because a gate reading "whatever is current" would take the previous
+   train offline the day you open the next one.
+4. Put your email in `.ops/operators` and push, if it is not there already.
+   **Who sees what** appears in the rail under Settings; tick your test account
+   first, then a customer, then Everyone.
 
-The screen tells you both ends of the lifecycle: a banner for work that is live
-but has no audience yet, and a quieter line for a release that has been on
-*Everyone* long enough that its switch is now dead code. The second one is a
-message for whoever writes the code — mention it and it gets removed.
+**The rules that apply either way:**
 
-**The developer's part** (mine, or whoever writes the feature):
-
-- **Joining the current train** is the normal case: guard the new behaviour with
-  `await isReleaseEnabled(tenantId, 'release_2026_08')`. Nothing else to
-  declare — the key already exists and the operator already has one switch for
-  it.
-- **Opening a new train** (once a month, roughly): add an entry to
-  `FEATURE_FLAGS` in `shared/contract.ts` — both copies, the contract-sync
-  ratchet enforces it — and move `CURRENT_RELEASE` to it. Give it a `name` a
-  non-developer would recognise: that string is what the screen shows.
-  **Existing gates are not touched and must not be**: they go on naming the
-  train they shipped in, or opening September would take August offline for
-  everyone who already had it.
-- A gate names its release literally. `CURRENT_RELEASE` is typed `string` for
-  exactly this reason: passing it to `isReleaseEnabled` does not compile.
-- Ship it. A new release arrives switched off, so merging it is safe on its own.
-- **Finishing a release is deleting it.** Once the console says a release has
-  been on *Everyone* for more than 14 days, delete its key from `FEATURE_FLAGS`
-  and run `npm run check`: every gate that named it is now a compile error, and
-  that list is the cleanup. Remove those branches, keep the new behaviour. This
-  is the step every team forgets, which is why the screen now says it out loud.
 - **Never gate a bug fix.** Gating a fix means choosing who keeps the broken
   behaviour. Fixes to existing behaviour ship to everyone.
+- **A train is a batch.** Switching it off withdraws everything in it. Fine
+  while a month is one or two changes you would withdraw together — the signal
+  to give something its own key (`kind: 'feature'`) the moment it is not.
+- **Finishing a release is deleting it.** Once the console says a release has
+  been on *Everyone* for more than 14 days, delete its key from `FEATURE_FLAGS`
+  and run `npm run check`: every gate that named it becomes a compile error, and
+  that list is the cleanup. This is the step every team forgets, which is why
+  the console says it out loud. (August 2026 was retired exactly this way.)
+
+**What is missing, and it matters more without flags:** there is no alerting. If
+a deploy breaks something, nothing tells you — you find out by looking. Rollback
+is one click (*Rollback production*); noticing is manual. That is the next
+fundamental to build, and it is more urgent than any flag work.
 
 ## The one rule (keep migrations safe)
 The 0%-traffic revision shares the database with the live one, so **migrations

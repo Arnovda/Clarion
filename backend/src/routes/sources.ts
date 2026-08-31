@@ -25,7 +25,6 @@ import { requireAuth, requireRole } from '../middleware/auth';
 import { config } from '../config';
 import { validate } from '../middleware/validate';
 import { reqDb } from '../db/reqDb';
-import { isReleaseEnabled } from '../services/featureFlags';
 import { encryptCredentials, decryptCredentials } from '../utils/crypto';
 import { logger } from '../utils/logger';
 
@@ -33,48 +32,17 @@ const router = Router();
 
 // ─── GET /api/source-types ────────────────────────────────────────────────
 /**
- * Connectors that are part of the current release train and therefore only
- * offered to tenants the operator has switched it on for.
+ * Every registered connector, for every tenant.
  *
- * This is a ROLLOUT decision, not a property of the connector, which is why it
- * lives here rather than in the connector package: the list empties itself the
- * day the train opens to everyone, and the connectors do not change.
- *
- * It gates ADDING a source, nothing else. A connection that already exists
- * keeps syncing, and stays fully manageable — see the carve-out below, which
- * is not optional: the edit dialog reads a connection's config schema from
- * this same catalog, so filtering a type away unconditionally would break
- * editing an existing source the moment the flag was switched back off.
+ * Excel and SharePoint used to be filtered out here until the August release
+ * was switched on for a tenant. That gate has been removed along with the
+ * train itself: with no customers there is no audience to protect, and a
+ * switch guarding nobody is a branch that can only ever be wrong. Re-gating a
+ * future connector is a small, deliberate change — see docs/DEV_FLOW.md.
  */
-const RELEASE_GATED_CONNECTORS = new Set(['excel', 'sharepoint']);
-
-/**
- * The train these two shipped in — named, never "whatever is current". When
- * the next train opens this gate must go on answering for August's audience;
- * reading a moving pointer would have made these tiles vanish for tenants that
- * already had them. Deleting `release_2026_08` from the registry turns this
- * line into a compile error, which is the removal checklist.
- */
-const RELEASE_GATED_IN = 'release_2026_08';
-
-router.get('/', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
+router.get('/', requireAuth, async (_req: Request, res: Response, next: NextFunction) => {
   try {
-  const tenantId = req.user?.tenantId;
-  const released = await isReleaseEnabled(tenantId, RELEASE_GATED_IN, reqDb(req));
-
-  let catalog = listConnectorCatalog();
-  if (!released) {
-    // Keep any gated type this tenant already uses, so an existing connection
-    // never becomes unmanageable because a flag moved.
-    const inUse = new Set(
-      (await reqDb(req)('connections')
-        .where({ tenant_id: tenantId })
-        .whereNotNull('connector_type')
-        .distinct('connector_type')
-        .pluck('connector_type')) as string[],
-    );
-    catalog = catalog.filter((c) => !RELEASE_GATED_CONNECTORS.has(c.type) || inUse.has(c.type));
-  }
+  const catalog = listConnectorCatalog();
 
   res.json({
     ok: true,

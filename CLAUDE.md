@@ -31,7 +31,52 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-08-31 (RELEASE MECHANICS HARDENED — a gate names its own
+**Last updated:** 2026-08-31 (NOTHING IS GATED — the August train was retired and
+the platform ships to everyone, on purpose, until the first customer)
+
+**Owner: *"Kunnen we voorlopig alles gwn laten doorkomen en automatisch voor
+iedereen beschikbaar maken? Ik heb nog geen klanten en wil snelheid maken."*
+Right call, and it was executed through exactly the removal path built hours
+earlier — the mechanism's first real use was retiring itself.**
+- **`release_2026_08` is DELETED from `FEATURE_FLAGS`, and `tsc` produced the
+  cleanup list**: two errors, `dashboards.ts:574` and `sources.ts:63`. Both
+  gates removed. Excel + SharePoint are now in the catalog for every tenant;
+  the tiered dashboard fast path runs for everyone (its `escalate()` fallback
+  is untouched and still the safety net). **`CURRENT_RELEASE` is `null`** —
+  "no train is open" is now a representable state rather than a lie.
+- **`ReleaseKey` narrows to `never` with no train declared, so
+  `isReleaseEnabled` cannot be called at all.** That is the right error for
+  someone reaching for a gate before opening a train, and it means the idle
+  machinery cannot be half-used.
+- **WHY THIS IS NOT A CORNER CUT.** A flag protects an audience; there is no
+  audience. A switch guarding nobody is a second code path that can only ever
+  be wrong, plus a decision to remember on every change. Everything that makes
+  gating work is still built and still tested — the console, the ladder, the
+  audience-survives-'off' rule, the lifecycle reporting. Only the audience is
+  missing, and the registry comment + `DEV_FLOW.md` Loop 3 carry the four-step
+  reversal (declare a train, point `CURRENT_RELEASE` at it, gate the next
+  user-visible change, tick a tenant) so the day-one-customer flip is an hour,
+  not a rediscovery.
+- **`source-types-release-gate.test.ts` → `source-types-catalog.test.ts`.** The
+  gate tests would have been deleted as meaningless; instead the file now pins
+  the DECISION — every connector is offered to a brand-new tenant — so
+  re-introducing a gate is a visible act rather than something that creeps
+  back. The `CURRENT_RELEASE` test allows null OR a real key, and still refuses
+  the third state (a name that looks real and is not).
+- **The production `feature_flags` row for `release_2026_08` becomes an
+  orphan** — the console already filters orphans out, so it simply vanishes
+  from the screen. Nothing to clean up by hand. `preview_banner` survives as
+  the one standing capability, and is the only thing on the console now.
+- **THE GAP THIS WIDENS, stated plainly: with no flags AND no alerting, the
+  only safety net between a bad push and a customer is the CI gate plus a
+  manual rollback.** That is an acceptable trade at zero customers and it stops
+  being one at one customer. Alerting is now unambiguously the next fundamental
+  — more urgent than any flag work.
+- Validation: backend **47 files / 476 passed** (one fewer file: the gate suite
+  replaced), all eight ratchets green from the repo root, frontend `tsc` + lint
+  clean, `next build` green 40/40.
+
+**Prior last updated:** 2026-08-31 (RELEASE MECHANICS HARDENED — a gate names its own
 train, and the console reports the END of a release's life)
 
 **THE RELEASE TRAIN HAD A SUCCESSION BUG THAT WOULD HAVE FIRED ON THE FIRST DAY

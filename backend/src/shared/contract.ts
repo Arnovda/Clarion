@@ -302,8 +302,22 @@ export type FeatureRollout = 'off' | 'tenants' | 'all';
  * What can be released to a chosen set of customers, separately from the code
  * that contains it.
  *
- * THE UNIT IS A RELEASE, NOT A FEATURE. Everything user-visible that ships in
- * one batch hangs off ONE key — `CURRENT_RELEASE` below — so the person
+ * ⚠ NO RELEASE TRAIN IS OPEN RIGHT NOW, AND THAT IS A DELIBERATE STANDING
+ * DECISION, not neglect. There are no customers yet, so there is no audience to
+ * protect: new work ships to everyone the moment it is deployed, which is the
+ * fastest correct thing to do and what every pre-revenue product does. A switch
+ * guarding nobody is not free — it is a second code path that can only ever be
+ * wrong, and one more thing to remember per change.
+ *
+ * THE DAY THE FIRST CUSTOMER SIGNS, THIS FLIPS BACK, and the flip is small:
+ * declare a train here, point `CURRENT_RELEASE` at it, and gate the next
+ * user-visible change with `isReleaseEnabled`. Everything that made that work
+ * is still here and still tested — the console, the ladder, the audience, the
+ * lifecycle reporting. Only the audience is missing. `docs/DEV_FLOW.md` Loop 3
+ * has the four steps.
+ *
+ * THE UNIT IS A RELEASE, NOT A FEATURE. When a train is open, everything
+ * user-visible that ships in one batch hangs off ONE key, so the person
  * choosing an audience ticks a customer once per release and gets the whole
  * batch, instead of hunting through a switch per feature. That was the owner's
  * ask in as many words: "I don't want it per feature, just the latest version
@@ -338,11 +352,6 @@ export type FeatureRollout = 'off' | 'tenants' | 'all';
  * back to a switch per feature.
  */
 export const FEATURE_FLAGS = {
-  release_2026_08: {
-    kind: 'release',
-    name: 'August 2026',
-    description: 'Quicker dashboard changes: when you ask to alter a dashboard, Clarion works out the smallest set of edits and makes most of them itself instead of rebuilding every card — faster, and it only touches what you asked about. Off means dashboard changes still work; they just take the slower route.',
-  },
   preview_banner: {
     kind: 'feature',
     name: 'Preview marker',
@@ -352,13 +361,22 @@ export const FEATURE_FLAGS = {
 
 export type FeatureKey = keyof typeof FEATURE_FLAGS;
 
-/** Just the release trains — the only keys a release gate may name. */
+/**
+ * Just the release trains — the only keys a release gate may name. With no
+ * train declared this is `never`, so `isReleaseEnabled` cannot be called at
+ * all: you cannot gate on a release that does not exist, which is the right
+ * error to get if you reach for a gate before opening a train.
+ */
 export type ReleaseKey = {
   [K in FeatureKey]: (typeof FEATURE_FLAGS)[K]['kind'] extends 'release' ? K : never;
 }[FeatureKey];
 
 /**
- * The train NEW work joins. It is documentation for the next person writing a
+ * The train NEW work joins, or null when none is open — which is the case
+ * today, on purpose: with no customers, work ships to everyone and nothing is
+ * gated. See the registry comment above for the decision and how to reverse it.
+ *
+ * When a train IS open this is documentation for the next person writing a
  * gate, and it is NOT what a running gate reads.
  *
  * That distinction is the whole point, and the first version got it backwards.
@@ -381,7 +399,7 @@ export type ReleaseKey = {
  * `ReleaseKey`, so passing this constant fails to compile. The mistake above
  * cannot be made again by hand; it is not a rule anyone has to remember.
  */
-export const CURRENT_RELEASE: string = 'release_2026_08';
+export const CURRENT_RELEASE: string | null = null;
 
 /**
  * How long a release may sit on Everyone before its gate counts as dead code.
