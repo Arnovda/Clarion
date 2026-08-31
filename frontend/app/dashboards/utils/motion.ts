@@ -34,14 +34,20 @@ export const widgetVariants: Variants = {
 // ─── KPI Number Spring ────────────────────────────────────────────────────────
 
 /**
- * Spring config for animating KPI number count-up with framer-motion's
- * useSpring / motion.div. Feels weighty and authoritative.
+ * How long a KPI number takes to roll to its value, in seconds.
+ *
+ * THE ONE PLACE TO CHANGE THE SPEED. It is a fixed duration rather than a
+ * spring on purpose: a spring's settle time is emergent, and the previous one
+ * (stiffness 100, damping 30 — a damping RATIO of 1.5, i.e. overdamped)
+ * approached its value asymptotically, so the last digits of a number like
+ * €611.040,36 crawled for a couple of seconds after the roll was visually
+ * over. A duration is a number someone can read, reason about and change.
+ *
+ * Keep it short. The roll exists to show that a number MOVED when a filter
+ * changed — that reads in a few hundred milliseconds, and anything longer is
+ * the dashboard making the reader wait to find out what it already knows.
  */
-export const numberSpring = {
-  type: 'spring' as const,
-  stiffness: 80,
-  damping: 20,
-};
+export const NUMBER_ROLL_SECONDS = 0.4;
 
 // ─── Page-Level Fade ──────────────────────────────────────────────────────────
 
