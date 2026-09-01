@@ -220,7 +220,7 @@ router.get('/:catalog', requireAuth, async (req: Request, res: Response, next: N
 
       // Count tables per connection from Neo4j (in parallel)
       const withCounts = await Promise.all(conns.map(async (c) => {
-        const tables = await graph.getTablesByConnection(c.id);
+        const tables = await graph.getTablesByConnection(c.id, req.user!.tenantId);
         return {
           catalog: 'sources' as const,
           id: toSlugWithId(c.name, c.id),
@@ -239,7 +239,7 @@ router.get('/:catalog', requireAuth, async (req: Request, res: Response, next: N
       .select('id', 'name', 'description', 'status', 'created_by', 'created_at', 'updated_at', 'connection_id')
       .orderBy('name');
 
-    const productTree = await graph.getProductTree();
+    const productTree = await graph.getProductTree(req.user!.tenantId);
     const tableCountByDpid = new Map<number, number>();
     for (const p of productTree.products) {
       tableCountByDpid.set(p.dataProductId, p.tables.length);
@@ -331,10 +331,10 @@ router.get('/:catalog/:schema', requireAuth, async (req: Request, res: Response,
       const conn = await db('connections').where({ id: schemaId }).first();
       if (!conn) return res.status(404).json({ ok: false, error: 'Connection not found' });
 
-      const tables = await graph.getTablesByConnection(schemaId);
+      const tables = await graph.getTablesByConnection(schemaId, req.user!.tenantId);
       // Pull column counts in parallel
       const withColumns = await Promise.all(tables.map(async (t) => {
-        const cols = await graph.getColumnsByTablePgId(Number(t.id));
+        const cols = await graph.getColumnsByTablePgId(Number(t.id), req.user!.tenantId);
         return {
           catalog: 'sources' as const,
           schema: schemaSlug,
@@ -358,9 +358,9 @@ router.get('/:catalog/:schema', requireAuth, async (req: Request, res: Response,
     const product = await db('data_products').where({ id: schemaId }).first();
     if (!product) return res.status(404).json({ ok: false, error: 'Data product not found' });
 
-    const tables = await graph.getProductTablesByProduct(schemaId);
+    const tables = await graph.getProductTablesByProduct(schemaId, req.user!.tenantId);
     const withColumns = await Promise.all(tables.map(async (t) => {
-      const cols = await graph.getProductColumnsByTablePgId(Number(t.id));
+      const cols = await graph.getProductColumnsByTablePgId(Number(t.id), req.user!.tenantId);
       return {
         catalog: 'products' as const,
         schema: schemaSlug,
@@ -402,10 +402,9 @@ router.get('/:catalog/:schema/:table', requireAuth, async (req: Request, res: Re
       return res.status(404).json({ ok: false, error: 'Unknown table' });
     }
 
-    // `tableId` comes straight from the URL and the graph lookups below have no
-    // tenant predicate (see db/tenantOwnership.ts), so authorise it against the
-    // Postgres mirror first — otherwise this endpoint returns another tenant's
-    // column catalog to any authenticated user.
+    // `tableId` comes straight from the URL. The graph lookups below carry a
+    // tenant predicate now, but the Postgres gate stays in front: it is what
+    // turns "not yours" into a 404 instead of a silent empty column list.
     const db = reqDb(req);
     const ownsTable = await owns(
       db,
@@ -418,7 +417,7 @@ router.get('/:catalog/:schema/:table', requireAuth, async (req: Request, res: Re
     }
 
     if (catalog === 'sources') {
-      const cols = await graph.getColumnsByTablePgId(tableId);
+      const cols = await graph.getColumnsByTablePgId(tableId, req.user!.tenantId);
       const data = cols.map((c) => ({
         catalog: 'sources' as const,
         schema: schemaSlug,
@@ -438,7 +437,7 @@ router.get('/:catalog/:schema/:table', requireAuth, async (req: Request, res: Re
       return res.json({ ok: true, data });
     }
 
-    const cols = await graph.getProductColumnsByTablePgId(tableId);
+    const cols = await graph.getProductColumnsByTablePgId(tableId, req.user!.tenantId);
     const data = cols.map((c) => ({
       catalog: 'products' as const,
       schema: schemaSlug,

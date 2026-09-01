@@ -1310,21 +1310,29 @@ export async function runSchemaProfiler(
       description:   r.description ?? null,
     }));
 
-    await graph.upsertConnectionGraph(graphTables, graphColumns, graphRels, tenantId);
+    if (tenantId == null) {
+      // A node written without a tenant is invisible to every tenant-scoped
+      // read and unattributable forever — exactly the backlog the 2026-09-01
+      // graph backfill spent a day pruning. Refuse to create more of it.
+      log.warn('No tenant resolved for this connection — skipping the Neo4j sync rather than writing unattributable nodes');
+    } else {
+      await graph.upsertConnectionGraph(graphTables, graphColumns, graphRels, tenantId);
 
-    if (allFkCandidates.length > 0) {
-      await graph.saveFkCandidates(
-        connectionId,
-        allFkCandidates.map((fk) => ({
-          fromTable:    fk.fromTable,
-          fromColumn:   fk.fromColumn,
-          toTable:      fk.toTable,
-          toColumn:     fk.toColumn,
-          source:       fk.source,
-          confidence:   fk.confidence,
-          overlapRatio: fk.overlapRatio ?? null,
-        })),
-      );
+      if (allFkCandidates.length > 0) {
+        await graph.saveFkCandidates(
+          connectionId,
+          allFkCandidates.map((fk) => ({
+            fromTable:    fk.fromTable,
+            fromColumn:   fk.fromColumn,
+            toTable:      fk.toTable,
+            toColumn:     fk.toColumn,
+            source:       fk.source,
+            confidence:   fk.confidence,
+            overlapRatio: fk.overlapRatio ?? null,
+          })),
+          tenantId,
+        );
+      }
     }
   } catch (neo4jErr) {
     log.warn({ err: neo4jErr }, 'Neo4j sync failed (non-fatal)');

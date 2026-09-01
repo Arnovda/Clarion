@@ -423,16 +423,18 @@ async function main(): Promise<void> {
   process.stdout.write('\n');
   if (remaining === 0) {
     process.stdout.write(
-      'Every graph entity carries tenantId. This is the precondition for adding a\n' +
-      'tenant predicate to the read queries in db/semanticGraph.ts (step 3).\n',
+      'Every graph entity carries tenantId — the tenant-scoped reads in\n' +
+      'db/semanticGraph.ts (step 3, shipped 2026-09-01) can see all of it.\n',
     );
   } else {
     process.stdout.write(
       `${remaining} entit(ies) still unstamped.\n\n` +
-      'DO NOT add tenant predicates to the read path yet — these would vanish from\n' +
-      'their owner\'s catalog. Unattributable rows are usually orphans whose Postgres\n' +
+      'The read path is tenant-scoped now (step 3 shipped 2026-09-01), so these are\n' +
+      'ALREADY INVISIBLE to their owner\'s catalog — this is live breakage, not a\n' +
+      'pending hazard. Unattributable rows are usually orphans whose Postgres\n' +
       'mirror was deleted, or a CrossSourceView with no connectionId. Inspect them\n' +
-      'individually and either attribute or delete them; do not guess an owner.\n',
+      'individually and either attribute (apply) or delete (prune) them; do not\n' +
+      'guess an owner.\n',
     );
   }
 

@@ -31,7 +31,105 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-09-01 (P0-5 REMEDIATION — email verification, a default
+**Last updated:** 2026-09-01 (P0-2 FULLY CLOSED — the semantic graph is
+tenant-scoped BY CONSTRUCTION: backfill+prune verified clean, then every MATCH
+gained a tenantId predicate, held by a ninth ratchet)
+
+**Third PR of the market-readiness remediation plan (wave 1). P0-2's three
+steps are all done — writes stamp (step 1, since 2026-08-04), existing data
+backfilled and verified (step 2, this day), reads scoped (step 3, this PR):**
+- **STEP 2 FIRST, AND IT TOOK THREE TOOLING BUGS TO GET AN HONEST ANSWER.**
+  `.ops/graph-backfill` gained `apply`/`prune` modes running as a one-shot
+  Container Apps Job inside the environment (Neo4j is internal-ingress only —
+  correct posture, kept). Bugs found on the way, each now documented in the
+  workflow: (a) `az containerapp job create/update --args` rejects ANY
+  dash-prefixed list value, so the mode travels as `GRAPH_BACKFILL_MODE` env
+  var; (b) **`az -o tsv` SKIPS null fields**, so a secretref env row collapsed
+  and the secret NAME became the env VALUE — the job ran with
+  `NEO4J_PASSWORD="neo4j-password"`; env cloning is jq-over-JSON now, in BOTH
+  workflows that clone env this way. **Side finding: the jobs-worker was
+  provisioned with the same broken parse on 2026-07-27 and likely has corrupt
+  env since — masked because the API runs every queue when `WORKER_QUEUES` is
+  unset on it. Re-provision by touching `.ops/provision-jobs-worker` (fix is
+  merged); belongs with the P0-6/P1-1 ops work.** (c) `Number(neo4jInt)` is
+  NaN — a `toNum()` guard keeps prune's mirror-lookup from reading every key
+  as dead (which would have over-deleted catastrophically).
+- **The first full apply stamped everything attributable and left 5,089
+  leftovers. Prune partitioned them by owner liveness — every one keyed to a
+  DELETED connection (ids 10,11,12,16,17,18) or product (15–41), months of
+  test tenants and re-created connections — deleted them (172 SourceTable,
+  1929 SourceColumn, 112 ProductTable, 2425 ProductColumn, 1 CrossSourceView),
+  and the after-prune RECOUNT (the verdict, never the arithmetic) came back
+  CLEAN on every label including RELATES_TO edges.** Live-keyed leftovers are
+  never deleted — reported INVESTIGATE. Control rests at `apply` (re-running
+  is the idempotent re-check).
+- **STEP 3 — every anchored `MATCH` on a tenant-owned label in
+  `db/semanticGraph.ts` now carries `tenantId: $tenantId`** (80 anchored
+  clauses; traversals off an already-bound variable inherit their anchor's
+  scope). Every read function takes the tenant as an explicit REQUIRED
+  parameter — never ambient context, because an authorisation input must be
+  visible at the call site — threaded from `req.user!.tenantId` at ~95 call
+  sites across 12 files (the compiler generated the checklist: signatures
+  changed first, 98 arity errors fixed one by one). **`getProductTree(tenantId)`
+  is required now** — the finding's named example; `routes/catalog.ts` can no
+  longer call it scope-free. A wrong tenant matches nothing: the failure
+  direction is an empty result, never another tenant's data.
+- **The route-level `denyUnlessOwned` gates STAY, deliberately.** They are the
+  404-vs-silent-empty distinction, and they authorise against the Postgres
+  mirror — the ownership oracle a mis-stamped graph node cannot fool. The
+  CLAUDE.md dual-write rule block is rewritten accordingly (predicate =
+  construction-level first line, gates = second).
+- **Three deliberate exemptions, each carrying a `// tenant-exempt:` comment
+  the linter honours**: `getRelationshipConnectionId` (the ownership resolver —
+  it exists to DISCOVER an owner), and the owner-key purges `deleteTenantGraph`
+  + `deleteProductGraph`, where a tenant predicate would STRAND mis-stamped
+  nodes forever instead of deleting them (under-deletion is the one failure
+  GDPR erasure cannot have).
+- **NINTH RATCHET: `lint-graph-tenant-predicate`** (test.yml, beside the stamp
+  lint). Reads the Cypher as text: an anchored MATCH on a tenant-owned label
+  must reference tenantId within its clause segment; bare-bound-variable
+  anchors pass; owned-edge matches with an empty `()` anchor are held to the
+  rule too. **Verified to go red** (stripped a node predicate and an
+  edge-anchored one → 2 named violations) **and refuses an empty scan** (<30
+  clauses inspected = broken parser, not a clean file — the `.ops/prod-logs`
+  lesson). The stamp lint's stale header was refreshed and its edge list
+  gained CROSS_VIEW_LINK (now stamped at creation).
+- **Hardening that fell out of making tenantId required on the write paths**:
+  `upsertConnectionGraph`/`upsertProductGraph` require a real tenant and their
+  internal MATCH anchors are scoped; SchemaProfiler, productGraphSync and
+  syncAllProducts now REFUSE to sync a tenant-less row (loud warn) instead of
+  writing null-stamped nodes — recreating the pruned backlog is no longer
+  possible from those paths. `createRelationship`/`createKpi`/
+  `createQualityRule`/`createCrossSourceView`/`addCrossViewRelationship` take
+  required tenantId and scope their endpoint anchors, so e.g. a relationship
+  can only be drawn between two tables the caller's tenant owns.
+  `buildSemanticContextForQuery`'s cache key gained the tenant so a
+  wrong-tenant call can never poison the owner's cached context.
+  `getCrossSourceViews` without a connectionId filters by tenant in the graph
+  itself (was: fetch every tenant's views, then subtract).
+- **Edge-addressed ops scope via a stamped ENDPOINT node**
+  (`(ft:SourceTable {tenantId: $tenantId})-[r:RELATES_TO {pgId: …}]`), not the
+  edge's own property — node stamping is what the backfill verified, and
+  pre-stamp CROSS_VIEW_LINK edges (never backfilled) still resolve.
+- Validation: backend `npm run check` clean (98→0 errors); full vitest **52
+  files / 534 passed / 4 skipped** (11 new in `semanticGraph.tenant.test.ts`,
+  which mock the driver and pin that the tenant a caller passes is bound to
+  `$tenantId` on EVERY query each function runs — plus a negative control
+  pinning the resolver's exemption); all NINE ratchets green from the repo
+  root with per-ratchet exit codes; `e2e/rls.spec.ts` + `e2e/auth-login.spec.ts`
+  **8/8** against a live backend as `databridge_app`; frontend `tsc` clean +
+  `next build` green (no frontend files touched). **NOT runtime-tested against
+  a real Neo4j** — the sandbox and CI have none; the text linter, the
+  param-binding tests and the verified-clean production stamping are the
+  evidence chain. Watch the first production catalog read after deploy: an
+  EMPTY catalog for a real tenant would mean a stamp mismatch, and
+  `.ops/graph-backfill` (report) is the diagnostic.
+- **NOT in this PR, deliberately**: retiring the ownership gates (they are the
+  second line and the 404 semantics); scoping `deleteProductGraph`/
+  `deleteTenantGraph` (owner-key purges must out-reach mis-stamps); the
+  jobs-worker re-provision (ops act, queued with P0-6).
+
+**Prior last updated:** 2026-09-01 (P0-5 REMEDIATION — email verification, a default
 AI budget for self-registered tenants, and the second "Acme" no longer 500s;
 P0-1's production half ANSWERED the same day)
 
@@ -6940,31 +7038,37 @@ write to those three tables.
 - `POST /semantic/approve` — generic approval flow writes Neo4j only.
 - `POST /semantic/import` — bulk CSV import writes Neo4j only.
 
-**MANDATORY: Neo4j has NO tenant scoping — gate every request-supplied id.**
-`db/semanticGraph.ts` matches nodes and edges by their globally-unique `pgId`
-(or `connectionId`) with **no tenant predicate anywhere** — 90+ `MATCH` clauses,
-zero tenant references. Postgres RLS protects the mirror rows but not the graph,
-so any route that hands a request-supplied id to a `graph.*` call reaches
-whichever tenant owns that id, and ids come from a shared sequence (trivially
-enumerable). A 2026-07-28 audit found this live on ~30 endpoints across
-`routes/semantic.ts`, `routes/catalog.ts` and `routes/cross-views.ts`, including
-`GET /semantic/columns?tableId=` returning another tenant's column catalog to any
-authenticated user, and `DELETE /semantic/relationships/:id` deleting another
-tenant's relationship.
+**MANDATORY: the semantic graph is tenant-scoped BY CONSTRUCTION now — keep
+both layers.** Since 2026-09-01 every `MATCH` on a tenant-owned label in
+`db/semanticGraph.ts` carries a `tenantId: $tenantId` predicate, every read
+function takes the tenant as an explicit required parameter, and
+`lint-graph-tenant-predicate` (test.yml, next to the stamp lint) fails the
+merge when a new query forgets it. A wrong tenant matches nothing: the failure
+direction is an empty result, never another tenant's data. This landed only
+after the writes had been stamping (`lint-graph-tenant-stamp`) and the
+2026-09-01 backfill+prune verified every existing entity clean — that ordering
+was load-bearing and stays documented in `.ops/graph-backfill`.
 
-The rule, no exceptions: **before an id from a path param, query string or body
-reaches a `graph.*` call, authorise it with `owns()` / `ownedIds()` from
-`db/tenantOwnership.ts`** (in routes: the local `denyUnlessOwned` helpers).
-Those match `tenant_id` EXPLICITLY rather than relying on RLS, because `reqDb()`
-falls back to the global pool whose session-level `SET app.current_tenant` has a
-documented race — an authorisation check must not depend on which side of that
-race it lands. Refuse with **404, never 403**: a 403 confirms the id exists and
-belongs to someone else.
+Two rules, no exceptions:
+1. **Never call a `graph.*` function with any tenant other than the caller's
+   own** (`req.user!.tenantId` in routes; the tenant on the RLS-scoped row in
+   services). Passing an id-derived or hardcoded tenant re-opens the hole the
+   predicate closed. The tenant parameter is deliberately explicit — an
+   authorisation input must be visible at the call site, never ambient.
+2. **The `owns()` / `ownedIds()` gates from `db/tenantOwnership.ts` STAY in
+   front of request-supplied ids** (in routes: the local `denyUnlessOwned`
+   helpers). They are what turns "not yours" into a **404, never 403** (a 403
+   confirms the id exists), they authorise against the Postgres mirror — the
+   ownership oracle a mis-stamped graph node cannot fool — and they cover
+   entities that exist ONLY in the graph (pre-dual-write relationships, which
+   authorise via `graph.getRelationshipConnectionId()`, the one deliberately
+   tenant-free read).
 
-Two things this does not cover, both tracked: entities that exist ONLY in the
-graph (pre-dual-write relationships) authorise via
-`graph.getRelationshipConnectionId()` → the owning connection; and the real fix
-is putting `tenantId` on the nodes and into the Cypher, which retires this rule.
+History, kept because the shape recurs: a 2026-07-28 audit found the unscoped
+graph live on ~30 endpoints (`GET /semantic/columns?tableId=` returned another
+tenant's column catalog to any authenticated user). The predicate is the
+construction-level fix; the gates were the interim control and are now the
+second line.
 
 **If you add a new write to any of those three tables, you have two options:**
 1. Mirror it (preferred — follow the pattern in `PATCH /semantic/tables/:id`).

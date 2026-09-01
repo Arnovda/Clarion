@@ -667,7 +667,7 @@ router.post('/product/:productTableId/profile', requireAuth, requireRole('admin'
         return await resolveOwnerProductTable(ptId, tenantId);
       } catch (e) {
         if (!(e instanceof OwnerResolveError) || e.stage !== 'product_table') throw e;
-        const hint = await graph.getProductTableByPgId(ptId);
+        const hint = await graph.getProductTableByPgId(ptId, Number(tenantId));
         if (!hint || !hint.data_product_id || !hint.table_name) throw e;
         const ss = await db('star_schemas')
           .where({ data_product_id: hint.data_product_id })
@@ -795,7 +795,7 @@ router.post('/product/:productTableId/evaluate', requireAuth, requireRole('admin
         return await resolveOwnerProductTable(ptId, tenantId);
       } catch (e) {
         if (!(e instanceof OwnerResolveError) || e.stage !== 'product_table') throw e;
-        const hint = await graph.getProductTableByPgId(ptId);
+        const hint = await graph.getProductTableByPgId(ptId, Number(tenantId));
         if (!hint || !hint.data_product_id || !hint.table_name) throw e;
         const ss = await db('star_schemas')
           .where({ data_product_id: hint.data_product_id })
@@ -1012,7 +1012,7 @@ router.post('/:connId/:table/profile', requireAuth, requireRole('admin', 'analys
       await graph.updateTableQualityStats(connId, table, {
         rowCount:       result.rowCount ?? null,
         lastProfiledAt: new Date().toISOString(),
-      });
+      }, Number(tenantId));
       for (const f of result.fields) {
         await graph.updateColumnQualityStats(connId, table, f.field_name, {
           nullCount:     f.null_count    ?? null,
@@ -1024,7 +1024,7 @@ router.post('/:connId/:table/profile', requireAuth, requireRole('admin', 'analys
           meanValue:     f.mean_value    ?? null,
           medianValue:   f.median_value  ?? null,
           topValues:     f.top_values    ?? null,
-        });
+        }, Number(tenantId));
       }
     } catch (neo4jErr) {
       log.warn({ err: neo4jErr }, 'Neo4j stats sync failed (non-fatal)');
