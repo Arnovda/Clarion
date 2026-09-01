@@ -31,7 +31,65 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-09-01 (MARKET READINESS ASSESSMENT — doc only, no code
+**Last updated:** 2026-09-01 (P0-1 REMEDIATION, CODE HALF — `auth_lookup` is a
+migration at last, CI logs in as `databridge_app`, and the preflight reads
+policy PREDICATES instead of counting rows in `pg_policy`)
+
+**First PR of the market-readiness remediation plan (wave 1, item 1). One
+finding, three controls, each proven to fail before it shipped:**
+- **NEW MIGRATION 88 (`20260901000088_auth_lookup_policies.ts`)** — the
+  `auth_lookup` FOR SELECT policy (`USING (NULLIF(current_setting(
+  'app.current_tenant', true), '') IS NULL)`) on the five unauthenticated-path
+  tables: `users`, `refresh_tokens`, `webauthn_credentials`,
+  `mfa_backup_codes`, `oauth_pending` — verbatim the shape
+  `prod-fix-missing-policies.ts` applied by hand, DROP-then-CREATE so a
+  production database where that script already ran migrates cleanly.
+  **Reproduced before fixing**: on a migration-only database, a real user row
+  read as **0 rows** under `databridge_app` with empty tenant context; with
+  the migration, 1. `down` drops the carve-outs (a true inverse).
+- **`oauth_pending` needed two repairs FIRST, in the same migration**: its
+  RLS was conditional on `databridge_app` existing at migration time, and its
+  policy predicate was the pre-NULLIF shape
+  `current_setting('app.current_tenant')::integer`, which THROWS under empty
+  or unset context. Permissive policies OR into one qual with no guaranteed
+  evaluation order, so adding `auth_lookup` beside it could have made the very
+  SELECT it permits error instead. Now: unconditional ENABLE+FORCE and the
+  canonical `tenant_isolation`.
+- **NEW `e2e/auth-login.spec.ts`**, wired into test.yml's `rls-isolation` job
+  (the one environment where the backend runs as `databridge_app` against a
+  migration-only database): register → **LOGIN** (the call `rls.spec.ts` never
+  makes) → `/auth/me` with the issued token → wrong-password 401 → refresh
+  exchange → duplicate-email register **409** (the check that always said
+  "free" under P0-1 — this doubles as the P0-5 duplicate-defect regression
+  test). Verified red against the pre-migration schema: login returned 401
+  with the correct password, exactly the production signature.
+- **`preflight-role-flip.ts` asserts policy IDENTITY now** — for every
+  RLS-enabled tenant table, an ALL-command policy whose USING **and** WITH
+  CHECK actually compare `tenant_id` to `app.current_tenant` (matched on the
+  predicate, not the name — `oauth_pending_tenant` and
+  `refresh_tokens_tenant_isolation` are legitimate); for the five auth tables,
+  a permissive FOR SELECT carve-out that references `app.current_tenant`,
+  `IS NULL`, and NOT `tenant_id`. Against the pre-migration database — where
+  the old count check reported GO with "71/71 with a policy" — it now reports
+  **NO-GO with 5 named blockers**; post-migration, GO with `auth_lookup
+  verified 5/5`.
+- **The two halves of P0-1 are deliberately not conflated**: this migration is
+  correct whatever production turns out to be. The production `pg_policy` /
+  `rolbypassrls` query (owed to the owner, SQL prepared) answers a DIFFERENT
+  question — whether live login is broken today or RLS is inert — and changes
+  operations, not this schema.
+- Validation: defect reproduced at SQL level and end-to-end, then the same
+  checks green; backend `npm run check` clean; full vitest suite green;
+  all eight ratchets green from the repo root with per-ratchet exit codes;
+  `e2e/rls.spec.ts` 4/4 and `e2e/auth-login.spec.ts` 4/4 against a live
+  backend running as `databridge_app`; frontend `tsc` clean and `next build`
+  green (no frontend files touched).
+- **NOT in this PR, deliberately**: email verification, default AI budget and
+  slug collision handling (P0-5 — next wave-1 items after P0-2), and any
+  change to production (P0-1's second half is a read-only query the owner
+  runs).
+
+**Prior last updated:** 2026-09-01 (MARKET READINESS ASSESSMENT — doc only, no code
 changed; the platform around the product is what is unfinished)
 
 **Owner: *"I want to bring Clarion to the market. What is still missing? What do
