@@ -31,7 +31,87 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-09-01 (P1-3 REMEDIATION — suspending a customer bites in
+**Last updated:** 2026-09-01 (P1-5 REMEDIATION — the operator has a console:
+`/admin/tenants` with suspend/resume, budgets, sync inspection and AUDITED
+15-minute impersonation; supporting a customer no longer means a database
+session)
+
+**Second wave-2 PR of the market-readiness remediation plan.**
+- **NEW `routes/adminTenants.ts` under `/api/admin/tenants`** — list (every
+  tenant + per-tenant health: users, sources, failing syncs, last sync, AI
+  tokens/calls this month, budget), detail (users, connections, recent
+  source_sync_runs, 6-month usage), `POST /:id/suspend|resume`,
+  `PATCH /:id/budget`, `POST /:id/impersonate`. Same PLATFORM OPERATOR gate
+  and **404-not-403 refusal** as the feature-flag console (operator ≠ admin
+  — the reasoning lives in routes/featureFlags.ts and holds doubly here).
+  All mutations Zod-validated (validate-coverage baseline untouched at 159).
+- **Cross-tenant reads are the structural interest**: under the production
+  non-bypass role RLS cannot aggregate across tenants, so the list runs ONE
+  `tenantQuery` (SET LOCAL) per tenant with scalar subqueries — and every
+  subquery ALSO filters `tenant_id` explicitly, because the test database's
+  superuser role would otherwise silently aggregate across all tenants (and
+  explicit predicates are the house rule regardless). One broken tenant
+  degrades to `healthError: true` instead of blanking the console. Capped
+  at 200 tenants; revisit with pagination when felt.
+- **Suspend/resume is just the switch — P1-3's requireAuth re-validation is
+  the enforcement** (≤30s), and the console says so in its copy. Suspending
+  the tenant the operator is signed into is refused (they would lock
+  themselves out of this very console 30 seconds later). Pinned by a test
+  that suspends via the API and watches the target tenant's still-valid
+  token get 401'd on the next request.
+- **IMPERSONATION is deliberately narrow**: `signImpersonationToken`
+  (middleware/auth.ts) is HARD-capped at 15 minutes regardless of
+  `JWT_ACCESS_EXPIRES_IN`, carries `impersonatedBy`, and NO refresh token
+  is issued — the window closes itself and cannot be extended. A stated
+  `reason` (Zod-required, min 3 chars) is mandatory. Only a real, ACTIVE
+  user of the target tenant, matched with an explicit
+  `{id, tenant_id}` filter (an authorization decision never rides the
+  session variable alone); suspended tenants refuse up front instead of
+  minting a token P1-3 would kill anyway.
+- **NEW `recordAuditForTenant(targetTenantId, req, input)`**
+  (auditService): operator actions audit into the TARGET tenant's trail —
+  "who suspended us / who was in our workspace and why" must be answerable
+  where that customer's own admins look, while `recordAudit(req,…)` would
+  file it under the OPERATOR's tenant via the session variable. Writes
+  under an explicit SET LOCAL for the target tenant (the
+  refreshTokenService pattern); `actor_role: 'platform_operator'`,
+  actor_email = the operator; actor_user_id deliberately NULL (the
+  operator's user id belongs to another tenant).
+- **Frontend `/admin/tenants` ("Customers", Building2 rail entry,
+  operatorOnly)** — follows /admin/features' structure to the letter:
+  chrome as default export, every hook one level inside AppShell (the
+  FeaturesProvider lesson), and THREE outcomes never two (allowed /
+  not-found / a fault that says so). Table with status pill, active/total
+  users, sources + failing count, last sync, AI usage vs budget; row
+  expands to people (with per-user "Support session" buttons), budget
+  editor, sources and recent sync runs. Suspend confirms with the ≤30s
+  consequence stated; impersonation prompts for the reason and warns it
+  lands in the customer's audit trail; on grant it clears BOTH tokens
+  (no refresh may survive), sets the boxed token and hard-reloads to
+  /home as the customer's user. The stale CLAUDE.md claim that TopBar
+  caches the org name in sessionStorage was checked — no sessionStorage
+  use exists anywhere in frontend/ — so the reloaded chrome shows the
+  impersonated tenant correctly.
+- Validation: backend `npm run check` clean; full vitest **54 files / 557
+  passed / 4 skipped** (10 new in `admin-tenants.test.ts`: gate refusal for
+  viewer+analyst+admin, list health with cross-tenant-bleed split,
+  suspend→401→resume→200 round trip with the audit row asserted in the
+  TARGET tenant, self-suspend 400, unknown-tenant 404, budget set/clear
+  with audits + negative 400, impersonation happy path incl.
+  NO-refresh-token assertion + audit reason, foreign-user 404, missing
+  reason 400); all nine ratchets green from the repo root; frontend `tsc`
+  clean, both touched files lint-clean, `next build` green **46/46**
+  (`/admin/tenants` 5.66 kB). First `.as('u')` version of the health query
+  produced invalid nested-alias SQL — caught by the new list test, which
+  is exactly what the healthError degradation + test were for.
+- **NOT in this PR, deliberately**: pagination on the tenant list (capped
+  200, noted in code); per-request impersonation marking in the UI of the
+  impersonated session (the audit row + boxed token are the controls;
+  a banner is polish for the next pass); tenant deletion (purgeTenant
+  exists as the GDPR path and wants its own confirmation ceremony, not a
+  button beside Suspend).
+
+**Prior last updated:** 2026-09-01 (P1-3 REMEDIATION — suspending a customer bites in
 30 seconds, not 8 hours; wave 2 begins, with P0-3 billing DEFERRED by owner
 decision to manual invoices)
 

@@ -76,6 +76,45 @@ export async function recordAudit(req: Request, input: AuditInput): Promise<void
 }
 
 /**
+ * Record an audit event INTO ANOTHER TENANT's trail, with the real actor
+ * (P1-5 operator console). A platform operator suspending tenant 42 must
+ * leave the row in tenant 42's audit trail — "who suspended us and when"
+ * has to be answerable where the suspended customer's own admins look —
+ * while `recordAudit(req, …)` would write it into the OPERATOR's tenant
+ * via the session variable. Runs under an explicit SET LOCAL for the
+ * target tenant (same pattern as refreshTokenService's writes) so the
+ * insert satisfies RLS WITH CHECK under the non-bypass role.
+ */
+export async function recordAuditForTenant(
+  targetTenantId: number,
+  req: Request,
+  input: AuditInput,
+): Promise<void> {
+  try {
+    const ip = (req.headers['x-forwarded-for'] as string | undefined)?.split(',')[0].trim()
+      ?? req.socket?.remoteAddress
+      ?? null;
+    await semanticDb.transaction(async (trx) => {
+      await trx.raw(`SET LOCAL app.current_tenant = '${Number(targetTenantId)}'`);
+      await trx('audit_events').insert({
+        tenant_id:     targetTenantId,
+        actor_user_id: null, // the operator's user id belongs to ANOTHER tenant — an FK-style reference here would be misleading
+        actor_email:   req.user?.email ?? null,
+        actor_role:    'platform_operator',
+        action:        input.action,
+        entity_type:   input.entityType ?? null,
+        entity_id:     input.entityId != null ? String(input.entityId) : null,
+        context:       input.context ? JSON.stringify(input.context) : null,
+        ip,
+        user_agent:    ((req.headers['user-agent'] as string | undefined) ?? null)?.slice(0, 500) ?? null,
+      });
+    });
+  } catch (err) {
+    log.warn({ err, action: input.action, targetTenantId }, 'failed to write operator audit event');
+  }
+}
+
+/**
  * Record a system / cron / job-triggered audit event (no Express req).
  * Useful for scheduled tasks (refresh runs, schema drift detection,
  * background imports) that should still be auditable.

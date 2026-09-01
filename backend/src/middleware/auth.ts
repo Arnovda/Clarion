@@ -85,6 +85,20 @@ export function verifyToken(token: string): JwtPayload {
   return jwt.verify(token, getSecret()) as unknown as JwtPayload;
 }
 
+/**
+ * Impersonation tokens (P1-5 operator console) are HARD time-boxed at 15
+ * minutes regardless of JWT_ACCESS_EXPIRES_IN — the whole point of a
+ * support session is a window that closes itself, and no refresh token is
+ * ever issued alongside one, so there is no way to extend it. The
+ * `impersonatedBy` claim rides in the payload so request logs and audit
+ * rows written during the session can name the real actor.
+ */
+export function signImpersonationToken(
+  payload: Omit<JwtPayload, 'iat' | 'exp'> & { impersonatedBy: string },
+): string {
+  return jwt.sign(payload, getSecret(), { expiresIn: '15m' } as jwt.SignOptions);
+}
+
 // ---------------------------------------------------------------------------
 // User lookup helpers
 // ---------------------------------------------------------------------------
