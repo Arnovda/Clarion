@@ -224,14 +224,20 @@ jobs:
       - name: Install Playwright
         run: npm ci
 
-      # The spec drives the API through Playwright's `request` fixture and
-      # never opens a page, so no browser download is needed.
-      - name: Run RLS isolation tests
+      # The specs drive the API through Playwright's `request` fixture and
+      # never open a page, so no browser download is needed.
+      #
+      # auth-login.spec.ts is the login half of the gate: this job is the one
+      # environment where the backend runs as `databridge_app` against a
+      # migration-only database, and rls.spec.ts only ever uses the token
+      # /register returns — so a schema in which login itself cannot work
+      # (the P0-1 auth_lookup gap) passed this job for weeks. It logs in.
+      - name: Run RLS isolation + auth flow tests
         env:
           RLS_SOURCE_PGDATABASE: databridge_test
           RLS_SOURCE_PGUSER: databridge
           RLS_SOURCE_PGPASSWORD: databridge
-        run: npx playwright test e2e/rls.spec.ts
+        run: npx playwright test e2e/rls.spec.ts e2e/auth-login.spec.ts
 
       - name: Backend log on failure
         if: failure()

@@ -43,7 +43,139 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-09-01 (YOUR OWN FILTERS, REMEMBERED — plus the provenance
+**Last updated:** 2026-09-01 (P0-1 REMEDIATION, CODE HALF — `auth_lookup` is a
+migration at last, CI logs in as `databridge_app`, and the preflight reads
+policy PREDICATES instead of counting rows in `pg_policy`)
+
+**First PR of the market-readiness remediation plan (wave 1, item 1). One
+finding, three controls, each proven to fail before it shipped:**
+- **NEW MIGRATION 88 (`20260901000088_auth_lookup_policies.ts`)** — the
+  `auth_lookup` FOR SELECT policy (`USING (NULLIF(current_setting(
+  'app.current_tenant', true), '') IS NULL)`) on the five unauthenticated-path
+  tables: `users`, `refresh_tokens`, `webauthn_credentials`,
+  `mfa_backup_codes`, `oauth_pending` — verbatim the shape
+  `prod-fix-missing-policies.ts` applied by hand, DROP-then-CREATE so a
+  production database where that script already ran migrates cleanly.
+  **Reproduced before fixing**: on a migration-only database, a real user row
+  read as **0 rows** under `databridge_app` with empty tenant context; with
+  the migration, 1. `down` drops the carve-outs (a true inverse).
+- **`oauth_pending` needed two repairs FIRST, in the same migration**: its
+  RLS was conditional on `databridge_app` existing at migration time, and its
+  policy predicate was the pre-NULLIF shape
+  `current_setting('app.current_tenant')::integer`, which THROWS under empty
+  or unset context. Permissive policies OR into one qual with no guaranteed
+  evaluation order, so adding `auth_lookup` beside it could have made the very
+  SELECT it permits error instead. Now: unconditional ENABLE+FORCE and the
+  canonical `tenant_isolation`.
+- **NEW `e2e/auth-login.spec.ts`**, wired into test.yml's `rls-isolation` job
+  (the one environment where the backend runs as `databridge_app` against a
+  migration-only database): register → **LOGIN** (the call `rls.spec.ts` never
+  makes) → `/auth/me` with the issued token → wrong-password 401 → refresh
+  exchange → duplicate-email register **409** (the check that always said
+  "free" under P0-1 — this doubles as the P0-5 duplicate-defect regression
+  test). Verified red against the pre-migration schema: login returned 401
+  with the correct password, exactly the production signature.
+- **`preflight-role-flip.ts` asserts policy IDENTITY now** — for every
+  RLS-enabled tenant table, an ALL-command policy whose USING **and** WITH
+  CHECK actually compare `tenant_id` to `app.current_tenant` (matched on the
+  predicate, not the name — `oauth_pending_tenant` and
+  `refresh_tokens_tenant_isolation` are legitimate); for the five auth tables,
+  a permissive FOR SELECT carve-out that references `app.current_tenant`,
+  `IS NULL`, and NOT `tenant_id`. Against the pre-migration database — where
+  the old count check reported GO with "71/71 with a policy" — it now reports
+  **NO-GO with 5 named blockers**; post-migration, GO with `auth_lookup
+  verified 5/5`.
+- **The two halves of P0-1 are deliberately not conflated**: this migration is
+  correct whatever production turns out to be. The production `pg_policy` /
+  `rolbypassrls` query (owed to the owner, SQL prepared) answers a DIFFERENT
+  question — whether live login is broken today or RLS is inert — and changes
+  operations, not this schema.
+- Validation: defect reproduced at SQL level and end-to-end, then the same
+  checks green; backend `npm run check` clean; full vitest suite green;
+  all eight ratchets green from the repo root with per-ratchet exit codes;
+  `e2e/rls.spec.ts` 4/4 and `e2e/auth-login.spec.ts` 4/4 against a live
+  backend running as `databridge_app`; frontend `tsc` clean and `next build`
+  green (no frontend files touched).
+- **NOT in this PR, deliberately**: email verification, default AI budget and
+  slug collision handling (P0-5 — next wave-1 items after P0-2), and any
+  change to production (P0-1's second half is a read-only query the owner
+  runs).
+
+**Prior last updated:** 2026-09-01 (MARKET READINESS ASSESSMENT — doc only, no code
+changed; the platform around the product is what is unfinished)
+
+**Owner: *"I want to bring Clarion to the market. What is still missing? What do
+I miss for multiple customers? Is this platform complete in all functional and
+non-functional aspects?"* Full audit against a seven-plane multi-tenant SaaS
+model, verified from code/migrations/workflows/Terraform rather than from these
+notes. NEW DOC: `docs/backlog/market-readiness-assessment.md`. Artifact:
+"Clarion Launch Preflight".**
+- **VERDICT: no-go for paid onboarding.** The data engine is ahead of where a
+  platform this young usually is; almost every gap sits AROUND it — the layer
+  that proves isolation, the layer that takes money, the layer that says
+  production is broken, and the paperwork that makes processing a customer's
+  accounting data lawful. 6 P0 / 7 P1 / 5 P2.
+- **P0-1 — `auth_lookup` EXISTS IN NO MIGRATION, and this is now measured, not
+  suspected.** The only thing that creates it is `backend/scripts/prod-fix-
+  missing-policies.ts`, which NO workflow and NO `.ops` control invokes. A
+  migration-only database gives `users` just `tenant_isolation`, whose predicate
+  under empty tenant context is `tenant_id = NULL` — zero rows. Under
+  `databridge_app` login/forgot-password/refresh/WebAuthn can only fail. **Three
+  controls all miss it and each for its own reason**: `e2e/rls.spec.ts` uses the
+  token `/register` RETURNS and never calls `/auth/login`; `auth.test.ts` does
+  test login but connects as the superuser, so RLS is inert; and
+  `preflight-role-flip.ts` asserts each table has ≥1 policy — `users` has one, so
+  it reports GO. **A preflight that counts policies cannot notice the wrong one.**
+- **P0-2 — the graph's tenant scoping is still 1 of 3 steps done.** Measured:
+  **0 tenant predicates across 90 `MATCH` clauses**; `.ops/graph-backfill` is
+  still `report`. Isolation rests on ~30 handlers each remembering a gate, which
+  has already failed once (the 2026-07-28 `/semantic/columns` leak).
+  `routes/catalog.ts:242` still calls the scope-free `getProductTree()` — read
+  only for counts of owned ids today, so latent rather than live.
+- **P0-3 — no commercial layer at all** (no plan/subscription/entitlement/
+  payment/trial/dunning). The METERING half is real though: `ai_usage` +
+  enforced `monthly_token_budget` is a usable base for usage pricing, so this is
+  a build-on, not a build-from-zero.
+- **P0-4 — no ToS, privacy policy, DPA or subprocessor list.** GDPR Art. 28
+  wants the contract BEFORE processing; the real subprocessors are Azure,
+  Anthropic, ACS. The engineering is ahead of the paperwork — EU residency,
+  `services/retention.ts`, `audit_events`, and a working `purgeTenant` all exist.
+- **P0-5 — open registration + `monthly_token_budget = NULL` (unlimited).** No
+  email verification. Two defects in the same handler: the duplicate-email check
+  goes through `unauthQuery` so under P0-1 it ALWAYS says the address is free
+  (and login's `.first()` is then non-deterministic), and the slug is derived
+  into a UNIQUE column with no collision handling — **the second customer called
+  "Acme" 500s on signup**.
+- **P0-6 — still no alerting, and `/api/health` probes POSTGRES ONLY** while
+  deploy auto-promotes on it. A revision with Redis/Neo4j/worker dead reports
+  `200 ok` and takes 100% traffic. The gap CLAUDE.md has called "the next
+  fundamental" since 2026-08-29, now compounded by automatic promotion.
+- **P1 highlights**: `schema-profiling` and `bus-matrix` both run
+  `concurrency: 1` GLOBALLY and the worker is pinned to one replica (the reapers
+  have no owner/heartbeat) — **one tenant's build blocks every other tenant's**;
+  rate limits are per-IP, in-memory, per-replica, so every published limit is
+  ~3× and brute-force is ~15/15min; `requireAuth` re-checks only the JWT
+  signature, so **suspension takes up to 8h to bite**; Postgres has no HA, Redis
+  no persistence, and Neo4j **no backup at all** (14-day PITR on Postgres vs a
+  5 GiB file share holding the semantic layer); no per-tenant observability; and
+  `ignoreBuildErrors` + a deploy gate that never type-checks the frontend, which
+  has **zero tests**.
+- **P2**: no i18n in a NL/FR market; `/onboarding` referenced from NOWHERE so
+  register lands on a cold `/sources`; `routes/query.ts` still single-
+  `connectionId` so the cross-system demo cannot be given; no status page or
+  support channel; MFA is per-user and cannot be required org-wide.
+- **Remediation is three waves with exit gates**, sequenced by dependency, not
+  preference: W1 *prove it is safe and make it lawful* (~3-4wk), W2 *be able to
+  charge and to operate* (~5-7wk), W3 *sell it into this market* (~4-6wk). Full
+  task list in the doc.
+- **TWO THINGS THIS ASSESSMENT COULD NOT ESTABLISH, both one production query
+  away and both owed before W1 closes**: the live database's actual `pg_policy` /
+  `rolbypassrls` state (P0-1 is unresolvable without it — either login is broken
+  or RLS is inert, and a 401 looks identical either way), and whether per-tenant
+  warehouse containers have taken any writes since the 2026-07-26 flip (last
+  measured: 0).
+
+**Prior last updated:** 2026-09-01 (YOUR OWN FILTERS, REMEMBERED — plus the provenance
 SQL is readable at last)
 
 **Owner, two asks off one screenshot: *"Format the SQL"* in the provenance panel,

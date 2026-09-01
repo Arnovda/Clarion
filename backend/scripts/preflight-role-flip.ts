@@ -21,8 +21,18 @@
  *
  *   1. the role exists and is genuinely NOBYPASSRLS (otherwise the flip is
  *      cosmetic: it would change the username and enforce nothing)
- *   2. every tenant-scoped table with RLS enabled has a policy
- *      (RLS + no policy = deny everything)
+ *   2. every tenant-scoped table with RLS enabled has the RIGHT policies,
+ *      asserted by predicate identity, not by count:
+ *        - a tenant-isolation policy whose predicate actually compares
+ *          tenant_id against app.current_tenant (RLS + no policy = deny
+ *          everything, but RLS + the WRONG policy is just as fatal and a
+ *          count can't see it)
+ *        - on the five tables the unauthenticated auth paths read (users,
+ *          refresh_tokens, webauthn_credentials, mfa_backup_codes,
+ *          oauth_pending): the auth_lookup SELECT carve-out for empty tenant
+ *          context. Without it login, refresh and forgot-password read zero
+ *          rows under this role — `users` "having a policy" was exactly how
+ *          the market-readiness assessment's P0-1 slipped past this script.
  *   3. the role holds SELECT/INSERT/UPDATE/DELETE on every table and USAGE on
  *      every sequence (missing grants deny access before RLS is consulted)
  *
@@ -39,9 +49,71 @@ import { Client } from 'pg';
 
 const APP_ROLE = process.env.RLS_APP_ROLE ?? 'databridge_app';
 
+/**
+ * Tables the unauthenticated auth paths SELECT from before any tenant is
+ * known (login, register's duplicate-email check, forgot/reset-password,
+ * refresh-token validation, WebAuthn login verify, OAuth callback). Each
+ * must carry the `auth_lookup` FOR SELECT carve-out — created by migration
+ * 20260901000088; keep this list in agreement with that migration and with
+ * scripts/prod-fix-missing-policies.ts.
+ */
+const AUTH_LOOKUP_TABLES = [
+  'users',
+  'refresh_tokens',
+  'webauthn_credentials',
+  'mfa_backup_codes',
+  'oauth_pending',
+];
+
 interface Blocker {
   kind: string;
   detail: string;
+}
+
+interface PolicyRow {
+  table_name: string;
+  polname: string;
+  /** 'r' = SELECT, 'a' = INSERT, 'w' = UPDATE, 'd' = DELETE, '*' = ALL */
+  polcmd: string;
+  polpermissive: boolean;
+  qual: string | null;
+  with_check: string | null;
+}
+
+/**
+ * Does this policy isolate tenants? Identity is asserted on the predicate,
+ * not the name — the policies predate a naming convention
+ * (`tenant_isolation`, `refresh_tokens_tenant_isolation`,
+ * `oauth_pending_tenant` all exist) and renaming them in place would churn
+ * production for no behavioural gain. What actually matters is that reads
+ * AND writes are both constrained to `tenant_id = <the session's tenant>`.
+ */
+function isTenantIsolation(p: PolicyRow): boolean {
+  if (p.polcmd !== '*') return false;
+  // WITH CHECK falls back to USING when absent (Postgres semantics), so the
+  // effective write predicate is with_check ?? qual.
+  const read = p.qual ?? '';
+  const write = p.with_check ?? p.qual ?? '';
+  const references = (expr: string) =>
+    expr.includes('tenant_id') && expr.includes('app.current_tenant');
+  return references(read) && references(write);
+}
+
+/**
+ * Is this the auth_lookup carve-out? FOR SELECT only, permissive, visible
+ * exactly when there is NO tenant context — and NOT itself tenant-scoped
+ * (a tenant-scoped SELECT policy is tenant_isolation wearing the wrong
+ * polcmd, not a carve-out).
+ */
+function isAuthLookup(p: PolicyRow): boolean {
+  const qual = p.qual ?? '';
+  return (
+    p.polcmd === 'r' &&
+    p.polpermissive &&
+    qual.includes('app.current_tenant') &&
+    qual.includes('IS NULL') &&
+    !qual.includes('tenant_id')
+  );
 }
 
 async function main(): Promise<void> {
@@ -107,15 +179,68 @@ async function main(): Promise<void> {
     const notEnabled = rls.rows.filter((t) => !t.enabled);
     const notForced = rls.rows.filter((t) => t.enabled && !t.forced);
 
+    // Policy IDENTITY, not just count. A table "having a policy" proved
+    // nothing when the policy was the wrong one: `users` carried only
+    // tenant_isolation, this script said GO, and login under the app role
+    // could still only fail (P0-1). So fetch every policy's actual predicate
+    // and check that each table's policies do what the flip depends on.
+    const pol = await client.query<PolicyRow>(`
+      SELECT c.relname                            AS table_name,
+             p.polname,
+             p.polcmd,
+             p.polpermissive,
+             pg_get_expr(p.polqual, p.polrelid)      AS qual,
+             pg_get_expr(p.polwithcheck, p.polrelid) AS with_check
+        FROM pg_policy p
+        JOIN pg_class c     ON c.oid = p.polrelid
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+       WHERE n.nspname = 'public'
+       ORDER BY c.relname, p.polname
+    `);
+    const policiesByTable = new Map<string, PolicyRow[]>();
+    for (const p of pol.rows) {
+      const list = policiesByTable.get(p.table_name) ?? [];
+      list.push(p);
+      policiesByTable.set(p.table_name, list);
+    }
+
+    const enabledTables = rls.rows.filter((t) => t.enabled);
+    const missingIsolation = enabledTables.filter(
+      (t) => t.policies > 0 && !(policiesByTable.get(t.table_name) ?? []).some(isTenantIsolation),
+    );
+    const missingAuthLookup = AUTH_LOOKUP_TABLES.filter((name) => {
+      const t = rls.rows.find((r) => r.table_name === name);
+      // A table with RLS off needs no carve-out to be readable (and is
+      // already reported below as not isolated); a missing table is a schema
+      // problem this check should still surface.
+      if (t && !t.enabled) return false;
+      return !(policiesByTable.get(name) ?? []).some(isAuthLookup);
+    });
+
     out(`  tenant tables ..... ${rls.rows.length} with a tenant_id column`);
-    out(`    RLS enabled ..... ${rls.rows.filter((t) => t.enabled).length}`);
+    out(`    RLS enabled ..... ${enabledTables.length}`);
     out(`    with a policy ... ${rls.rows.filter((t) => t.policies > 0).length}`);
+    out(`    tenant-isolation verified ... ${enabledTables.length - noPolicy.length - missingIsolation.length}/${enabledTables.length}`);
+    out(`    auth_lookup verified ........ ${AUTH_LOOKUP_TABLES.length - missingAuthLookup.length}/${AUTH_LOOKUP_TABLES.length}`);
 
     for (const t of noPolicy) {
       // This is the one that would have taken production down.
       blockers.push({
         kind: 'policy',
         detail: `${t.table_name}: RLS enabled with NO policy — denies every row`,
+      });
+    }
+    for (const t of missingIsolation) {
+      const names = (policiesByTable.get(t.table_name) ?? []).map((p) => p.polname).join(', ');
+      blockers.push({
+        kind: 'policy',
+        detail: `${t.table_name}: has policies (${names}) but NONE isolates tenants — no ALL-command policy comparing tenant_id to app.current_tenant`,
+      });
+    }
+    for (const name of missingAuthLookup) {
+      blockers.push({
+        kind: 'policy',
+        detail: `${name}: no auth_lookup SELECT carve-out for empty tenant context — unauthenticated lookups (login, refresh, password reset) read zero rows under ${APP_ROLE}`,
       });
     }
     for (const t of notEnabled) {
@@ -197,9 +322,10 @@ async function main(): Promise<void> {
         if (list.length > 20) out(`    …and ${list.length - 20} more`);
       }
       out('');
-      out('Missing policies are fixed by migration 20260804000074, missing grants');
-      out('by 20260804000075. If either is still reported, those migrations have');
-      out('not been applied to this database yet.');
+      out('Missing tenant-isolation policies are fixed by migration 20260804000074,');
+      out('missing grants by 20260804000075, and the auth_lookup carve-outs by');
+      out('20260901000088. If any is still reported, those migrations have not');
+      out('been applied to this database yet.');
     }
 
     process.exitCode = blockers.length === 0 ? 0 : 1;

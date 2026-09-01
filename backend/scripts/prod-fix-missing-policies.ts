@@ -19,6 +19,14 @@
  *
  * Run as DATABASE_URL=<admin-url> npx ts-node scripts/prod-fix-missing-policies.ts
  * Idempotent.
+ *
+ * ⚠ SUPERSEDED FOR PROVISIONING (2026-09-01): migrations 20260804000074
+ * (tenant_isolation backfill) and 20260901000088 (auth_lookup on the five
+ * tables below) now create these policies on every migrated database, and
+ * scripts/preflight-role-flip.ts asserts their identity. This script stays
+ * as an emergency backstop for a live database that is somehow missing
+ * policies despite migrations — it should never again be the only thing
+ * that creates one. Keep AUTH_LOOKUP_TABLES in agreement with both.
  */
 import { Client } from 'pg';
 

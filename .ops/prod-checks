@@ -1,5 +1,6 @@
 report
 
+# re-run 2026-09-01 — P0-1 verification
 # run 1 (2026-08-04): first execution. Answers the two questions blocking the
 # tenant-isolation work — is the database role flip safe, and do existing graph
 # nodes carry tenantId.
