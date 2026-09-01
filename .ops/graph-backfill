@@ -29,3 +29,4 @@ apply
 # remains unstamped, and that exit code is the gate on step 3.
 
 # 2026-09-01: re-run after fixing the workflow update path (az job update --args)
+# 2026-09-01: trigger apply under image main-c8f8675 (env-var mode fix deployed)
