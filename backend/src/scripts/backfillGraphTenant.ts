@@ -157,6 +157,23 @@ async function main(): Promise<void> {
     `backfill-graph-tenant — ${APPLY ? 'APPLY' : 'REPORT ONLY (pass --apply to write)'}\n\n`,
   );
 
+  // Configuration visibility — names and lengths only, never values. The
+  // first production execution failed with a Neo4j auth rejection and there
+  // was no way to tell from the output whether the cloned job was missing
+  // NEO4J_PASSWORD (falling back to the dev default) or carrying a mangled
+  // one. A run's report must make that distinction itself.
+  const present = (name: string) =>
+    process.env[name] ? `set(${(process.env[name] as string).length})` : 'MISSING→default';
+  process.stdout.write(
+    `  config: NEO4J_URI ${present('NEO4J_URI')} · NEO4J_USER ${present('NEO4J_USER')}` +
+    ` · NEO4J_PASSWORD ${present('NEO4J_PASSWORD')} · DATABASE_URL ${present('DATABASE_URL')}\n\n`,
+  );
+
+  // Postgres first, so a Neo4j failure is legible as exactly that — the
+  // ownership source being readable is this script's precondition anyway.
+  const tenantCount = await semanticDb('tenants').count<{ c: string }[]>('id as c');
+  process.stdout.write(`  postgres reachable — ${Number(tenantCount[0]?.c ?? 0)} tenant(s)\n\n`);
+
   let remaining = 0;
 
   for (const plan of PLANS) {

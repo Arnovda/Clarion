@@ -114,6 +114,16 @@ jobs:
           # GRAPH_BACKFILL_MODE=apply as equivalent to --apply.
           ENV_ARGS+=("GRAPH_BACKFILL_MODE=$MODE")
 
+          # What was carried — NAMES only, never values. The first real
+          # execution failed on Neo4j auth with no way to tell whether the
+          # password env even made it into the job; this makes the cloning
+          # auditable from the run summary alone.
+          CARRIED=$(printf '%s\n' "${ENV_ARGS[@]}" | sed -e 's/=secretref:.*/ (secretref)/' -e 's/=.*//' | sort | tr '\n' ' ')
+          say "Env carried: \`$CARRIED\`"
+          SECRET_NAMES=$(printf '%s\n' "${SECRET_ARGS[@]}" | cut -d= -f1 | sort | tr '\n' ' ')
+          say "Secrets copied: \`$SECRET_NAMES\`"
+          say ""
+
           # ── Create or refresh the job ──────────────────────────────────────
           ARGS=("dist/scripts/backfillGraphTenant.js")
 
