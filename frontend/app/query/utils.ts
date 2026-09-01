@@ -2,22 +2,10 @@
  * Pure helpers extracted from page.tsx — no React, no hooks, no state.
  */
 
-import { format as sqlFormat } from 'sql-formatter';
-
-/** Pretty-print SQL using sql-formatter (DuckDB dialect). Falls back to raw on error. */
-export function formatSql(raw: string): string {
-  if (!raw) return '';
-  try {
-    return sqlFormat(raw, {
-      language: 'duckdb',
-      keywordCase: 'upper',
-      tabWidth: 2,
-      linesBetweenQueries: 1,
-    });
-  } catch {
-    return raw;
-  }
-}
+// Pretty-printing SQL moved to lib/formatSql.ts — every surface that shows a
+// query to a person now shares one implementation. Re-exported so the many
+// existing `from './utils'` imports keep working.
+export { formatSql } from '@/lib/formatSql';
 
 /**
  * Detect the numeric format implied by a column name.

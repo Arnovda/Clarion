@@ -1,7 +1,8 @@
 import { Router, Request, Response, NextFunction } from 'express';
+import type { Knex } from 'knex';
 import { requireAuth } from '../middleware/auth';
 import { validate } from '../middleware/validate';
-import { createDashboardSchema, updateDashboardSchema, batchExecuteSchema, refineDashboardSchema, fixWidgetSchema, generateDashboardSchema, refineSpecSchema, pinWidgetSchema } from '../middleware/schemas';
+import { createDashboardSchema, updateDashboardSchema, batchExecuteSchema, refineDashboardSchema, fixWidgetSchema, generateDashboardSchema, refineSpecSchema, pinWidgetSchema, saveMyViewSchema, clearMyViewSchema } from '../middleware/schemas';
 import { semanticDb } from '../db/knex';
 import { createConnector, createProductConnector } from '../connectors/ConnectorFactory';
 import { generateDashboardSpec, generateDashboardRefinement, refineDashboardSpec, validateAndFixDashboardSpec, checkWidgetSemantics, SqlDialect, explainWidget, generateDashboardInsights, planInvestigation, synthesizeInvestigation, narrateDashboard, planDashboardEdit, editWidgetSql, generateSingleWidget } from '../ai/AIService';
@@ -2151,6 +2152,106 @@ router.patch('/:id/favorite', requireAuth, async (req: Request, res: Response, n
 // ---------------------------------------------------------------------------
 // PATCH /api/dashboards/:id — update dashboard properties (title, folder, sharing, auto-refresh)
 // ---------------------------------------------------------------------------
+
+// ─── Per-person saved view ────────────────────────────────────────────────
+//
+// The filters YOU left this dashboard on. Private by construction: every query
+// filters by BOTH the dashboard and the calling user, so one person's lens is
+// invisible to everyone else looking at the same dashboard.
+//
+// Readable by anyone who can open the dashboard — including a viewer on a
+// shared one. Saving a private filter selection is not an edit to the
+// artefact, so it needs no ownership of it.
+
+/**
+ * The dashboards this caller may open at all: their own, plus shared ones.
+ *
+ * `tenant_id` is filtered EXPLICITLY rather than left to RLS. The house rule
+ * (see CLAUDE.md) is that an authorization decision must not depend on the
+ * session variable: `reqDb` can fall back to a pooled connection whose
+ * `app.current_tenant` is not the caller's, and a superuser connection
+ * bypasses row-level security altogether. Written the other way, a request
+ * from another tenant reads a SHARED dashboard here — which is exactly what
+ * the isolation test caught before this filter existed.
+ */
+async function findVisibleDashboard(db: Knex, id: number, userId: number, tenantId: number) {
+  return db('dashboards')
+    .where({ id, tenant_id: tenantId })
+    .where(function () {
+      this.where({ user_id: userId }).orWhere({ is_shared: true });
+    })
+    .first();
+}
+
+// GET /api/dashboards/:id/my-view — the caller's saved filters, or null.
+router.get('/:id/my-view', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const db = reqDb(req);
+    const userId = req.user!.sub;
+    const dashboardId = Number(req.params.id);
+    if (!Number.isFinite(dashboardId)) { res.status(400).json({ ok: false, error: 'Invalid dashboard id' }); return; }
+
+    const dash = await findVisibleDashboard(db, dashboardId, userId, req.user!.tenantId);
+    if (!dash) { res.status(404).json({ ok: false, error: 'Dashboard not found' }); return; }
+
+    const row = await db('dashboard_user_views')
+      .where({ dashboard_id: dashboardId, user_id: userId, tenant_id: req.user!.tenantId })
+      .first() as { filter_values: Record<string, string>; updated_at: string } | undefined;
+
+    res.json({ ok: true, data: row
+      ? { filterValues: row.filter_values ?? {}, savedAt: row.updated_at }
+      : null });
+  } catch (err) { next(err); }
+});
+
+// PUT /api/dashboards/:id/my-view — save (or replace) the caller's filters.
+router.put('/:id/my-view', requireAuth, validate(saveMyViewSchema), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const db = reqDb(req);
+    const userId = req.user!.sub;
+    const tenantId = req.user!.tenantId;
+    const dashboardId = Number(req.params.id);
+    if (!Number.isFinite(dashboardId)) { res.status(400).json({ ok: false, error: 'Invalid dashboard id' }); return; }
+
+    const dash = await findVisibleDashboard(db, dashboardId, userId, tenantId);
+    if (!dash) { res.status(404).json({ ok: false, error: 'Dashboard not found' }); return; }
+
+    const { filterValues } = req.body as { filterValues: Record<string, string> };
+
+    // One row per person per dashboard — saving replaces, never accumulates.
+    await db('dashboard_user_views')
+      .insert({
+        tenant_id: tenantId,
+        dashboard_id: dashboardId,
+        user_id: userId,
+        filter_values: JSON.stringify(filterValues),
+        updated_at: db.fn.now(),
+      })
+      .onConflict(['dashboard_id', 'user_id'])
+      .merge(['filter_values', 'updated_at']);
+
+    res.json({ ok: true });
+  } catch (err) { next(err); }
+});
+
+// DELETE /api/dashboards/:id/my-view — back to the dashboard's own defaults.
+router.delete('/:id/my-view', requireAuth, validate(clearMyViewSchema), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const db = reqDb(req);
+    const userId = req.user!.sub;
+    const dashboardId = Number(req.params.id);
+    if (!Number.isFinite(dashboardId)) { res.status(400).json({ ok: false, error: 'Invalid dashboard id' }); return; }
+
+    // No visibility check on the way out: removing your own row can only ever
+    // affect you, and refusing it on a dashboard that was un-shared underneath
+    // you would strand the row with no way to clear it.
+    await db('dashboard_user_views')
+      .where({ dashboard_id: dashboardId, user_id: userId, tenant_id: req.user!.tenantId })
+      .delete();
+
+    res.json({ ok: true });
+  } catch (err) { next(err); }
+});
 
 router.patch('/:id', requireAuth, validate(updateDashboardSchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
