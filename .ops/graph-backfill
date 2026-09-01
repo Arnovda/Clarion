@@ -1,4 +1,4 @@
-report
+apply
 
 # Stamp `tenantId` onto Neo4j nodes written before the write paths started
 # setting it. Step 2 of 3 towards tenant-scoping the semantic graph:
