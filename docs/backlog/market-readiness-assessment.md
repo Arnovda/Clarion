@@ -84,6 +84,31 @@ Why nothing catches it:
 
 ### P0-2 · The semantic graph has no tenant boundary
 
+> **REMEDIATED 2026-09-01** (third wave-1 PR; all three steps now done). Step 2
+> first: `.ops/graph-backfill` gained `apply` and `prune` modes and ran inside
+> the Container Apps environment — the first apply stamped everything
+> attributable and left 5,089 leftovers, every one an orphan of a deleted
+> connection or product; `prune` deleted them (they belonged to nobody) and the
+> recount came back **clean on every label including `RELATES_TO`**. Then step
+> 3: every `MATCH` on a tenant-owned label in `db/semanticGraph.ts` carries a
+> `tenantId: $tenantId` predicate, every read function takes the tenant as an
+> explicit required parameter threaded from `req.user!.tenantId` (or the
+> RLS-scoped row in services), and `getProductTree` — this finding's named
+> example — now requires a tenant argument, so `routes/catalog.ts` cannot call
+> it scope-free any more. A wrong tenant matches nothing: the failure direction
+> is an empty result, never another tenant's data. Held by a new merge-gate
+> linter (`lint-graph-tenant-predicate`, 80 anchored clauses checked, verified
+> to go red when a predicate is removed) beside the existing stamp linter, and
+> by `db/semanticGraph.tenant.test.ts` (11 tests asserting the tenant a caller
+> passes is bound to `$tenantId` on every query each function runs). The
+> route-level ownership gates deliberately STAY: they are the 404-vs-empty
+> distinction and the Postgres-backed second line. Three deliberate exemptions
+> carry `// tenant-exempt:` comments — the ownership resolver
+> (`getRelationshipConnectionId`) and the two owner-key purges
+> (`deleteTenantGraph`, `deleteProductGraph`), where a tenant predicate would
+> strand mis-stamped nodes instead of deleting them. The original finding
+> follows.
+
 `db/semanticGraph.ts`: **90 `MATCH` clauses, 0 tenant predicates**. Nodes match
 on a globally unique, sequential, enumerable `pgId`.
 
@@ -217,6 +242,9 @@ wave 2 unverifiable.
 3. **P0-2** Run `.ops/graph-backfill` to `apply` until it reports zero unstamped
    nodes, then add tenant predicates to all 90 `MATCH` clauses plus a linter.
    Give `getProductTree` a required tenant argument.
+   **DONE 2026-09-01** — backfill+prune reported clean on every label, the
+   predicates and linter shipped in the third wave-1 PR (see the addendum
+   under the finding).
 4. **P0-5** Email verification, a non-null default AI budget, slug collision
    handling, and a duplicate-email check that works once P0-1 lands.
 5. **P0-6** Deepen `/api/health` to Redis + Neo4j + blob + worker heartbeat and

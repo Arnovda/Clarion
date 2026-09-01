@@ -31,8 +31,9 @@ const router = Router();
 
 async function buildSemanticContext(
   connectionId: number,
+  tenantId: number,
 ): Promise<{ semanticContext: string; relationshipContext: string }> {
-  const { tables, columns, relationships } = await buildSemanticContextForQuery(connectionId);
+  const { tables, columns, relationships } = await buildSemanticContextForQuery(connectionId, tenantId);
 
   const semanticContext = (tables as { id: number; table_name: string; description: string }[])
     .map((t) => {
@@ -312,7 +313,7 @@ router.post('/generate', requireAuth, validate(generateDashboardSchema), async (
       : await buildProductSemanticContext(connectionId, productIds, db);
     const semanticCtx = productCtx
       ? { semanticContext: productCtx.semanticContext, relationshipContext: productCtx.relationshipContext }
-      : await buildSemanticContext(connectionId);
+      : await buildSemanticContext(connectionId, req.user!.tenantId);
 
     // Determine SQL dialect from the connection's query engine
     const connection = await db('connections').where({ id: connectionId }).first();
@@ -357,7 +358,7 @@ router.post('/refine', requireAuth, validate(refineDashboardSchema), async (req:
       : await buildProductSemanticContext(connectionId, productIds, db);
     const semanticCtx = productCtx
       ? { semanticContext: productCtx.semanticContext, relationshipContext: productCtx.relationshipContext }
-      : await buildSemanticContext(connectionId);
+      : await buildSemanticContext(connectionId, req.user!.tenantId);
     const result: RefinementOutput = await generateDashboardRefinement(request, semanticCtx.semanticContext, semanticCtx.relationshipContext);
 
     res.json({ ok: true, data: result });
@@ -391,7 +392,7 @@ router.post('/refine-spec', requireAuth, validate(refineSpecSchema), async (req:
       : await buildProductSemanticContext(connectionId, effectiveProductIds, db);
     const semanticCtx = productCtx
       ? { semanticContext: productCtx.semanticContext, relationshipContext: productCtx.relationshipContext }
-      : await buildSemanticContext(connectionId);
+      : await buildSemanticContext(connectionId, req.user!.tenantId);
 
     // Strip app-managed noise from what the model sees: `insights` describe
     // the pre-refine dashboard (stale after any change, and pure token cost),
@@ -541,7 +542,7 @@ router.post('/refine-spec-stream', requireAuth, validate(refineSpecSchema), asyn
       : await buildProductSemanticContext(connectionId, effectiveProductIds, db);
     const semanticCtx = productCtx
       ? { semanticContext: productCtx.semanticContext, relationshipContext: productCtx.relationshipContext }
-      : await buildSemanticContext(connectionId);
+      : await buildSemanticContext(connectionId, req.user!.tenantId);
 
     const sse = startSSE(res, { headers: { 'Cache-Control': 'no-cache, no-transform' } });
     const stamp = (spec: DashboardSpec): DashboardSpec => {
@@ -908,7 +909,7 @@ router.post('/fix-widget', requireAuth, validate(fixWidgetSchema), async (req: R
       : await buildProductSemanticContext(connectionId, productIds, db);
     const semanticCtx = productCtx
       ? { semanticContext: productCtx.semanticContext, relationshipContext: productCtx.relationshipContext }
-      : await buildSemanticContext(connectionId);
+      : await buildSemanticContext(connectionId, req.user!.tenantId);
 
     const repaired = await validateAndRepairSpec(
       spec, connectionId, req.user!.tenantId, dataLayer, semanticCtx, new Set([widgetId]),

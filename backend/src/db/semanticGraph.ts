@@ -12,6 +12,28 @@
  * Every node carries a `pgId` property — a stable integer drawn from the
  * `semantic_node_id_seq` Postgres sequence.  Routes that return data to the
  * frontend expose `pgId` as `id` so existing response shapes are unchanged.
+ *
+ * TENANT SCOPING — the rule for every function in this file:
+ *
+ * Neo4j has no row-level security. A `pgId` is globally unique and enumerable,
+ * so any MATCH keyed on it (or on `connectionId`, which is equally guessable)
+ * reaches whichever tenant owns that id. Every node and property-carrying edge
+ * therefore carries a `tenantId` property (writes stamp it — held by
+ * lint-graph-tenant-stamp; existing data was backfilled and verified clean on
+ * 2026-09-01), and EVERY MATCH on a tenant-owned label must carry a
+ * `tenantId: $tenantId` predicate (held by lint-graph-tenant-predicate).
+ * Functions take the tenant as an explicit required parameter — never ambient
+ * context, per the house rule that an authorisation input must be visible at
+ * the call site. A wrong tenant matches nothing: the failure direction is an
+ * empty result, never another tenant's data.
+ *
+ * The route-level `denyUnlessOwned` gates STAY in front of these calls. They
+ * are what turns "not yours" into a 404 instead of a silent empty result, and
+ * they cover entities the graph cannot scope (legacy graph-only rows). The
+ * predicate here is the construction-level second line the gates never had.
+ *
+ * The few deliberately tenant-free functions carry a `// tenant-exempt:`
+ * comment naming the reason, which the linter honours.
  */
 
 import { isInt, Integer as Neo4jInt } from 'neo4j-driver';
@@ -158,13 +180,14 @@ function mapQualityRule(p: Record<string, unknown>): Record<string, unknown> {
 
 export async function getTablesByConnection(
   connectionId: number,
+  tenantId: number,
 ): Promise<Record<string, unknown>[]> {
   const session = getSession();
   try {
     const result = await session.run(
-      `MATCH (t:SourceTable {connectionId: $cid})
+      `MATCH (t:SourceTable {connectionId: $cid, tenantId: $tenantId})
        RETURN t ORDER BY t.tableName`,
-      { cid: connectionId },
+      { cid: connectionId, tenantId },
     );
     return result.records.map((r) => mapTable(r.get('t').properties as Record<string, unknown>));
   } finally {
@@ -178,11 +201,12 @@ export async function updateTable(
     display_name?: unknown; description?: unknown; owner_name?: unknown;
     is_active?: unknown; domains?: unknown; grain?: unknown;
   },
+  tenantId: number,
 ): Promise<void> {
   const session = getSession();
   try {
     await session.run(
-      `MATCH (t:SourceTable {pgId: $pgId})
+      `MATCH (t:SourceTable {pgId: $pgId, tenantId: $tenantId})
        SET t.displayName    = $displayName,
            t.description    = $description,
            t.ownerName      = $ownerName,
@@ -193,6 +217,7 @@ export async function updateTable(
            t.updatedAt      = $now`,
       {
         pgId,
+        tenantId,
         displayName: patch.display_name ?? null,
         description: patch.description ?? null,
         ownerName:   patch.owner_name  ?? null,
@@ -207,14 +232,14 @@ export async function updateTable(
   }
 }
 
-export async function getTableDomains(connectionId: number): Promise<string[]> {
+export async function getTableDomains(connectionId: number, tenantId: number): Promise<string[]> {
   const session = getSession();
   try {
     const result = await session.run(
-      `MATCH (t:SourceTable {connectionId: $cid})
+      `MATCH (t:SourceTable {connectionId: $cid, tenantId: $tenantId})
        WHERE t.domains IS NOT NULL
        RETURN t.domains AS domains`,
-      { cid: connectionId },
+      { cid: connectionId, tenantId },
     );
     const all = new Set<string>();
     for (const rec of result.records) {
@@ -231,12 +256,13 @@ export async function getTableDomains(connectionId: number): Promise<string[]> {
 export async function getTableByConnectionAndName(
   connectionId: number,
   tableName: string,
+  tenantId: number,
 ): Promise<Record<string, unknown> | null> {
   const session = getSession();
   try {
     const result = await session.run(
-      `MATCH (t:SourceTable {connectionId: $cid, tableName: $tn}) RETURN t`,
-      { cid: connectionId, tn: tableName },
+      `MATCH (t:SourceTable {connectionId: $cid, tableName: $tn, tenantId: $tenantId}) RETURN t`,
+      { cid: connectionId, tn: tableName, tenantId },
     );
     if (!result.records.length) return null;
     return mapTable(result.records[0].get('t').properties as Record<string, unknown>);
@@ -249,13 +275,14 @@ export async function updateTableBusinessKey(
   connectionId: number,
   tableName: string,
   businessKeyColumn: string | null,
+  tenantId: number,
 ): Promise<void> {
   const session = getSession();
   try {
     await session.run(
-      `MATCH (t:SourceTable {connectionId: $cid, tableName: $tn})
+      `MATCH (t:SourceTable {connectionId: $cid, tableName: $tn, tenantId: $tenantId})
        SET t.businessKeyColumn = $bk, t.updatedAt = $now`,
-      { cid: connectionId, tn: tableName, bk: businessKeyColumn ?? null, now: new Date().toISOString() },
+      { cid: connectionId, tn: tableName, tenantId, bk: businessKeyColumn ?? null, now: new Date().toISOString() },
     );
   } finally {
     await session.close();
@@ -268,14 +295,15 @@ export async function updateTableBusinessKey(
 
 export async function getColumnsByTablePgId(
   tablePgId: number,
+  tenantId: number,
 ): Promise<Record<string, unknown>[]> {
   const session = getSession();
   try {
     const result = await session.run(
-      `MATCH (t:SourceTable {pgId: $tpid})-[:HAS_COLUMN]->(c:SourceColumn)
+      `MATCH (t:SourceTable {pgId: $tpid, tenantId: $tenantId})-[:HAS_COLUMN]->(c:SourceColumn)
        RETURN c, t.tableName AS tableName
        ORDER BY c.columnName`,
-      { tpid: tablePgId },
+      { tpid: tablePgId, tenantId },
     );
     return result.records.map((r) => {
       const props = r.get('c').properties as Record<string, unknown>;
@@ -293,11 +321,12 @@ export async function updateColumn(
     display_name?: unknown; description?: unknown; owner_name?: unknown;
     is_dimension?: unknown; is_measure?: unknown;
   },
+  tenantId: number,
 ): Promise<void> {
   const session = getSession();
   try {
     await session.run(
-      `MATCH (c:SourceColumn {pgId: $pgId})
+      `MATCH (c:SourceColumn {pgId: $pgId, tenantId: $tenantId})
        SET c.displayName  = $displayName,
            c.description  = $description,
            c.ownerName    = $ownerName,
@@ -307,6 +336,7 @@ export async function updateColumn(
            c.updatedAt    = $now`,
       {
         pgId,
+        tenantId,
         displayName: patch.display_name ?? null,
         description: patch.description  ?? null,
         ownerName:   patch.owner_name   ?? null,
@@ -330,15 +360,16 @@ export async function updateColumnDescriptionOnly(
   pgId: number,
   description: string,
   aiDraft: boolean,
+  tenantId: number,
 ): Promise<void> {
   const session = getSession();
   try {
     await session.run(
-      `MATCH (c:SourceColumn {pgId: $pgId})
+      `MATCH (c:SourceColumn {pgId: $pgId, tenantId: $tenantId})
        SET c.description = $description,
            c.aiDraft     = $aiDraft,
            c.updatedAt   = $now`,
-      { pgId, description, aiDraft, now: new Date().toISOString() },
+      { pgId, tenantId, description, aiDraft, now: new Date().toISOString() },
     );
   } finally {
     await session.close();
@@ -348,14 +379,15 @@ export async function updateColumnDescriptionOnly(
 // All columns for a connection with their table_name denormalised — used by query/dashboards context.
 export async function getColumnsByConnection(
   connectionId: number,
+  tenantId: number,
 ): Promise<Record<string, unknown>[]> {
   const session = getSession();
   try {
     const result = await session.run(
-      `MATCH (t:SourceTable {connectionId: $cid, isActive: true})-[:HAS_COLUMN]->(c:SourceColumn)
+      `MATCH (t:SourceTable {connectionId: $cid, tenantId: $tenantId, isActive: true})-[:HAS_COLUMN]->(c:SourceColumn)
        RETURN c, t.tableName AS tableName, t.pgId AS tablePgId
        ORDER BY t.tableName, c.columnName`,
-      { cid: connectionId },
+      { cid: connectionId, tenantId },
     );
     return result.records.map((r) => {
       const props = r.get('c').properties as Record<string, unknown>;
@@ -371,14 +403,15 @@ export async function getColumnsByConnection(
 // Dimension columns only — for entity pre-flight check in query.ts
 export async function getDimensionColumns(
   connectionId: number,
+  tenantId: number,
 ): Promise<{ column_name: string; table_name: string; data_type: string; example_values: unknown }[]> {
   const session = getSession();
   try {
     const result = await session.run(
-      `MATCH (t:SourceTable {connectionId: $cid, isActive: true})-[:HAS_COLUMN]->(c:SourceColumn {isDimension: true})
+      `MATCH (t:SourceTable {connectionId: $cid, tenantId: $tenantId, isActive: true})-[:HAS_COLUMN]->(c:SourceColumn {isDimension: true})
        RETURN c.columnName AS columnName, t.tableName AS tableName,
               c.dataType AS dataType, c.exampleValues AS exampleValues`,
-      { cid: connectionId },
+      { cid: connectionId, tenantId },
     );
     return result.records.map((r) => ({
       column_name:    String(r.get('columnName') ?? ''),
@@ -397,14 +430,15 @@ export async function getDimensionColumns(
 
 export async function getRelationshipsForConnection(
   connectionId: number,
+  tenantId: number,
 ): Promise<Record<string, unknown>[]> {
   const session = getSession();
   try {
     const result = await session.run(
-      `MATCH (ft:SourceTable {connectionId: $cid})-[r:RELATES_TO]->(tt:SourceTable)
+      `MATCH (ft:SourceTable {connectionId: $cid, tenantId: $tenantId})-[r:RELATES_TO]->(tt:SourceTable)
        RETURN r, ft.tableName AS fromTableName, tt.tableName AS toTableName,
               ft.pgId AS fromTablePgId, tt.pgId AS toTablePgId`,
-      { cid: connectionId },
+      { cid: connectionId, tenantId },
     );
     return result.records.map((r) => {
       const p = r.get('r').properties as Record<string, unknown>;
@@ -443,14 +477,15 @@ export async function getRelationshipsForConnection(
 // written before migration 78 has no such property.
 export async function getRelationshipsForContext(
   connectionId: number,
+  tenantId: number,
 ): Promise<Record<string, unknown>[]> {
   const session = getSession();
   try {
     const result = await session.run(
-      `MATCH (ft:SourceTable {connectionId: $cid, isActive: true})-[r:RELATES_TO]->(tt:SourceTable)
+      `MATCH (ft:SourceTable {connectionId: $cid, tenantId: $tenantId, isActive: true})-[r:RELATES_TO]->(tt:SourceTable)
        WHERE coalesce(r.flagged, false) = false
        RETURN r, ft.tableName AS fromTable, tt.tableName AS toTable`,
-      { cid: connectionId },
+      { cid: connectionId, tenantId },
     );
     return result.records.map((rec) => {
       const p = rec.get('r').properties as Record<string, unknown>;
@@ -476,12 +511,15 @@ export async function getRelationshipsForContext(
  * the graph and then subtracting a Postgres query from it. Nothing else reads
  * it, and it carries no reason text — the *why* stays in one store.
  */
-export async function setRelationshipFlagged(pgId: number, flagged: boolean): Promise<void> {
+export async function setRelationshipFlagged(pgId: number, flagged: boolean, tenantId: number): Promise<void> {
   const session = getSession();
   try {
+    // Scoped on the FROM-side node's tenantId, not the edge's own property:
+    // node stamping is what the backfill verified clean, and pre-stamp edges
+    // (created before migration-era writes carried tenantId) still resolve.
     await session.run(
-      `MATCH ()-[r:RELATES_TO {pgId: $pgId}]->() SET r.flagged = $flagged`,
-      { pgId, flagged },
+      `MATCH (ft:SourceTable {tenantId: $tenantId})-[r:RELATES_TO {pgId: $pgId}]->() SET r.flagged = $flagged`,
+      { pgId, flagged, tenantId },
     );
   } finally {
     await session.close();
@@ -499,14 +537,15 @@ export async function createRelationship(params: {
   description: string | null;
   aiDraft: boolean;
   pgId: number;
-  /** Stamped onto the node/edge so a tenant-scoped read can find it. See
-   *  `upsertConnectionGraph` — Neo4j has no scoping of its own. */
-  tenantId?: number | null;
+  /** Stamped onto the edge AND used as the predicate on both endpoint tables,
+   *  so a relationship can only ever be drawn between two tables the caller's
+   *  tenant owns. */
+  tenantId: number;
 }): Promise<number> {
   const session = getSession();
   try {
     await session.run(
-      `MATCH (ft:SourceTable {pgId: $fromTPgId}), (tt:SourceTable {pgId: $toTPgId})
+      `MATCH (ft:SourceTable {pgId: $fromTPgId, tenantId: $tenantId}), (tt:SourceTable {pgId: $toTPgId, tenantId: $tenantId})
        CREATE (ft)-[r:RELATES_TO {
          pgId:        $pgId,
          tenantId:    $tenantId,
@@ -520,7 +559,7 @@ export async function createRelationship(params: {
        }]->(tt)`,
       {
         pgId:        params.pgId,
-        tenantId:    params.tenantId ?? null,
+        tenantId:    params.tenantId,
         fromTPgId:   params.fromTablePgId,
         toTPgId:     params.toTablePgId,
         fromColPgId: params.fromColumnPgId ?? null,
@@ -548,11 +587,12 @@ export async function updateRelationship(
     toColumnPgId?: number | null;
     toColName?: string | null;
   },
+  tenantId: number,
 ): Promise<void> {
   const session = getSession();
   try {
     await session.run(
-      `MATCH ()-[r:RELATES_TO {pgId: $pgId}]->()
+      `MATCH (ft:SourceTable {tenantId: $tenantId})-[r:RELATES_TO {pgId: $pgId}]->()
        SET r.relType     = COALESCE($relType, r.relType),
            r.description = COALESCE($description, r.description),
            r.fromColPgId = CASE WHEN $hasFromCol THEN $fromColPgId ELSE r.fromColPgId END,
@@ -562,6 +602,7 @@ export async function updateRelationship(
            r.aiDraft     = false`,
       {
         pgId,
+        tenantId,
         relType:     patch.relationship_type ?? null,
         description: patch.description       ?? null,
         hasFromCol:  patch.fromColumnPgId !== undefined,
@@ -590,6 +631,10 @@ export async function updateRelationship(
 export async function getRelationshipConnectionId(pgId: number): Promise<number | null> {
   const session = getSession();
   try {
+    // tenant-exempt: this IS the ownership resolver — it exists to discover
+    // which connection (and thereby which tenant) owns a legacy graph-only
+    // relationship, so the caller can authorise against Postgres. It returns
+    // only a connectionId, never entity data.
     const result = await session.run(
       `MATCH (ft:SourceTable)-[r:RELATES_TO {pgId: $pgId}]->()
        RETURN ft.connectionId AS cid LIMIT 1`,
@@ -603,10 +648,13 @@ export async function getRelationshipConnectionId(pgId: number): Promise<number 
   }
 }
 
-export async function deleteRelationship(pgId: number): Promise<void> {
+export async function deleteRelationship(pgId: number, tenantId: number): Promise<void> {
   const session = getSession();
   try {
-    await session.run(`MATCH ()-[r:RELATES_TO {pgId: $pgId}]->() DELETE r`, { pgId });
+    await session.run(
+      `MATCH (ft:SourceTable {tenantId: $tenantId})-[r:RELATES_TO {pgId: $pgId}]->() DELETE r`,
+      { pgId, tenantId },
+    );
   } finally {
     await session.close();
   }
@@ -629,6 +677,11 @@ export async function deleteTenantGraph(
   const session = getSession();
   try {
     if (productIds.length > 0) {
+      // tenant-exempt: the purge is scoped by owner keys the caller collected
+      // from the tenant's OWN Postgres rows under RLS, before deleting them.
+      // A tenantId predicate here would EXCLUDE any mis-stamped node from its
+      // owner's purge — under-deletion is the failure mode GDPR erasure cannot
+      // have, so the owner key is the authority.
       await session.run(
         `MATCH (pt:ProductTable) WHERE pt.dataProductId IN $pids
          OPTIONAL MATCH (pt)-[:HAS_COLUMN]->(pc:ProductColumn)
@@ -647,12 +700,12 @@ export async function deleteTenantGraph(
   }
 }
 
-export async function deleteAiDraftRelationships(connectionId: number): Promise<void> {
+export async function deleteAiDraftRelationships(connectionId: number, tenantId: number): Promise<void> {
   const session = getSession();
   try {
     await session.run(
-      `MATCH (ft:SourceTable {connectionId: $cid})-[r:RELATES_TO {aiDraft: true}]->() DELETE r`,
-      { cid: connectionId },
+      `MATCH (ft:SourceTable {connectionId: $cid, tenantId: $tenantId})-[r:RELATES_TO {aiDraft: true}]->() DELETE r`,
+      { cid: connectionId, tenantId },
     );
   } finally {
     await session.close();
@@ -660,12 +713,12 @@ export async function deleteAiDraftRelationships(connectionId: number): Promise<
 }
 
 // Fetch a single column node by pgId — used when resolving column names for relationship creation.
-export async function getColumnByPgId(pgId: number): Promise<{ column_name: string; table_name: string } | null> {
+export async function getColumnByPgId(pgId: number, tenantId: number): Promise<{ column_name: string; table_name: string } | null> {
   const session = getSession();
   try {
     const result = await session.run(
-      `MATCH (c:SourceColumn {pgId: $pgId}) RETURN c.columnName AS cn, c.tableName AS tn`,
-      { pgId },
+      `MATCH (c:SourceColumn {pgId: $pgId, tenantId: $tenantId}) RETURN c.columnName AS cn, c.tableName AS tn`,
+      { pgId, tenantId },
     );
     if (!result.records.length) return null;
     return {
@@ -682,18 +735,19 @@ export async function getColumnByPgId(pgId: number): Promise<{ column_name: stri
 export async function getRelationshipsBetweenTables(
   tablePgId: number,
   otherTablePgIds: number[],
+  tenantId: number,
 ): Promise<{ from_table_id: number; from_column_id: number | null; to_table_id: number; to_column_id: number | null; relationship_type: string }[]> {
   if (!otherTablePgIds.length) return [];
   const session = getSession();
   try {
     const result = await session.run(
-      `MATCH (a:SourceTable)-[r:RELATES_TO]->(b:SourceTable)
+      `MATCH (a:SourceTable {tenantId: $tenantId})-[r:RELATES_TO]->(b:SourceTable {tenantId: $tenantId})
        WHERE (a.pgId = $tpid AND b.pgId IN $others)
           OR (b.pgId = $tpid AND a.pgId IN $others)
        RETURN a.pgId AS fromId, r.fromColPgId AS fromColId,
               b.pgId AS toId,   r.toColPgId   AS toColId,
               r.relType AS relType`,
-      { tpid: tablePgId, others: otherTablePgIds },
+      { tpid: tablePgId, others: otherTablePgIds, tenantId },
     );
     return result.records.map((rec) => ({
       from_table_id:     toNum(rec.get('fromId')),
@@ -709,14 +763,14 @@ export async function getRelationshipsBetweenTables(
 
 // Returns a source table and its 1-hop RELATES_TO neighbours, plus the edges.
 // Used by the relationship viewer to expand a table's neighbourhood on demand.
-export async function getRelatedTables(tablePgId: number): Promise<{
+export async function getRelatedTables(tablePgId: number, tenantId: number): Promise<{
   tables: Array<{ id: number; tableName: string; displayName: string; connectionId: number }>;
   relationships: Array<{ id: number; fromTableId: number; fromColumnId: number | null; toTableId: number; toColumnId: number | null; relType: string; description: string | null }>;
 }> {
   const session = getSession();
   try {
     const result = await session.run(
-      `MATCH (src:SourceTable {pgId: $pgId})-[r:RELATES_TO]-(neighbor:SourceTable)
+      `MATCH (src:SourceTable {pgId: $pgId, tenantId: $tenantId})-[r:RELATES_TO]-(neighbor:SourceTable {tenantId: $tenantId})
        RETURN neighbor.pgId         AS nPgId,
               neighbor.tableName    AS nTableName,
               neighbor.displayName  AS nDisplayName,
@@ -728,7 +782,7 @@ export async function getRelatedTables(tablePgId: number): Promise<{
               r.toColPgId           AS toColId,
               r.relType             AS relType,
               r.description         AS description`,
-      { pgId: tablePgId },
+      { pgId: tablePgId, tenantId },
     );
 
     const tablesMap = new Map<number, { id: number; tableName: string; displayName: string; connectionId: number }>();
@@ -773,12 +827,13 @@ export async function getRelatedTables(tablePgId: number): Promise<{
 
 export async function getKpisByConnection(
   connectionId: number,
+  tenantId: number,
 ): Promise<Record<string, unknown>[]> {
   const session = getSession();
   try {
     const result = await session.run(
-      `MATCH (k:KpiDefinition {connectionId: $cid}) RETURN k ORDER BY k.name`,
-      { cid: connectionId },
+      `MATCH (k:KpiDefinition {connectionId: $cid, tenantId: $tenantId}) RETURN k ORDER BY k.name`,
+      { cid: connectionId, tenantId },
     );
     return result.records.map((r) => mapKpi(r.get('k').properties as Record<string, unknown>));
   } finally {
@@ -789,15 +844,16 @@ export async function getKpisByConnection(
 export async function getKpisByIds(
   pgIds: number[],
   connectionId: number,
+  tenantId: number,
 ): Promise<Record<string, unknown>[]> {
   if (!pgIds.length) return [];
   const session = getSession();
   try {
     const result = await session.run(
-      `MATCH (k:KpiDefinition)
+      `MATCH (k:KpiDefinition {tenantId: $tenantId})
        WHERE k.pgId IN $ids AND k.connectionId = $cid AND k.aiDraft = false
        RETURN k`,
-      { ids: pgIds, cid: connectionId },
+      { ids: pgIds, cid: connectionId, tenantId },
     );
     return result.records.map((r) => mapKpi(r.get('k').properties as Record<string, unknown>));
   } finally {
@@ -814,15 +870,15 @@ export async function createKpi(params: {
   formulaSql?: string | null;
   ownerName?: string | null;
   aiDraft: boolean;
-  /** Stamped onto the node/edge so a tenant-scoped read can find it. See
-   *  `upsertConnectionGraph` — Neo4j has no scoping of its own. */
-  tenantId?: number | null;
+  /** Stamped onto the node AND used as the predicate on the anchor table, so a
+   *  KPI can only attach to a connection the caller's tenant owns. */
+  tenantId: number;
 }): Promise<number> {
   const session = getSession();
   const now = new Date().toISOString();
   try {
     await session.run(
-      `MATCH (t:SourceTable {connectionId: $cid})
+      `MATCH (t:SourceTable {connectionId: $cid, tenantId: $tenantId})
        WITH t LIMIT 1
        CREATE (k:KpiDefinition {
          pgId:             $pgId,
@@ -840,7 +896,7 @@ export async function createKpi(params: {
        CREATE (t)-[:DEFINES_KPI]->(k)`,
       {
         pgId:             params.pgId,
-        tenantId:         params.tenantId ?? null,
+        tenantId:         params.tenantId,
         cid:              params.connectionId,
         name:             params.name,
         description:      params.description      ?? null,
@@ -863,11 +919,12 @@ export async function updateKpi(
     name?: unknown; description?: unknown;
     formula_plain_text?: unknown; formula_sql?: unknown; owner_name?: unknown;
   },
+  tenantId: number,
 ): Promise<void> {
   const session = getSession();
   try {
     await session.run(
-      `MATCH (k:KpiDefinition {pgId: $pgId})
+      `MATCH (k:KpiDefinition {pgId: $pgId, tenantId: $tenantId})
        SET k.name             = COALESCE($name, k.name),
            k.description      = $description,
            k.formulaPlainText = $formulaPlainText,
@@ -877,6 +934,7 @@ export async function updateKpi(
            k.updatedAt        = $now`,
       {
         pgId,
+        tenantId,
         name:             patch.name              ?? null,
         description:      patch.description       ?? null,
         formulaPlainText: patch.formula_plain_text ?? null,
@@ -911,13 +969,14 @@ export async function updateApprovalStatus(
     approved_at?: string | null;
     rejection_reason?: string | null;
   },
+  tenantId: number,
 ): Promise<void> {
   const label = LABEL_MAP[entityType];
   if (!label) throw new Error(`Unknown entityType: ${entityType}`);
   const session = getSession();
   try {
     await session.run(
-      `MATCH (n:${label} {pgId: $pgId})
+      `MATCH (n:${label} {pgId: $pgId, tenantId: $tenantId})
        SET n.approvalStatus   = $approvalStatus,
            n.approvedBy       = $approvedBy,
            n.approvedAt       = $approvedAt,
@@ -925,6 +984,7 @@ export async function updateApprovalStatus(
            n.updatedAt        = $now`,
       {
         pgId,
+        tenantId,
         approvalStatus:  updates.approval_status,
         approvedBy:      updates.approved_by ?? null,
         approvedAt:      updates.approved_at ?? null,
@@ -955,6 +1015,7 @@ export interface SemanticQueryContext {
  */
 export async function getTableAndColumnNames(
   connectionId: number,
+  tenantId: number,
   domains?: string[],
 ): Promise<{ tableName: string; displayName: string; columnNames: string[] }[]> {
   const session = getSession();
@@ -963,13 +1024,13 @@ export async function getTableAndColumnNames(
       ? 'AND ANY(d IN t.domains WHERE d IN $domains)'
       : '';
     const result = await session.run(
-      `MATCH (t:SourceTable {connectionId: $cid, isActive: true})
+      `MATCH (t:SourceTable {connectionId: $cid, tenantId: $tenantId, isActive: true})
        WHERE true ${domainFilter}
        OPTIONAL MATCH (t)-[:HAS_COLUMN]->(c:SourceColumn)
        RETURN t.tableName AS tableName, t.displayName AS displayName,
               collect(c.columnName) AS columnNames
        ORDER BY t.tableName`,
-      { cid: connectionId, domains: domains ?? [] },
+      { cid: connectionId, tenantId, domains: domains ?? [] },
     );
     return result.records.map((r) => ({
       tableName:   toStr(r.get('tableName')),
@@ -988,6 +1049,7 @@ export async function getTableAndColumnNames(
 export async function buildRelevantSubgraph(
   connectionId: number,
   seedTableNames: string[],
+  tenantId: number,
   domains?: string[],
 ): Promise<SemanticQueryContext> {
   const session = getSession();
@@ -997,33 +1059,33 @@ export async function buildRelevantSubgraph(
       : '';
     // Find seed tables + their 2-hop RELATES_TO neighbours
     const neighborResult = await session.run(
-      `MATCH (seed:SourceTable {connectionId: $cid, isActive: true})
+      `MATCH (seed:SourceTable {connectionId: $cid, tenantId: $tenantId, isActive: true})
        WHERE seed.tableName IN $seeds
-       MATCH (seed)-[:RELATES_TO*0..2]-(n:SourceTable {connectionId: $cid, isActive: true})
+       MATCH (seed)-[:RELATES_TO*0..2]-(n:SourceTable {connectionId: $cid, tenantId: $tenantId, isActive: true})
        WHERE true ${domainFilter}
        RETURN DISTINCT n.tableName AS tableName`,
-      { cid: connectionId, seeds: seedTableNames, domains: domains ?? [] },
+      { cid: connectionId, tenantId, seeds: seedTableNames, domains: domains ?? [] },
     );
     const neighborNames = neighborResult.records.map((r) => toStr(r.get('tableName')));
     if (!neighborNames.length) return { tables: [], columns: [], kpis: [], relationships: [] };
 
     // Fetch full context for the neighbourhood only
     const tableResult = await session.run(
-      `MATCH (t:SourceTable {connectionId: $cid, isActive: true})
+      `MATCH (t:SourceTable {connectionId: $cid, tenantId: $tenantId, isActive: true})
        WHERE t.tableName IN $names
        RETURN t ORDER BY t.tableName`,
-      { cid: connectionId, names: neighborNames },
+      { cid: connectionId, tenantId, names: neighborNames },
     );
     const tables = tableResult.records.map((r) =>
       mapTable(r.get('t').properties as Record<string, unknown>),
     );
 
     const colResult = await session.run(
-      `MATCH (t:SourceTable {connectionId: $cid, isActive: true})-[:HAS_COLUMN]->(c:SourceColumn)
+      `MATCH (t:SourceTable {connectionId: $cid, tenantId: $tenantId, isActive: true})-[:HAS_COLUMN]->(c:SourceColumn)
        WHERE t.tableName IN $names
        RETURN c, t.tableName AS tableName, t.pgId AS tablePgId
        ORDER BY t.tableName, c.columnName`,
-      { cid: connectionId, names: neighborNames },
+      { cid: connectionId, tenantId, names: neighborNames },
     );
     const columns = colResult.records.map((r) => {
       const cp = { ...r.get('c').properties as Record<string, unknown> };
@@ -1033,10 +1095,10 @@ export async function buildRelevantSubgraph(
     });
 
     const relResult = await session.run(
-      `MATCH (ft:SourceTable {connectionId: $cid, isActive: true})-[r:RELATES_TO]->(tt:SourceTable)
+      `MATCH (ft:SourceTable {connectionId: $cid, tenantId: $tenantId, isActive: true})-[r:RELATES_TO]->(tt:SourceTable)
        WHERE ft.tableName IN $names AND tt.tableName IN $names
        RETURN r, ft.tableName AS fromTable, tt.tableName AS toTable`,
-      { cid: connectionId, names: neighborNames },
+      { cid: connectionId, tenantId, names: neighborNames },
     );
     const relationships = relResult.records.map((rec) => {
       const p = rec.get('r').properties as Record<string, unknown>;
@@ -1051,8 +1113,8 @@ export async function buildRelevantSubgraph(
     });
 
     const kpiResult = await session.run(
-      `MATCH (k:KpiDefinition {connectionId: $cid}) RETURN k ORDER BY k.name`,
-      { cid: connectionId },
+      `MATCH (k:KpiDefinition {connectionId: $cid, tenantId: $tenantId}) RETURN k ORDER BY k.name`,
+      { cid: connectionId, tenantId },
     );
     const kpis = kpiResult.records.map((r) =>
       mapKpi(r.get('k').properties as Record<string, unknown>),
@@ -1066,14 +1128,18 @@ export async function buildRelevantSubgraph(
 
 export async function buildSemanticContextForQuery(
   connectionId: number,
+  tenantId: number,
   domains?: string[],
 ): Promise<SemanticQueryContext> {
-  const cacheKey = CacheKeys.semanticContext(connectionId, domains);
-  return cacheThrough(cacheKey, () => _buildSemanticContextForQuery(connectionId, domains), 5 * 60 * 1000);
+  // The tenant is part of the cache key so a wrong-tenant call (which the graph
+  // answers with an empty context) can never poison the owner's cached entry.
+  const cacheKey = `${CacheKeys.semanticContext(connectionId, domains)}:t=${tenantId}`;
+  return cacheThrough(cacheKey, () => _buildSemanticContextForQuery(connectionId, tenantId, domains), 5 * 60 * 1000);
 }
 
 async function _buildSemanticContextForQuery(
   connectionId: number,
+  tenantId: number,
   domains?: string[],
 ): Promise<SemanticQueryContext> {
   const session = getSession();
@@ -1083,10 +1149,10 @@ async function _buildSemanticContextForQuery(
       ? 'AND ANY(d IN t.domains WHERE d IN $domains)'
       : '';
     const tableResult = await session.run(
-      `MATCH (t:SourceTable {connectionId: $cid, isActive: true})
+      `MATCH (t:SourceTable {connectionId: $cid, tenantId: $tenantId, isActive: true})
        WHERE true ${domainFilter}
        RETURN t ORDER BY t.tableName`,
-      { cid: connectionId, domains: domains ?? [] },
+      { cid: connectionId, tenantId, domains: domains ?? [] },
     );
     const tables = tableResult.records.map((r) =>
       mapTable(r.get('t').properties as Record<string, unknown>),
@@ -1096,11 +1162,11 @@ async function _buildSemanticContextForQuery(
 
     // --- Columns ---
     const colResult = await session.run(
-      `MATCH (t:SourceTable {connectionId: $cid, isActive: true})-[:HAS_COLUMN]->(c:SourceColumn)
+      `MATCH (t:SourceTable {connectionId: $cid, tenantId: $tenantId, isActive: true})-[:HAS_COLUMN]->(c:SourceColumn)
        ${domainFilter ? `WHERE ANY(d IN t.domains WHERE d IN $domains)` : ''}
        RETURN c, t.tableName AS tableName, t.pgId AS tablePgId
        ORDER BY t.tableName, c.columnName`,
-      { cid: connectionId, domains: domains ?? [] },
+      { cid: connectionId, tenantId, domains: domains ?? [] },
     );
     const columns = colResult.records.map((r) => {
       const cp = { ...r.get('c').properties as Record<string, unknown> };
@@ -1111,9 +1177,9 @@ async function _buildSemanticContextForQuery(
 
     // --- Relationships ---
     const relResult = await session.run(
-      `MATCH (ft:SourceTable {connectionId: $cid, isActive: true})-[r:RELATES_TO]->(tt:SourceTable)
+      `MATCH (ft:SourceTable {connectionId: $cid, tenantId: $tenantId, isActive: true})-[r:RELATES_TO]->(tt:SourceTable)
        RETURN r, ft.tableName AS fromTable, tt.tableName AS toTable`,
-      { cid: connectionId },
+      { cid: connectionId, tenantId },
     );
     const relationships = relResult.records.map((rec) => {
       const p = rec.get('r').properties as Record<string, unknown>;
@@ -1129,8 +1195,8 @@ async function _buildSemanticContextForQuery(
 
     // --- KPIs ---
     const kpiResult = await session.run(
-      `MATCH (k:KpiDefinition {connectionId: $cid}) RETURN k ORDER BY k.name`,
-      { cid: connectionId },
+      `MATCH (k:KpiDefinition {connectionId: $cid, tenantId: $tenantId}) RETURN k ORDER BY k.name`,
+      { cid: connectionId, tenantId },
     );
     const kpis = kpiResult.records.map((r) =>
       mapKpi(r.get('k').properties as Record<string, unknown>),
@@ -1174,6 +1240,7 @@ export interface JoinPathStep {
 export async function getJoinPaths(
   connectionId: number,
   tableNames: string[],
+  tenantId: number,
 ): Promise<{ from: string; to: string; steps: JoinPathStep[] }[]> {
   if (tableNames.length < 2) return [];
   const session = getSession();
@@ -1184,9 +1251,9 @@ export async function getJoinPaths(
       for (let j = i + 1; j < tableNames.length; j++) {
         const result = await session.run(
           `MATCH path = shortestPath(
-             (a:SourceTable {connectionId: $cid, tableName: $from})
+             (a:SourceTable {connectionId: $cid, tenantId: $tenantId, tableName: $from})
              -[:RELATES_TO*..4]-
-             (b:SourceTable {connectionId: $cid, tableName: $to})
+             (b:SourceTable {connectionId: $cid, tenantId: $tenantId, tableName: $to})
            )
            WHERE length(path) >= 2
            RETURN [n IN nodes(path) | n.tableName] AS nodeNames,
@@ -1197,7 +1264,7 @@ export async function getJoinPaths(
                     toCol:     r.toColName,
                     relType:   r.relType
                   }] AS steps`,
-          { cid: connectionId, from: tableNames[i], to: tableNames[j] },
+          { cid: connectionId, tenantId, from: tableNames[i], to: tableNames[j] },
         );
         for (const rec of result.records) {
           const steps = (rec.get('steps') as Record<string, unknown>[]).map((s) => ({
@@ -1241,12 +1308,13 @@ export async function findAllShortestPaths(
   connectionId: number,
   fromTablePgId: number,
   toTablePgId: number,
+  tenantId: number,
 ): Promise<PathFinderResult> {
   const session = getSession();
   try {
     const result = await session.run(
-      `MATCH (a:SourceTable {connectionId: $cid, pgId: $from}),
-            (b:SourceTable {connectionId: $cid, pgId: $to})
+      `MATCH (a:SourceTable {connectionId: $cid, tenantId: $tenantId, pgId: $from}),
+            (b:SourceTable {connectionId: $cid, tenantId: $tenantId, pgId: $to})
        MATCH path = allShortestPaths((a)-[:RELATES_TO*..8]-(b))
        RETURN [n IN nodes(path) | {
                 pgId: n.pgId,
@@ -1264,7 +1332,7 @@ export async function findAllShortestPaths(
                 relType: r.relType
               }] AS rels
        LIMIT 10`,
-      { cid: connectionId, from: fromTablePgId, to: toTablePgId },
+      { cid: connectionId, tenantId, from: fromTablePgId, to: toTablePgId },
     );
 
     const paths = result.records.map((rec) => {
@@ -1308,13 +1376,16 @@ function mapCrossView(p: Record<string, unknown>): Record<string, unknown> {
   };
 }
 
-export async function getCrossSourceViews(connectionId?: number): Promise<Record<string, unknown>[]> {
+export async function getCrossSourceViews(
+  connectionId: number | undefined,
+  tenantId: number,
+): Promise<Record<string, unknown>[]> {
   const session = getSession();
   try {
     const cypher = connectionId != null
-      ? `MATCH (v:CrossSourceView {connectionId: $cid}) RETURN v ORDER BY v.updatedAt DESC`
-      : `MATCH (v:CrossSourceView) RETURN v ORDER BY v.updatedAt DESC`;
-    const result = await session.run(cypher, connectionId != null ? { cid: connectionId } : {});
+      ? `MATCH (v:CrossSourceView {connectionId: $cid, tenantId: $tenantId}) RETURN v ORDER BY v.updatedAt DESC`
+      : `MATCH (v:CrossSourceView {tenantId: $tenantId}) RETURN v ORDER BY v.updatedAt DESC`;
+    const result = await session.run(cypher, connectionId != null ? { cid: connectionId, tenantId } : { tenantId });
     return result.records.map((r) => mapCrossView(r.get('v').properties as Record<string, unknown>));
   } finally {
     await session.close();
@@ -1327,9 +1398,8 @@ export async function createCrossSourceView(params: {
   description?: string | null;
   connectionId?: number | null;
   userId: string | number;
-  /** Stamped onto the node so a tenant-scoped read can find it. See
-   *  `upsertConnectionGraph` — Neo4j has no scoping of its own. */
-  tenantId?: number | null;
+  /** Stamped onto the node — the property every tenant-scoped read filters on. */
+  tenantId: number;
 }): Promise<number> {
   const session = getSession();
   const now = new Date().toISOString();
@@ -1345,7 +1415,7 @@ export async function createCrossSourceView(params: {
          createdAt:    $now,
          updatedAt:    $now
        })`,
-      { pgId: params.pgId, tenantId: params.tenantId ?? null, name: params.name, description: params.description ?? null, connectionId: params.connectionId ?? null, userId: params.userId, now },
+      { pgId: params.pgId, tenantId: params.tenantId, name: params.name, description: params.description ?? null, connectionId: params.connectionId ?? null, userId: params.userId, now },
     );
     return params.pgId;
   } finally {
@@ -1356,27 +1426,28 @@ export async function createCrossSourceView(params: {
 export async function updateCrossSourceView(
   pgId: number,
   patch: { name?: string; description?: string },
+  tenantId: number,
 ): Promise<void> {
   const session = getSession();
   try {
     await session.run(
-      `MATCH (v:CrossSourceView {pgId: $pgId})
+      `MATCH (v:CrossSourceView {pgId: $pgId, tenantId: $tenantId})
        SET v.name        = COALESCE($name, v.name),
            v.description = $description,
            v.updatedAt   = $now`,
-      { pgId, name: patch.name ?? null, description: patch.description ?? null, now: new Date().toISOString() },
+      { pgId, tenantId, name: patch.name ?? null, description: patch.description ?? null, now: new Date().toISOString() },
     );
   } finally {
     await session.close();
   }
 }
 
-export async function deleteCrossSourceView(pgId: number): Promise<void> {
+export async function deleteCrossSourceView(pgId: number, tenantId: number): Promise<void> {
   const session = getSession();
   try {
     // DETACH DELETE removes the node and all its edges (INCLUDES, CROSS_VIEW_LINK if embedded)
     await session.run(
-      `MATCH (v:CrossSourceView {pgId: $pgId})
+      `MATCH (v:CrossSourceView {pgId: $pgId, tenantId: $tenantId})
        OPTIONAL MATCH (v)-[:INCLUDES]->(t:SourceTable)
        // Remove CROSS_VIEW_LINK edges that belong to this view
        WITH v, collect(t) AS ts
@@ -1385,14 +1456,14 @@ export async function deleteCrossSourceView(pgId: number): Promise<void> {
        DELETE cvl
        WITH v
        DETACH DELETE v`,
-      { pgId },
+      { pgId, tenantId },
     );
   } finally {
     await session.close();
   }
 }
 
-export async function getCrossSourceViewDetail(pgId: number): Promise<{
+export async function getCrossSourceViewDetail(pgId: number, tenantId: number): Promise<{
   view: Record<string, unknown> | null;
   viewTables: Record<string, unknown>[];
   columns: Record<string, unknown>[];
@@ -1401,17 +1472,17 @@ export async function getCrossSourceViewDetail(pgId: number): Promise<{
   const session = getSession();
   try {
     const viewResult = await session.run(
-      `MATCH (v:CrossSourceView {pgId: $pgId}) RETURN v`,
-      { pgId },
+      `MATCH (v:CrossSourceView {pgId: $pgId, tenantId: $tenantId}) RETURN v`,
+      { pgId, tenantId },
     );
     if (!viewResult.records.length) return null;
     const view = mapCrossView(viewResult.records[0].get('v').properties as Record<string, unknown>);
 
     // Tables on canvas with position
     const tablesResult = await session.run(
-      `MATCH (v:CrossSourceView {pgId: $pgId})-[inc:INCLUDES]->(t:SourceTable)
+      `MATCH (v:CrossSourceView {pgId: $pgId, tenantId: $tenantId})-[inc:INCLUDES]->(t:SourceTable)
        RETURN t, inc.posX AS posX, inc.posY AS posY`,
-      { pgId },
+      { pgId, tenantId },
     );
     const viewTables = tablesResult.records.map((r) => {
       const tp = r.get('t').properties as Record<string, unknown>;
@@ -1431,11 +1502,11 @@ export async function getCrossSourceViewDetail(pgId: number): Promise<{
     const columns: Record<string, unknown>[] = [];
     if (tableIds.length) {
       const colResult = await session.run(
-        `MATCH (t:SourceTable)-[:HAS_COLUMN]->(c:SourceColumn)
+        `MATCH (t:SourceTable {tenantId: $tenantId})-[:HAS_COLUMN]->(c:SourceColumn)
          WHERE t.pgId IN $tids
          RETURN c, t.tableName AS tableName, t.pgId AS tablePgId
          ORDER BY c.columnName`,
-        { tids: tableIds },
+        { tids: tableIds, tenantId },
       );
       for (const r of colResult.records) {
         const cp = r.get('c').properties as Record<string, unknown>;
@@ -1447,9 +1518,9 @@ export async function getCrossSourceViewDetail(pgId: number): Promise<{
 
     // Cross-view relationships within this view
     const relResult = await session.run(
-      `MATCH (a:SourceTable)-[r:CROSS_VIEW_LINK {viewPgId: $pgId}]->(b:SourceTable)
+      `MATCH (a:SourceTable {tenantId: $tenantId})-[r:CROSS_VIEW_LINK {viewPgId: $pgId}]->(b:SourceTable)
        RETURN r, a.pgId AS fromTableId, b.pgId AS toTableId`,
-      { pgId },
+      { pgId, tenantId },
     );
     const relationships = relResult.records.map((r) => {
       const rp = r.get('r').properties as Record<string, unknown>;
@@ -1476,31 +1547,33 @@ export async function addTableToView(
   tablePgId: number,
   posX: number,
   posY: number,
+  tenantId: number,
 ): Promise<void> {
   const session = getSession();
   try {
-    // MERGE prevents duplicate INCLUDES edges
+    // MERGE prevents duplicate INCLUDES edges. Both endpoints carry the tenant
+    // predicate: a view must never be able to include another tenant's table.
     await session.run(
-      `MATCH (v:CrossSourceView {pgId: $vpid}), (t:SourceTable {pgId: $tpid})
+      `MATCH (v:CrossSourceView {pgId: $vpid, tenantId: $tenantId}), (t:SourceTable {pgId: $tpid, tenantId: $tenantId})
        MERGE (v)-[inc:INCLUDES]->(t)
        ON CREATE SET inc.posX = $posX, inc.posY = $posY`,
-      { vpid: viewPgId, tpid: tablePgId, posX, posY },
+      { vpid: viewPgId, tpid: tablePgId, posX, posY, tenantId },
     );
   } finally {
     await session.close();
   }
 }
 
-export async function removeTableFromView(viewPgId: number, tablePgId: number): Promise<void> {
+export async function removeTableFromView(viewPgId: number, tablePgId: number, tenantId: number): Promise<void> {
   const session = getSession();
   try {
     await session.run(
-      `MATCH (v:CrossSourceView {pgId: $vpid})-[inc:INCLUDES]->(t:SourceTable {pgId: $tpid})
+      `MATCH (v:CrossSourceView {pgId: $vpid, tenantId: $tenantId})-[inc:INCLUDES]->(t:SourceTable {pgId: $tpid})
        DELETE inc
        WITH t
        MATCH (t)-[cvl:CROSS_VIEW_LINK {viewPgId: $vpid}]-()
        DELETE cvl`,
-      { vpid: viewPgId, tpid: tablePgId },
+      { vpid: viewPgId, tpid: tablePgId, tenantId },
     );
   } finally {
     await session.close();
@@ -1512,13 +1585,14 @@ export async function updateTablePositionInView(
   tablePgId: number,
   posX: number,
   posY: number,
+  tenantId: number,
 ): Promise<void> {
   const session = getSession();
   try {
     await session.run(
-      `MATCH (v:CrossSourceView {pgId: $vpid})-[inc:INCLUDES]->(t:SourceTable {pgId: $tpid})
+      `MATCH (v:CrossSourceView {pgId: $vpid, tenantId: $tenantId})-[inc:INCLUDES]->(t:SourceTable {pgId: $tpid})
        SET inc.posX = $posX, inc.posY = $posY`,
-      { vpid: viewPgId, tpid: tablePgId, posX, posY },
+      { vpid: viewPgId, tpid: tablePgId, posX, posY, tenantId },
     );
   } finally {
     await session.close();
@@ -1536,13 +1610,16 @@ export async function addCrossViewRelationship(params: {
   toColName?: string | null;
   relationshipType: string;
   label?: string | null;
+  /** Predicate on both endpoint tables AND stamped onto the edge. */
+  tenantId: number;
 }): Promise<number> {
   const session = getSession();
   try {
     await session.run(
-      `MATCH (a:SourceTable {pgId: $fromTPgId}), (b:SourceTable {pgId: $toTPgId})
+      `MATCH (a:SourceTable {pgId: $fromTPgId, tenantId: $tenantId}), (b:SourceTable {pgId: $toTPgId, tenantId: $tenantId})
        CREATE (a)-[:CROSS_VIEW_LINK {
          pgId:        $pgId,
+         tenantId:    $tenantId,
          viewPgId:    $viewPgId,
          relType:     $relType,
          label:       $label,
@@ -1553,6 +1630,7 @@ export async function addCrossViewRelationship(params: {
        }]->(b)`,
       {
         pgId:        params.pgId,
+        tenantId:    params.tenantId,
         fromTPgId:   params.fromTablePgId,
         toTPgId:     params.toTablePgId,
         viewPgId:    params.viewPgId,
@@ -1570,10 +1648,15 @@ export async function addCrossViewRelationship(params: {
   }
 }
 
-export async function deleteCrossViewRelationship(pgId: number): Promise<void> {
+export async function deleteCrossViewRelationship(pgId: number, tenantId: number): Promise<void> {
   const session = getSession();
   try {
-    await session.run(`MATCH ()-[r:CROSS_VIEW_LINK {pgId: $pgId}]->() DELETE r`, { pgId });
+    // Scoped on the FROM-side node, not the edge property — CROSS_VIEW_LINK
+    // edges created before stamping carry no tenantId of their own.
+    await session.run(
+      `MATCH (a:SourceTable {tenantId: $tenantId})-[r:CROSS_VIEW_LINK {pgId: $pgId}]->() DELETE r`,
+      { pgId, tenantId },
+    );
   } finally {
     await session.close();
   }
@@ -1586,13 +1669,14 @@ export async function deleteCrossViewRelationship(pgId: number): Promise<void> {
 export async function getQualityRules(
   connectionId: number,
   tableName: string,
+  tenantId: number,
 ): Promise<Record<string, unknown>[]> {
   const session = getSession();
   try {
     const result = await session.run(
-      `MATCH (q:QualityRule {connectionId: $cid, tableName: $tn})
+      `MATCH (q:QualityRule {connectionId: $cid, tableName: $tn, tenantId: $tenantId})
        RETURN q ORDER BY q.createdAt`,
-      { cid: connectionId, tn: tableName },
+      { cid: connectionId, tn: tableName, tenantId },
     );
     return result.records.map((r) => mapQualityRule(r.get('q').properties as Record<string, unknown>));
   } finally {
@@ -1603,13 +1687,14 @@ export async function getQualityRules(
 export async function getActiveQualityRules(
   connectionId: number,
   tableName: string,
+  tenantId: number,
 ): Promise<Record<string, unknown>[]> {
   const session = getSession();
   try {
     const result = await session.run(
-      `MATCH (q:QualityRule {connectionId: $cid, tableName: $tn, isActive: true})
+      `MATCH (q:QualityRule {connectionId: $cid, tableName: $tn, tenantId: $tenantId, isActive: true})
        RETURN q ORDER BY q.createdAt`,
-      { cid: connectionId, tn: tableName },
+      { cid: connectionId, tn: tableName, tenantId },
     );
     return result.records.map((r) => mapQualityRule(r.get('q').properties as Record<string, unknown>));
   } finally {
@@ -1629,15 +1714,14 @@ export async function createQualityRule(params: {
   ruleConfig?: Record<string, unknown>;
   passThreshold?: number;
   ownerName?: string | null;
-  /** Stamped onto the node so a tenant-scoped read can find it. See
-   *  `upsertConnectionGraph` — Neo4j has no scoping of its own. */
-  tenantId?: number | null;
+  /** Stamped onto the node AND used as the predicate on the anchor table. */
+  tenantId: number;
 }): Promise<number> {
   const session = getSession();
   const now = new Date().toISOString();
   try {
     await session.run(
-      `MATCH (t:SourceTable {connectionId: $cid, tableName: $tn})
+      `MATCH (t:SourceTable {connectionId: $cid, tableName: $tn, tenantId: $tenantId})
        CREATE (q:QualityRule {
          pgId:          $pgId,
          tenantId:      $tenantId,
@@ -1657,7 +1741,7 @@ export async function createQualityRule(params: {
        CREATE (q)-[:APPLIES_TO]->(t)`,
       {
         pgId:          params.pgId,
-        tenantId:      params.tenantId ?? null,
+        tenantId:      params.tenantId,
         cid:           params.connectionId,
         tn:            params.tableName,
         ruleName:      params.ruleName,
@@ -1684,11 +1768,12 @@ export async function updateQualityRule(
     description?: unknown; rule_type?: unknown; rule_config?: unknown;
     pass_threshold?: unknown; owner_name?: unknown; is_active?: unknown;
   },
+  tenantId: number,
 ): Promise<void> {
   const session = getSession();
   try {
     const setClauses: string[] = [];
-    const params: Record<string, unknown> = { pgId };
+    const params: Record<string, unknown> = { pgId, tenantId };
 
     if (patch.rule_name     !== undefined) { setClauses.push('q.ruleName = $ruleName');       params.ruleName       = patch.rule_name; }
     if (patch.dimension     !== undefined) { setClauses.push('q.dimension = $dimension');      params.dimension      = patch.dimension; }
@@ -1702,7 +1787,7 @@ export async function updateQualityRule(
 
     if (!setClauses.length) return;
     await session.run(
-      `MATCH (q:QualityRule {pgId: $pgId}) SET ${setClauses.join(', ')}`,
+      `MATCH (q:QualityRule {pgId: $pgId, tenantId: $tenantId}) SET ${setClauses.join(', ')}`,
       params,
     );
   } finally {
@@ -1710,12 +1795,12 @@ export async function updateQualityRule(
   }
 }
 
-export async function deleteQualityRule(pgId: number): Promise<void> {
+export async function deleteQualityRule(pgId: number, tenantId: number): Promise<void> {
   const session = getSession();
   try {
     await session.run(
-      `MATCH (q:QualityRule {pgId: $pgId}) DETACH DELETE q`,
-      { pgId },
+      `MATCH (q:QualityRule {pgId: $pgId, tenantId: $tenantId}) DETACH DELETE q`,
+      { pgId, tenantId },
     );
   } finally {
     await session.close();
@@ -1730,16 +1815,18 @@ export async function updateTableQualityStats(
   connectionId: number,
   tableName: string,
   stats: { rowCount?: number | null; lastProfiledAt?: string | null },
+  tenantId: number,
 ): Promise<void> {
   const session = getSession();
   try {
     await session.run(
-      `MATCH (t:SourceTable {connectionId: $cid, tableName: $tn})
+      `MATCH (t:SourceTable {connectionId: $cid, tableName: $tn, tenantId: $tenantId})
        SET t.rowCount      = $rowCount,
            t.lastProfiledAt = $lastProfiledAt`,
       {
         cid:            connectionId,
         tn:             tableName,
+        tenantId,
         rowCount:       stats.rowCount        ?? null,
         lastProfiledAt: stats.lastProfiledAt  ?? new Date().toISOString(),
       },
@@ -1760,11 +1847,12 @@ export async function updateColumnQualityStats(
     meanValue?: number | null; medianValue?: number | null;
     topValues?: unknown;
   },
+  tenantId: number,
 ): Promise<void> {
   const session = getSession();
   try {
     await session.run(
-      `MATCH (t:SourceTable {connectionId: $cid, tableName: $tn})-[:HAS_COLUMN]->(c:SourceColumn {columnName: $fn})
+      `MATCH (t:SourceTable {connectionId: $cid, tableName: $tn, tenantId: $tenantId})-[:HAS_COLUMN]->(c:SourceColumn {columnName: $fn})
        SET c.nullCount     = $nullCount,
            c.nullPct       = $nullPct,
            c.distinctCount = $distinctCount,
@@ -1778,6 +1866,7 @@ export async function updateColumnQualityStats(
         cid:           connectionId,
         tn:            tableName,
         fn:            fieldName,
+        tenantId,
         nullCount:     stats.nullCount     ?? null,
         nullPct:       stats.nullPct       ?? null,
         distinctCount: stats.distinctCount ?? null,
@@ -1845,13 +1934,12 @@ export async function upsertConnectionGraph(
   columns: UpsertColumnInput[],
   relationships: UpsertRelationshipInput[],
   /**
-   * Stamped onto every node this writes. The graph has no tenant scoping of its
-   * own (see db/tenantOwnership.ts); this is the property the future MATCH
-   * predicates will filter on, and the indexes for it already exist in
-   * db/neo4j.ts. Null only for callers that genuinely have no tenant context —
-   * those nodes stay invisible to a tenant-scoped read, which is the safe side.
+   * Stamped onto every node this writes, and the predicate on every internal
+   * MATCH anchor. Required: a null-stamped node is exactly the unattributable
+   * backlog the 2026-09-01 backfill spent a day pruning — refusing to write
+   * one is cheaper than pruning it later.
    */
-  tenantId?: number | null,
+  tenantId: number,
 ): Promise<void> {
   const session = getSession();
   const now = new Date().toISOString();
@@ -1881,7 +1969,7 @@ export async function upsertConnectionGraph(
            tbl.semanticSource = $semanticSource,
            tbl.aiDraft        = CASE WHEN $aiDraft THEN tbl.aiDraft ELSE false END,
            tbl.updatedAt      = $now`,
-        { pgId: t.pgId, tenantId: tenantId ?? null, cid: t.connectionId, tn: t.tableName, displayName: t.displayName, description: t.description, grain: t.grain ?? null, aiDraft: t.aiDraft ?? true, semanticSource: t.semanticSource ?? null, now },
+        { pgId: t.pgId, tenantId, cid: t.connectionId, tn: t.tableName, displayName: t.displayName, description: t.description, grain: t.grain ?? null, aiDraft: t.aiDraft ?? true, semanticSource: t.semanticSource ?? null, now },
       );
     }
 
@@ -1913,7 +2001,7 @@ export async function upsertConnectionGraph(
         // hanging off THIS table node". The table node is itself merged on
         // (connectionId, tableName), which is both tenant-scoped and stable
         // across re-profiles, so the column inherits both properties.
-        `MATCH (tbl:SourceTable {pgId: $tpid})
+        `MATCH (tbl:SourceTable {pgId: $tpid, tenantId: $tenantId})
          MERGE (tbl)-[:HAS_COLUMN]->(col:SourceColumn {columnName: $cn})
          ON CREATE SET
            col.pgId           = $pgId,
@@ -1944,7 +2032,7 @@ export async function upsertConnectionGraph(
            col.updatedAt      = $now`,
         {
           pgId:           c.pgId,
-          tenantId:       tenantId ?? null,
+          tenantId,
           tpid:           c.tablePgId,
           tn:             c.tableName,
           cn:             c.columnName,
@@ -1966,13 +2054,13 @@ export async function upsertConnectionGraph(
     const connectionIds = [...new Set(tables.map((t) => t.connectionId))];
     for (const cid of connectionIds) {
       await session.run(
-        `MATCH (ft:SourceTable {connectionId: $cid})-[r:RELATES_TO {aiDraft: true}]->() DELETE r`,
-        { cid },
+        `MATCH (ft:SourceTable {connectionId: $cid, tenantId: $tenantId})-[r:RELATES_TO {aiDraft: true}]->() DELETE r`,
+        { cid, tenantId },
       );
     }
     for (const rel of relationships) {
       await session.run(
-        `MATCH (ft:SourceTable {pgId: $fromTPgId}), (tt:SourceTable {pgId: $toTPgId})
+        `MATCH (ft:SourceTable {pgId: $fromTPgId, tenantId: $tenantId}), (tt:SourceTable {pgId: $toTPgId, tenantId: $tenantId})
          CREATE (ft)-[r:RELATES_TO {
            pgId:        $pgId,
            tenantId:    $tenantId,
@@ -1986,7 +2074,7 @@ export async function upsertConnectionGraph(
          }]->(tt)`,
         {
           pgId:        rel.pgId,
-          tenantId:    tenantId ?? null,
+          tenantId,
           fromTPgId:   rel.fromTablePgId,
           toTPgId:     rel.toTablePgId,
           fromColPgId: rel.fromColPgId ?? null,
@@ -2004,12 +2092,12 @@ export async function upsertConnectionGraph(
 }
 
 // Returns { tableName → pgId } map — needed by SchemaProfiler and re-suggest route
-export async function getTablePgIdMap(connectionId: number): Promise<Map<string, number>> {
+export async function getTablePgIdMap(connectionId: number, tenantId: number): Promise<Map<string, number>> {
   const session = getSession();
   try {
     const result = await session.run(
-      `MATCH (t:SourceTable {connectionId: $cid}) RETURN t.tableName AS tn, t.pgId AS pgId`,
-      { cid: connectionId },
+      `MATCH (t:SourceTable {connectionId: $cid, tenantId: $tenantId}) RETURN t.tableName AS tn, t.pgId AS pgId`,
+      { cid: connectionId, tenantId },
     );
     const map = new Map<string, number>();
     for (const r of result.records) map.set(String(r.get('tn')), toNum(r.get('pgId')));
@@ -2020,13 +2108,13 @@ export async function getTablePgIdMap(connectionId: number): Promise<Map<string,
 }
 
 // Returns { "tableName.columnName" → pgId } map — needed by SchemaProfiler and re-suggest route
-export async function getColumnPgIdMap(connectionId: number): Promise<Map<string, number>> {
+export async function getColumnPgIdMap(connectionId: number, tenantId: number): Promise<Map<string, number>> {
   const session = getSession();
   try {
     const result = await session.run(
-      `MATCH (t:SourceTable {connectionId: $cid})-[:HAS_COLUMN]->(c:SourceColumn)
+      `MATCH (t:SourceTable {connectionId: $cid, tenantId: $tenantId})-[:HAS_COLUMN]->(c:SourceColumn)
        RETURN t.tableName AS tn, c.columnName AS cn, c.pgId AS pgId`,
-      { cid: connectionId },
+      { cid: connectionId, tenantId },
     );
     const map = new Map<string, number>();
     for (const r of result.records) {
@@ -2059,23 +2147,24 @@ export interface FkCandidateEdge {
 export async function saveFkCandidates(
   connectionId: number,
   candidates: FkCandidateEdge[],
+  tenantId: number,
 ): Promise<void> {
   if (!candidates.length) return;
   const session = getSession();
   try {
     // Clear old candidates for this connection
     await session.run(
-      `MATCH (t:SourceTable {connectionId: $cid})-[:HAS_COLUMN]->(fc:SourceColumn)
+      `MATCH (t:SourceTable {connectionId: $cid, tenantId: $tenantId})-[:HAS_COLUMN]->(fc:SourceColumn)
        -[r:FK_CANDIDATE]->(:SourceColumn)
        DELETE r`,
-      { cid: connectionId },
+      { cid: connectionId, tenantId },
     );
 
     // Insert new candidates
     for (const c of candidates) {
       await session.run(
-        `MATCH (ft:SourceTable {connectionId: $cid, tableName: $fromTable})-[:HAS_COLUMN]->(fc:SourceColumn {columnName: $fromCol})
-         MATCH (tt:SourceTable {connectionId: $cid, tableName: $toTable})-[:HAS_COLUMN]->(tc:SourceColumn {columnName: $toCol})
+        `MATCH (ft:SourceTable {connectionId: $cid, tenantId: $tenantId, tableName: $fromTable})-[:HAS_COLUMN]->(fc:SourceColumn {columnName: $fromCol})
+         MATCH (tt:SourceTable {connectionId: $cid, tenantId: $tenantId, tableName: $toTable})-[:HAS_COLUMN]->(tc:SourceColumn {columnName: $toCol})
          CREATE (fc)-[:FK_CANDIDATE {
            source:       $source,
            confidence:   $confidence,
@@ -2083,6 +2172,7 @@ export async function saveFkCandidates(
          }]->(tc)`,
         {
           cid:          connectionId,
+          tenantId,
           fromTable:    c.fromTable,
           fromCol:      c.fromColumn,
           toTable:      c.toTable,
@@ -2103,16 +2193,17 @@ export async function saveFkCandidates(
  */
 export async function getFkCandidates(
   connectionId: number,
+  tenantId: number,
 ): Promise<FkCandidateEdge[]> {
   const session = getSession();
   try {
     const result = await session.run(
-      `MATCH (ft:SourceTable {connectionId: $cid})-[:HAS_COLUMN]->(fc:SourceColumn)
+      `MATCH (ft:SourceTable {connectionId: $cid, tenantId: $tenantId})-[:HAS_COLUMN]->(fc:SourceColumn)
        -[r:FK_CANDIDATE]->(tc:SourceColumn)<-[:HAS_COLUMN]-(tt:SourceTable)
        RETURN ft.tableName AS fromTable, fc.columnName AS fromCol,
               tt.tableName AS toTable,   tc.columnName AS toCol,
               r.source AS source, r.confidence AS confidence, r.overlapRatio AS overlapRatio`,
-      { cid: connectionId },
+      { cid: connectionId, tenantId },
     );
     return result.records.map((r) => ({
       fromTable:    String(r.get('fromTable')),
@@ -2129,13 +2220,13 @@ export async function getFkCandidates(
 }
 
 // Returns tables by their pgIds — used by cross-views for integer FK compat
-export async function getTablesByPgIds(pgIds: number[]): Promise<Record<string, unknown>[]> {
+export async function getTablesByPgIds(pgIds: number[], tenantId: number): Promise<Record<string, unknown>[]> {
   if (!pgIds.length) return [];
   const session = getSession();
   try {
     const result = await session.run(
-      `MATCH (t:SourceTable) WHERE t.pgId IN $ids RETURN t`,
-      { ids: pgIds },
+      `MATCH (t:SourceTable {tenantId: $tenantId}) WHERE t.pgId IN $ids RETURN t`,
+      { ids: pgIds, tenantId },
     );
     return result.records.map((r) => mapTable(r.get('t').properties as Record<string, unknown>));
   } finally {
@@ -2202,13 +2293,14 @@ function mapProductColumn(p: Record<string, unknown>): Record<string, unknown> {
 // All product tables for a specific data product
 export async function getProductTablesByProduct(
   dataProductId: number,
+  tenantId: number,
 ): Promise<Record<string, unknown>[]> {
   const session = getSession();
   try {
     const result = await session.run(
-      `MATCH (t:ProductTable {dataProductId: $dpid})
+      `MATCH (t:ProductTable {dataProductId: $dpid, tenantId: $tenantId})
        RETURN t ORDER BY t.dagOrder, t.tableName`,
-      { dpid: dataProductId },
+      { dpid: dataProductId, tenantId },
     );
     return result.records.map((r) => mapProductTable(r.get('t').properties as Record<string, unknown>));
   } finally {
@@ -2216,13 +2308,14 @@ export async function getProductTablesByProduct(
   }
 }
 
-// All product tables across all products (for the semantic tree)
-export async function getAllProductTables(): Promise<Record<string, unknown>[]> {
+// All product tables across all of ONE TENANT's products (for the semantic tree)
+export async function getAllProductTables(tenantId: number): Promise<Record<string, unknown>[]> {
   const session = getSession();
   try {
     const result = await session.run(
-      `MATCH (t:ProductTable)
+      `MATCH (t:ProductTable {tenantId: $tenantId})
        RETURN t ORDER BY t.dataProductId, t.dagOrder, t.tableName`,
+      { tenantId },
     );
     return result.records.map((r) => mapProductTable(r.get('t').properties as Record<string, unknown>));
   } finally {
@@ -2231,12 +2324,12 @@ export async function getAllProductTables(): Promise<Record<string, unknown>[]> 
 }
 
 // Single product table by pgId (for version tracking)
-export async function getProductTableByPgId(pgId: number): Promise<Record<string, unknown> | null> {
+export async function getProductTableByPgId(pgId: number, tenantId: number): Promise<Record<string, unknown> | null> {
   const session = getSession();
   try {
     const result = await session.run(
-      `MATCH (t:ProductTable {pgId: $pgId}) RETURN t`,
-      { pgId },
+      `MATCH (t:ProductTable {pgId: $pgId, tenantId: $tenantId}) RETURN t`,
+      { pgId, tenantId },
     );
     if (result.records.length === 0) return null;
     return mapProductTable(result.records[0].get('t').properties as Record<string, unknown>);
@@ -2246,12 +2339,12 @@ export async function getProductTableByPgId(pgId: number): Promise<Record<string
 }
 
 // Single product column by pgId (for version tracking)
-export async function getProductColumnByPgId(pgId: number): Promise<Record<string, unknown> | null> {
+export async function getProductColumnByPgId(pgId: number, tenantId: number): Promise<Record<string, unknown> | null> {
   const session = getSession();
   try {
     const result = await session.run(
-      `MATCH (c:ProductColumn {pgId: $pgId}) RETURN c`,
-      { pgId },
+      `MATCH (c:ProductColumn {pgId: $pgId, tenantId: $tenantId}) RETURN c`,
+      { pgId, tenantId },
     );
     if (result.records.length === 0) return null;
     return mapProductColumn(result.records[0].get('c').properties as Record<string, unknown>);
@@ -2263,14 +2356,15 @@ export async function getProductColumnByPgId(pgId: number): Promise<Record<strin
 // Columns for a product table
 export async function getProductColumnsByTablePgId(
   tablePgId: number,
+  tenantId: number,
 ): Promise<Record<string, unknown>[]> {
   const session = getSession();
   try {
     const result = await session.run(
-      `MATCH (t:ProductTable {pgId: $tpid})-[:HAS_COLUMN]->(c:ProductColumn)
+      `MATCH (t:ProductTable {pgId: $tpid, tenantId: $tenantId})-[:HAS_COLUMN]->(c:ProductColumn)
        RETURN c, t.tableName AS tableName
        ORDER BY c.sortOrder, c.columnName`,
-      { tpid: tablePgId },
+      { tpid: tablePgId, tenantId },
     );
     return result.records.map((r) => {
       const props = r.get('c').properties as Record<string, unknown>;
@@ -2289,11 +2383,12 @@ export async function updateProductTable(
     display_name?: unknown; description?: unknown; owner_name?: unknown;
     domains?: unknown;
   },
+  tenantId: number,
 ): Promise<void> {
   const session = getSession();
   try {
     await session.run(
-      `MATCH (t:ProductTable {pgId: $pgId})
+      `MATCH (t:ProductTable {pgId: $pgId, tenantId: $tenantId})
        SET t.displayName  = $displayName,
            t.description  = $description,
            t.ownerName    = $ownerName,
@@ -2302,6 +2397,7 @@ export async function updateProductTable(
            t.updatedAt    = $now`,
       {
         pgId,
+        tenantId,
         displayName: patch.display_name ?? null,
         description: patch.description  ?? null,
         ownerName:   patch.owner_name   ?? null,
@@ -2321,11 +2417,12 @@ export async function updateProductColumn(
     display_name?: unknown; description?: unknown; owner_name?: unknown;
     column_role?: unknown;
   },
+  tenantId: number,
 ): Promise<void> {
   const session = getSession();
   try {
     await session.run(
-      `MATCH (c:ProductColumn {pgId: $pgId})
+      `MATCH (c:ProductColumn {pgId: $pgId, tenantId: $tenantId})
        SET c.displayName = $displayName,
            c.description = $description,
            c.ownerName   = $ownerName,
@@ -2334,6 +2431,7 @@ export async function updateProductColumn(
            c.updatedAt   = $now`,
       {
         pgId,
+        tenantId,
         displayName: patch.display_name ?? null,
         description: patch.description  ?? null,
         ownerName:   patch.owner_name   ?? null,
@@ -2380,13 +2478,12 @@ export async function upsertProductGraph(
     aiDraft: boolean;
   }>,
   /**
-   * Stamped onto every node this writes. Neo4j has no tenant scoping of its
-   * own — nodes are matched by a globally-unique, enumerable `pgId` — so the
-   * property has to be on the node before any read predicate can use it.
-   * Optional only so the two legacy call sites can be migrated one at a time;
-   * a null here leaves a node that a future tenant-scoped read will not see.
+   * Stamped onto every node this writes, and the predicate on every internal
+   * MATCH anchor. Required: a null-stamped node is invisible to every
+   * tenant-scoped read and is exactly the unattributable backlog the
+   * 2026-09-01 backfill pruned.
    */
-  tenantId?: number | null,
+  tenantId: number,
 ): Promise<void> {
   const session = getSession();
   const now = new Date().toISOString();
@@ -2425,7 +2522,7 @@ export async function upsertProductGraph(
            tbl.updatedAt             = $now`,
         {
           pgId:        t.pgId,
-          tenantId:    tenantId ?? null,
+          tenantId,
           dpid:        dataProductId,
           ssid:        t.starSchemaId,
           tn:          t.tableName,
@@ -2445,7 +2542,7 @@ export async function upsertProductGraph(
     // Upsert columns — MERGE on parent table + columnName
     for (const c of columns) {
       await session.run(
-        `MATCH (tbl:ProductTable {pgId: $tpid})
+        `MATCH (tbl:ProductTable {pgId: $tpid, tenantId: $tenantId})
          MERGE (col:ProductColumn {tablePgId: $tpid, columnName: $cn})
          ON CREATE SET
            col.pgId                      = $pgId,
@@ -2483,7 +2580,7 @@ export async function upsertProductGraph(
          MERGE (tbl)-[:HAS_COLUMN]->(col)`,
         {
           pgId:          c.pgId,
-          tenantId:      tenantId ?? null,
+          tenantId,
           tpid:          c.tablePgId,
           tn:            c.tableName,
           cn:            c.columnName,
@@ -2508,23 +2605,23 @@ export async function upsertProductGraph(
     const colKeys = columns.map((c) => `${c.tableName}::${c.columnName}`);
     if (tableNames.length) {
       await session.run(
-        `MATCH (t:ProductTable {dataProductId: $dpid})-[:HAS_COLUMN]->(c:ProductColumn)
+        `MATCH (t:ProductTable {dataProductId: $dpid, tenantId: $tenantId})-[:HAS_COLUMN]->(c:ProductColumn)
          WHERE t.tableName IN $tableNames
          WITH c, c.tableName + '::' + c.columnName AS key
          WHERE NOT key IN $colKeys
          DETACH DELETE c`,
-        { dpid: dataProductId, tableNames, colKeys },
+        { dpid: dataProductId, tenantId, tableNames, colKeys },
       );
     }
 
     // Remove orphaned tables
     const currentTableNames = tables.map((t) => t.tableName);
     await session.run(
-      `MATCH (t:ProductTable {dataProductId: $dpid})
+      `MATCH (t:ProductTable {dataProductId: $dpid, tenantId: $tenantId})
        WHERE NOT t.tableName IN $names
        OPTIONAL MATCH (t)-[:HAS_COLUMN]->(c:ProductColumn)
        DETACH DELETE c, t`,
-      { dpid: dataProductId, names: currentTableNames },
+      { dpid: dataProductId, tenantId, names: currentTableNames },
     );
   } finally {
     await session.close();
@@ -2535,6 +2632,11 @@ export async function upsertProductGraph(
 export async function deleteProductGraph(dataProductId: number): Promise<void> {
   const session = getSession();
   try {
+    // tenant-exempt: scoped by the owner key (`dataProductId`, a Postgres PK
+    // the caller resolved from an RLS-scoped `data_products` row). It can run
+    // AFTER the Postgres row is gone, when no tenant lookup is possible any
+    // more — and a tenantId predicate would strand any mis-stamped node of a
+    // deleted product forever, which is how the pruned backlog was born.
     await session.run(
       `MATCH (t:ProductTable {dataProductId: $dpid})
        OPTIONAL MATCH (t)-[:HAS_COLUMN]->(c:ProductColumn)
@@ -2546,8 +2648,11 @@ export async function deleteProductGraph(dataProductId: number): Promise<void> {
   }
 }
 
-// Product tree for the semantic page sidebar
-export async function getProductTree(): Promise<{
+// Product tree for the semantic page sidebar. The tenant argument is REQUIRED
+// on purpose: the parameterless version of this function returned every
+// tenant's products and star schemas to any authenticated caller — the P0-2
+// finding's worst read (routes/catalog.ts called it scope-free).
+export async function getProductTree(tenantId: number): Promise<{
   products: Array<{
     dataProductId: number;
     tables: Array<Record<string, unknown>>;
@@ -2556,10 +2661,11 @@ export async function getProductTree(): Promise<{
   const session = getSession();
   try {
     const result = await session.run(
-      `MATCH (t:ProductTable)
+      `MATCH (t:ProductTable {tenantId: $tenantId})
        OPTIONAL MATCH (t)-[:HAS_COLUMN]->(c:ProductColumn)
        RETURN t, count(c) AS columnCount
        ORDER BY t.dataProductId, t.dagOrder, t.tableName`,
+      { tenantId },
     );
 
     const productMap = new Map<number, Array<Record<string, unknown>>>();

@@ -811,7 +811,7 @@ router.post('/:id/enrich-descriptions', requireAuth, requireRole('admin'), valid
         });
         // Mirror the display text to Neo4j (dual-write contract) — targeted
         // update; updateColumn's full-SET shape would null the other fields.
-        await graph.updateColumnDescriptionOnly(Number(c.id), text, true).catch((e) =>
+        await graph.updateColumnDescriptionOnly(Number(c.id), text, true, req.user!.tenantId).catch((e) =>
           log.warn({ err: e, columnId: c.id }, 'Neo4j mirror of enriched description failed'),
         );
         enriched++;

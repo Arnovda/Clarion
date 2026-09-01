@@ -3,17 +3,19 @@
  *
  * WHY THIS EXISTS
  * ---------------
- * Neo4j has no tenant scoping. Every node and edge in `db/semanticGraph.ts` is
- * matched by its globally-unique `pgId` (or by `connectionId`) with no tenant
- * predicate anywhere — e.g. `MATCH (t:SourceTable {pgId: $pgId})`. Postgres RLS
- * therefore protects the mirror rows but NOT the graph, so any route that takes
- * an id from the request and hands it to a `graph.*` call reaches whichever
- * tenant owns that id. Ids come from a shared sequence, so they are trivially
- * enumerable.
+ * Neo4j has no row-level security of its own. Every node and edge in
+ * `db/semanticGraph.ts` is matched by its globally-unique `pgId` (or by
+ * `connectionId`), and ids come from a shared sequence, so they are trivially
+ * enumerable. Since 2026-09-01 every such MATCH also carries a
+ * `tenantId: $tenantId` predicate (held by lint-graph-tenant-predicate), so a
+ * foreign id matches nothing at the graph itself — but this gate STAYS in
+ * front of it, for two reasons: it is what turns "not yours" into a 404
+ * instead of a silent empty result, and it authorises against the Postgres
+ * mirror, which is the ownership oracle a mis-stamped graph node cannot fool.
  *
- * Postgres is the ownership oracle: every semantic entity has a mirror row
- * carrying `tenant_id` (migration 20260403000020). These helpers check that row
- * BEFORE the graph is touched.
+ * Postgres is that oracle: every semantic entity has a mirror row carrying
+ * `tenant_id` (migration 20260403000020). These helpers check that row BEFORE
+ * the graph is touched.
  *
  * WHY tenant_id IS MATCHED EXPLICITLY, not left to RLS
  * ---------------------------------------------------

@@ -691,7 +691,7 @@ router.post('/bus-matrix-stream', requireAuth, requireRole('admin'), async (req:
     let relationshipsText = '';
     try {
       const { getRelationshipsForContext } = await import('../../db/semanticGraph');
-      const rels = await getRelationshipsForContext(connectionId);
+      const rels = await getRelationshipsForContext(connectionId, req.user!.tenantId);
       if (rels.length > 0) {
         const lines = rels.map((r) => {
           const from = `${r.from_table as string}.${r.from_column as string}`;

@@ -200,7 +200,9 @@ async function buildAiSourceContext(
   let relCount = 0;
   try {
     const { getRelationshipsForContext } = await import('../db/semanticGraph');
-    const rels = await getRelationshipsForContext(connectionId);
+    // No tenant means no way to scope the graph read — degrade to no
+    // relationship context rather than querying unscoped.
+    const rels = tenantId ? await getRelationshipsForContext(connectionId, Number(tenantId)) : [];
     if (rels.length > 0) {
       const lines = rels.map((r) => {
         const from = `${r.from_table as string}.${r.from_column as string}`;

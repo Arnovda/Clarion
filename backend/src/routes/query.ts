@@ -559,7 +559,7 @@ router.post('/', requireAuth, validate(askQuestionSchema), async (req: Request, 
     // 1. Build semantic context — use semantic retrieval when possible.
     //    First extract entities from the question, then fetch only the relevant
     //    2-hop subgraph from Neo4j. Falls back to full context if no entities match.
-    const catalog = await getTableAndColumnNames(connectionId, domains);
+    const catalog = await getTableAndColumnNames(connectionId, req.user!.tenantId, domains);
     const entityMatches = extractEntitiesFromQuestion(question, catalog);
 
     let contextSource: 'subgraph' | 'kpi_fallback' | 'full';
@@ -567,7 +567,7 @@ router.post('/', requireAuth, validate(askQuestionSchema), async (req: Request, 
 
     if (seedTables.length === 0) {
       // Fallback: extract table names referenced in KPI formulas
-      const allKpis = (await buildSemanticContextForQuery(connectionId, domains)).kpis as { formula_sql?: string }[];
+      const allKpis = (await buildSemanticContextForQuery(connectionId, req.user!.tenantId, domains)).kpis as { formula_sql?: string }[];
       const kpiTableRefs = new Set<string>();
       for (const k of allKpis) {
         if (k.formula_sql) {
@@ -585,8 +585,8 @@ router.post('/', requireAuth, validate(askQuestionSchema), async (req: Request, 
     }
 
     const { tables, columns, kpis, relationships } = contextSource === 'full'
-      ? await buildSemanticContextForQuery(connectionId, domains)
-      : await buildRelevantSubgraph(connectionId, seedTables, domains);
+      ? await buildSemanticContextForQuery(connectionId, req.user!.tenantId, domains)
+      : await buildRelevantSubgraph(connectionId, seedTables, req.user!.tenantId, domains);
 
     // Format semantic context — table + column definitions
     const semanticContext = (tables as { id: number; table_name: string; description: string; grain?: string }[]).map((t) => {
@@ -620,7 +620,7 @@ router.post('/', requireAuth, validate(askQuestionSchema), async (req: Request, 
     //   Direct relationships are already in relationshipContext; this adds explicit
     //   chains for 3+ table queries so Claude doesn't have to infer them.
     const tableNames = (tables as { table_name: string }[]).map((t) => t.table_name);
-    const joinPaths = await getJoinPaths(connectionId, tableNames);
+    const joinPaths = await getJoinPaths(connectionId, tableNames, req.user!.tenantId);
     let relationshipContextWithPaths = relationshipContext;
     if (joinPaths.length > 0) {
       const pathLines = joinPaths.map((p) => {
@@ -1050,7 +1050,7 @@ router.post('/', requireAuth, validate(askQuestionSchema), async (req: Request, 
     const stringLiterals = [...new Set(literalMatches.map((m) => m[1]))];
 
     // Dimension columns (text/varchar) in the tables Claude used — fetched from Neo4j
-    const allDimCols = await getDimensionColumns(connectionId);
+    const allDimCols = await getDimensionColumns(connectionId, req.user!.tenantId);
     const textTypes = new Set(['TEXT', 'VARCHAR', 'text', 'varchar', 'NVARCHAR', 'nvarchar', 'CHAR', 'char']);
     const dimColumns = allDimCols.filter((c) =>
       nlResult.tables_used.includes(c.table_name) && textTypes.has(c.data_type),
@@ -1536,12 +1536,12 @@ router.post('/think', requireAuth, validate(thinkQuerySchema), async (req: Reque
     // ── SOURCE LAYER STREAMING PATH (fallback) ──────────────────────────
 
     // ── 1. Semantic context — semantic retrieval with fallback ──────────────
-    const thinkCatalog = await getTableAndColumnNames(connectionId, domains);
+    const thinkCatalog = await getTableAndColumnNames(connectionId, req.user!.tenantId, domains);
     const thinkEntityMatches = extractEntitiesFromQuestion(question, thinkCatalog);
 
     let thinkSeeds = thinkEntityMatches;
     if (thinkSeeds.length === 0) {
-      const allKpis = (await buildSemanticContextForQuery(connectionId, domains)).kpis as { formula_sql?: string }[];
+      const allKpis = (await buildSemanticContextForQuery(connectionId, req.user!.tenantId, domains)).kpis as { formula_sql?: string }[];
       const kpiRefs = new Set<string>();
       for (const k of allKpis) {
         if (k.formula_sql) {
@@ -1554,8 +1554,8 @@ router.post('/think', requireAuth, validate(thinkQuerySchema), async (req: Reque
     }
 
     const { tables, columns, kpis, relationships } = thinkSeeds.length > 0
-      ? await buildRelevantSubgraph(connectionId, thinkSeeds, domains)
-      : await buildSemanticContextForQuery(connectionId, domains);
+      ? await buildRelevantSubgraph(connectionId, thinkSeeds, req.user!.tenantId, domains)
+      : await buildSemanticContextForQuery(connectionId, req.user!.tenantId, domains);
 
     const semanticContext = (tables as { id: number; table_name: string; description: string; grain?: string }[]).map((t) => {
       const cols = (columns as { table_id: number; column_name: string; data_type: string; description: string; is_dimension: boolean; is_measure: boolean }[])
@@ -1584,7 +1584,7 @@ router.post('/think', requireAuth, validate(thinkQuerySchema), async (req: Reque
 
     // ── 2a. Multi-hop join paths ─────────────────────────────────────────────
     const tableNames = (tables as { table_name: string }[]).map((t) => t.table_name);
-    const thinkJoinPaths = await getJoinPaths(connectionId, tableNames);
+    const thinkJoinPaths = await getJoinPaths(connectionId, tableNames, req.user!.tenantId);
     let thinkRelCtx = relationshipContext;
     if (thinkJoinPaths.length > 0) {
       const pathLines = thinkJoinPaths.map((p) => {
@@ -1752,7 +1752,7 @@ router.post('/think', requireAuth, validate(thinkQuerySchema), async (req: Reque
 
     const literalMatches = [...nlResult.sql.matchAll(/'([^']+)'/g)];
     const stringLiterals = [...new Set(literalMatches.map((m) => m[1]))];
-    const allDimCols = await getDimensionColumns(connectionId);
+    const allDimCols = await getDimensionColumns(connectionId, req.user!.tenantId);
     const textTypes = new Set(['TEXT', 'VARCHAR', 'text', 'varchar', 'NVARCHAR', 'nvarchar', 'CHAR', 'char']);
     const dimColumns = allDimCols.filter((c) =>
       nlResult.tables_used.includes(c.table_name) && textTypes.has(c.data_type),
@@ -2409,13 +2409,13 @@ router.post('/forecast', requireAuth, validate(forecastQuerySchema), async (req:
       dialect = 'duckdb';
     } else {
       // Source layer context
-      const catalog = await getTableAndColumnNames(connectionId, domains);
+      const catalog = await getTableAndColumnNames(connectionId, tenantId, domains);
       const entityMatches = extractEntitiesFromQuestion(question, catalog);
       const seeds = entityMatches.length > 0 ? entityMatches : [];
 
       const ctx = seeds.length > 0
-        ? await buildRelevantSubgraph(connectionId, seeds, domains)
-        : await buildSemanticContextForQuery(connectionId, domains);
+        ? await buildRelevantSubgraph(connectionId, seeds, tenantId, domains)
+        : await buildSemanticContextForQuery(connectionId, tenantId, domains);
 
       semanticContext = (ctx.tables as { id: number; table_name: string; description: string; grain?: string }[]).map((t) => {
         const cols = (ctx.columns as { table_id: number; column_name: string; data_type: string; description: string; is_dimension: boolean; is_measure: boolean }[])

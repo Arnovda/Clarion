@@ -103,14 +103,15 @@ export async function syncProductToNeo4j(productId: number): Promise<void> {
 
     // The product row carries the tenant, so the graph nodes can be stamped
     // without threading a parameter through every caller. Neo4j has no tenant
-    // scoping of its own; the property must be on the node before any read
-    // predicate can rely on it.
-    await graph.upsertProductGraph(
-      productId,
-      mappedTables,
-      mappedColumns,
-      (product.tenant_id as number | null) ?? null,
-    );
+    // scoping of its own; the property is both the stamp on every node and the
+    // predicate on every tenant-scoped read — a node written without it would
+    // be invisible and unattributable, so a tenant-less row refuses to sync.
+    const tenantId = Number(product.tenant_id);
+    if (!Number.isInteger(tenantId) || tenantId <= 0) {
+      log.warn({ productId }, 'Product row carries no tenant — skipping Neo4j sync rather than writing unattributable nodes');
+      return;
+    }
+    await graph.upsertProductGraph(productId, mappedTables, mappedColumns, tenantId);
   } catch (err) {
     // Non-fatal: log and continue — Neo4j sync failure shouldn't block product operations
     log.error({ err }, `Failed to sync product ${productId} to Neo4j`);

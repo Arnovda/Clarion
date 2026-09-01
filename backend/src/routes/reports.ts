@@ -24,7 +24,7 @@ router.post('/generate', requireAuth, validate(generateReportSchema), async (req
     };
 
     // 1. Fetch confirmed KPI definitions from Neo4j
-    const kpis = await getKpisByIds(kpiIds, connectionId);
+    const kpis = await getKpisByIds(kpiIds, connectionId, req.user!.tenantId);
 
     if (!kpis.length) {
       res.status(400).json({ ok: false, error: 'No confirmed KPIs found for the provided IDs' });

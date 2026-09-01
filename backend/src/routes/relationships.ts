@@ -514,7 +514,7 @@ router.post('/:id/flag', requireAuth, requireRole('admin', 'analyst'),
       // Best-effort: the flag is recorded either way, and a graph that is down
       // must not make raising one fail.
       try {
-        await graph.setRelationshipFlagged(id, flagged);
+        await graph.setRelationshipFlagged(id, flagged, req.user!.tenantId);
       } catch (err) {
         log.warn({ err, id }, 'could not mirror relationship flag to the graph');
       }

@@ -228,7 +228,7 @@ router.get('/tables', requireAuth, async (req: Request, res: Response, next: Nex
   try {
     const connectionId = Number(req.query.connectionId);
     if (!await denyUnlessOwned(req, res, 'connections', connectionId)) return;
-    const rows = await graph.getTablesByConnection(connectionId);
+    const rows = await graph.getTablesByConnection(connectionId, req.user!.tenantId);
     res.json({ ok: true, data: rows });
   } catch (err) { next(err); }
 });
@@ -240,9 +240,9 @@ router.patch('/tables/:id', requireAuth, requireRole('admin', 'analyst'), valida
     const id = Number(req.params.id);
     const body = req.body as Record<string, unknown>;
 
-    // graph.updateTable matches on pgId with no tenant predicate, so authorise
-    // BEFORE touching Neo4j. The Postgres mirror below is tenant-scoped and
-    // would silently update 0 rows, leaving the two stores divergent.
+    // Authorise BEFORE touching Neo4j. The graph MATCH is tenant-scoped now,
+    // but a foreign id there is a silent no-op — this gate is what makes it a
+    // 404, and it keeps the Postgres mirror below from diverging.
     if (!await denyUnlessOwned(req, res, 'source_tables', id)) return;
 
     // Capture old state for diff
@@ -251,7 +251,7 @@ router.patch('/tables/:id', requireAuth, requireRole('admin', 'analyst'), valida
       .orderBy('version', 'desc').first();
     const oldSnapshot = old?.snapshot ? (typeof old.snapshot === 'string' ? JSON.parse(old.snapshot) : old.snapshot) : {};
 
-    await graph.updateTable(id, body);
+    await graph.updateTable(id, body, req.user!.tenantId);
     // Mirror to Postgres source_tables. Neo4j is the source of truth for
     // reads, but several aggregate surfaces (Home health score, /review
     // queue counts) still query Postgres directly. Without this dual-write
@@ -297,7 +297,7 @@ router.get('/domains', requireAuth, async (req: Request, res: Response, next: Ne
     if (!await denyUnlessOwned(req, res, 'connections', connectionId)) return;
     const [conn, tableDomains] = await Promise.all([
       db('connections').where({ id: connectionId }).first(),
-      graph.getTableDomains(connectionId),
+      graph.getTableDomains(connectionId, req.user!.tenantId),
     ]);
     const all = new Set<string>(tableDomains);
     const connDomains: string[] = conn?.domains
@@ -317,7 +317,7 @@ router.get('/columns', requireAuth, async (req: Request, res: Response, next: Ne
   try {
     const tableId = Number(req.query.tableId);
     if (!await denyUnlessOwned(req, res, 'source_tables', tableId)) return;
-    const rows = await graph.getColumnsByTablePgId(tableId);
+    const rows = await graph.getColumnsByTablePgId(tableId, req.user!.tenantId);
     res.json({ ok: true, data: rows });
   } catch (err) { next(err); }
 });
@@ -337,7 +337,7 @@ router.patch('/columns/:id', requireAuth, requireRole('admin', 'analyst'), valid
       .orderBy('version', 'desc').first();
     const oldSnapshot = old?.snapshot ? (typeof old.snapshot === 'string' ? JSON.parse(old.snapshot) : old.snapshot) : {};
 
-    await graph.updateColumn(id, body);
+    await graph.updateColumn(id, body, req.user!.tenantId);
     // Mirror to Postgres source_columns. See PATCH /tables/:id above for
     // the full rationale — Home health score + /review queue COUNT
     // queries hit Postgres directly and would otherwise miss confirms.
@@ -372,7 +372,7 @@ router.patch('/columns/:id', requireAuth, requireRole('admin', 'analyst'), valid
       colPatch.semantic_source = 'curated';
       colPatch.approval_status = 'approved';
       colPatch.ai_draft = false;
-      await graph.updateColumnDescriptionOnly(id, String(current.vendor_description), false);
+      await graph.updateColumnDescriptionOnly(id, String(current.vendor_description), false, req.user!.tenantId);
     }
 
     await db('source_columns').where({ id }).update(colPatch);
@@ -482,11 +482,12 @@ router.get('/paths', requireAuth, async (req: Request, res: Response, next: Next
       res.status(400).json({ ok: false, error: 'connectionId, fromTableId and toTableId required' });
       return;
     }
-    // All three ids are attacker-controlled and all three reach unscoped Cypher.
+    // All three ids are attacker-controlled; the gate turns a foreign id into
+    // a 404 where the tenant-scoped Cypher would just return an empty path set.
     if (!await denyUnlessOwned(req, res, 'connections', connectionId)) return;
     if (!await denyUnlessOwned(req, res, 'source_tables', fromTableId)) return;
     if (!await denyUnlessOwned(req, res, 'source_tables', toTableId)) return;
-    const result = await graph.findAllShortestPaths(connectionId, fromTableId, toTableId);
+    const result = await graph.findAllShortestPaths(connectionId, fromTableId, toTableId, req.user!.tenantId);
     res.json({ ok: true, data: result });
   } catch (err) { next(err); }
 });
@@ -512,7 +513,7 @@ router.get('/relationships', requireAuth, async (req: Request, res: Response, ne
   try {
     const connectionId = Number(req.query.connectionId);
     if (!await denyUnlessOwned(req, res, 'connections', connectionId)) return;
-    const rows = await graph.getRelationshipsForConnection(connectionId);
+    const rows = await graph.getRelationshipsForConnection(connectionId, req.user!.tenantId);
     res.json({ ok: true, data: rows });
   } catch (err) { next(err); }
 });
@@ -544,8 +545,8 @@ router.post('/relationships', requireAuth, requireRole('admin', 'analyst'), vali
 
     // Look up column names if column IDs were provided
     const [fromCol, toCol] = await Promise.all([
-      from_column_id ? graph.getColumnByPgId(Number(from_column_id)) : Promise.resolve(null),
-      to_column_id   ? graph.getColumnByPgId(Number(to_column_id))   : Promise.resolve(null),
+      from_column_id ? graph.getColumnByPgId(Number(from_column_id), req.user!.tenantId) : Promise.resolve(null),
+      to_column_id   ? graph.getColumnByPgId(Number(to_column_id), req.user!.tenantId)   : Promise.resolve(null),
     ]);
 
     const pgId = await graph.nextPgId();
@@ -614,8 +615,8 @@ router.patch('/relationships/:id', requireAuth, requireRole('admin', 'analyst'),
         && !await denyUnlessOwned(req, res, 'source_columns', to_column_id)) return;
 
     const [fromCol, toCol] = await Promise.all([
-      from_column_id !== undefined ? graph.getColumnByPgId(Number(from_column_id)) : Promise.resolve(undefined),
-      to_column_id   !== undefined ? graph.getColumnByPgId(Number(to_column_id))   : Promise.resolve(undefined),
+      from_column_id !== undefined ? graph.getColumnByPgId(Number(from_column_id), req.user!.tenantId) : Promise.resolve(undefined),
+      to_column_id   !== undefined ? graph.getColumnByPgId(Number(to_column_id), req.user!.tenantId)   : Promise.resolve(undefined),
     ]);
 
     await graph.updateRelationship(Number(req.params.id), {
@@ -625,7 +626,7 @@ router.patch('/relationships/:id', requireAuth, requireRole('admin', 'analyst'),
       fromColName:    fromCol !== undefined ? (fromCol?.column_name ?? null) : undefined,
       toColumnPgId:   to_column_id   !== undefined ? (to_column_id   ? Number(to_column_id)   : null) : undefined,
       toColName:      toCol   !== undefined ? (toCol?.column_name   ?? null) : undefined,
-    });
+    }, req.user!.tenantId);
     // Mirror to Postgres table_relationships so Home's "relationships
     // approved / total" count reflects the confirmation. Same dual-write
     // pattern as PATCH /tables/:id and PATCH /columns/:id above.
@@ -664,7 +665,7 @@ router.delete('/relationships/:id', requireAuth, requireRole('admin', 'analyst')
     // Resolve the cache scope BEFORE the row is deleted — afterwards there is
     // nothing left to join through and we would fall back to a global wipe.
     const relConnectionId = await connectionIdForEntity(db, 'table_relationships', id);
-    await graph.deleteRelationship(id);
+    await graph.deleteRelationship(id, req.user!.tenantId);
     // Mirror delete to Postgres so Home's relationship counts decrement.
     // No-op if the row doesn't exist (e.g. legacy Neo4j-only rels created
     // before the dual-write was added).
@@ -696,11 +697,11 @@ router.post('/relationships/re-suggest', requireAuth, requireRole('admin'), asyn
 
     // Gather all enriched semantic context from Neo4j (including quality stats + FK candidates)
     const [tables, columns, existingRels, kpis, fkCandidates, matchAssertions] = await Promise.all([
-      graph.getTablesByConnection(connectionId),
-      graph.getColumnsByConnection(connectionId),
-      graph.getRelationshipsForContext(connectionId),
-      graph.getKpisByConnection(connectionId),
-      graph.getFkCandidates(connectionId),
+      graph.getTablesByConnection(connectionId, req.user!.tenantId),
+      graph.getColumnsByConnection(connectionId, req.user!.tenantId),
+      graph.getRelationshipsForContext(connectionId, req.user!.tenantId),
+      graph.getKpisByConnection(connectionId, req.user!.tenantId),
+      graph.getFkCandidates(connectionId, req.user!.tenantId),
       // Cross-source identity links. Postgres-backed and NOT part of the Neo4j
       // relationship read above: `kind` lives only in Postgres, and a match
       // spans two connections while that read is scoped to one.
@@ -767,10 +768,10 @@ router.post('/relationships/re-suggest', requireAuth, requireRole('admin'), asyn
 
     emit({ phase: 'storing', message: `Saving ${result.relationships.length} relationships…` });
 
-    const tableIdMap  = await graph.getTablePgIdMap(connectionId);
-    const columnIdMap = await graph.getColumnPgIdMap(connectionId);
+    const tableIdMap  = await graph.getTablePgIdMap(connectionId, req.user!.tenantId);
+    const columnIdMap = await graph.getColumnPgIdMap(connectionId, req.user!.tenantId);
 
-    await graph.deleteAiDraftRelationships(connectionId);
+    await graph.deleteAiDraftRelationships(connectionId, req.user!.tenantId);
     // Mirror the wipe in Postgres — drop every AI-draft relationship rooted
     // at any table for this connection. Confirmed (ai_draft = false) rels
     // are preserved on both sides.
@@ -852,7 +853,7 @@ router.get('/kpis', requireAuth, async (req: Request, res: Response, next: NextF
   try {
     const connectionId = Number(req.query.connectionId);
     if (!await denyUnlessOwned(req, res, 'connections', connectionId)) return;
-    const rows = await graph.getKpisByConnection(connectionId);
+    const rows = await graph.getKpisByConnection(connectionId, req.user!.tenantId);
     res.json({ ok: true, data: rows });
   } catch (err) { next(err); }
 });
@@ -900,7 +901,7 @@ router.patch('/kpis/:id', requireAuth, requireRole('admin'), async (req: Request
       .orderBy('version', 'desc').first();
     const oldSnapshot = old?.snapshot ? (typeof old.snapshot === 'string' ? JSON.parse(old.snapshot) : old.snapshot) : {};
 
-    await graph.updateKpi(id, body);
+    await graph.updateKpi(id, body, req.user!.tenantId);
     await invalidateSemanticCache(await connectionIdForEntity(db, 'kpi_definitions', id) ?? undefined);
 
     const changes = computeChanges(oldSnapshot, body);
@@ -1038,7 +1039,7 @@ router.get('/preview', requireAuth, requireRole('admin'), async (req: Request, r
     }
 
     // Validate table name against known tables to prevent SQL injection
-    const knownTables = await graph.getTablesByConnection(Number(connectionId));
+    const knownTables = await graph.getTablesByConnection(Number(connectionId), req.user!.tenantId);
     const validTable = (knownTables as { table_name: string }[]).find(
       (t) => t.table_name === table,
     );
@@ -1133,7 +1134,7 @@ router.post('/revert', requireAuth, requireRole('admin'), async (req: Request, r
       if (snapshot.domains !== undefined) patch.domains = snapshot.domains;
       if (snapshot.grain !== undefined) patch.grain = snapshot.grain;
       if (snapshot.is_active !== undefined) patch.is_active = snapshot.is_active;
-      await graph.updateTable(entityId, patch);
+      await graph.updateTable(entityId, patch, req.user!.tenantId);
       // Mirror to Postgres
       const pgPatch: Record<string, unknown> = {};
       if (snapshot.display_name !== undefined) pgPatch.display_name = snapshot.display_name;
@@ -1152,7 +1153,7 @@ router.post('/revert', requireAuth, requireRole('admin'), async (req: Request, r
       if (snapshot.owner_name !== undefined) patch.owner_name = snapshot.owner_name;
       if (snapshot.is_dimension !== undefined) patch.is_dimension = snapshot.is_dimension;
       if (snapshot.is_measure !== undefined) patch.is_measure = snapshot.is_measure;
-      await graph.updateColumn(entityId, patch);
+      await graph.updateColumn(entityId, patch, req.user!.tenantId);
       // Mirror to Postgres
       const pgPatch: Record<string, unknown> = {};
       if (snapshot.display_name !== undefined) pgPatch.display_name = snapshot.display_name;
@@ -1169,7 +1170,7 @@ router.post('/revert', requireAuth, requireRole('admin'), async (req: Request, r
       if (snapshot.formula_plain_text !== undefined) patch.formula_plain_text = snapshot.formula_plain_text;
       if (snapshot.formula_sql !== undefined) patch.formula_sql = snapshot.formula_sql;
       if (snapshot.owner_name !== undefined) patch.owner_name = snapshot.owner_name;
-      await graph.updateKpi(entityId, patch);
+      await graph.updateKpi(entityId, patch, req.user!.tenantId);
       // Mirror to Postgres kpi_definitions if present (table is dual-
       // written today; some old tenants may not have it but the column
       // set is stable). Tolerate missing rows / table.
@@ -1345,7 +1346,7 @@ router.post('/approve', requireAuth, requireRole('admin'), async (req: Request, 
       updates.approved_at = null;
     }
 
-    await graph.updateApprovalStatus(entityType as 'table' | 'column' | 'kpi' | 'product_table' | 'product_column', entityId, updates);
+    await graph.updateApprovalStatus(entityType as 'table' | 'column' | 'kpi' | 'product_table' | 'product_column', entityId, updates, req.user!.tenantId);
 
     // Mirror approval status to Postgres for the entity types that have
     // approval columns. Home health counts + /review queue read these
@@ -1429,9 +1430,9 @@ router.post('/import', requireAuth, requireRole('admin'), async (req: Request, r
     for (const def of definitions) {
       if (def.column_name) {
         // Column-level update: find table then column
-        const table = await graph.getTableByConnectionAndName(connectionId, def.table_name);
+        const table = await graph.getTableByConnectionAndName(connectionId, def.table_name, req.user!.tenantId);
         if (!table) { skipped++; continue; }
-        const columns = await graph.getColumnsByTablePgId(table.id as number);
+        const columns = await graph.getColumnsByTablePgId(table.id as number, req.user!.tenantId);
         const col = (columns as { id: number; column_name: string }[]).find((c) => c.column_name === def.column_name);
         if (!col) { skipped++; continue; }
 
@@ -1442,7 +1443,7 @@ router.post('/import', requireAuth, requireRole('admin'), async (req: Request, r
         if (def.is_measure !== undefined) patch.is_measure = def.is_measure;
 
         if (Object.keys(patch).length > 0) {
-          await graph.updateColumn(col.id, patch);
+          await graph.updateColumn(col.id, patch, req.user!.tenantId);
           // Mirror to Postgres source_columns. Importing a CSV is a
           // confirm-style action — clear ai_draft so Home counts pick
           // it up. Tolerate any single-row mismatch.
@@ -1455,7 +1456,7 @@ router.post('/import', requireAuth, requireRole('admin'), async (req: Request, r
         }
       } else {
         // Table-level update
-        const table = await graph.getTableByConnectionAndName(connectionId, def.table_name);
+        const table = await graph.getTableByConnectionAndName(connectionId, def.table_name, req.user!.tenantId);
         if (!table) { skipped++; continue; }
 
         const patch: Record<string, unknown> = {};
@@ -1465,7 +1466,7 @@ router.post('/import', requireAuth, requireRole('admin'), async (req: Request, r
         if (def.grain !== undefined) patch.grain = def.grain;
 
         if (Object.keys(patch).length > 0) {
-          await graph.updateTable(table.id as number, patch);
+          await graph.updateTable(table.id as number, patch, req.user!.tenantId);
           // Mirror to Postgres source_tables.
           const pgPatch: Record<string, unknown> = { ai_draft: false };
           if (def.display_name !== undefined) pgPatch.display_name = def.display_name;
@@ -1499,10 +1500,10 @@ router.get('/dictionary', requireAuth, async (req: Request, res: Response, next:
     const connectionId = Number(req.query.connectionId);
     const format = (req.query.format as string) || 'json';
 
-    const tables = await graph.getTablesByConnection(connectionId);
-    const allColumns = await graph.getColumnsByConnection(connectionId);
-    const relationships = await graph.getRelationshipsForConnection(connectionId);
-    const kpis = await graph.getKpisByConnection(connectionId);
+    const tables = await graph.getTablesByConnection(connectionId, req.user!.tenantId);
+    const allColumns = await graph.getColumnsByConnection(connectionId, req.user!.tenantId);
+    const relationships = await graph.getRelationshipsForConnection(connectionId, req.user!.tenantId);
+    const kpis = await graph.getKpisByConnection(connectionId, req.user!.tenantId);
 
     type TableRow = { id: number; table_name: string; display_name: string; description: string; domains: string[]; grain: string; approval_status: string };
     type ColRow = { table_id: number; column_name: string; display_name: string; description: string; data_type: string; is_dimension: boolean; is_measure: boolean };
@@ -1598,8 +1599,8 @@ router.get('/export/csv', requireAuth, async (req: Request, res: Response, next:
       return;
     }
 
-    const tables = await graph.getTablesByConnection(connectionId);
-    const allColumns = await graph.getColumnsByConnection(connectionId);
+    const tables = await graph.getTablesByConnection(connectionId, req.user!.tenantId);
+    const allColumns = await graph.getColumnsByConnection(connectionId, req.user!.tenantId);
 
     type TableRow = { id: number; table_name: string; display_name: string; description: string; row_count: number | null };
     type ColRow = { table_id: number; table_name?: string; column_name: string; display_name: string; data_type: string; description: string; is_dimension: boolean; is_measure: boolean; column_role: string };
@@ -1642,10 +1643,10 @@ router.get('/export/xlsx', requireAuth, async (req: Request, res: Response, next
       return;
     }
 
-    const tables = await graph.getTablesByConnection(connectionId);
-    const allColumns = await graph.getColumnsByConnection(connectionId);
-    const relationships = await graph.getRelationshipsForConnection(connectionId);
-    const kpis = await graph.getKpisByConnection(connectionId);
+    const tables = await graph.getTablesByConnection(connectionId, req.user!.tenantId);
+    const allColumns = await graph.getColumnsByConnection(connectionId, req.user!.tenantId);
+    const relationships = await graph.getRelationshipsForConnection(connectionId, req.user!.tenantId);
+    const kpis = await graph.getKpisByConnection(connectionId, req.user!.tenantId);
 
     type TableRow = { id: number; table_name: string; display_name: string; description: string; domains: string[] | string; row_count: number | null; approval_status: string };
     type ColRow = { table_id: number; column_name: string; display_name: string; data_type: string; description: string; column_role: string; is_nullable: boolean; is_dimension: boolean; is_measure: boolean; approval_status: string };
@@ -1713,7 +1714,7 @@ router.get('/export/xlsx', requireAuth, async (req: Request, res: Response, next
 router.get('/product-tree', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const db = reqDb(req);
-    const { products: allProducts } = await graph.getProductTree();
+    const { products: allProducts } = await graph.getProductTree(req.user!.tenantId);
 
     // getProductTree() is unscoped — it returns EVERY tenant's products, and the
     // enrichment below tolerates a missing Postgres row ("Product <id>"), so
@@ -1790,7 +1791,7 @@ router.get('/product-tables', requireAuth, async (req: Request, res: Response, n
       return;
     }
     if (!await denyUnlessOwned(req, res, 'data_products', dataProductId)) return;
-    const rows = await graph.getProductTablesByProduct(dataProductId);
+    const rows = await graph.getProductTablesByProduct(dataProductId, req.user!.tenantId);
     res.json({ ok: true, data: rows });
   } catch (err) { next(err); }
 });
@@ -1805,7 +1806,7 @@ router.get('/product-columns', requireAuth, async (req: Request, res: Response, 
       return;
     }
     if (!await denyUnlessOwned(req, res, 'product_tables', tablePgId)) return;
-    const rows = await graph.getProductColumnsByTablePgId(tablePgId);
+    const rows = await graph.getProductColumnsByTablePgId(tablePgId, req.user!.tenantId);
     res.json({ ok: true, data: rows });
   } catch (err) { next(err); }
 });
@@ -1824,7 +1825,7 @@ router.patch('/product-tables/:id', requireAuth, requireRole('admin'), async (re
       description:  body.description,
       owner_name:   body.owner_name,
       domains:      body.domains,
-    });
+    }, req.user!.tenantId);
 
     await invalidateSemanticCache(await connectionIdForEntity(db, 'product_tables', pgId) ?? undefined);
     await auditLog(db, req.user!.tenantId, req.user!.sub, req.user!.name as string, 'update', 'product_table', pgId, body.display_name as string ?? null, body);
@@ -1847,7 +1848,7 @@ router.patch('/product-columns/:id', requireAuth, requireRole('admin'), async (r
       description:  body.description,
       owner_name:   body.owner_name,
       column_role:  body.column_role,
-    });
+    }, req.user!.tenantId);
 
     await invalidateSemanticCache(await connectionIdForEntity(db, 'product_columns', pgId) ?? undefined);
     await auditLog(db, req.user!.tenantId, req.user!.sub, req.user!.name as string, 'update', 'product_column', pgId, body.display_name as string ?? null, body);

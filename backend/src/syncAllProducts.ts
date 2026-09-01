@@ -102,8 +102,15 @@ async function main() {
       };
     });
 
-    // Stamp the tenant so this backfill produces nodes a tenant-scoped read can see.
-    await upsertProductGraph(p.id, mappedTables, mappedColumns, p.tenant_id ?? null);
+    // Stamp the tenant so this backfill produces nodes a tenant-scoped read can
+    // see. A product row without one cannot be attributed — skip it loudly
+    // rather than write nodes no tenant-scoped read will ever find.
+    const tenantId = Number(p.tenant_id);
+    if (!Number.isInteger(tenantId) || tenantId <= 0) {
+      console.warn(`    ! product ${p.id} carries no tenant_id — SKIPPED (would create unattributable graph nodes)`);
+      continue;
+    }
+    await upsertProductGraph(p.id, mappedTables, mappedColumns, tenantId);
 
     console.log(`    ✓ ${tables.length} tables, ${columns.length} columns synced`);
   }

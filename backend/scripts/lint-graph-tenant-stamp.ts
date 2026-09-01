@@ -4,21 +4,18 @@
  *
  * Why this is a lint and not a code review note:
  *
- * `db/semanticGraph.ts` matches nodes by a globally-unique, enumerable `pgId`
- * and has no tenant predicate anywhere. Postgres RLS protects the mirror rows
- * but not the graph, so tenant isolation on the semantic layer rests entirely
- * on `denyUnlessOwned` gates applied BY HAND at each of ~93 `graph.*` call
- * sites in routes. That gate has already been missed twice.
+ * `db/semanticGraph.ts` matches nodes by a globally-unique, enumerable `pgId`.
+ * Postgres RLS protects the mirror rows but not the graph, so every MATCH
+ * there now carries a `tenantId` predicate (held by the companion
+ * lint-graph-tenant-predicate; landed 2026-09-01 after the backfill reported
+ * clean). That predicate has one hard precondition: the property must be ON
+ * the node. A node written without it does not leak — it silently returns an
+ * empty catalog for every affected tenant, which is its own outage.
  *
- * The structural fix is a tenant predicate in the Cypher, and it has one hard
- * precondition: the property must be ON the node. A read predicate that lands
- * while some node type is still unstamped does not leak — it silently returns
- * an empty catalog for every affected tenant, which is its own outage.
- *
- * So the ordering is: stamp everything → backfill → only then add predicates.
- * This lint holds the first step in place. A new write path that forgets
+ * The ordering was: stamp everything → backfill → add predicates. This lint
+ * holds the first step in place, permanently. A new write path that forgets
  * `tenantId` would not fail any test — it would just quietly create a node
- * that the eventual tenant-scoped read cannot see. That is precisely the class
+ * that the tenant-scoped reads cannot see. That is precisely the class
  * of silent, months-later failure this codebase has repeated seven times.
  *
  * The check is deliberately crude — it reads Cypher as text, because that is
@@ -47,7 +44,7 @@ const TENANT_OWNED = [
 ];
 
 /** Relationship types that carry their own property map (and so their own id). */
-const TENANT_OWNED_EDGES = ['RELATES_TO'];
+const TENANT_OWNED_EDGES = ['RELATES_TO', 'CROSS_VIEW_LINK'];
 
 function fail(message: string): never {
   process.stderr.write(`lint-graph-tenant-stamp: ${message}\n`);
