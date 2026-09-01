@@ -35,7 +35,7 @@ import type {
 
 // ─── Extracted utilities ─────────────────────────────────────────────────────
 import { buildDefaultFilters, relTime } from './utils/format';
-import { applyRefineCarryover } from './utils/refineCarryover';
+import { applyRefineCarryover, carryFilterValues } from './utils/refineCarryover';
 import { containerVariants, slideUp, shimmerClass } from './utils/motion';
 import { buildDashboardContext } from './utils/dashboardContext';
 
@@ -202,6 +202,15 @@ export default function DashboardsPage() {
   // up to ~300px of that permanently with no way to put it away. Closed by
   // default; opened by asking for it, or by a card's "Change this card".
   const [assistantOpen, setAssistantOpen] = useState(false);
+  /**
+   * The caller's own saved filter selection for the open dashboard, if they
+   * have one. Private per person — see dashboard_user_views. Held so the bar
+   * can say the view is in force and offer to update or clear it.
+   */
+  const [myViewSavedAt, setMyViewSavedAt] = useState<string | null>(null);
+  /** The values that were saved — lets the bar tell a current view from a stale one. */
+  const [myViewValues, setMyViewValues] = useState<Record<string, string> | null>(null);
+  const [myViewBusy, setMyViewBusy] = useState(false);
   // The single card the next edit is aimed at, if any. Held as id + title:
   // the id is what the server scopes on, the title is what the user sees, and
   // resolving the title later would break if the edit renamed the card.
@@ -758,7 +767,24 @@ export default function DashboardsPage() {
       const connId = row.connection_id ?? connectionId;
       if (row.connection_id) setConnectionId(row.connection_id);
       setSelectedProductIds(spec.productIds ?? []);
-      const defaults = buildDefaultFilters(spec.filters);
+      // The caller's own saved filters, if any. Fetched alongside the row
+      // rather than after it, so the dashboard never renders once with the
+      // defaults and then jumps to the saved view.
+      let myView: { filterValues: Record<string, string>; savedAt: string } | null = null;
+      try {
+        myView = await apiGet<{ filterValues: Record<string, string>; savedAt: string } | null>(`/dashboards/${id}/my-view`);
+      } catch {
+        // A saved view is a convenience: if it cannot be read the dashboard
+        // still opens, on its defaults.
+      }
+      setMyViewSavedAt(myView?.savedAt ?? null);
+      setMyViewValues(myView?.filterValues ?? null);
+      // carryFilterValues rather than the raw saved map: the spec can have
+      // changed since it was saved — a filter that is gone must not linger,
+      // and one that was added takes its default.
+      const defaults = myView
+        ? carryFilterValues(spec.filters, spec.filters, myView.filterValues)
+        : buildDefaultFilters(spec.filters);
       // Clear client-side cache so new dashboard shows skeletons, not stale data
       widgetCacheRef.current = {};
       setCurrentSpec(spec);
@@ -781,6 +807,50 @@ export default function DashboardsPage() {
       executeAllWidgets(spec, defaults, null, connId);
     } catch {
       // ignore
+    }
+  }
+
+  // ── The caller's own saved view ───────────────────────────────────────────
+  //
+  // A private lens on a shared dashboard: the filters you left it on, restored
+  // next time you open it, on any device. Invisible to everyone else — two
+  // people can sit on the same dashboard with different filters and neither
+  // disturbs the other.
+
+  async function saveMyView() {
+    if (!activeId || activeId < 0) return;
+    setMyViewBusy(true);
+    try {
+      await api.put(`/dashboards/${activeId}/my-view`, { filterValues });
+      setMyViewSavedAt(new Date().toISOString());
+      setMyViewValues(filterValues);
+      toast.success('Saved as your view', { description: 'This dashboard will open with these filters for you.' });
+    } catch {
+      toast.error('Could not save your view');
+    } finally {
+      setMyViewBusy(false);
+    }
+  }
+
+  async function clearMyView() {
+    if (!activeId || activeId < 0 || !currentSpec) return;
+    setMyViewBusy(true);
+    try {
+      await api.delete(`/dashboards/${activeId}/my-view`);
+      setMyViewSavedAt(null);
+      setMyViewValues(null);
+      // Put the dashboard back on its own defaults immediately — clearing a
+      // view that stays on screen has not visibly done anything.
+      const defaults = buildDefaultFilters(currentSpec.filters);
+      setFilterValues(defaults);
+      setCrossFilter(null);
+      widgetCacheRef.current = {};
+      executeAllWidgets(currentSpec, defaults, null, connectionId);
+      toast.success('Your view is cleared', { description: 'Back to the dashboard defaults.' });
+    } catch {
+      toast.error('Could not clear your view');
+    } finally {
+      setMyViewBusy(false);
     }
   }
 
@@ -1375,6 +1445,8 @@ export default function DashboardsPage() {
   function discardDashboard() {
     widgetCacheRef.current = {};
     setCurrentSpec(null);
+    setMyViewSavedAt(null);   // belongs to the dashboard being left
+    setMyViewValues(null);
     setIsUnsaved(false);
     setActiveId(null);
     setMode('empty');
@@ -2417,6 +2489,12 @@ export default function DashboardsPage() {
                 filterValues={filterValues}
                 filterOptions={filterOptions}
                 onFilterChange={handleFilterChange}
+                canSaveView={!!activeId && activeId > 0}
+                myViewSavedAt={myViewSavedAt}
+                myViewValues={myViewValues}
+                myViewBusy={myViewBusy}
+                onSaveMyView={saveMyView}
+                onClearMyView={clearMyView}
               />
 
               {/* Widget grid + investigation panel */}

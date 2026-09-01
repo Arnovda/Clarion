@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import dynamic from 'next/dynamic';
-import { format as formatSql } from 'sql-formatter';
+import { formatSql } from '@/lib/formatSql';
 import { Gauge, X, Sparkles, Maximize2 } from 'lucide-react';
 import api from '@/lib/api';
 import AiPromptDialog from './AiPromptDialog';
@@ -862,7 +862,7 @@ function SqlViewer({ pgTableId }: { pgTableId: number }) {
       let pretty = raw;
       if (raw) {
         try {
-          pretty = formatSql(raw, { language: 'duckdb', keywordCase: 'upper', tabWidth: 2 });
+          pretty = formatSql(raw);
         } catch {
           pretty = raw;
         }

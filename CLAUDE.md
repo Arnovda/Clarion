@@ -31,7 +31,72 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-09-01 (THE BUSINESS KEY COMES FROM THE SOURCE NOW — a
+**Last updated:** 2026-09-01 (YOUR OWN FILTERS, REMEMBERED — plus the provenance
+SQL is readable at last)
+
+**Owner, two asks off one screenshot: *"Format the SQL"* in the provenance panel,
+and *"be able to save a specific state of a report so next time their filters are
+already applied. This is per person. If someone else saves it, you don't see
+that."***
+- **THE FORMATTER ALREADY EXISTED AND THE PANEL DID NOT USE IT.** `sql-formatter`
+  has been a dependency for months and `app/query/utils.ts` wrapped it properly
+  (duckdb dialect, upper keywords, try/catch). There were **FOUR** treatments of
+  the same problem: that good one; a naive regex in `gaps/page.tsx` that inserted
+  a newline before every keyword — **including keywords inside string literals**,
+  which corrupts the query on screen; a bare `format()` in
+  `ProductTableDetailPanel` with **no guard, so unparseable SQL throws inside a
+  render**; and the provenance panel, which did nothing at all. All four now go
+  through **`lib/formatSql.ts`**.
+- **`whitespace-pre-wrap` → `whitespace-pre` + horizontal scroll** in the panel.
+  Once a query is indented, wrapping a long line re-flows it under the wrong
+  indent level and undoes the formatting. Verified against the owner's actual
+  widget SQL: 1 line → **43 lines, longest 79 chars, all 8 `{{placeholders}}`
+  intact**, CTEs reading properly.
+- **NEW `dashboard_user_views` (migration 87) — a private lens on a shared
+  dashboard.** One row per (dashboard, user); `filter_values` jsonb; canonical
+  RLS dance. `GET|PUT|DELETE /dashboards/:id/my-view`. Opening a dashboard
+  restores your own filters, on any device.
+- **SERVER-SIDE, NOT localStorage, deliberately**: "next time they look at the
+  dashboard" means from any device, and browser storage would lose the view on a
+  new laptop while appearing to work on the old one.
+- **Only filter VALUES are stored.** Layout, widget set and titles belong to the
+  dashboard and are shared by definition; a per-user copy of those forks the
+  artefact rather than filtering it.
+- **Restored through `carryFilterValues`, not applied raw** — the spec can have
+  changed since the view was saved, so a filter that is gone must not linger and
+  one that was added takes its default. Third caller of that already-tested
+  helper.
+- **THE PER-USER HALF IS NOT ENFORCED BY RLS AND THAT IS THE THING TO KNOW.** The
+  policy isolates TENANTS; "only you see your view" is an explicit `user_id`
+  filter on every query. Hence the test that a colleague **in the same tenant**
+  saving their own view leaves yours untouched — RLS cannot catch that one.
+- **A REAL ISOLATION GAP THE TESTS CAUGHT BEFORE IT SHIPPED**: the first
+  visibility query leant on RLS alone, and a request from ANOTHER TENANT read a
+  shared dashboard (200 instead of 404). `findVisibleDashboard` filters
+  `tenant_id` EXPLICITLY now, per the house rule that an authorization decision
+  must never depend on the session variable. **Note the pre-existing
+  `GET /dashboards/:id` has the same shape** — protected in production by RLS
+  since the role flip, but worth the same treatment on a future pass.
+- **THE RENDER CHECK CHANGED THE DESIGN, not just a colour.** First version showed
+  a chip plus *Update my view* plus *Reset* whenever a view existed — three
+  controls that **wrapped onto a second row of the filter bar**, permanently, on
+  the screen whose whole job is charts. Now *Save/Update* appears only when the
+  filters have actually MOVED from what was saved (compared over the union of
+  both key sets, so an added filter counts as a change). The steady state is a
+  chip and *Reset*, inline, no extra row — and a button that cannot change
+  anything is never shown.
+- Validation: backend **50 files / 510 passed** (10 new in
+  `dashboard-my-view.test.ts`), all eight ratchets green — validate-coverage
+  caught the unvalidated DELETE and it now carries a params-only schema, the same
+  catch the managed-grids work hit — frontend `tsc` + lint clean, `next build`
+  green 40/40. Four filter-bar states screenshotted in real Chromium, then the
+  harness deleted.
+- **NOT done, deliberately**: cross-filter state and the Arrange layout are not
+  saved — the first is a transient drill, the second is the dashboard's own
+  shape. And a saved view is not shareable as a link; that is a different
+  feature (a URL), not this one.
+
+**Prior last updated:** 2026-09-01 (THE BUSINESS KEY COMES FROM THE SOURCE NOW — a
 `Created` timestamp was identifying bank statement lines)
 
 **Owner, from the Quality tab on ExactOnline's `BankEntryLines`: *"the business

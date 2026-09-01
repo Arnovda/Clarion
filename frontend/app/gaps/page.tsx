@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
+import { formatSql } from '@/lib/formatSql';
 import AppShell from '@/components/layout/AppShell';
 import RequireRole from '@/components/RequireRole';
 import Pagination from '@/components/Pagination';
@@ -45,13 +46,6 @@ function relativeTime(iso: string): string {
   const d = Date.now() - new Date(iso).getTime();
   const m = Math.floor(d / 60000); const h = Math.floor(d / 3600000); const dy = Math.floor(d / 86400000);
   if (m < 1) return 'just now'; if (m < 60) return `${m}m ago`; if (h < 24) return `${h}h ago`; return `${dy}d ago`;
-}
-
-function formatSql(sql: string): string {
-  const kws = ['SELECT', 'FROM', 'LEFT JOIN', 'JOIN', 'WHERE', 'GROUP BY', 'ORDER BY', 'HAVING', 'LIMIT'];
-  let result = sql;
-  for (const kw of kws) result = result.replace(new RegExp(`\\b${kw}\\b`, 'gi'), `\n${kw}`);
-  return result.trim();
 }
 
 const BADGE_CLS = 'text-[10px] font-mono tracking-[0.08em] uppercase px-2 py-0.5 rounded border border-line';

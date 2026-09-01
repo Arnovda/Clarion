@@ -746,6 +746,32 @@ export const updateNotebookCellSchema = z.object({
   }).passthrough(),
 });
 
+// PUT /dashboards/:id/my-view — a person's own filter selection.
+export const saveMyViewSchema = z.object({
+  params: z.object({ id: positiveInt }),
+  body: z.object({
+    /**
+     * { filterId: value } exactly as the dashboard page holds it. Values are
+     * strings because that is what a filter control produces — a date, a
+     * picked option, or the literal 'all'.
+     *
+     * Capped: a dashboard's filter set is a handful of controls, and an
+     * unbounded record here would let a client store arbitrary payload in a
+     * per-user row nobody ever looks at.
+     */
+    filterValues: z.record(z.string().max(200), z.string().max(500)).refine(
+      (v) => Object.keys(v).length <= 50,
+      { message: 'A saved view may hold at most 50 filters' },
+    ),
+  }).passthrough(),
+});
+
+// DELETE /dashboards/:id/my-view — no body; the params schema is the gate, so
+// `/my-view` on a non-numeric id is refused rather than reaching a query.
+export const clearMyViewSchema = z.object({
+  params: z.object({ id: positiveInt }),
+});
+
 // POST /notebooks/generate — natural language → SQL/Python for a cell.
 export const generateNotebookCodeSchema = z.object({
   body: z.object({
