@@ -99,16 +99,26 @@ jobs:
 
           # Env vars: reuse the backend's, but drop the two we override and skip
           # PORT (the worker serves no traffic beyond its health probe).
+          #
+          # Parsed from JSON, NOT `-o tsv`. az's tsv formatter SKIPS null
+          # fields, so a secretref env row ([name, null, ref]) collapsed to two
+          # columns and the secret NAME landed as the env's literal VALUE —
+          # the worker would run with DATABASE_URL="database-url",
+          # NEO4J_PASSWORD="neo4j-password", and so on. Found 2026-09-01 when
+          # the graph-backfill job (which cloned env the same way) failed Neo4j
+          # auth; if the worker was provisioned with the broken parse, it has
+          # the same corrupt env and needs a re-provision (touch
+          # .ops/provision-jobs-worker) after this fix merges.
           ENV_ARGS=()
-          while IFS=$'\t' read -r NAME VALUE SECREF; do
-            case "$NAME" in ROLE|WORKER_QUEUES|RUN_SCHEDULERS) continue ;; esac
-            if [ -n "${SECREF:-}" ] && [ "$SECREF" != "None" ]; then
-              ENV_ARGS+=("$NAME=secretref:$SECREF")
-            elif [ -n "${VALUE:-}" ] && [ "$VALUE" != "None" ]; then
-              ENV_ARGS+=("$NAME=$VALUE")
-            fi
+          while IFS= read -r PAIR; do
+            ENV_ARGS+=("$PAIR")
           done < <(az containerapp show -n "$APP" -g "$RG" \
-                     --query "properties.template.containers[0].env[].[name,value,secretRef]" -o tsv)
+                     --query "properties.template.containers[0].env" -o json \
+                   | jq -r '.[]
+                       | select([.name] | inside(["ROLE","WORKER_QUEUES","RUN_SCHEDULERS"]) | not)
+                       | if (.secretRef // "") != "" then "\(.name)=secretref:\(.secretRef)"
+                         elif (.value // "") != "" then "\(.name)=\(.value)"
+                         else empty end')
 
           # The worker's own role. Queues listed here need no Azure AD identity.
           ENV_ARGS+=("ROLE=worker")

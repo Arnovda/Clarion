@@ -96,16 +96,24 @@ jobs:
           # set — the script needs both stores: Postgres to learn who owns what,
           # Neo4j to stamp it. ROLE is forced to a value that starts no workers;
           # this container must run one script and exit.
+          #
+          # Parsed from JSON, NOT `-o tsv`: az's tsv formatter SKIPS null
+          # fields, so a secretref env row ([name, null, ref]) collapsed to two
+          # columns and the secret NAME was read as the env's VALUE — every
+          # secretref env (NEO4J_PASSWORD, DATABASE_URL, JWT_SECRET, …) reached
+          # the job as a literal string like "neo4j-password". Run #4's Neo4j
+          # "client is unauthorized" failure was exactly that, and run #5's
+          # env-name report (no secretref markers anywhere) confirmed it.
           ENV_ARGS=()
-          while IFS=$'\t' read -r NAME VALUE SECREF; do
-            case "$NAME" in ROLE|WORKER_QUEUES|RUN_SCHEDULERS|PORT) continue ;; esac
-            if [ -n "${SECREF:-}" ] && [ "$SECREF" != "None" ]; then
-              ENV_ARGS+=("$NAME=secretref:$SECREF")
-            elif [ -n "${VALUE:-}" ] && [ "$VALUE" != "None" ]; then
-              ENV_ARGS+=("$NAME=$VALUE")
-            fi
+          while IFS= read -r PAIR; do
+            ENV_ARGS+=("$PAIR")
           done < <(az containerapp show -n "$APP" -g "$RG" \
-                     --query "properties.template.containers[0].env[].[name,value,secretRef]" -o tsv)
+                     --query "properties.template.containers[0].env" -o json \
+                   | jq -r '.[]
+                       | select([.name] | inside(["ROLE","WORKER_QUEUES","RUN_SCHEDULERS","PORT"]) | not)
+                       | if (.secretRef // "") != "" then "\(.name)=secretref:\(.secretRef)"
+                         elif (.value // "") != "" then "\(.name)=\(.value)"
+                         else empty end')
           ENV_ARGS+=("RUN_SCHEDULERS=false")
           # The mode travels as an ENV VAR, never as an argv flag: az's
           # `--args` parser rejects any list value beginning with `--`

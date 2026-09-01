@@ -31,3 +31,4 @@ apply
 # 2026-09-01: re-run after fixing the workflow update path (az job update --args)
 # 2026-09-01: trigger apply under image main-c8f8675 (env-var mode fix deployed)
 # 2026-09-01: re-run with config-visibility diagnostics (auth failure triage)
+# 2026-09-01: re-run after fixing the tsv null-collapse env cloning (jq parse)
