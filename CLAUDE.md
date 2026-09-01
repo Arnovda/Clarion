@@ -31,7 +31,77 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-09-01 (P0-2 FULLY CLOSED — the semantic graph is
+**Last updated:** 2026-09-01 (P0-6 REMEDIATION — the promote gate asks a real
+question and production can finally page a human; the "no alerting" gap open
+since 2026-08-29 is closed)
+
+**Fourth PR of the market-readiness remediation plan (wave 1). Two halves,
+each proven against live processes before shipping:**
+- **THE DEEP HEALTH CHECK (`services/healthCheck.ts`).** `GET /api/health` —
+  which deploy.yml's promote gate curls before shifting traffic — checked
+  POSTGRES ONLY; the defect was reproduced red first (Redis + Neo4j pointed at
+  dead ports → pre-fix `200 {"ok":true}`). It now checks Postgres, Redis,
+  Neo4j, blob storage and — the sharpest probe — **whether anything is
+  LISTENING on the transformation and bus-matrix queues** via BullMQ
+  `getWorkers()` (Redis `CLIENT LIST`): the jobs-worker's liveness measured
+  directly, no self-reported heartbeat to trust. All four states verified
+  live: deps dead → 503 naming components (in 5.0s — parallel probes racing
+  the per-component `HEALTH_CHECK_TIMEOUT_MS` budget); unconfigured →
+  `skipped` → 200 (dev/CI unchanged — "absent by configuration" must never
+  read as "broken"); Redis alive + `ROLE=api` (nobody listening) → 503;
+  workers attached → 200.
+- **PROBE SEMANTICS ARE THE LOAD-BEARING DETAIL**: ACA's liveness/readiness
+  probes hit `/api/ping`, NOT `/api/health` — verified in infra/main.tf before
+  deepening. A Redis blip stops a PROMOTION; it must never make the platform
+  restart healthy API replicas. Comment on both routes says so; do not point
+  the ACA probes at /api/health.
+- **Error DETAIL is deliberately withheld** on the unauthenticated endpoint
+  (component name only — a hostname in an error message is a disclosure); the
+  promote gate now echoes the response BODY per attempt, so "which component"
+  is readable from the Actions log instead of being a log-diving exercise.
+- **ALERTING — new GitOps control `.ops/alerts`** (email address or `off`) +
+  `alerts.yml`: creates action group `clarion-alerts` + rules for backend 5xx
+  (Requests, statusCodeCategory=5xx), backend/worker restarts, Postgres
+  cpu_percent/storage_percent, and two Log Analytics scheduled-query rules on
+  the strings `request failed` (requestLogger at HTTP ≥500) and **`sync run
+  failed` — a NEW load-bearing log line in SyncOrchestrator** (both failure
+  persist sites), because a failed sync was previously only a database row no
+  alert could read. Both code sites carry comments naming the alert so a
+  rewording can't silently blind it. **ACA metric names are DISCOVERED via
+  `az monitor metrics list-definitions` and printed to the run summary** —
+  this workflow cannot be tested outside Azure, and a rule against a guessed
+  name would silently watch nothing; **any rule that fails to create FAILS
+  the workflow** (an alert you believe exists but does not is the exact
+  failure this control replaces). `infra/alerts.tf` mirrors the resources for
+  a future `terraform import` (jobs-worker precedent). First run happens when
+  this merges (`.ops/alerts` is in the PR) — **read that run's summary**, and
+  send one portal test alert so the first incident is not the first test.
+- **Deliberately deferred, reasons in `.ops/alerts`**: queue-depth alerting
+  (no Azure metric for BullMQ; needs an exporter — P1-6; the queue-listener
+  probe covers the dead-consumer case, which is what strands work silently)
+  and a continuous uptime web test (App Insights web test, same pass).
+- **SEQUENCING NOTE FOR THE NEXT DEPLOYS**: today the API runs every queue
+  (`WORKER_QUEUES` unset on it), so its own workers satisfy the queue-listener
+  probe and promotion passes. **After the jobs-worker re-provision** (touch
+  `.ops/provision-jobs-worker` → `create`; its env has been corrupt since the
+  2026-07-27 az-tsv bug) the API hands the compute queues over — from then on
+  a dead jobs-worker BLOCKS backend promotion, which is precisely the point.
+  Do the re-provision right after this merges and verify its run summary.
+- Validation: backend `npm run check` clean; health suite 7 tests (route +
+  injected-probe matrix incl. skipped-is-not-broken); full vitest **52 files /
+  540 passed / 4 skipped**; all nine ratchets green from the repo root
+  (dynamic-import baseline LOWERED 88→87 — the route's lazy knex import went
+  static into the new service); `e2e/rls.spec.ts` + `e2e/auth-login.spec.ts`
+  8/8 against a live backend as `databridge_app` (its readiness curl hits the
+  deepened /api/health with nothing configured → skipped → 200, verified);
+  both workflow YAMLs parse; **`infra/alerts.tf` NOT terraform-validated**
+  (no terraform binary in the sandbox — same standing limitation as every
+  infra edit; the az workflow, not terraform, is what executes).
+- **NOT in this PR, deliberately**: the jobs-worker re-provision itself (ops
+  act on main, queued right behind the merge); per-tenant observability and
+  an uptime web test (P1-6); rate-limit hardening (P1-2).
+
+**Prior last updated:** 2026-09-01 (P0-2 FULLY CLOSED — the semantic graph is
 tenant-scoped BY CONSTRUCTION: backfill+prune verified clean, then every MATCH
 gained a tenantId predicate, held by a ninth ratchet)
 

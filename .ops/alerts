@@ -1,0 +1,31 @@
+arnovda@telenet.be
+
+# Production alerting — who gets told when production is broken (P0-6).
+#
+# First non-comment line is either an EMAIL ADDRESS or the word `off`.
+# Editing this file on main runs .github/workflows/alerts.yml, which creates
+# (or updates) an Azure Monitor action group routed to that address plus the
+# alert rules below. `off` deletes all of them. Changing the address is an
+# edit + push; no redeploy is involved.
+#
+# Rules the workflow maintains:
+#   clarion-backend-5xx        ≥10 5xx responses on the backend in 15 min
+#   clarion-backend-restarts   container restarts on the backend app
+#   clarion-worker-restarts    container restarts on the jobs-worker app
+#   clarion-pg-cpu             Postgres flexible server CPU ≥ 90% (15 min avg)
+#   clarion-pg-storage         Postgres flexible server storage ≥ 85%
+#   clarion-server-errors      'request failed' lines (HTTP ≥500 in the app
+#                              logs — the .ops/prod-logs `server-error`
+#                              signature) ≥5 in 15 min
+#   clarion-failed-syncs       any 'sync run failed' line (the load-bearing
+#                              string SyncOrchestrator logs when a sync run is
+#                              persisted as failed)
+#
+# Deliberately NOT here (and why):
+#   queue depth      no Azure metric exists for BullMQ; needs a metrics
+#                    exporter (P1-6). The deep /api/health check covers the
+#                    dead-consumer half — a queue nobody listens on fails the
+#                    promote gate.
+#   uptime probing   a continuous availability test wants an App Insights
+#                    web test; the deploy gate + 5xx/restart alerts cover the
+#                    P0. Belongs with the P1-6 observability pass.

@@ -83,6 +83,7 @@ import { subscribeToInvalidations, closeCacheBus } from './jobs/cacheBus';
 import { drainPool } from './connectors/ConnectorPool';
 import { drainAll as drainDuckDBPool } from './connectors/DuckDBPool';
 import { drainRunners } from './services/warehouse/queryRunnerPool';
+import { runHealthChecks } from './services/healthCheck';
 
 const app = express();
 app.set('trust proxy', 1); // trust Azure Container Apps / load balancer X-Forwarded-For
@@ -309,20 +310,19 @@ app.post('/api/connections/:id/profile', requireAuth, requireRole('admin'), asyn
 // Health check + global error handler
 // ---------------------------------------------------------------------------
 
-// Simple liveness probe — always 200 if the process is running
+// Simple liveness probe — always 200 if the process is running. The ACA
+// liveness/readiness probes point HERE, never at /api/health: a Redis or
+// Neo4j outage must stop a PROMOTION, not restart healthy API replicas.
 app.get('/api/ping', (_req, res) => { res.json({ ok: true }); });
 
-
+// Deep health — what deploy.yml's promote gate actually asks before shifting
+// traffic. Covers Postgres, Redis, Neo4j, blob storage and whether anything
+// is listening on the job queues (the jobs-worker's real liveness). See
+// services/healthCheck.ts for the three-valued status vocabulary and why
+// error detail is deliberately withheld on this unauthenticated endpoint.
 app.get('/api/health', async (_req, res) => {
-  const checks: Record<string, string> = {};
-  try {
-    const { semanticDb } = await import('./db/knex');
-    await semanticDb.raw('SELECT 1');
-    checks.postgres = 'ok';
-  } catch { checks.postgres = 'error'; }
-
-  const allOk = Object.values(checks).every((v) => v === 'ok');
-  res.status(allOk ? 200 : 503).json({ ok: allOk, checks, uptime: process.uptime() });
+  const { ok, checks } = await runHealthChecks();
+  res.status(ok ? 200 : 503).json({ ok, checks, uptime: process.uptime() });
 });
 
 app.use(errorHandler);

@@ -586,24 +586,33 @@ jobs:
 
             # The real smoke test: ask the NEW revision, through its staging
             # label, whether it is actually serving. A revision can be
-            # Provisioned and still fail every request.
+            # Provisioned and still fail every request. Since P0-6 this is a
+            # DEEP check — Postgres, Redis, Neo4j, blob and whether anything
+            # listens on the job queues — so a revision with a dead dependency
+            # can no longer take traffic on a Postgres-only 200. The body
+            # names the failing component, so echo it: "503" alone made the
+            # first diagnosis a log-diving exercise.
             FQDN=$(az containerapp show --name "$BACKEND" --resource-group "$RG" \
               --query properties.configuration.ingress.fqdn -o tsv)
             HEALTH="https://${FQDN/./---staging.}/api/health"
 
             OK=""
+            BODY=""
             for _ in $(seq 1 20); do
-              CODE=$(curl -sS -o /dev/null -w '%{http_code}' -m 15 "$HEALTH" || echo 000)
-              echo "  health $HEALTH -> $CODE"
+              CODE=$(curl -sS -o /tmp/health-body -w '%{http_code}' -m 15 "$HEALTH" || echo 000)
+              BODY=$(cat /tmp/health-body 2>/dev/null || true)
+              echo "  health $HEALTH -> $CODE ${BODY:+· $BODY}"
               if [ "$CODE" = "200" ]; then OK=1; break; fi
               sleep 10
             done
             if [ -z "$OK" ]; then
-              echo "::error::the new backend never answered 200 on /api/health — leaving traffic where it is."
+              echo "::error::the new backend never answered 200 on /api/health — leaving traffic where it is. Last body: ${BODY:-none}"
               {
                 echo "### 🛑 Not promoted — the new version did not come up healthy"
                 echo ""
                 echo "Your customers are still on the previous version. Nothing changed for them."
+                echo ""
+                echo "Last health answer: \`${BODY:-no response body}\`"
               } >> "$GITHUB_STEP_SUMMARY"
               exit 1
             fi

@@ -600,6 +600,11 @@ async function runSyncInBackground(args: {
         .where({ id: connectionId, tenant_id: tenantId })
         .update({ last_sync_status: 'cancelled' });
     } else {
+      // The words 'sync run failed' are LOAD-BEARING: the .ops/alerts
+      // scheduled-query rule and .ops/prod-logs both match this exact string.
+      // Failures are otherwise only visible as a database row, which no alert
+      // can read. Change the wording and the alert goes silently blind.
+      childLog.error({ syncRunId, connectionId, tenantId, exitCode }, 'sync run failed');
       await semanticDb('source_sync_runs')
         .where({ id: syncRunId, tenant_id: tenantId })
         .update({
@@ -618,6 +623,8 @@ async function runSyncInBackground(args: {
     cancellationHandles.delete(syncRunId);
     const message = e instanceof Error ? e.message : String(e);
     childLog.error({ err: e }, 'orchestrator-side error');
+    // Same load-bearing alert signature as the worker-exit failure above.
+    childLog.error({ syncRunId, connectionId, tenantId }, 'sync run failed');
     try {
       await setTenant(tenantId);
       await semanticDb('source_sync_runs')
