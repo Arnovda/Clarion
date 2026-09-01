@@ -31,7 +31,78 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-09-01 (P0-6 REMEDIATION — the promote gate asks a real
+**Last updated:** 2026-09-01 (P0-4 REMEDIATION, DRAFT HALF — the legal surface
+exists as reviewed-nothing DRAFTS behind a banner; the false SOC 2 claim on the
+sign-in screen is GONE)
+
+**Fifth PR of the market-readiness remediation plan (wave 1). The one finding
+whose closure is deliberately NOT this PR's to claim: P0-4 wants a lawyer, and
+the standing instruction was "draft legal docs only, never present AI text as
+the actual agreement". Everything here is built to make that boundary
+structural rather than remembered:**
+- **FOUR DRAFT DOCUMENTS as single-source string modules**
+  (`frontend/lib/legal/{terms,privacy,dpa,subprocessors}.ts`, each exporting
+  VERSION `0.1-draft` + UPDATED + the text): Terms of Service, Privacy Policy,
+  a GDPR Art. 28 **Data Processing Agreement drafted for incorporation into
+  the ToS** (self-serve acceptance at signup is the only way the "contract
+  BEFORE processing" ordering works for a product with no sales call), and
+  the REAL subprocessor list — exactly two entries, Microsoft Azure (West
+  Europe) and Anthropic, because that is what infra/ and the codebase
+  demonstrably use; ACS rides under Azure. Every fact was grounded in code
+  before it was written down: prompts carry questions + schema metadata +
+  sampled values **and query results** (the privacy policy says so plainly);
+  retention is 90d notifications / 365d ai_call_log / content
+  kept-until-deleted; erasure = in-product user anonymisation + irreversible
+  `purgeTenant`; DPA Annex II lists ONLY measures that exist (RLS as
+  non-bypass role, graph tenant predicates held by merge gates, AES-256-GCM
+  credentials, MFA, audit trail, deep-health-gated deploys, 14-day PITR).
+- **What could not be grounded is a NAMED PLACEHOLDER, never prose**:
+  `[COMPANY LEGAL NAME]`, `[KBO/BCE NUMBER]`, `[REGISTERED ADDRESS]`, and the
+  Anthropic transfer mechanism `[DPF and/or SCCs — TO BE VERIFIED BY
+  COUNSEL]`. A plausible-sounding invented legal fact is the one failure this
+  work must not have; a bracket is honest and greppable.
+  **`docs/legal/README.md` is the lawyer's checklist** — every placeholder,
+  the liability-cap questions, and the go-live steps in order.
+- **`/legal/{terms,privacy,dpa,subprocessors}`** render through one shared
+  `LegalPage.tsx`: a markdown-lite renderer (four line shapes + inline bold —
+  no dependency), cross-nav, and a **"Draft — not yet in force" banner gated
+  on `LEGAL_IN_FORCE = false`**. Flipping that constant — and wiring
+  "by signing up you agree" into registration — is the OWNER'S act after
+  legal review, and the register flow deliberately gained nothing: the
+  sign-in screen's new footer links are informational only, with a comment
+  saying exactly why.
+- **THE DRIVE-BY THAT WAS ITSELF A FINDING: AuthLayout claimed "SOC 2 TYPE
+  II" on the sign-in screen.** No such certification exists (the competitive
+  analysis explicitly lists it as Peliqan's edge Clarion lacks). A compliance
+  claim on a sign-in screen is a representation, not decoration — removed,
+  replaced with three claims that are true (EU-hosted · AES-256 · GDPR
+  erasure built in), with a comment forbidding its return until the
+  certificate is real.
+- Validation: frontend `tsc` clean, all six touched/new frontend files
+  lint-clean, `next build` green **45/45** (four new static `/legal/*` routes,
+  ~190 B each); backend untouched (no backend validation owed — verified by
+  `git status`); the renderer was exercised over every line shape the four
+  documents actually use.
+- **NOT in this PR, deliberately**: registration acceptance wiring and
+  `LEGAL_IN_FORCE = true` (owner, after counsel); a cookie banner (the app
+  sets only functional auth tokens — stated in the privacy draft); versioned
+  acceptance records (wanted the moment acceptance is wired, pointless
+  before).
+- **SAME DAY, ops act completing P0-6's queue**: `.ops/provision-jobs-worker`
+  touched on main (4fd73ed) → run #3 SUCCESS: worker re-created from image
+  `main-033e3e5` with **8 secrets + 39 env vars via the fixed jq-over-JSON
+  cloning** (the `az -o tsv` null-collapse that had corrupted its env since
+  2026-07-27 is what this re-run erases), grants 0/2 → phased split, API now
+  runs only identity-requiring queues (`WORKER_QUEUES=bus-matrix,
+  connection-sync-schedule,pipeline-schedule,email-report,morning-brief`),
+  API revision re-pinned at 100%. **The handover is what arms the P0-6 gate**:
+  from now on a dead jobs-worker fails `/api/health`'s queue-listener probe
+  and blocks the next backend promotion. Worker attach NOT yet observed
+  live (sandbox egress cannot reach the ACA domain) — the owner's one-click
+  check is the backend `/api/health` URL, or the next backend deploy's
+  Go-live gate proves it.
+
+**Prior last updated:** 2026-09-01 (P0-6 REMEDIATION — the promote gate asks a real
 question and production can finally page a human; the "no alerting" gap open
 since 2026-08-29 is closed)
 
