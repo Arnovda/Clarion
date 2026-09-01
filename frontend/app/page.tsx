@@ -26,6 +26,23 @@ export default function LoginPage() {
   const [webauthnChallenge, setWebauthnChallenge] = useState<string | null>(null);
   const [preferredMethod, setPreferredMethod] = useState<'totp' | 'webauthn'>('totp');
 
+  // The server refuses login with code `email_unverified` until the
+  // registration email is confirmed — offer a resend instead of the
+  // generic wrong-password message.
+  const [unverified, setUnverified] = useState(false);
+  const [resendState, setResendState] = useState<'idle' | 'sending' | 'sent'>('idle');
+
+  async function resendVerification() {
+    if (!email || resendState === 'sending') return;
+    setResendState('sending');
+    try {
+      await api.post('/auth/resend-verification', { email });
+      setResendState('sent');
+    } catch {
+      setResendState('idle');
+    }
+  }
+
   async function landAfterLogin() {
     const payload = getTokenPayload();
     // Send admins-with-no-connections to /sources so they can connect
@@ -48,6 +65,8 @@ export default function LoginPage() {
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError('');
+    setUnverified(false);
+    setResendState('idle');
     setLoading(true);
     try {
       const res = await api.post('/auth/login', { email, password });
@@ -66,8 +85,15 @@ export default function LoginPage() {
       }
       setAuthTokens(data.token, data.refreshToken);
       await landAfterLogin();
-    } catch {
-      setError('Invalid email or password.');
+    } catch (err: unknown) {
+      const body = (err as { response?: { data?: { code?: string } } })?.response?.data;
+      if (body?.code === 'email_unverified') {
+        // The password was right; the address just isn't confirmed yet.
+        setUnverified(true);
+        setError('Confirm your email address first — check your inbox for the link.');
+      } else {
+        setError('Invalid email or password.');
+      }
     } finally {
       setLoading(false);
     }
@@ -272,6 +298,21 @@ export default function LoginPage() {
           <div className="font-mono text-[10.5px] text-err uppercase tracking-[0.04em]">
             {error}
           </div>
+        )}
+
+        {unverified && (
+          <button
+            type="button"
+            onClick={resendVerification}
+            disabled={resendState === 'sending'}
+            className="self-start text-[11px] font-mono uppercase tracking-[0.08em] text-ocean hover:text-ocean-hover disabled:opacity-50"
+          >
+            {resendState === 'sent'
+              ? 'Link sent — check your inbox'
+              : resendState === 'sending'
+                ? 'Sending…'
+                : 'Send a new verification link →'}
+          </button>
         )}
 
         <Button type="submit" size="lg" className="w-full justify-center mt-3" loading={loading}>

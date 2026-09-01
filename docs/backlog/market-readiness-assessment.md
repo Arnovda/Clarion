@@ -52,6 +52,12 @@ represents a failure a customer cannot recover from alone.
 
 ### P0-1 · The policy that makes login work exists in no migration
 
+> **REMEDIATED 2026-09-01** ([PR #101](https://github.com/Arnovda/Clarion/pull/101),
+> merged): migration 20260901000088 creates `auth_lookup` on all five tables,
+> `e2e/auth-login.spec.ts` logs in as `databridge_app` in CI, and the
+> preflight asserts policy identity. Production settled the same day — see
+> §7 item 1. The original finding follows.
+
 Thirteen places describe an `auth_lookup` RLS policy letting an unauthenticated
 `SELECT` find a user. It is created by exactly one thing:
 `backend/scripts/prod-fix-missing-policies.ts`, a hand-run script no workflow and
@@ -116,6 +122,19 @@ The engineering is ahead of the paperwork: EU residency is real (`westeurope`),
 exists, and `purgeTenant` implements erasure wired to `routes/settings.ts`.
 
 ### P0-5 · Open registration with an unlimited AI budget
+
+> **REMEDIATED 2026-09-01** (second wave-1 PR). Email verification gates login
+> when an email provider is configured (`REQUIRE_EMAIL_VERIFICATION`
+> overrides; environments that cannot send mail create users pre-verified —
+> enforcement without delivery would be a lockout, not a control). New tenants
+> get a non-null `monthly_token_budget` (`DEFAULT_MONTHLY_TOKEN_BUDGET`,
+> 2,000,000 unless overridden). Slug collisions retry over numbered then
+> random candidates instead of 500ing. The duplicate-email check works since
+> P0-1's `auth_lookup` migration and is pinned by `e2e/auth-login.spec.ts`.
+> Redeeming a password-reset/invite link counts as verification, so invited
+> users are never locked out. Pinned by
+> `backend/src/tests/signup-hardening.test.ts` (13 tests, all reproduced red
+> against the pre-fix handler). The original finding follows.
 
 `POST /auth/register` is unauthenticated, creates a tenant plus admin user, and
 performs **no email verification**. New tenants get `monthly_token_budget = NULL`,
@@ -271,6 +290,14 @@ Two things could not be established from the repository and should be answered
 before wave 1 closes — both are single queries against production:
 
 1. The live database's actual policy and role state (P0-1).
+   **ANSWERED 2026-09-01** — the owner ran the extended `prod-checks`
+   preflight against production: `databridge_app` is genuinely
+   `bypassrls=false`, all 71 tenant tables carry a verified tenant-isolation
+   predicate, and `auth_lookup` is present 5/5. Combined with daily logins
+   since the 2026-08-06 role flip, this settles the history: the hand-run
+   `prod-fix-missing-policies.ts` HAD been applied and was carrying login;
+   RLS was genuinely enforcing all along. Migration 20260901000088 now owns
+   those policies, so every freshly built database matches production.
 2. Whether per-tenant warehouse containers have received writes since the mode
    was switched to `per-tenant` on 2026-07-26 (last measured: 0 containers).
 

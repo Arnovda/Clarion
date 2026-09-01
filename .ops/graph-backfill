@@ -1,4 +1,4 @@
-report
+apply
 
 # Stamp `tenantId` onto Neo4j nodes written before the write paths started
 # setting it. Step 2 of 3 towards tenant-scoping the semantic graph:
@@ -27,3 +27,8 @@ report
 # GUESS: an entity whose mirror row is gone (a CrossSourceView with no
 # connectionId) is reported, never attributed. It exits non-zero while anything
 # remains unstamped, and that exit code is the gate on step 3.
+
+# 2026-09-01: re-run after fixing the workflow update path (az job update --args)
+# 2026-09-01: trigger apply under image main-c8f8675 (env-var mode fix deployed)
+# 2026-09-01: re-run with config-visibility diagnostics (auth failure triage)
+# 2026-09-01: re-run after fixing the tsv null-collapse env cloning (jq parse)
