@@ -310,7 +310,7 @@ async function runSyncInBackground(args: {
     // wasn't cleared between queue + start (defence in depth).
     await semanticDb('source_sync_runs')
       .where({ id: syncRunId, tenant_id: tenantId })
-      .update({ status: 'running', started_at: semanticDb.fn.now() });
+      .update({ status: 'running', started_at: semanticDb.fn.now(), heartbeat_at: semanticDb.fn.now() });
     await semanticDb('connections')
       .where({ id: connectionId, tenant_id: tenantId })
       .update({ last_sync_status: 'running' });
@@ -422,7 +422,11 @@ async function runSyncInBackground(args: {
               await setTenant(tenantId);
               await semanticDb('source_sync_runs')
                 .where({ id: syncRunId, tenant_id: tenantId })
-                .update({ row_counts: JSON.stringify(rowCounts) });
+                // heartbeat_at is what the liveness-based reaper keys on
+                // (services/reapers.ts, P1-1): a run that keeps flushing
+                // progress is alive whatever its age; one that stops is
+                // reaped within ~10 minutes.
+                .update({ row_counts: JSON.stringify(rowCounts), heartbeat_at: semanticDb.fn.now() });
             } catch { /* heartbeat swallowed */ }
           })().catch(() => undefined);
         }

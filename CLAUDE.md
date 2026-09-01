@@ -31,7 +31,93 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-09-01 (P1-5 REMEDIATION — the operator has a console:
+**Last updated:** 2026-09-01 (P1-1 REMEDIATION — one tenant's build no longer
+blocks every other's, and the reapers judge LIVENESS instead of age)
+
+**Third wave-2 PR of the market-readiness remediation plan. Two coupled
+halves — you cannot raise parallelism while the reapers kill healthy long
+work on age:**
+- **THE REAPERS ARE LIVENESS-BASED NOW (`services/reapers.ts`, extracted
+  from index.ts; migration 90 adds `source_sync_runs.heartbeat_at` +
+  `connections.profiling_heartbeat_at`).** The defect was reproduced red
+  at SQL level first: a RUNNING sync started 31 minutes ago — with
+  activity seconds old — was failed by the verbatim old rule
+  (`COALESCE(started_at, queued_at) < NOW() - 30 min`). Age cannot
+  separate "orphaned" from "big". New rule: reap when the HEARTBEAT is
+  quiet for 10 minutes (a dead process stops stamping within seconds), or
+  at a 4-hour absolute ceiling (a wedged-but-beating process); rows
+  written before the columns existed COALESCE back to their start stamps.
+  Sync heartbeats ride the orchestrator's EXISTING periodic progress
+  flush (one added column on the same UPDATE) plus the status→running
+  stamp. **Profiling beats on a TIMER, not at phase boundaries —
+  `withHeartbeat` (`services/heartbeat.ts`) wraps `runSchemaProfiler` at
+  its export boundary** (the body renamed `runSchemaProfilerBody`),
+  because Pass B is ONE model call that can run for minutes on a large
+  source and a phase boundary is exactly what does not happen while it
+  runs; every caller present and future is covered at that one boundary.
+  The legacy-ingestion reaper's own bug died in passing: it keyed on
+  `connections.created_at` — the CONNECTION's creation — so any ingestion
+  on a connection older than 30 minutes was reaped within one tick of
+  starting; it reaps only at the ceiling now (no start stamp exists to do
+  better).
+- **PER-TENANT FAIRNESS ON THE AI QUEUES (`jobs/tenantFairness.ts`)**:
+  schema-profiling and bus-matrix go concurrency 1 → 2, and
+  `deferWhenTenantBusy` keeps one tenant from taking both slots — a job
+  whose tenant already has an ACTIVE job on the same queue is pushed to
+  the delayed set (BullMQ `moveToDelayed` + `DelayedError`, retried in
+  20s) so the freed slot goes to somebody else. The truth is read from
+  BullMQ's own active set — no side lock to renew or leak, which matters
+  because a build legitimately outlives any comfortable lock TTL. The
+  guard FAILS OPEN on any error (fairness must never break the work), and
+  the same-instant race it tolerates is fine: the enqueue-side dedupes
+  (one build per tenant 409s, one profiling per connection) already
+  prevent harmful duplicates, and per-tenant AI spend stays bounded by
+  the token budget — global concurrency 1 was rationing everyone to
+  protect nobody.
+- **QUEUE POSITION ("show it meanwhile")**: `/bus-matrix/active` returns
+  `buildsAhead` for waiting/delayed jobs (active count + place in the
+  waiting list, null-safe — the position is a nicety that must never fail
+  the endpoint), and the Build page polls it every 8s ONLY while the SSE
+  stream has not spoken yet, rendering "Waiting for a build slot — N
+  builds ahead of you" instead of a spinner that cannot say why.
+- **THE REPLICA-PIN CLAIM WAS HALF STALE, and the correction is recorded
+  where the pin lives**: `infra/variables.tf`'s description said the
+  reapers run "in EVERY worker process" — that stopped being true on
+  2026-07-27 when `RUN_SCHEDULERS=false` confined schedules, crash
+  recovery and reapers to the API. With liveness-based reaping the pin's
+  remaining reason is gone too — BUT `max_replicas` without a KEDA scale
+  rule is INERT on Container Apps, so the default stays 1 with an honest
+  description: scaling out is now an unblocked CAPACITY decision (raise
+  min too, or add a Redis queue-depth rule), not a silent knob that
+  pretends. Same note in `.github/workflows/provision-jobs-worker.yml`.
+- Validation: backend `npm run check` clean; full vitest **55 files / 563
+  passed / 4 skipped** (6 new in `reapers.test.ts`: the exact
+  fresh-heartbeat-survives shape the old rule killed, quiet-heartbeat
+  reaped, pre-migration NULL fallback, ceiling beats a wedged-but-beating
+  run, profiling both directions; plus 3 fairness tests on fakes incl.
+  fail-open and self-not-counted); all nine ratchets green from the repo
+  root (the new queue getters imported statically — the first draft's two
+  dynamic imports would have tripped the ratchet); `e2e/rls.spec.ts` +
+  `e2e/auth-login.spec.ts` **8/8** against a live backend as
+  `databridge_app`; frontend `tsc` clean, `app/build/page.tsx` lint-clean,
+  `next build` green **46/46** (`/build` 10.6 kB); provision workflow YAML
+  parses; test-suite note: `uq_source_sync_runs_inflight` (one in-flight
+  run per connection) forced one synthetic connection per running row in
+  the reaper tests — the constraint working as designed.
+- **NOT runtime-exercised**: a real BullMQ defer→delayed→resume cycle
+  (needs two long AI jobs racing in a live worker — watch the first
+  concurrent Analyse/build in production for the 'deferring so the slot
+  goes to another tenant' log line) and a real reaped-then-alive sync
+  (the heartbeat column fills on the next production sync's first
+  progress flush).
+- **NOT in this PR, deliberately**: actually scaling the worker (capacity
+  decision: min replicas or a KEDA depth rule — unblocked, documented,
+  not taken silently); fairness on the transformation queues (they are
+  cheap-per-job and already concurrency 2; the AI queues were the named
+  finding); a queue-position display for profiling (the Build page was
+  the named pain).
+
+**Prior last updated:** 2026-09-01 (P1-5 REMEDIATION — the operator has a console:
 `/admin/tenants` with suspend/resume, budgets, sync inspection and AUDITED
 15-minute impersonation; supporting a customer no longer means a database
 session)

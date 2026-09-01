@@ -28,10 +28,11 @@
 
 import { Worker, Job } from 'bullmq';
 import { getRedisConnection } from './redis';
-import { SchemaProfilingJobData, IngestionJobData, TransformationJobData, EmailReportJobData, BusMatrixJobData, ConnectionSyncScheduleJobData, PipelineScheduleJobData } from './queues';
+import { SchemaProfilingJobData, IngestionJobData, TransformationJobData, EmailReportJobData, BusMatrixJobData, ConnectionSyncScheduleJobData, PipelineScheduleJobData, getSchemaProfilingQueue, getBusMatrixQueue } from './queues';
 import { registerJobAbortController, unregisterJob, isJobCancelled, watchForCancellation } from './cancellation';
 import { shouldRunQueue } from './queueRoles';
 import { runSchemaProfiler } from '../semantic/SchemaProfiler';
+import { deferWhenTenantBusy } from './tenantFairness';
 import { notify } from '../services/notificationService';
 import { createSourceConnector } from '../connectors/ConnectorFactory';
 import { tenantQuery } from '../services/tenantQuery';
@@ -342,8 +343,15 @@ export function startWorkers(): void {
   // Schema profiling worker
   const schemaWorker = makeWorker<SchemaProfilingJobData>(
     'schema-profiling',
-    async (job) => withTenantAiContext(job.data.tenantId, () => processSchemaProfilingJob(job)),
-    { ...defaultOpts, concurrency: 1 }, // AI calls are expensive, limit to 1
+    async (job, token) => {
+      // P1-1: two TENANTS profile in parallel; one tenant never takes both
+      // slots (see jobs/tenantFairness.ts). AI spend per tenant stays
+      // bounded by the token budget, which is the real cost control —
+      // global concurrency 1 was rationing everyone to protect nobody.
+      await deferWhenTenantBusy(job, getSchemaProfilingQueue(), token);
+      return withTenantAiContext(job.data.tenantId, () => processSchemaProfilingJob(job));
+    },
+    { ...defaultOpts, concurrency: 2 },
   );
   schemaWorker?.on('failed', (job, err) => {
     log.error({ err }, `schema-profiling job ${job?.id} failed`);
@@ -459,10 +467,18 @@ export function startWorkers(): void {
   // serialises product builds; running multiple in parallel offers no win.
   const busMatrixWorker = makeWorker<BusMatrixJobData>(
     'bus-matrix',
-    async (job) => withTenantAiContext(job.data.tenantId, () => processBusMatrixJob(job)),
+    async (job, token) => {
+      // P1-1: same fairness as schema-profiling — two tenants build in
+      // parallel, one tenant's build no longer blocks every other's. The
+      // enqueue-side one-build-per-tenant 409 already prevents same-tenant
+      // duplicates on the design path; this also covers refresh/pipeline
+      // jobs sharing the queue.
+      await deferWhenTenantBusy(job, getBusMatrixQueue(), token);
+      return withTenantAiContext(job.data.tenantId, () => processBusMatrixJob(job));
+    },
     {
       ...defaultOpts,
-      concurrency: 1,
+      concurrency: 2,
       // Allow long-running jobs without lock loss. Bus matrix builds can take
       // many minutes on large schemas (AI design + N transformations).
       lockDuration: 5 * 60 * 1000,        // 5 min lock

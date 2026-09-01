@@ -127,6 +127,13 @@ jobs:
           say "Prepared ${#ENV_ARGS[@]} environment variables"
 
           # ── Create (or update) the worker app ─────────────────────────────
+          # Replicas stay 1/1 deliberately. The reaper-based reasons for the
+          # pin are gone (P1-1: reapers are liveness-based and confined to
+          # the API by RUN_SCHEDULERS=false), but max-replicas without a
+          # KEDA scale rule is inert on Container Apps — scaling out is a
+          # capacity decision: raise BOTH numbers here, or add a Redis
+          # queue-depth rule. Parallelism today comes from per-queue
+          # concurrency (2 on the AI queues, per-tenant fair).
           if az containerapp show -n "$WORKER" -g "$RG" >/dev/null 2>&1; then
             say "\`$WORKER\` already exists — updating it"
             az containerapp update -n "$WORKER" -g "$RG" \

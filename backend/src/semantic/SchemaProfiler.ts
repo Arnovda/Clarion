@@ -51,6 +51,8 @@ export {
   describeFkVerdict,
   type FkVerdict,
 } from './fkVerification';
+import { withHeartbeat } from '../services/heartbeat';
+import { tenantQuery } from '../services/tenantQuery';
 import { verifyFkCandidate, describeFkVerdict } from './fkVerification';
 import { resolveDocumentedReferences } from './referenceResolution';
 
@@ -105,7 +107,39 @@ export interface ProfilerOptions {
  * pass logs a warning, the next stage still runs with what it has, and the
  * profiler always returns success unless the introspection itself blows up.
  */
+/**
+ * P1-1 liveness heartbeat, at the ONE boundary every caller passes through.
+ * The reaper (services/reapers.ts) fails a 'running' profiling whose
+ * heartbeat goes quiet for 10 minutes; stamping only at phase boundaries
+ * would re-create the false positive being removed, because Pass B is a
+ * single model call that can run for minutes on a large source. So the
+ * stamp is a TIMER owned here, beating every 60s whatever the pipeline is
+ * doing, and dying with the process — which is exactly the signal. Without
+ * a resolvable tenant (the RLS-broken fallback fetch path, which the body
+ * already warns loudly about) the beat is disabled and the reaper's
+ * COALESCE to profiling_started_at applies.
+ */
 export async function runSchemaProfiler(
+  connectionId: number,
+  onProgress?: (p: ProfilerProgress) => void,
+  connectorOverride?: BaseConnector,
+  options?: ProfilerOptions,
+): Promise<ProfilerResult> {
+  const connRow = (options?.connection as Record<string, unknown> | undefined)
+    ?? await semanticDb('connections').where({ id: connectionId }).first();
+  const hbTenantId = Number(connRow?.tenant_id);
+  const stamp = Number.isFinite(hbTenantId) && hbTenantId > 0
+    ? () => tenantQuery(hbTenantId, (trx) =>
+        trx('connections')
+          .where({ id: connectionId, tenant_id: hbTenantId })
+          .update({ profiling_heartbeat_at: trx.fn.now() }))
+    : async () => undefined;
+  return withHeartbeat(stamp, () =>
+    runSchemaProfilerBody(connectionId, onProgress, connectorOverride,
+      connRow ? { ...(options ?? {}), connection: connRow } : options));
+}
+
+async function runSchemaProfilerBody(
   connectionId: number,
   onProgress?: (p: ProfilerProgress) => void,
   connectorOverride?: BaseConnector,

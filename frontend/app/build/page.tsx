@@ -276,6 +276,39 @@ function Build() {
     return () => { cancelled = true; };
   }, [attachToJob]);
 
+  // P1-1 queue position: with two build slots shared fairly across
+  // customers, a build can genuinely queue behind another workspace's now.
+  // A spinner that cannot say why reads as broken — so while the stream has
+  // not spoken yet, ask the server where the job stands and say it in
+  // words. Stops mattering the moment a real SSE phase arrives (the phase
+  // check below no longer matches) and costs one light request per 8s only
+  // during that window.
+  useEffect(() => {
+    if (!run || run.done) return;
+    const waitingPhase = run.phase === 'Starting…' || run.phase.startsWith('Waiting for a build slot');
+    if (!waitingPhase) return;
+    const t = window.setInterval(async () => {
+      try {
+        const res = await api.get('/products/bus-matrix/active');
+        const a = res.data?.data as { jobId?: string; state?: string; buildsAhead?: number | null } | null;
+        const cur = runRef.current;
+        if (!cur || cur.done || !a || a.jobId !== cur.jobId) return;
+        if (a.state === 'waiting' || a.state === 'delayed') {
+          const n = a.buildsAhead ?? 0;
+          const msg = n > 0
+            ? `Waiting for a build slot — ${n} build${n === 1 ? '' : 's'} ahead of you`
+            : 'Waiting for a build slot…';
+          setRun((r) => (
+            r && !r.done && (r.phase === 'Starting…' || r.phase.startsWith('Waiting for a build slot'))
+              ? { ...r, phase: msg }
+              : r
+          ));
+        }
+      } catch { /* position is a nicety — never surface an error for it */ }
+    }, 8000);
+    return () => window.clearInterval(t);
+  }, [run]);
+
   const startBuild = useCallback(async (connectionId: number) => {
     setConfirmRebuild(null);
     try {
