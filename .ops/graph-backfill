@@ -27,3 +27,5 @@ apply
 # GUESS: an entity whose mirror row is gone (a CrossSourceView with no
 # connectionId) is reported, never attributed. It exits non-zero while anything
 # remains unstamped, and that exit code is the gate on step 3.
+
+# 2026-09-01: re-run after fixing the workflow update path (az job update --args)

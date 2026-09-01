@@ -112,32 +112,37 @@ jobs:
           ARGS=("dist/scripts/backfillGraphTenant.js")
           if [ "$MODE" = "apply" ]; then ARGS+=("--apply"); fi
 
+          # The job is DELETED and RECREATED on every run rather than updated
+          # in place. `az containerapp job update --args` parses its value
+          # differently from `create` (one token, not a list), so the
+          # two-element apply-mode args died with "unrecognized arguments:
+          # --apply" — measured on run #2, the first time the update path ever
+          # carried two args; run #1 had created the job in one-arg report
+          # mode and worked. The job holds no state worth preserving between
+          # runs, and the create path is the one that demonstrably works for
+          # every mode.
           if az containerapp job show -n "$JOB" -g "$RG" >/dev/null 2>&1; then
-            say "Refreshing \`$JOB\` to the backend's current image"
-            az containerapp job update -n "$JOB" -g "$RG" \
-              --image "$IMAGE" \
-              --command "node" --args "${ARGS[@]}" \
-              --replace-env-vars "${ENV_ARGS[@]}" >/dev/null || {
-                echo "::error::could not update the job"; exit 1; }
-          else
-            say "Creating \`$JOB\` (manual trigger, one execution, no ingress)"
-            az containerapp job create -n "$JOB" -g "$RG" \
-              --environment "$ENV_ID" \
-              --trigger-type Manual \
-              --replica-timeout 1800 \
-              --replica-retry-limit 0 \
-              --parallelism 1 \
-              --replica-completion-count 1 \
-              --image "$IMAGE" \
-              --registry-server "$REGISTRY" \
-              --registry-username "$REG_USER" \
-              --registry-password "secretref:acr-password" \
-              --cpu 0.5 --memory 1Gi \
-              --secrets "${SECRET_ARGS[@]}" \
-              --env-vars "${ENV_ARGS[@]}" \
-              --command "node" --args "${ARGS[@]}" >/dev/null || {
-                echo "::error::could not create the job"; exit 1; }
+            say "Deleting the previous \`$JOB\` (recreated fresh each run)"
+            az containerapp job delete -n "$JOB" -g "$RG" --yes >/dev/null || {
+              echo "::error::could not delete the existing job"; exit 1; }
           fi
+          say "Creating \`$JOB\` (manual trigger, one execution, no ingress)"
+          az containerapp job create -n "$JOB" -g "$RG" \
+            --environment "$ENV_ID" \
+            --trigger-type Manual \
+            --replica-timeout 1800 \
+            --replica-retry-limit 0 \
+            --parallelism 1 \
+            --replica-completion-count 1 \
+            --image "$IMAGE" \
+            --registry-server "$REGISTRY" \
+            --registry-username "$REG_USER" \
+            --registry-password "secretref:acr-password" \
+            --cpu 0.5 --memory 1Gi \
+            --secrets "${SECRET_ARGS[@]}" \
+            --env-vars "${ENV_ARGS[@]}" \
+            --command "node" --args "${ARGS[@]}" >/dev/null || {
+              echo "::error::could not create the job"; exit 1; }
 
           # ── Run it ─────────────────────────────────────────────────────────
           EXEC=$(az containerapp job start -n "$JOB" -g "$RG" --query name -o tsv)
