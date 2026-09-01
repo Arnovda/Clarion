@@ -28,6 +28,13 @@
  *   npx tsx backend/src/scripts/backfillGraphTenant.ts          # report only
  *   npx tsx backend/src/scripts/backfillGraphTenant.ts --apply  # write
  *
+ * `GRAPH_BACKFILL_MODE=apply` in the environment means the same as `--apply`.
+ * It exists because the Container Apps Job that runs this in production is
+ * created with `az containerapp job create`, whose `--args` parser rejects
+ * any value beginning with `--` ("unrecognized arguments: --apply", measured
+ * 2026-09-01 on the first apply-mode run). Environment variables have no such
+ * restriction, so the workflow passes the mode that way.
+ *
  * It lives under src/, not scripts/, for one reason: Neo4j runs with
  * `external_enabled = false`, so nothing outside the Container Apps environment
  * can reach it — correctly. Only src/ is compiled into the production image, so
@@ -38,7 +45,9 @@
 import { semanticDb } from '../db/knex';
 import { getSession, closeDriver } from '../db/neo4j';
 
-const APPLY = process.argv.includes('--apply');
+const APPLY =
+  process.argv.includes('--apply') ||
+  (process.env.GRAPH_BACKFILL_MODE ?? '').trim().toLowerCase() === 'apply';
 
 interface Plan {
   label: string;
