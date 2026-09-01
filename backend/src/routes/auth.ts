@@ -15,7 +15,18 @@ import {
   loginSchema,
   forgotPasswordSchema,
   resetPasswordSchema,
+  verifyEmailSchema,
+  resendVerificationSchema,
 } from '../middleware/schemas';
+import {
+  emailVerificationRequired,
+  issueVerificationToken,
+  hashVerificationToken,
+  sendVerificationEmail,
+  defaultMonthlyTokenBudget,
+  slugCandidates,
+} from '../services/signup';
+import { sendEmail } from '../services/emailService';
 import {
   createRefreshToken,
   validateRefreshToken,
@@ -78,21 +89,52 @@ router.post('/register', validate(registerSchema), async (req: Request, res: Res
       return;
     }
 
-    // Create tenant
-    const slug = companyName
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, '-')
-      .replace(/^-|-$/g, '');
+    // Create tenant. The slug lands in a UNIQUE column, so the second
+    // customer with the same company name used to 500 on the raw 23505.
+    // Insert-and-retry over the candidate list rather than check-then-insert
+    // — two concurrent registrations for the same name would both pass the
+    // check and one would still hit the constraint.
+    //
+    // monthly_token_budget is stamped NON-NULL on purpose: NULL means
+    // unlimited to the budget enforcement in services/aiBudget.ts, and an
+    // unauthenticated stranger must not be able to register into unlimited
+    // AI spend. Operators raise the budget per tenant when a real customer
+    // needs more.
+    const tokenBudget = defaultMonthlyTokenBudget();
+    let tenantId: number | null = null;
+    for (const slug of slugCandidates(companyName)) {
+      try {
+        const [tenantRow] = await semanticDb('tenants')
+          .insert({
+            name: companyName.trim(),
+            slug,
+            status: 'active',
+            monthly_token_budget: tokenBudget,
+          })
+          .returning('id');
+        tenantId = typeof tenantRow === 'object' ? (tenantRow as { id: number }).id : (tenantRow as number);
+        break;
+      } catch (err) {
+        const pgCode = (err as { code?: string })?.code;
+        if (pgCode === '23505') continue; // slug taken — try the next candidate
+        throw err;
+      }
+    }
+    if (tenantId == null) {
+      // Every candidate — including a random suffix — collided. Not a state
+      // reachable outside deliberate abuse; refuse rather than loop forever.
+      res.status(409).json({ ok: false, error: 'Could not allocate a workspace identifier — please try again' });
+      return;
+    }
 
-    const [tenantRow] = await semanticDb('tenants')
-      .insert({
-        name: companyName.trim(),
-        slug,
-        status: 'active',
-      })
-      .returning('id');
-
-    const tenantId: number = typeof tenantRow === 'object' ? (tenantRow as { id: number }).id : (tenantRow as number);
+    // Email verification: when enforcement is on, the account starts
+    // unverified, gets an emailed confirmation link, and receives NO tokens
+    // until the address is proven (login refuses with `email_unverified`).
+    // When it is off — no email provider, so nothing could ever deliver the
+    // link — the user is created pre-verified, which also means a later
+    // enforcement flip cannot retroactively lock existing accounts out.
+    const requiresVerification = emailVerificationRequired();
+    const verification = requiresVerification ? issueVerificationToken() : null;
 
     // RLS WITH CHECK on `users` requires tenant_id to match
     // app.current_tenant. /register is unauthenticated so we haven't
@@ -110,12 +152,30 @@ router.post('/register', validate(registerSchema), async (req: Request, res: Res
           display_name: displayName.trim(),
           role: 'admin',
           is_active: true,
+          email_verified_at: requiresVerification ? null : new Date().toISOString(),
+          email_verification_token: verification?.hash ?? null,
+          email_verification_expires: verification?.expiresAt.toISOString() ?? null,
         })
         .returning('id');
       return row;
     });
 
     const userId: number = typeof userRow === 'object' ? (userRow as { id: number }).id : (userRow as number);
+
+    if (requiresVerification && verification) {
+      // Send the confirmation link and stop here — no tokens until the
+      // inbox is proven. The frontend renders the check-your-email state
+      // off `requiresVerification`.
+      await sendVerificationEmail(normalizedEmail, displayName.trim(), verification.raw);
+      res.status(201).json({
+        ok: true,
+        data: {
+          requiresVerification: true,
+          message: 'Check your inbox — confirm your email address to activate the workspace.',
+        },
+      });
+      return;
+    }
 
     // Sign JWT access token (short-lived) + create refresh token
     // (long-lived, server-side revocable).
@@ -194,6 +254,21 @@ router.post('/login', validate(loginSchema), async (req: Request, res: Response,
     );
     if (!tenant || tenant.status !== 'active') {
       res.status(403).json({ ok: false, error: 'Your organization has been suspended' });
+      return;
+    }
+
+    // Email-verification gate — only while enforcement is on (see
+    // services/signup.ts). Checked AFTER the password so the answer leaks
+    // nothing to someone who doesn't hold the credentials, and BEFORE the
+    // MFA gate so an unverified account is told the actual blocker instead
+    // of being walked through a second factor it then fails anyway. The
+    // machine-readable `code` is what the frontend keys the resend UI on.
+    if (emailVerificationRequired() && !user.email_verified_at) {
+      res.status(403).json({
+        ok: false,
+        error: 'Please confirm your email address first — check your inbox for the verification link.',
+        code: 'email_unverified',
+      });
       return;
     }
 
@@ -449,7 +524,6 @@ router.post('/forgot-password', validate(forgotPasswordSchema), async (req: Requ
     // out after the very first forgot-password attempt in prod.
     const resetUrl = `${config.appUrl}/reset-password?token=${rawToken}&email=${encodeURIComponent(normalizedEmail)}`;
     try {
-      const { sendEmail } = await import('../services/emailService');
       await sendEmail({
         to: normalizedEmail,
         subject: 'Reset your Clarion password',
@@ -525,6 +599,13 @@ router.post('/reset-password', validate(resetPasswordSchema), async (req: Reques
         password_hash: passwordHash,
         password_reset_token: null,
         password_reset_expires: null,
+        // Redeeming a token that only ever existed inside an email IS proof
+        // of inbox control — the same proof /verify-email collects. Without
+        // this, an INVITED user (created unverified, onboarded through this
+        // very route) could never log in while verification is enforced.
+        email_verified_at: user.email_verified_at ?? new Date().toISOString(),
+        email_verification_token: null,
+        email_verification_expires: null,
         updated_at: new Date().toISOString(),
       }),
     );
@@ -539,6 +620,83 @@ router.post('/reset-password', validate(resetPasswordSchema), async (req: Reques
     }
 
     res.json({ ok: true, data: { message: 'Password has been reset. You can now log in.' } });
+  } catch (err) { next(err); }
+});
+
+// ---------------------------------------------------------------------------
+// POST /api/auth/verify-email — Prove control of the registered address
+//
+// Body: { email, token }. The raw token arrives from the emailed link;
+// the row stores its SHA-256 (same discipline as password reset). On a
+// match inside the expiry window the account is marked verified and the
+// login gate opens. Unauthenticated by construction — the whole point is
+// that the user cannot log in yet.
+// ---------------------------------------------------------------------------
+
+router.post('/verify-email', validate(verifyEmailSchema), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { email, token } = req.body as { email: string; token: string };
+    const tokenHash = hashVerificationToken(token);
+
+    // Lookup under unauthQuery (auth_lookup carve-out), write under
+    // tenantScopedWrite — the same two-phase shape as reset-password and
+    // for the same reason: auth_lookup is FOR SELECT only.
+    const user = await unauthQuery((trx) =>
+      trx('users')
+        .where({ email, email_verification_token: tokenHash, is_active: true })
+        .where('email_verification_expires', '>', new Date().toISOString())
+        .first(),
+    );
+
+    if (!user) {
+      res.status(400).json({ ok: false, error: 'Invalid or expired verification link' });
+      return;
+    }
+
+    await tenantScopedWrite(user.tenant_id, (trx) =>
+      trx('users').where({ id: user.id }).update({
+        email_verified_at: user.email_verified_at ?? new Date().toISOString(),
+        email_verification_token: null,
+        email_verification_expires: null,
+        updated_at: new Date().toISOString(),
+      }),
+    );
+
+    res.json({ ok: true, data: { message: 'Email confirmed. You can now sign in.' } });
+  } catch (err) { next(err); }
+});
+
+// ---------------------------------------------------------------------------
+// POST /api/auth/resend-verification — Re-send the confirmation link
+//
+// Body: { email }. Enumeration-safe like forgot-password: the response is
+// identical whether the address exists, is already verified, or was never
+// registered. Rotates the stored token so only the newest link works.
+// ---------------------------------------------------------------------------
+
+router.post('/resend-verification', validate(resendVerificationSchema), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { email } = req.body as { email: string };
+    const generic = { ok: true, data: { message: 'If an unverified account exists, a new link has been sent.' } };
+
+    const user = await unauthQuery((trx) =>
+      trx('users').where({ email, is_active: true }).first(),
+    );
+    if (!user || user.email_verified_at) {
+      res.json(generic);
+      return;
+    }
+
+    const verification = issueVerificationToken();
+    await tenantScopedWrite(user.tenant_id, (trx) =>
+      trx('users').where({ id: user.id }).update({
+        email_verification_token: verification.hash,
+        email_verification_expires: verification.expiresAt.toISOString(),
+      }),
+    );
+    await sendVerificationEmail(email, user.display_name ?? null, verification.raw);
+
+    res.json(generic);
   } catch (err) { next(err); }
 });
 
