@@ -89,13 +89,61 @@ plumbing underneath.**
   all eight ratchets green from the repo root, frontend `tsc` clean, new/changed
   files lint-clean (the four findings in `notebooks/[id]/page.tsx` are
   pre-existing — verified by re-running the linter against `HEAD`), `next build`
-  green 40/40 (`/notebooks/[id]` 8.4 → 14.8 kB). The panel was checked by
-  RENDERING it: a throwaway `/dev/notebook-ai` harness screenshotted in real
-  Chromium in three states (mid-run, idle-new-cell, collapsed pill), then deleted.
+  green 40/40 (`/notebooks/[id]` 8.4 → 16.9 kB), diff engine dry-run 20/20 in
+  real Node. Both the panel and the diff were checked by RENDERING them: a
+  throwaway `/dev/notebook-ai` harness screenshotted in real Chromium (mid-run,
+  idle-new-cell, collapsed pill; then a real SQL edit, a folded 30-line cell, a
+  brand-new cell, and the panel's kept/waiting history), then deleted. That
+  check is what caught the green pending bubble and a duplicated instruction.
+- **THE AI NO LONGER WRITES A CELL — IT PROPOSES ONE (same day, owner: *"show
+  what will be deleted from the code and what will be added, then the user can
+  accept or reject… check the new logic and if it's not right reject it and keep
+  his old code"* — the Databricks pattern).** The first version overwrote the
+  cell and offered *Insert again*, which is not the same thing at all: once the
+  old code is gone, "keep my old code" is an undo the product does not have.
+  Now a generated answer lands as a **pending proposal** on the target cell,
+  rendered as a diff with **Keep** / **Discard**, and nothing is written until
+  Keep.
+- **NEW `frontend/app/notebooks/[id]/diff.ts`** — a classic LCS line diff, pure
+  and dependency-free (the same house call as the hand-rolled xlsx reader).
+  **Minimality is the whole point**: a naive implementation renders a one-line
+  edit as "everything removed, everything added", which tells the reviewer
+  nothing. Verified by DRY-RUN in real Node over 20 cases — identical text,
+  single-line edit, pure insert, pure delete, empty either side, reordering,
+  and two the eye would miss: **a trailing newline is not a line** and **CRLF vs
+  LF is not a change**, both of which would otherwise show a phantom diff.
+  `collapseUnchanged` folds long untouched runs to `⋯ N unchanged lines` (click
+  to expand) so a one-line edit in a 200-line query is not 199 lines from the
+  change. Above 2,000 lines it degrades honestly to block replacement rather
+  than building a four-million-cell table.
+- **NEW `CellDiff.tsx` renders IN THE CELL, not in the panel.** The panel is
+  440px and code needs width — but the real reason is that "is this logic
+  right?" is a question about the cell, and it is easiest to answer where the
+  code will live. Old and new line numbers side by side, `+`/`−` gutter,
+  green/red rows, `whitespace-pre-wrap` so a long SQL line cannot hide off the
+  right edge unreviewed. The decision bar LEADS so a long diff never pushes the
+  buttons below the fold.
+- **Three rules that make reject mean what it says.** (a) The editor is
+  REPLACED by the diff while a decision is pending — two editable versions of
+  one cell is a state nobody can reason about. (b) **Run and Run All refuse a
+  cell with a pending suggestion**: the cell still holds the OLD code, so
+  running it would attribute an old result to the new logic. (c) The reject
+  baseline is the user's OWN code, carried across a chain of follow-ups, so
+  discarding the third suggestion restores what the user wrote — not the first
+  suggestion's output. A proposal that CREATED its cell deletes it on discard.
+- **The outcome comes back to the panel**: messages carry
+  `decision: pending | accepted | rejected | superseded`, so the history reads
+  *Waiting for you* / *Kept* / *Discarded* instead of implying every suggestion
+  was applied. **A pending decision is deliberately NOT green** — the render
+  check caught it rendering in the success colour, which says "done" about the
+  one thing that is not.
 - **NOT done, deliberately**: the collapsed pill has no stop of its own (a button
-  inside a button is invalid; open it, then stop). Neither Stop path has been
-  exercised against a live AI backend — watch the first real cancel, since that
-  is where `sse.signal` reaches the Anthropic stream for the first time.
+  inside a button is invalid; open it, then stop). The dashboard assistant is
+  NOT given a diff — it edits a spec, not code the user wrote, and it already
+  has the equivalent (unsaved state + Discard). Neither Stop path nor the
+  proposal flow has been exercised against a live AI backend — watch the first
+  real cancel, since that is where `sse.signal` reaches the Anthropic stream for
+  the first time.
 
 **Prior last updated:** 2026-08-31 (DASHBOARD EDITING — the filter that never reached
 the KPI cards, an assistant that gets out of the way, and one card at a time)

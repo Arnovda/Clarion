@@ -24,11 +24,14 @@ import { Check, ChevronDown, Copy, CornerDownLeft, Sparkles, Square, X } from 'l
 // a cell's AI button now aims THIS panel at that cell.
 // ---------------------------------------------------------------------------
 
+/**
+ * The cell the panel is aimed at. There being no target at all is expressed
+ * by `target === null`, so both fields are always real once one exists.
+ */
 export interface AssistantTarget {
-  /** null while the answer will go into a cell that does not exist yet. */
-  cellId: number | null;
+  cellId: number;
   /** 1-based position shown to the user. */
-  index: number | null;
+  index: number;
   language: 'sql' | 'python';
   /** True when the cell already has code — the model is editing, not writing. */
   hasCode: boolean;
@@ -42,8 +45,14 @@ export interface NotebookChatMessage {
   /** The code the assistant wrote — the substance of an assistant turn. */
   code?: string;
   language?: 'sql' | 'python';
-  /** Where it landed, e.g. "Cell 3 · SQL". */
+  /** Which cell it was proposed for, e.g. "Cell 3 · SQL". */
   targetLabel?: string;
+  /**
+   * What became of the suggestion. The assistant proposes; the cell is where
+   * it is accepted or rejected, and this is how that outcome comes back —
+   * without it the history reads as though every suggestion was applied.
+   */
+  decision?: 'pending' | 'accepted' | 'rejected' | 'superseded';
   working?: boolean;
   startedAt?: number;
   errorDetail?: string;
@@ -76,14 +85,18 @@ function Elapsed({ since, active }: { since?: number; active: boolean }) {
 function CollapsedMessage({ msg, onExpand }: { msg: NotebookChatMessage; onExpand: () => void }) {
   const label = msg.errorDetail
     ? 'Could not write that'
-    : msg.text.split('\n')[0].slice(0, 64) || 'Code written';
+    : msg.decision === 'rejected' ? 'Discarded — your code kept'
+      : msg.decision === 'accepted' ? `Kept — ${msg.targetLabel ?? 'cell updated'}`
+        : msg.text.split('\n')[0].slice(0, 64) || 'Code written';
   return (
     <button
       type="button"
       onClick={onExpand}
       className="w-full flex items-center gap-2 text-left px-3 py-1.5 rounded-md border border-line bg-softer hover:bg-soft transition-colors group/collapsed"
     >
-      <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${msg.errorDetail ? 'bg-warn' : 'bg-ok'}`} />
+      <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${
+        msg.errorDetail ? 'bg-warn' : msg.decision === 'rejected' ? 'bg-line-strong' : 'bg-ok'
+      }`} />
       <span className="flex-1 min-w-0 truncate text-[12px] text-muted group-hover/collapsed:text-ink-2 transition-colors">
         {label}
       </span>
@@ -92,7 +105,9 @@ function CollapsedMessage({ msg, onExpand }: { msg: NotebookChatMessage; onExpan
   );
 }
 
-function CodeBlock({ code, onInsertAgain }: { code: string; onInsertAgain: () => void }) {
+function CodeBlock({
+  code, onProposeAgain, canProposeAgain,
+}: { code: string; onProposeAgain: () => void; canProposeAgain: boolean }) {
   const [copied, setCopied] = useState(false);
   return (
     <div className="mt-2 rounded-md border border-line bg-raised overflow-hidden">
@@ -100,15 +115,19 @@ function CodeBlock({ code, onInsertAgain }: { code: string; onInsertAgain: () =>
         {code}
       </pre>
       <div className="flex items-center gap-1 px-2 py-1 border-t border-line bg-softer">
-        <button
-          type="button"
-          onClick={onInsertAgain}
-          className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-mono uppercase tracking-[0.08em] text-muted hover:text-ocean transition-colors"
-          title="Put this code back in the cell"
-        >
-          <CornerDownLeft className="w-3 h-3" strokeWidth={2} />
-          Insert again
-        </button>
+        {/* Only once the decision is behind you: while a proposal is pending
+            in the cell, "propose again" would mean replacing it with itself. */}
+        {canProposeAgain && (
+          <button
+            type="button"
+            onClick={onProposeAgain}
+            className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-mono uppercase tracking-[0.08em] text-muted hover:text-ocean transition-colors"
+            title="Suggest this code for the cell again"
+          >
+            <CornerDownLeft className="w-3 h-3" strokeWidth={2} />
+            Suggest again
+          </button>
+        )}
         <button
           type="button"
           onClick={() => {
@@ -147,7 +166,8 @@ interface NotebookAssistantProps {
   target: AssistantTarget | null;
   /** Aim at the notebook as a whole instead of one cell. */
   onClearTarget: () => void;
-  onInsertAgain: (code: string) => void;
+  /** Put a past suggestion back in front of the user as a fresh proposal. */
+  onProposeAgain: (code: string) => void;
   /** No connection on the notebook — the model has no schema to write against. */
   disabledReason?: string | null;
 }
@@ -167,7 +187,7 @@ export default function NotebookAssistant({
   onNewLanguageChange,
   target,
   onClearTarget,
-  onInsertAgain,
+  onProposeAgain,
   disabledReason,
 }: NotebookAssistantProps) {
   const endRef = useRef<HTMLDivElement>(null);
@@ -199,7 +219,7 @@ export default function NotebookAssistant({
   const effectiveLanguage = mode === 'new' ? newLanguage : target?.language ?? newLanguage;
   const targetLabel = mode === 'new'
     ? `New ${effectiveLanguage === 'sql' ? 'SQL' : 'Python'} cell at the end`
-    : target?.index != null
+    : target
       ? `Cell ${target.index} · ${target.language === 'sql' ? 'SQL' : 'Python'}${target.hasCode ? '' : ' (empty)'}`
       : `New ${effectiveLanguage === 'sql' ? 'SQL' : 'Python'} cell`;
 
@@ -263,7 +283,7 @@ export default function NotebookAssistant({
           Writing
         </span>
         <span className="flex-1 min-w-0 truncate text-[12.5px] text-ink-2">{targetLabel}</span>
-        {mode === 'edit' && target?.cellId != null && (
+        {mode === 'edit' && target && (
           <button
             type="button"
             onClick={onClearTarget}
@@ -307,18 +327,32 @@ export default function NotebookAssistant({
                 className={`px-3.5 py-2.5 rounded-lg border text-[13px] ${
                   msg.errorDetail
                     ? 'bg-warn-soft border-warn/40 text-ink-2'
-                    : msg.working
+                    // A decision still waiting is NOT a success — green here
+                    // reads as "done" and is the one thing it must not say.
+                    : msg.working || msg.decision === 'pending'
                       ? 'bg-ocean-softer border-line text-ink-2'
-                      : 'bg-ok-soft border-line text-ink-2'
+                      : msg.decision === 'rejected'
+                        ? 'bg-softer border-line text-ink-2'
+                        : 'bg-ok-soft border-line text-ink-2'
                 }`}
               >
                 <div className="flex items-center gap-2 mb-1">
                   <span
                     className={`text-[10px] font-mono tracking-[0.08em] uppercase ${
-                      msg.errorDetail ? 'text-warn' : msg.working ? 'text-ocean' : 'text-ok'
+                      msg.errorDetail ? 'text-warn'
+                        : msg.working ? 'text-ocean'
+                          : msg.decision === 'rejected' ? 'text-muted'
+                            : msg.decision === 'pending' ? 'text-ocean'
+                              : 'text-ok'
                     }`}
                   >
-                    {msg.errorDetail ? 'Error' : msg.working ? 'Writing code' : msg.targetLabel ?? 'Code written'}
+                    {msg.errorDetail ? 'Error'
+                      : msg.working ? 'Writing code'
+                        : msg.decision === 'pending' ? 'Waiting for you'
+                          : msg.decision === 'accepted' ? 'Kept'
+                            : msg.decision === 'rejected' ? 'Discarded'
+                              : msg.decision === 'superseded' ? 'Replaced'
+                                : msg.targetLabel ?? 'Code written'}
                   </span>
                   <span className="flex-1" />
                   <Elapsed since={msg.startedAt} active={!!msg.working} />
@@ -333,7 +367,22 @@ export default function NotebookAssistant({
                   </p>
                 )}
 
-                {msg.code && <CodeBlock code={msg.code} onInsertAgain={() => onInsertAgain(msg.code!)} />}
+                {msg.decision === 'pending' && (
+                  <p className="text-[12px] text-ocean mt-1.5">
+                    Keep or discard it in {msg.targetLabel ?? 'the cell'}.
+                  </p>
+                )}
+
+                {/* A pending suggestion is being read in the cell, where the
+                    diff shows what it replaces; repeating it here in full
+                    just moves the eye away from the decision. */}
+                {msg.code && msg.decision !== 'pending' && (
+                  <CodeBlock
+                    code={msg.code}
+                    onProposeAgain={() => onProposeAgain(msg.code!)}
+                    canProposeAgain={msg.decision === 'rejected' || msg.decision === 'superseded'}
+                  />
+                )}
 
                 {msg.errorDetail && (
                   <div className="mt-2">

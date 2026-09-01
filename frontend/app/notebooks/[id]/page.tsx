@@ -7,6 +7,7 @@ import api from '@/lib/api';
 import { usePyodide } from '@/components/notebooks/usePyodide';
 import SchemaExplorer from '@/components/notebooks/SchemaExplorer';
 import NotebookAssistant, { type AssistantTarget, type NotebookChatMessage } from './NotebookAssistant';
+import CellDiff from './CellDiff';
 
 // Lazy-load CellEditor to avoid SSR issues with CodeMirror
 const CellEditor = dynamic(() => import('@/components/notebooks/CellEditor'), { ssr: false });
@@ -34,6 +35,32 @@ interface Notebook {
 interface Connection {
   id: number;
   name: string;
+}
+
+/**
+ * A change the AI wants to make to a cell, waiting on the user.
+ *
+ * The AI does not write code any more — it PROPOSES, and the user reads what
+ * would go and what would come before it lands. That is the whole point:
+ * "check the new logic and if it's not right, reject it and keep your old
+ * code" is not possible once the old code has already been overwritten.
+ */
+interface CellProposal {
+  /** The code the AI is proposing. */
+  code: string;
+  /**
+   * The cell's source BEFORE the AI touched it — what Reject restores.
+   * Set from the first proposal and never updated, so a chain of follow-ups
+   * ("now group by month", "now only 2026") still rejects all the way back
+   * to what the user themself wrote, never to an intermediate AI draft.
+   */
+  previous: string;
+  /** The request that produced it, kept on the cell after accepting. */
+  prompt: string;
+  /** True when the proposal created this cell — Reject removes it again. */
+  createdCell: boolean;
+  /** Ties the proposal to its message in the assistant's history. */
+  messageId: string;
 }
 
 interface CellOutput {
@@ -77,6 +104,11 @@ export default function NotebookEditorPage() {
   const [aiTargetCellId, setAiTargetCellId] = useState<number | null>(null);
   /** Per-cell record of the request that produced its current code. */
   const [cellPrompts, setCellPrompts] = useState<Map<number, string>>(new Map());
+  /** Cells with a change waiting to be accepted or rejected. */
+  const [proposals, setProposals] = useState<Map<number, CellProposal>>(new Map());
+  /** runAll loops over cells asynchronously and must read the live set. */
+  const proposalsRef = useRef(proposals);
+  useEffect(() => { proposalsRef.current = proposals; }, [proposals]);
   const aiAbortRef = useRef<AbortController | null>(null);
   useEffect(() => () => aiAbortRef.current?.abort(), []);
 
@@ -173,6 +205,9 @@ export default function NotebookEditorPage() {
     if (cells.length <= 1) return; // keep at least one cell
     await api.delete(`/notebooks/cells/${cellId}`);
     setCells((prev) => prev.filter((c) => c.id !== cellId));
+    // A pending suggestion for a cell that no longer exists would keep the
+    // assistant reporting a decision nobody can make.
+    setProposals((prev) => { const next = new Map(prev); next.delete(cellId); return next; });
     setOutputs((prev) => {
       const next = new Map(prev);
       next.delete(cellId);
@@ -242,6 +277,10 @@ export default function NotebookEditorPage() {
   const runAll = async () => {
     setRunningAll(true);
     for (const cell of cells) {
+      // A cell with a suggestion waiting still holds the old code; running it
+      // would attribute an old result to the new logic. Skipped, same as the
+      // per-cell Run button refuses.
+      if (proposalsRef.current.has(cell.id)) continue;
       if (cell.source.trim() && (cell.cell_type === 'sql' || cell.cell_type === 'python')) {
         await executeCell(cell.id);
       }
@@ -285,6 +324,50 @@ export default function NotebookEditorPage() {
     debouncedSave(cellId, code);
   };
 
+  /**
+   * Take the proposal: the code becomes the cell's, as if it had been typed.
+   * Only now is anything written — up to this point the cell still holds the
+   * user's own code and the AI's version lives only in the pending diff.
+   */
+  const acceptProposal = (cellId: number) => {
+    const proposal = proposals.get(cellId);
+    if (!proposal) return;
+    applyCodeToCell(cellId, proposal.code);
+    setCellPrompts((prev) => new Map(prev).set(cellId, proposal.prompt));
+    setProposals((prev) => { const next = new Map(prev); next.delete(cellId); return next; });
+    setAiMessages((prev) => prev.map((m) => m.id === proposal.messageId
+      ? { ...m, decision: 'accepted' as const }
+      : m));
+  };
+
+  /**
+   * Refuse it. The cell goes back to exactly what it held before the AI ran
+   * — and a cell the proposal itself created is removed, so rejecting never
+   * leaves the notebook holding something the user did not want.
+   */
+  const rejectProposal = async (cellId: number) => {
+    const proposal = proposals.get(cellId);
+    if (!proposal) return;
+    setProposals((prev) => { const next = new Map(prev); next.delete(cellId); return next; });
+    setAiMessages((prev) => prev.map((m) => m.id === proposal.messageId
+      ? { ...m, decision: 'rejected' as const }
+      : m));
+    if (proposal.createdCell) {
+      // deleteCell keeps the notebook's last cell alive; in that one case the
+      // cell stays but is emptied, which is the same outcome for the user.
+      if (cells.length > 1) {
+        if (aiTargetCellId === cellId) setAiTargetCellId(null);
+        await deleteCell(cellId);
+        return;
+      }
+      applyCodeToCell(cellId, '');
+      return;
+    }
+    // Nothing to restore: the cell was never changed. Persist anyway, because
+    // an earlier accepted proposal may have left an unsaved debounce pending.
+    applyCodeToCell(cellId, proposal.previous);
+  };
+
   const stopAssistant = () => {
     aiAbortRef.current?.abort();
     aiAbortRef.current = null;
@@ -305,9 +388,11 @@ export default function NotebookEditorPage() {
     // the cell that gets written.
     const useNewCell = aiMode === 'new' || !aiTarget;
     const language: 'sql' | 'python' = useNewCell ? aiNewLanguage : aiTarget!.language;
-    const existingCode = !useNewCell && aiTarget!.hasCode
-      ? cells.find((c) => c.id === aiTarget!.cellId)?.source
-      : undefined;
+    // A follow-up iterates on what the user is LOOKING AT: the pending
+    // proposal when there is one, the cell's own code otherwise.
+    const pending = !useNewCell ? proposals.get(aiTarget!.cellId) : undefined;
+    const currentCode = pending?.code ?? (!useNewCell ? cells.find((c) => c.id === aiTarget!.cellId)?.source : undefined);
+    const existingCode = currentCode?.trim() ? currentCode : undefined;
 
     const userMsgId = `${Date.now()}_u`;
     const workingId = `${Date.now()}_a`;
@@ -345,37 +430,61 @@ export default function NotebookEditorPage() {
       if (!res.data.ok) throw new Error(res.data.error ?? 'The assistant could not write that.');
       const code: string = res.data.data.code;
 
-      // Land it. A new cell is created only now that there is something to
-      // put in it — an empty cell left behind by a cancelled request is
-      // litter the user has to clean up.
-      let landedCellId = useNewCell ? null : aiTarget!.cellId;
-      let landedLabel: string;
+      // Nothing is written. The code becomes a PROPOSAL on the target cell,
+      // rendered as a diff the user accepts or rejects. For a new cell that
+      // means creating it EMPTY and proposing into it, so a rejected
+      // suggestion can be removed cleanly and an accepted one lands the same
+      // way as every other.
+      let targetCellId: number;
+      let previous: string;
+      let createdCell = false;
+      let targetLabel: string;
+
       if (useNewCell) {
         const lastPosition = cells.length ? cells[cells.length - 1].position : -1;
         const created = await api.post(`/notebooks/${notebookId}/cells`, {
           cellType: language,
           position: lastPosition + 1,
-          source: code,
+          source: '',
         });
         if (!created.data.ok) throw new Error('Could not add the cell.');
         const cell = created.data.data as Cell;
         setCells((prev) => [...prev, cell].sort((a, b) => a.position - b.position));
-        landedCellId = cell.id;
+        targetCellId = cell.id;
+        previous = '';
+        createdCell = true;
         setActiveCellId(cell.id);
         setAiTargetCellId(cell.id);
         setAiMode('edit');
-        landedLabel = `Cell ${cells.length + 1} · ${language === 'sql' ? 'SQL' : 'Python'}`;
+        targetLabel = `Cell ${cells.length + 1} · ${language === 'sql' ? 'SQL' : 'Python'}`;
       } else {
-        applyCodeToCell(landedCellId!, code);
-        landedLabel = `Cell ${aiTarget!.index} · ${language === 'sql' ? 'SQL' : 'Python'}`;
-      }
-      if (landedCellId != null) {
-        setCellPrompts((prev) => new Map(prev).set(landedCellId!, prompt));
+        targetCellId = aiTarget!.cellId;
+        // The baseline is the user's OWN code, carried across a chain of
+        // follow-ups — rejecting the third suggestion must not leave the
+        // first one's code behind.
+        previous = pending?.previous ?? cells.find((c) => c.id === targetCellId)?.source ?? '';
+        targetLabel = `Cell ${aiTarget!.index} · ${language === 'sql' ? 'SQL' : 'Python'}`;
       }
 
-      setAiMessages((prev) => prev.map((m) => m.id === workingId
-        ? { ...m, working: false, text: `Written into ${landedLabel}. Run it to see the result.`, code, language, targetLabel: landedLabel }
-        : m));
+      // A superseded proposal's message is no longer awaiting a decision.
+      const supersededId = pending?.messageId;
+      setProposals((prev) => new Map(prev).set(targetCellId, {
+        code, previous, prompt, createdCell, messageId: workingId,
+      }));
+
+      setAiMessages((prev) => prev.map((m) => {
+        if (supersededId && m.id === supersededId) return { ...m, decision: 'superseded' as const };
+        if (m.id !== workingId) return m;
+        return {
+          ...m,
+          working: false,
+          // Short: the "keep or discard it in <cell>" line below says the
+          // rest, and saying it twice is how a panel starts being skimmed.
+          text: `Suggested a change to ${targetLabel}.`,
+          code, language, targetLabel,
+          decision: 'pending' as const,
+        };
+      }));
     } catch (err: unknown) {
       // A user Stop is not a failure — stopAssistant already cleaned up.
       if ((err as Error)?.name === 'AbortError' || (err as { code?: string })?.code === 'ERR_CANCELED') return;
@@ -561,6 +670,9 @@ export default function NotebookEditorPage() {
                   })}
                   onAskAi={() => aimAssistantAt(cell.id)}
                   aiAimedHere={aiOpen && aiMode === 'edit' && aiTarget?.cellId === cell.id}
+                  proposal={proposals.get(cell.id) ?? null}
+                  onAcceptProposal={() => acceptProposal(cell.id)}
+                  onRejectProposal={() => rejectProposal(cell.id)}
                 />
                 {/* Add cell button between cells */}
                 <AddCellButton onAdd={(type) => addCell(cell.position, type)} />
@@ -591,9 +703,20 @@ export default function NotebookEditorPage() {
           onNewLanguageChange={setAiNewLanguage}
           target={aiTarget}
           onClearTarget={() => { setAiTargetCellId(null); setAiMode('new'); }}
-          onInsertAgain={(code) => {
+          onProposeAgain={(code) => {
+            // Put an earlier suggestion back in front of the user as a fresh
+            // proposal — never straight into the cell, which would be the
+            // silent overwrite this whole flow exists to remove.
             const cellId = aiTarget?.cellId ?? activeCellId;
-            if (cellId != null) applyCodeToCell(cellId, code);
+            if (cellId == null) return;
+            const existing = proposals.get(cellId);
+            setProposals((prev) => new Map(prev).set(cellId, {
+              code,
+              previous: existing?.previous ?? cells.find((c) => c.id === cellId)?.source ?? '',
+              prompt: cellPrompts.get(cellId) ?? 'Suggested again',
+              createdCell: existing?.createdCell ?? false,
+              messageId: existing?.messageId ?? `${Date.now()}_again`,
+            }));
           }}
           disabledReason={notebook.connection_id
             ? null
@@ -624,6 +747,9 @@ function NotebookCell({
   onDismissAiPrompt,
   onAskAi,
   aiAimedHere,
+  proposal,
+  onAcceptProposal,
+  onRejectProposal,
 }: {
   cell: Cell;
   output?: CellOutput;
@@ -646,6 +772,10 @@ function NotebookCell({
   onAskAi: () => void;
   /** True while the assistant is pointed here — so the wand reads as active. */
   aiAimedHere: boolean;
+  /** A change the AI wants to make, waiting on the user. */
+  proposal: { code: string; previous: string } | null;
+  onAcceptProposal: () => void;
+  onRejectProposal: () => void;
 }) {
   const typeColors = {
     sql: { bg: 'bg-blue-50', text: 'text-blue-700', border: 'border-blue-200', ring: 'ring-blue-200' },
@@ -655,7 +785,11 @@ function NotebookCell({
   const colors = typeColors[cell.cell_type];
 
   return (
-    <div className={`group rounded-xl border ${output?.error ? 'border-red-200' : 'border-outline-variant/15'} bg-surface-container-lowest overflow-hidden transition-all hover:border-outline-variant/30`}>
+    <div className={`group rounded-xl border ${
+      proposal ? 'border-violet-300 ring-1 ring-violet-200/60'
+        : output?.error ? 'border-red-200'
+          : 'border-outline-variant/15 hover:border-outline-variant/30'
+    } bg-surface-container-lowest overflow-hidden transition-all`}>
       {/* Cell toolbar */}
       <div className="flex items-center gap-2 px-3 py-1.5 bg-surface-container-low/50 border-b border-outline-variant/10">
         {/* Type selector */}
@@ -709,12 +843,16 @@ function NotebookCell({
           </button>
         </div>
 
-        {/* Run button */}
+        {/* Run button. Disabled while a suggestion is pending: the cell still
+            holds the OLD code, so running it now would answer with the code
+            the user is in the middle of deciding to replace — a wrong result
+            attributed to the new logic is worse than no result. */}
         {cell.cell_type !== 'markdown' && (
           <button
             onClick={onRun}
-            disabled={isRunning}
-            className="flex items-center gap-1 px-2 py-1 rounded-md bg-emerald-50 text-emerald-700 text-[11px] font-semibold hover:bg-emerald-100 disabled:opacity-50 transition-colors"
+            disabled={isRunning || !!proposal}
+            title={proposal ? 'Keep or discard the suggested change first' : undefined}
+            className="flex items-center gap-1 px-2 py-1 rounded-md bg-emerald-50 text-emerald-700 text-[11px] font-semibold hover:bg-emerald-100 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
           >
             {isRunning ? (
               <div className="w-3 h-3 border-2 border-emerald-300 border-t-emerald-700 rounded-full animate-spin" />
@@ -758,18 +896,30 @@ function NotebookCell({
         </div>
       )}
 
-      {/* Editor */}
-      <div className="min-h-[60px]">
-        <CellEditor
-          value={cell.source}
-          onChange={onSourceChange}
-          language={cell.cell_type}
-          onRun={onRun}
-          onFocus={onFocus}
-          onReady={onRegisterInsert}
-          placeholder={cell.cell_type === 'sql' ? 'SELECT * FROM ...' : cell.cell_type === 'python' ? '# Python code...' : 'Write markdown...'}
+      {/* Editor. While a proposal is pending it is REPLACED by the diff:
+          two editable versions of the same cell on screen at once is a state
+          nobody can reason about, and the cell's own code is right there in
+          the diff's left column anyway. */}
+      {proposal ? (
+        <CellDiff
+          previous={proposal.previous}
+          proposed={proposal.code}
+          onAccept={onAcceptProposal}
+          onReject={onRejectProposal}
         />
-      </div>
+      ) : (
+        <div className="min-h-[60px]">
+          <CellEditor
+            value={cell.source}
+            onChange={onSourceChange}
+            language={cell.cell_type}
+            onRun={onRun}
+            onFocus={onFocus}
+            onReady={onRegisterInsert}
+            placeholder={cell.cell_type === 'sql' ? 'SELECT * FROM ...' : cell.cell_type === 'python' ? '# Python code...' : 'Write markdown...'}
+          />
+        </div>
+      )}
 
       {/* Output */}
       {output && <CellOutput output={output} cellType={cell.cell_type} />}
