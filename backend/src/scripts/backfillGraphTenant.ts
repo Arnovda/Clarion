@@ -27,6 +27,15 @@
  *
  *   npx tsx backend/src/scripts/backfillGraphTenant.ts          # report only
  *   npx tsx backend/src/scripts/backfillGraphTenant.ts --apply  # write
+ *   npx tsx backend/src/scripts/backfillGraphTenant.ts --prune  # write + delete orphans
+ *
+ * PRUNE (also GRAPH_BACKFILL_PRUNE=1) additionally DELETES unstamped nodes
+ * that provably belong to nobody: their owner key points at a Postgres row
+ * that no longer exists, or they carry no owner key at all. Those are
+ * unreachable garbage — every app read resolves graph entities through live
+ * Postgres rows — left behind by tenant purges and connection deletions that
+ * predate graph cleanup. A leftover whose key IS live is never deleted; it
+ * means the apply match is broken and is reported as INVESTIGATE.
  *
  * `GRAPH_BACKFILL_MODE=apply` in the environment means the same as `--apply`.
  * It exists because the Container Apps Job that runs this in production is
@@ -45,18 +54,45 @@
 import { semanticDb } from '../db/knex';
 import { getSession, closeDriver } from '../db/neo4j';
 
+const PRUNE =
+  process.argv.includes('--prune') ||
+  (process.env.GRAPH_BACKFILL_PRUNE ?? '').trim() === '1';
+
 const APPLY =
+  PRUNE ||
   process.argv.includes('--apply') ||
   (process.env.GRAPH_BACKFILL_MODE ?? '').trim().toLowerCase() === 'apply';
 
 interface Plan {
   label: string;
+  /** The node property holding the Postgres owner key; absent for the two
+   *  column labels, which inherit from their parent table instead. */
+  keyProp?: 'connectionId' | 'dataProductId';
   /** Cypher returning the nodes still missing tenantId, with their owner key. */
   countCypher: string;
   /** Cypher applying a { key → tenantId } map. */
   applyCypher: string;
   /** Postgres lookup: owner key → tenant id. */
   ownerMap(): Promise<Map<number, number>>;
+}
+
+/**
+ * Neo4j INTEGER values come back as the driver's lossless Integer object
+ * (`disableLosslessIntegers` is not set in db/neo4j.ts), and `Number(obj)`
+ * on one is NaN. Getting this wrong here would be catastrophic in prune
+ * mode: every key would look like it had no Postgres mirror. Convert
+ * explicitly, and treat anything unconvertible as null (reported, never
+ * matched, never deleted by key).
+ */
+function toNum(v: unknown): number | null {
+  if (v == null) return null;
+  if (typeof v === 'number') return Number.isFinite(v) ? v : null;
+  if (typeof v === 'object' && 'toNumber' in (v as object)) {
+    const n = (v as { toNumber(): number }).toNumber();
+    return Number.isFinite(n) ? n : null;
+  }
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
 }
 
 async function connectionOwners(): Promise<Map<number, number>> {
@@ -72,6 +108,7 @@ async function productOwners(): Promise<Map<number, number>> {
 const PLANS: Plan[] = [
   {
     label: 'SourceTable',
+    keyProp: 'connectionId',
     countCypher: `MATCH (n:SourceTable) WHERE n.tenantId IS NULL RETURN count(n) AS c`,
     applyCypher: `UNWIND $pairs AS p
                   MATCH (n:SourceTable {connectionId: p.key}) WHERE n.tenantId IS NULL
@@ -91,6 +128,7 @@ const PLANS: Plan[] = [
   },
   {
     label: 'ProductTable',
+    keyProp: 'dataProductId',
     countCypher: `MATCH (n:ProductTable) WHERE n.tenantId IS NULL RETURN count(n) AS c`,
     applyCypher: `UNWIND $pairs AS p
                   MATCH (n:ProductTable {dataProductId: p.key}) WHERE n.tenantId IS NULL
@@ -107,6 +145,7 @@ const PLANS: Plan[] = [
   },
   {
     label: 'KpiDefinition',
+    keyProp: 'connectionId',
     countCypher: `MATCH (n:KpiDefinition) WHERE n.tenantId IS NULL RETURN count(n) AS c`,
     applyCypher: `UNWIND $pairs AS p
                   MATCH (n:KpiDefinition {connectionId: p.key}) WHERE n.tenantId IS NULL
@@ -115,6 +154,7 @@ const PLANS: Plan[] = [
   },
   {
     label: 'QualityRule',
+    keyProp: 'connectionId',
     countCypher: `MATCH (n:QualityRule) WHERE n.tenantId IS NULL RETURN count(n) AS c`,
     applyCypher: `UNWIND $pairs AS p
                   MATCH (n:QualityRule {connectionId: p.key}) WHERE n.tenantId IS NULL
@@ -126,6 +166,7 @@ const PLANS: Plan[] = [
     // none. Those cannot be attributed from Postgres and are reported, not
     // guessed: assigning the wrong tenant is worse than leaving it unstamped.
     label: 'CrossSourceView',
+    keyProp: 'connectionId',
     countCypher: `MATCH (n:CrossSourceView) WHERE n.tenantId IS NULL RETURN count(n) AS c`,
     applyCypher: `UNWIND $pairs AS p
                   MATCH (n:CrossSourceView {connectionId: p.key}) WHERE n.tenantId IS NULL
@@ -221,6 +262,162 @@ async function main(): Promise<void> {
     const after = await countMissing(EDGE_PLAN.countCypher);
     process.stdout.write(`  ${EDGE_PLAN.label.padEnd(16)} ${edgeBefore} → ${after}\n`);
     remaining += after;
+  }
+
+  // ── Whose are the leftovers? ──────────────────────────────────────────────
+  // Run #6 (2026-09-01) left 5,089 entities unstamped with no way to tell the
+  // two possible stories apart, and they demand opposite responses: an orphan
+  // whose Postgres mirror row was deleted should itself be DELETED (it is
+  // unreachable garbage — every app read resolves graph entities through live
+  // Postgres rows), while a leftover whose key IS live means the apply match
+  // is broken and must be debugged, never deleted. So partition every
+  // unstamped node by its owner key against the live mirror.
+  interface Diag {
+    plan: Plan;
+    deadKeys: Array<{ key: number; c: number }>;
+    liveKeys: Array<{ key: number; tenantId: number; c: number }>;
+    nullKeyCount: number;
+  }
+  const diags: Diag[] = [];
+  if (remaining > 0) {
+    process.stdout.write('\n  ── leftover ownership ──\n');
+    for (const plan of PLANS) {
+      if (!plan.keyProp) continue;
+      const session = getSession();
+      let rows: Array<{ key: number | null; c: number }> = [];
+      try {
+        const res = await session.run(
+          `MATCH (n:${plan.label}) WHERE n.tenantId IS NULL
+           RETURN n.${plan.keyProp} AS key, count(*) AS c ORDER BY c DESC`,
+        );
+        rows = res.records.map((r) => ({
+          key: toNum(r.get('key')),
+          c: toNum(r.get('c')) ?? 0,
+        }));
+      } finally {
+        await session.close();
+      }
+      if (rows.length === 0) continue;
+
+      const owners = await plan.ownerMap();
+      const diag: Diag = { plan, deadKeys: [], liveKeys: [], nullKeyCount: 0 };
+      for (const { key, c } of rows) {
+        if (key == null) diag.nullKeyCount += c;
+        else if (owners.has(key)) diag.liveKeys.push({ key, tenantId: owners.get(key)!, c });
+        else diag.deadKeys.push({ key, c });
+      }
+      diags.push(diag);
+
+      const fmt = (list: Array<{ key: number; c: number }>) =>
+        list.slice(0, 15).map((e) => `${e.key}×${e.c}`).join(', ') + (list.length > 15 ? ', …' : '');
+      process.stdout.write(`  ${plan.label}:\n`);
+      if (diag.deadKeys.length > 0) {
+        process.stdout.write(
+          `    mirror DELETED — ${plan.keyProp} ${fmt(diag.deadKeys)} (${diag.deadKeys.reduce((s, e) => s + e.c, 0)} node(s) — orphans, prunable)\n`,
+        );
+      }
+      for (const e of diag.liveKeys) {
+        process.stdout.write(
+          `    mirror LIVE — ${plan.keyProp} ${e.key} (tenant ${e.tenantId}) ×${e.c} — apply should have stamped these; INVESTIGATE, never prune\n`,
+        );
+      }
+      if (diag.nullKeyCount > 0) {
+        process.stdout.write(`    no ${plan.keyProp} at all ×${diag.nullKeyCount} (unattributable by construction)\n`);
+      }
+    }
+
+    for (const childLabel of ['SourceColumn', 'ProductColumn']) {
+      const orphanCols = await countMissing(
+        `MATCH (n:${childLabel}) WHERE n.tenantId IS NULL AND NOT ( ()-[:HAS_COLUMN]->(n) ) RETURN count(n) AS c`,
+      );
+      const attachedCols = await countMissing(
+        `MATCH (t)-[:HAS_COLUMN]->(n:${childLabel}) WHERE n.tenantId IS NULL RETURN count(n) AS c`,
+      );
+      if (orphanCols + attachedCols > 0) {
+        process.stdout.write(
+          `  ${childLabel}: ${attachedCols} under an unstamped parent table, ${orphanCols} with no parent table at all\n`,
+        );
+      }
+    }
+  }
+
+  // ── Prune: delete what provably belongs to nobody ─────────────────────────
+  // Only nodes that are BOTH unstamped AND either keyed to a deleted mirror
+  // row or carrying no key at all. Live-keyed leftovers are never touched —
+  // those are a bug to debug, and this loop cannot reach them by
+  // construction. Deletions are counted and reported.
+  if (PRUNE && remaining > 0) {
+    process.stdout.write('\n  ── prune ──\n');
+    for (const diag of diags) {
+      const { plan } = diag;
+      let deleted = 0;
+      if (diag.deadKeys.length > 0) {
+        const session = getSession();
+        try {
+          const res = await session.run(
+            `UNWIND $keys AS k
+             MATCH (n:${plan.label} {${plan.keyProp}: k}) WHERE n.tenantId IS NULL
+             WITH n DETACH DELETE n RETURN count(*) AS c`,
+            { keys: diag.deadKeys.map((e) => e.key) },
+          );
+          deleted += toNum(res.records[0]?.get('c')) ?? 0;
+        } finally {
+          await session.close();
+        }
+      }
+      if (diag.nullKeyCount > 0) {
+        const session = getSession();
+        try {
+          const res = await session.run(
+            `MATCH (n:${plan.label}) WHERE n.tenantId IS NULL AND n.${plan.keyProp} IS NULL
+             WITH n DETACH DELETE n RETURN count(*) AS c`,
+          );
+          deleted += toNum(res.records[0]?.get('c')) ?? 0;
+        } finally {
+          await session.close();
+        }
+      }
+      if (deleted > 0) process.stdout.write(`  ${plan.label.padEnd(16)} deleted ${deleted} orphan(s)\n`);
+    }
+
+    // Columns whose parent table no longer exists (including parents the loop
+    // above just removed) are unreachable from every read path.
+    for (const childLabel of ['SourceColumn', 'ProductColumn']) {
+      const session = getSession();
+      try {
+        const res = await session.run(
+          `MATCH (n:${childLabel}) WHERE n.tenantId IS NULL AND NOT ( ()-[:HAS_COLUMN]->(n) )
+           WITH n DETACH DELETE n RETURN count(*) AS c`,
+        );
+        const deleted = toNum(res.records[0]?.get('c')) ?? 0;
+        if (deleted > 0) process.stdout.write(`  ${childLabel.padEnd(16)} deleted ${deleted} parentless orphan(s)\n`);
+      } finally {
+        await session.close();
+      }
+    }
+
+    // Edges touching pruned tables died with DETACH DELETE; any survivor with
+    // a now-stamped source table can inherit.
+    {
+      const session = getSession();
+      try {
+        await session.run(EDGE_PLAN.applyCypher);
+      } finally {
+        await session.close();
+      }
+    }
+
+    // The recount IS the verdict — never report prune arithmetic as clean.
+    remaining = 0;
+    process.stdout.write('\n  ── after prune ──\n');
+    for (const plan of PLANS) {
+      const left = await countMissing(plan.countCypher);
+      process.stdout.write(`  ${plan.label.padEnd(16)} ${left === 0 ? 'clean' : `${left} still unstamped`}\n`);
+      remaining += left;
+    }
+    const edgesLeft = await countMissing(EDGE_PLAN.countCypher);
+    process.stdout.write(`  ${EDGE_PLAN.label.padEnd(16)} ${edgesLeft === 0 ? 'clean' : `${edgesLeft} still unstamped`}\n`);
+    remaining += edgesLeft;
   }
 
   process.stdout.write('\n');

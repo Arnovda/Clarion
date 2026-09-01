@@ -1,6 +1,6 @@
 # Graph tenant backfill — run the one maintenance task that cannot run from CI.
 #
-#   .ops/graph-backfill   contains   `report`, `apply` or `noop`
+#   .ops/graph-backfill   contains   `report`, `apply`, `prune` or `noop`
 #
 # Neo4j runs with `external_enabled = false`: internal ingress only. That is the
 # right posture, and it means a GitHub runner cannot reach it — `prod-checks`
@@ -44,8 +44,8 @@ jobs:
           set -euo pipefail
           MODE=$(grep -vE '^[[:space:]]*(#|$)' .ops/graph-backfill | head -1 | tr -d '[:space:]')
           case "$MODE" in
-            report|apply|noop) ;;
-            *) echo "::error::invalid mode '$MODE' (expected 'report', 'apply' or 'noop')"; exit 1 ;;
+            report|apply|prune|noop) ;;
+            *) echo "::error::invalid mode '$MODE' (expected 'report', 'apply', 'prune' or 'noop')"; exit 1 ;;
           esac
           echo "mode=$MODE" >> "$GITHUB_OUTPUT"
           echo "Mode: $MODE"
@@ -120,7 +120,15 @@ jobs:
           # ("unrecognized arguments: --apply" — measured on the first
           # apply-mode run, for create and update alike). The script reads
           # GRAPH_BACKFILL_MODE=apply as equivalent to --apply.
-          ENV_ARGS+=("GRAPH_BACKFILL_MODE=$MODE")
+          # `prune` = apply + delete provably-orphaned leftovers (owner key
+          # points at a deleted Postgres row, or no key at all). Live-keyed
+          # leftovers are never deleted; the script reports them instead.
+          if [ "$MODE" = "prune" ]; then
+            ENV_ARGS+=("GRAPH_BACKFILL_MODE=apply")
+            ENV_ARGS+=("GRAPH_BACKFILL_PRUNE=1")
+          else
+            ENV_ARGS+=("GRAPH_BACKFILL_MODE=$MODE")
+          fi
 
           # What was carried — NAMES only, never values. The first real
           # execution failed on Neo4j auth with no way to tell whether the
