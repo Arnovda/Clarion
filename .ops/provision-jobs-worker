@@ -7,3 +7,14 @@ create
 #
 # re-run 2026-07-27: re-sync the worker to the backing build and promote the
 # API revision that actually understands WORKER_QUEUES.
+#
+# re-run 2026-09-01: RE-PROVISION UNDER THE FIXED ENV CLONING. The original
+# 2026-07-27 provisioning used `az -o tsv`, which SKIPS null fields — every
+# secretref env row collapsed and the secret NAME landed as the env VALUE
+# (DATABASE_URL="database-url", NEO4J_PASSWORD="neo4j-password", …), so the
+# worker has most likely been non-functional since, masked by the API running
+# every queue while WORKER_QUEUES was unset on it. The workflow clones env
+# via jq-over-JSON since the 2026-09-01 fix. After this run the API hands the
+# compute queues over — and from then on the deep /api/health promote gate
+# (P0-6) checks that something is LISTENING on the transformation queue, so a
+# dead worker BLOCKS the next promotion instead of failing silently.
