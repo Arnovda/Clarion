@@ -16,7 +16,7 @@ const baseUrl = process.env.DATABASE_URL ?? 'postgresql://databridge:databridge@
 const testDbUrl = baseUrl.replace(/\/[^/]+$/, '/databridge_test');
 process.env.DATABASE_URL = testDbUrl;
 process.env.JWT_SECRET = 'test-secret-key-do-not-use-in-production';
-process.env.JWT_EXPIRES_IN = '1h';
+process.env.JWT_ACCESS_EXPIRES_IN = '1h';
 process.env.NODE_ENV = 'test';
 
 // Disable Neo4j in tests (avoid connection errors)

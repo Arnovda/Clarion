@@ -6,6 +6,7 @@ import { JwtPayload, UserRole } from '../shared/types';
 import { semanticDb } from '../db/knex';
 import { config, requireJwtSecret } from '../config';
 import { withTenantAiContext } from '../services/aiBudget';
+import { checkAccountStatus } from '../services/accountStatus';
 import { logger } from '../utils/logger';
 
 // ---------------------------------------------------------------------------
@@ -119,6 +120,25 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
   } catch {
     res.status(401).json({ ok: false, error: 'Invalid or expired token' });
     return;
+  }
+
+  // P1-3 fast suspension: a verified signature says who the caller WAS
+  // when the token was signed — the account must still be in good
+  // standing NOW. Cached (AUTH_STATUS_TTL_MS, default 30s) so this costs
+  // one indexed read per user per TTL, not per request; a query error
+  // fails OPEN inside checkAccountStatus (a DB blip must not 401 the
+  // whole product). 401 — not 403 — on purpose: the frontend's 401
+  // interceptor attempts a token refresh (which refuses too, see
+  // refreshTokenService) and then clears the session and returns the
+  // user to the sign-in screen, where login states the real reason.
+  // Placed BEFORE the tenant transaction below so a refused request
+  // never spends a pool connection.
+  if (payload.tenantId && payload.sub) {
+    const status = await checkAccountStatus(payload.tenantId, payload.sub);
+    if (status === 'refused') {
+      res.status(401).json({ ok: false, error: 'This account is no longer active' });
+      return;
+    }
   }
 
   // Session-level SET on the pool. Existing routes that use the global

@@ -15,7 +15,7 @@
  */
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { request, registerUser, makeToken } from './helpers';
+import { request, registerUser, createUserWithToken } from './helpers';
 import { cleanTestDb, closeTestDb, getTestDb } from './db-helpers';
 import {
   deriveGridSlug,
@@ -129,8 +129,8 @@ describe('/api/grids', () => {
     const admin = await registerUser({ email: 'grids-admin@test.com', companyName: 'GridCo' });
     adminToken = admin.token;
     tenantId = admin.user.tenantId;
-    analystToken = makeToken({ tenantId, role: 'analyst', email: 'grids-analyst@test.com' });
-    viewerToken = makeToken({ tenantId, role: 'viewer', email: 'grids-viewer@test.com' });
+    analystToken = (await createUserWithToken({ tenantId, role: 'analyst', email: 'grids-analyst@test.com' })).token;
+    viewerToken = (await createUserWithToken({ tenantId, role: 'viewer', email: 'grids-viewer@test.com' })).token;
     const other = await registerUser({ email: 'grids-other@test.com', companyName: 'OtherGridCo' });
     otherToken = other.token;
   });

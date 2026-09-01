@@ -16,7 +16,7 @@ import dotenv from 'dotenv';
 import path from 'path';
 import { requestLogger } from './middleware/requestLogger';
 import { logger } from './utils/logger';
-import { config } from './config';
+import { config, legacyJwtExpiresInSet } from './config';
 import { runRetentionSweep } from './services/retention';
 
 // Gate for the daily data-retention sweep (driven off the 5-min reaper tick).
@@ -332,6 +332,17 @@ if (!process.env.VITEST) {
   const PORT = config.port;
   const server = app.listen(PORT, () => {
     logger.info({ port: PORT }, 'Clarion backend running');
+
+    // P1-3: JWT_EXPIRES_IN stopped governing the access-token lifetime
+    // (it predates the access/refresh split and kept production on 8h
+    // access tokens). An operator who still sets it deserves one loud
+    // line, not silence.
+    if (legacyJwtExpiresInSet) {
+      logger.warn(
+        { accessExpiresIn: config.jwt.accessExpiresIn },
+        'JWT_EXPIRES_IN is deprecated and ignored — access tokens now use JWT_ACCESS_EXPIRES_IN (default 15m)',
+      );
+    }
     // Start Neo4j constraint setup in the background — non-blocking.
     ensureNeo4jConstraints().catch(err => logger.error({ err }, 'Neo4j constraint setup error'));
 

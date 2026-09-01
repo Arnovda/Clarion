@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { request, registerUser, makeToken } from './helpers';
+import { request, registerUser, createUserWithToken } from './helpers';
 import { cleanTestDb, closeTestDb } from './db-helpers';
 
 let adminToken: string;
@@ -11,7 +11,7 @@ beforeAll(async () => {
   const admin = await registerUser({ email: 'users-admin@test.com', companyName: 'UsersCo' });
   adminToken = admin.token;
   tenantId = admin.user.tenantId;
-  viewerToken = makeToken({ sub: 999, tenantId, role: 'viewer' });
+  viewerToken = (await createUserWithToken({ tenantId, role: 'viewer' })).token;
 });
 
 afterAll(async () => {

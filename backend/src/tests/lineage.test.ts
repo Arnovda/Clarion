@@ -17,7 +17,7 @@
  */
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { request, registerUser, makeToken } from './helpers';
+import { request, registerUser, createUserWithToken } from './helpers';
 import { cleanTestDb, closeTestDb, getTestDb } from './db-helpers';
 
 let adminToken: string;
@@ -155,7 +155,7 @@ describe('GET /api/lineage/table', () => {
   });
 
   it('refuses viewers', async () => {
-    const viewerToken = makeToken({ tenantId, role: 'viewer', email: 'lineage-viewer@test.com' });
+    const viewerToken = (await createUserWithToken({ tenantId, role: 'viewer', email: 'lineage-viewer@test.com' })).token;
     const res = await fetchLineage(viewerToken, 'source', srcTableId);
     expect(res.status).toBe(403);
   });

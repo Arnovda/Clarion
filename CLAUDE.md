@@ -31,7 +31,81 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-09-01 (P0-4 REMEDIATION, DRAFT HALF — the legal surface
+**Last updated:** 2026-09-01 (P1-3 REMEDIATION — suspending a customer bites in
+30 seconds, not 8 hours; wave 2 begins, with P0-3 billing DEFERRED by owner
+decision to manual invoices)
+
+**First wave-2 PR of the market-readiness remediation plan. Wave 2 starts at
+P1-3 because the owner deferred P0-3 the same day** (*"Don't incorporate the
+billing system yet. It's through manual invoices in the beginning"* — recorded
+in the assessment doc's P0-3 addendum; the metering base keeps accruing).
+The finding's claims were re-verified and SHARPENED before fixing:
+- **`requireAuth` re-checked only the JWT signature — confirmed.** But the
+  8-hour token was subtler than the doc said: the CODE default was already
+  15m; production's Terraform sets the legacy `JWT_EXPIRES_IN=8h`, and
+  config.ts honoured it as the ACCESS lifetime alias — so the whole refresh
+  apparatus (30-day refresh tokens, frontend silent auto-refresh, revocation)
+  sat deployed but idle. **And a defect the doc did not name: `/auth/refresh`
+  checked `users.is_active` but NEVER `tenants.status`** — a suspended
+  tenant's users could mint fresh access tokens for the refresh token's whole
+  30-day lifetime, so shortening tokens alone would have fixed nothing.
+- **All three defects reproduced RED first** (`suspension.test.ts`, 3 route
+  tests, each 200-where-401-owed): suspended tenant + live token → still
+  served; suspended tenant → refresh still minted; deactivated user + live
+  token → still served (measured against `/api/dashboards` on purpose —
+  `/auth/me` re-reads the user row itself and passes that test for the wrong
+  reason).
+- **NEW `services/accountStatus.ts`** — `checkAccountStatus(tenantId, userId)`
+  behind a per-(tenant,user) TTL cache (`AUTH_STATUS_TTL_MS`, default 30s;
+  env read per call so tests can vary it; TTL=0 disables). One
+  `unauthQuery` join of users+tenants (runs BEFORE tenant context exists:
+  `users` readable under the P0-1 `auth_lookup` carve-out, `tenants` has no
+  RLS). **The two failure directions are deliberately different**: a
+  definitive negative (suspended / inactive / rows gone) REFUSES and is
+  cached; a query ERROR allows and is NOT cached — a DB blip must not 401
+  the whole product, and the request fails honestly downstream anyway.
+  Injectable fetcher for tests (the healthCheck pattern).
+- **Wired into `requireAuth` right after signature verify, BEFORE the tenant
+  transaction** (a refused request never spends a pool connection). Refusal
+  is **401, not 403, on purpose**: the frontend's 401 interceptor attempts a
+  refresh (which now also refuses), clears the session and lands on sign-in,
+  where login states the real reason ("Your organization has been
+  suspended"). `validateRefreshToken` gained the tenant-status check beside
+  its existing is_active check.
+- **`JWT_EXPIRES_IN` is deprecated and IGNORED** — `accessExpiresIn` reads
+  only `JWT_ACCESS_EXPIRES_IN` (default 15m), so production flips to 15m
+  access tokens on deploy with NO ops act (the live containers still carry
+  the old env var; it just stops steering). Safe because frontend
+  `lib/api.ts` swaps tokens silently on 401 (verified before deciding).
+  One loud boot warning in index.ts when the legacy var is still set
+  (flag exported from config.ts, which stays import-free — the no-console
+  ratchet caught the first console.warn version). infra/main.tf mirrors
+  both env blocks as `JWT_ACCESS_EXPIRES_IN=15m`.
+- **THE TEST FALLOUT WAS THE CONTROL WORKING**: seven test files forged
+  tokens for users that DON'T EXIST (`makeToken({sub: 999})`, default
+  `sub: 1`, or a real user with the WRONG tenant claim) — exactly the
+  loophole the check closes. New `helpers.createUserWithToken(...)` inserts
+  a real row and forges its token; all call sites converted, and the
+  build-chat cross-tenant test now uses a REAL other-tenant admin so the
+  route-level isolation gate is still what that test exercises.
+- Validation: backend `npm run check` clean; full vitest **53 files / 547
+  passed / 4 skipped** (7 new: 3 route + 4 service incl. cache-hit counting,
+  fail-open-not-cached, TTL expiry); all nine ratchets green from the repo
+  root; `e2e/rls.spec.ts` + `e2e/auth-login.spec.ts` **8/8** against a live
+  backend as `databridge_app` (proving the new unauthQuery join under the
+  auth_lookup policy with RLS enforcing); **live demo on that backend:
+  registered → suspended the tenant → the still-valid token was refused
+  after exactly 30s** (the TTL boundary). Frontend untouched (verified by
+  `git status`).
+- **New env vars** (in `.env.example`): `JWT_ACCESS_EXPIRES_IN` (15m),
+  `AUTH_STATUS_TTL_MS` (30000). `JWT_EXPIRES_IN` documented as deprecated.
+- **NOT in this PR, deliberately**: an operator surface to SET
+  `tenants.status` (P1-5's console — today it is a DB update, and the
+  enforcement doesn't care which); per-tenant rate limiting (P1-2); role
+  drift mid-session (handled by refresh-token revocation on role change,
+  now within 15m instead of 8h).
+
+**Prior last updated:** 2026-09-01 (P0-4 REMEDIATION, DRAFT HALF — the legal surface
 exists as reviewed-nothing DRAFTS behind a banner; the false SOC 2 claim on the
 sign-in screen is GONE)
 
@@ -7246,9 +7320,11 @@ NODE_ENV=development
 # Semantic layer DB — PostgreSQL running in Docker
 DATABASE_URL=postgresql://databridge:databridge@localhost:5432/databridge
 
-# JWT auth
+# JWT auth — access tokens are short-lived (15m) + 30-day refresh tokens;
+# JWT_EXPIRES_IN is deprecated and ignored (P1-3)
 JWT_SECRET=change_me_in_production
-JWT_EXPIRES_IN=8h
+JWT_ACCESS_EXPIRES_IN=15m
+AUTH_STATUS_TTL_MS=30000
 
 # Claude API (get key from console.anthropic.com)
 ANTHROPIC_API_KEY=your_key_here

@@ -145,6 +145,16 @@ export async function validateRefreshToken(
   );
   if (!user) return null;
 
+  // The TENANT must still be active too (P1-3). Before this check, a
+  // suspended tenant's users kept minting fresh access tokens for the
+  // refresh token's whole 30-day lifetime — suspension only ever bit at
+  // login, which a refreshing session never revisits. `tenants` carries
+  // no RLS, so the read needs no carve-out.
+  const tenant = await unauthQuery((trx) =>
+    trx('tenants').where({ id: user.tenant_id }).first(),
+  );
+  if (!tenant || tenant.status !== 'active') return null;
+
   // Last-used tracking — non-fatal if the update fails. tenantScopedWrite
   // is required because auth_lookup on refresh_tokens is SELECT-only and
   // tenant_isolation needs a real tenant in app.current_tenant to permit

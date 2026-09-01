@@ -587,8 +587,11 @@ resource "azurerm_container_app" "backend" {
         secret_name = "jwt-secret"
       }
       env {
-        name  = "JWT_EXPIRES_IN"
-        value = "8h"
+        # P1-3: access tokens are short-lived; sessions persist via 30-day
+        # refresh tokens the frontend swaps silently. The legacy
+        # JWT_EXPIRES_IN (8h) is deprecated and ignored by the backend.
+        name  = "JWT_ACCESS_EXPIRES_IN"
+        value = "15m"
       }
       env {
         name        = "ANTHROPIC_API_KEY"
@@ -909,8 +912,11 @@ resource "azurerm_container_app" "jobs_worker" {
         secret_name = "jwt-secret"
       }
       env {
-        name  = "JWT_EXPIRES_IN"
-        value = "8h"
+        # P1-3: access tokens are short-lived; sessions persist via 30-day
+        # refresh tokens the frontend swaps silently. The legacy
+        # JWT_EXPIRES_IN (8h) is deprecated and ignored by the backend.
+        name  = "JWT_ACCESS_EXPIRES_IN"
+        value = "15m"
       }
       env {
         name        = "ANTHROPIC_API_KEY"
