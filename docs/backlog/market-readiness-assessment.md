@@ -126,6 +126,16 @@ owned ids — a latent footgun, not a live leak).
 
 ### P0-3 · There is no commercial layer
 
+> **OWNER DECISION 2026-09-01** — *"Don't incorporate the billing system yet.
+> It's through manual invoices in the beginning."* No Mollie integration, no
+> automated invoicing/dunning for now: the first customers are invoiced by
+> hand. What that leaves in scope for wave 2, if anything, is the thin
+> administrative layer manual invoicing still needs — recording which plan a
+> tenant is on and reading their metered `ai_usage` when writing the invoice —
+> plus suspend/resume, which P1-5's operator console already covers. Revisit
+> the payment processor when manual invoicing stops scaling; the metering
+> foundation below is unchanged and keeps accruing.
+
 No plans, subscriptions, entitlements, payment processor, invoicing, trial or
 dunning. `tenants` carries `name`, `slug`, `status` and a nullable AI token
 budget — nothing describing what a customer bought.
@@ -315,6 +325,8 @@ minute, and be supported without a database session.
 1. **P0-3** Commercial layer on the existing metering: `plans`/`subscriptions`,
    entitlements in middleware, Mollie (better SEPA/Bancontact fit than Stripe for
    Belgium), trials, dunning. Feed `ai_usage` into invoicing.
+   *(Owner decision 2026-09-01: DEFERRED — manual invoices at first; see the
+   P0-3 addendum. Wave 2 starts at item 2.)*
 2. **P1-3** Re-validate tenant status and `is_active` in `requireAuth` behind a
    short-TTL cache; shorten the access token.
 3. **P1-5** Operator console: tenant list with health/usage, suspend/resume,
