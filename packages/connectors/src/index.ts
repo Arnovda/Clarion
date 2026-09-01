@@ -29,6 +29,9 @@ export type {
 
 export { CancellationError } from './types';
 
+// ─── Business keys (declared by the source, not guessed from the data) ────
+export { businessKeysFromCatalog, type EntityBusinessKey } from './businessKeys';
+
 // ─── Star-schema templates (deterministic modelling) ──────────────────────
 export {
   instantiateStarSchemaTemplate,

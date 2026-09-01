@@ -22,6 +22,7 @@
 
 import type { JSONSchema7 } from 'json-schema';
 import type { StarSchemaTemplate } from './starSchema';
+import type { EntityBusinessKey } from './businessKeys';
 
 // ─── The interface every connector implements ────────────────────────────
 export interface SourceConnector {
@@ -141,6 +142,27 @@ export interface SourceConnector {
    * subsequent layers (no duplicate name-pattern guesses).
    */
   getKnownRelationships?(selectedEntities: readonly string[]): readonly KnownRelationship[];
+
+  /**
+   * The identifying column per entity — declared, not inferred.
+   *
+   * Same rung and same shape as `getKnownRelationships`: a fact about the API
+   * surface, returned SYNCHRONOUSLY with no network call, because it is a
+   * compile-time constant and a live-metadata failure must never cost us it.
+   *
+   * Why the platform cannot work this out on its own: a business key is the
+   * column that IDENTIFIES a row, and uniqueness alone does not find it. On an
+   * append-only table `Created` is unique too — picking it yields completeness
+   * and uniqueness scores that read 100% while measuring nothing, which is
+   * worse than no score at all because it looks like a good one.
+   *
+   * Implementations should return `businessKeysFromCatalog(catalog, selected)`
+   * — the declarations already on `EntityDescriptor.businessKey`, which the
+   * warehouse writer uses to merge rows on re-sync. Entities with no declared
+   * key are OMITTED rather than returned empty: "the source does not say" and
+   * "the source says none" must stay distinguishable.
+   */
+  getBusinessKeys?(selectedEntities: readonly string[]): readonly EntityBusinessKey[];
 
   /**
    * Optional. Return the source system's OWN documentation for the selected
@@ -267,6 +289,8 @@ export interface UnresolvedReference {
 }
 
 /** Vendor documentation for one entity, returned by `describeEntities`. */
+export type { EntityBusinessKey } from './businessKeys';
+
 export interface EntityDocs {
   /** Matches `EntityDescriptor.name`. */
   entityName: string;

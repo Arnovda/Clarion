@@ -38,8 +38,10 @@ import type {
   SyncOptions,
   SyncResult,
   TestResult,
+  EntityBusinessKey,
 } from '../types';
 import { CancellationError } from '../types';
+import { businessKeysFromCatalog } from '../businessKeys';
 import { asOdooConfig, odooConfigSchema } from './schema';
 import {
   ALWAYS_KEEP_FIELDS,
@@ -263,6 +265,16 @@ export class OdooConnector extends BaseSourceConnector implements SourceConnecto
   getKnownRelationships(selectedEntities: readonly string[]): readonly KnownRelationship[] {
     const set = new Set(selectedEntities);
     return ODOO_KNOWN_RELATIONSHIPS.filter((r) => set.has(r.fromTable) && set.has(r.toTable));
+  }
+
+  // ─── getBusinessKeys ───────────────────────────────────────────────────
+  /**
+   * Odoo's primary key is always the integer `id`, on every model — the ORM
+   * guarantees it. Declared per entity rather than assumed platform-side, so
+   * the profiler reads one contract for every source.
+   */
+  getBusinessKeys(selectedEntities: readonly string[]): readonly EntityBusinessKey[] {
+    return businessKeysFromCatalog(ODOO_ENTITIES, selectedEntities);
   }
 
   // ─── getStarSchemaTemplate ─────────────────────────────────────────────

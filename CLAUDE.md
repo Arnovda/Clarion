@@ -31,7 +31,90 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-09-01 (STOP MEANS STOP — a running question is cancellable
+**Last updated:** 2026-09-01 (THE BUSINESS KEY COMES FROM THE SOURCE NOW — a
+`Created` timestamp was identifying bank statement lines)
+
+**Owner, from the Quality tab on ExactOnline's `BankEntryLines`: *"the business
+key is proposed as Created, while that obviously can't be right… I think it just
+identifies the first column with 100% uniqueness. Include it in the source system
+list like ExactOnline where we already describe the relations?"* Right about the
+symptom, right about the fix — and the fix was already half-built.**
+- **THE OLD RULE WAS ONE LINE**: `fields.reduce((best, f) => f.distinct_pct >
+  best.distinct_pct ? f : best, fields[0])` — highest uniqueness wins, and
+  because `>` is strict, **ties go to whichever column came first**. On an
+  append-only table `ID`, `Created` and `Modified` are all 100% unique, so field
+  order decided it. **No AI was involved at any point** (the owner assumed there
+  was); it is measured stats and a tie-break.
+- **THE HARM IS NOT THE LABEL, IT IS THE SCORE.** BK Completeness and BK
+  Uniqueness are computed FROM the key column, so both read 100% while measuring
+  a timestamp — a timestamp is trivially complete and trivially unique. **A wrong
+  key does not look like a broken table, it looks like a perfect one.**
+- **THE DECLARATION ALREADY EXISTED AND NOTHING READ IT.**
+  `EntityDescriptor.businessKey` has been in the connector contract since the
+  framework was built, the warehouse writer merges rows on it every sync, and
+  conformance already enforces `incrementalCursor ⇒ businessKey`.
+  **`BankEntryLines` declares `businessKey: 'ID'`.** 55 of 61 EO entities declare
+  one (the six that do not are the report-shaped endpoints); Odoo declares `id`
+  for all 21. The quality profiler was simply the one consumer that never asked.
+  So this is not a new list — it is wiring the list that exists, which is exactly
+  the `declared > curated > ai` ladder `SOURCE_ONBOARDING.md` already states.
+- **NEW `getBusinessKeys()` on `SourceConnector`**, deliberately the same shape
+  as `getKnownRelationships`: SYNCHRONOUS and network-free, because it is a
+  compile-time constant and a live-metadata failure must never be able to cost
+  us it. Both connectors implement it in one line over the shared
+  **`businessKeysFromCatalog`** (new `packages/connectors/src/businessKeys.ts`).
+  An entity with no declared key is OMITTED, never returned blank — "the source
+  does not say" and "the source says none" must stay distinguishable.
+- **Precedence is now `user's own pick > the source's declaration > a name-shape
+  guess > nothing`**, resolved by the CALLER (`declaredBusinessKeys.ts`) and
+  passed in as the existing `overrideBkColumn`, so the profiler needed no new
+  parameter. Matching is case-insensitive: a declaration says `ID`, a parquet
+  header may say `Id`, and a key that fails to match its own column is the exact
+  failure being removed.
+- **THE FALLBACK NO LONGER GUESSES WILDLY, AND REFUSES WHEN IT CANNOT TELL.**
+  New pure exported `chooseBusinessKey(fields, tableName)`: a candidate must be
+  100% distinct AND 0% null AND not a date/time/bool/float, and must be
+  key-SHAPED (`id`, `<table>id`, `code`, `number`, `guid`, `*_id`…). Ranked
+  best-shape → shortest → alphabetical, so the same data always yields the same
+  answer. **Nothing key-shaped ⇒ null, and null scores** — because an unmeasured
+  table must not render as a perfect one. `overall/completeness/uniqueness` are
+  now `number | null`; every consumer already handled null
+  (`checkAndCreateAlerts` returns early on it, home.ts filters it out), so
+  nothing else had to change.
+- **A SECOND BUG FOUND WHILE FIXING THE FIRST: an Analyse threw away the
+  curator's business key.** The profiler's persist step is wipe-and-reinsert and
+  never carried `business_key_column`, so a hand-picked key survived until the
+  next Analyse and then silently reverted to a guess. It is read before the wipe
+  and written back now — and the Analyse-time quality pass, which passed NO key
+  at all, now gets `user ?? declared` like the standalone route.
+- **The screen names its authority instead of saying AUTO-DETECTED for
+  everything**: *From Exact Online* / *Guessed from your data* / *Set by you* /
+  *none established*, with a sentence explaining which. Derived from
+  `declared_bk` (new on the settings endpoint) versus what the profile used —
+  **no migration and no new stored column**, because the distinction was already
+  implied by data we hold. `CONNECTOR_LABELS` moved from `sources/page.tsx` to
+  `lib/connectorIcons.tsx` so the second consumer imports it rather than copying.
+- **Conformance gained `validateBusinessKeyExposure`**: a catalog that declares
+  keys must EXPOSE them. Verified to fail — renaming EO's accessor turns the
+  suite red. Without it a new connector silently sends every table back to
+  guessing, and nothing errors.
+- Validation: backend **49 files / 500 passed** (14 new in `businessKey.test.ts`,
+  10 of which were confirmed to go RED against the old rule), connectors **231
+  passed** (8 new), all eight ratchets green, frontend `tsc` + `next build` green
+  40/40, new/changed files lint-clean (the four in `sources/page.tsx` are the
+  documented pre-existing ones). The provenance derivation was dry-run over its
+  nine states in real Node. **NOT render-checked** — unlike the notebook panel
+  this adds no new component or layout, only a chip and copy inside an existing
+  card.
+- **TAKES EFFECT ON THE NEXT ANALYSE OR PROFILE RUN.** Existing
+  `dataset_profiles` rows keep their old key until the table is re-profiled;
+  clicking **Run profile** on one table is enough to see it change.
+- **NOT done, deliberately**: direct-database sources (Postgres/MySQL/SQL Server/
+  SQLite) still get the heuristic — their real primary key IS knowable by
+  introspection and is not plumbed into the profiler. That is the obvious next
+  slice, and it is why the fallback refuses rather than guesses.
+
+**Prior last updated:** 2026-09-01 (STOP MEANS STOP — a running question is cancellable
 everywhere, and the notebook gets the dashboard's assistant)
 
 **Owner: *"Be able to cancel a question if the AI is running"* and *"Have the same

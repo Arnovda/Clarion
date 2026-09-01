@@ -13,6 +13,9 @@
 import { semanticDb } from '../db/knex';
 import { BaseConnector } from '../connectors/BaseConnector';
 import { tenantQuery } from '../services/tenantQuery';
+import { logger as rootLogger } from '../utils/logger';
+
+const log = rootLogger.child({ mod: 'quality-profiler' });
 
 export interface FieldStat {
   field_name:     string;
@@ -33,10 +36,82 @@ export interface ProfileResult {
   profileId:         number;
   rowCount:          number;
   fields:            FieldStat[];
-  overallScore:      number;
-  completenessScore: number;
-  uniquenessScore:   number;
+  /**
+   * Null when no business key could be identified. Every score here is
+   * derived from the key column, so without one there is nothing measured —
+   * and "unknown" has to look different from "perfect".
+   */
+  overallScore:      number | null;
+  completenessScore: number | null;
+  uniquenessScore:   number | null;
   validityScore:     number | null;
+  /** The column the scores describe, or null when none was identified. */
+  businessKeyColumn: string | null;
+}
+
+// ─── Business-key selection ────────────────────────────────────────────────
+//
+// A business key is the column that IDENTIFIES a row. Uniqueness alone does
+// not find it: on an append-only table a `Created` timestamp is unique too,
+// and the old rule — "the column with the highest distinct percentage, first
+// one wins a tie" — picked exactly that on ExactOnline's BankEntryLines. The
+// scores then read 100% complete and 100% unique while measuring a timestamp.
+//
+// The real answer usually needs no inference at all: the connector DECLARES
+// it (see packages/connectors/src/businessKeys.ts) and the caller passes it
+// in. What follows is only the fallback for sources that declare nothing —
+// a direct database connection, or an entity outside the catalog.
+
+/** Uniqueness required of a key. Not 1.0 exactly: float division on large
+ *  row counts lands a hair under, and a key is not less of a key for it. */
+const KEY_MIN_UNIQUENESS = 0.999;
+
+/** Types that can be unique by accident and are never an identity. */
+const NON_KEY_TYPE_RE = /^(date|time|timestamp|datetime|bool|float|double|real|decimal|numeric)/i;
+
+/**
+ * Name shapes that mean "this identifies the row", best first. A column that
+ * matches none of them is NOT proposed: a wrong key produces confident,
+ * meaningless scores, which is worse than an empty one — an empty score reads
+ * as "not measured", a wrong one reads as "perfect".
+ */
+function keyNameRank(columnName: string, tableName: string): number {
+  const c = columnName.toLowerCase();
+  const t = tableName.toLowerCase().replace(/[^a-z0-9]/g, '');
+  const singular = t.endsWith('s') ? t.slice(0, -1) : t;
+
+  if (c === 'id') return 0;
+  if (c === `${t}id` || c === `${t}_id` || c === `${singular}id` || c === `${singular}_id`) return 1;
+  if (c === 'guid' || c === 'uuid' || c === 'code' || c === 'number' || c === 'nr' || c === 'key') return 2;
+  if (/(^|_)(id|guid|uuid|code|number|key|ref)$/.test(c)) return 3;
+  return -1;   // not key-shaped
+}
+
+/**
+ * Pick the business key from measured stats, or return null.
+ *
+ * Exported for tests: this is the judgement call in the profiler and it runs
+ * against every table of every source, so it is worth pinning directly rather
+ * than through a database.
+ */
+export function chooseBusinessKey(fields: FieldStat[], tableName: string): string | null {
+  const candidates = fields
+    .filter((f) => f.null_pct === 0)                       // a key identifies EVERY row
+    .filter((f) => f.distinct_pct >= KEY_MIN_UNIQUENESS)   // …and identifies them uniquely
+    .filter((f) => !NON_KEY_TYPE_RE.test(f.data_type || ''))
+    .map((f) => ({ field: f, rank: keyNameRank(f.field_name, tableName) }))
+    .filter((c) => c.rank >= 0);
+
+  if (candidates.length === 0) return null;
+
+  // Best name shape wins; then the shorter name (`ID` over `ParentID`), then
+  // alphabetical so the same data always yields the same answer.
+  candidates.sort((a, b) =>
+    a.rank - b.rank
+    || a.field.field_name.length - b.field.field_name.length
+    || a.field.field_name.localeCompare(b.field.field_name));
+
+  return candidates[0].field.field_name;
 }
 
 const NUMERIC_RE = /^(int|integer|real|float|double|numeric|decimal|bigint|smallint|tinyint)/i;
@@ -188,24 +263,41 @@ export async function runQualityProfileWithConnector(
     });
   }
 
-  // Business-key column selection
+  // ── Business-key column selection ──
+  // Precedence, highest first:
+  //   1. `overrideBkColumn` — what the caller resolved: the user's own pick
+  //      if they made one, else the column the SOURCE declares.
+  //   2. the name-shape fallback, for sources that declare nothing.
+  //   3. nothing — and then nothing is scored.
   let pkField: FieldStat | null = null;
   if (overrideBkColumn) {
-    pkField = fields.find((f) => f.field_name === overrideBkColumn) ?? null;
+    // Case-insensitive: a declaration says `ID`, the parquet header may be
+    // `Id`. A key that fails to match its own column is the failure this
+    // whole path exists to remove, so it must not turn on casing.
+    const wanted = overrideBkColumn.toLowerCase();
+    pkField = fields.find((f) => f.field_name.toLowerCase() === wanted) ?? null;
+    if (!pkField) {
+      log.warn(
+        { tableName, overrideBkColumn },
+        'business key names a column this table does not have — falling back to detection',
+      );
+    }
   }
-  if (!pkField && fields.length > 0) {
-    // Without PRAGMA pk info, pick the most distinct column
-    pkField = fields.reduce(
-      (best, f) => f.distinct_pct > best.distinct_pct ? f : best,
-      fields[0],
-    );
+  if (!pkField) {
+    const chosen = chooseBusinessKey(fields, tableName);
+    pkField = chosen ? fields.find((f) => f.field_name === chosen) ?? null : null;
   }
 
   const bkColumnUsed = pkField?.field_name ?? null;
-  const completenessScore = pkField ? 1 - pkField.null_pct : 1;
-  const uniquenessScore = pkField ? pkField.distinct_pct : 1;
+  // No key → no scores. These numbers only ever described the key column, so
+  // defaulting them to 1 published a perfect score for a table nobody had
+  // measured. Null renders as "—" and is the honest answer.
+  const completenessScore = pkField ? 1 - pkField.null_pct : null;
+  const uniquenessScore = pkField ? pkField.distinct_pct : null;
   const validityScore: number | null = null;
-  const overallScore = (completenessScore + uniquenessScore) / 2;
+  const overallScore = pkField
+    ? (completenessScore! + uniquenessScore!) / 2
+    : null;
 
   // Persist — wrapped in tenantQuery so SET LOCAL app.current_tenant is set
   // for every insert. Without this, the pooled connection may not have tenant
@@ -269,5 +361,5 @@ export async function runQualityProfileWithConnector(
     return id;
   });
 
-  return { profileId, rowCount, fields, overallScore, completenessScore, uniquenessScore, validityScore };
+  return { profileId, rowCount, fields, overallScore, completenessScore, uniquenessScore, validityScore, businessKeyColumn: bkColumnUsed };
 }

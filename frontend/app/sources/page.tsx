@@ -4,7 +4,7 @@ import { useState, useEffect, Suspense, Fragment } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import AppShell from '@/components/layout/AppShell';
 import RequireRole from '@/components/RequireRole';
-import { connectorMark } from '@/lib/connectorIcons';
+import { connectorMark, CONNECTOR_LABELS } from '@/lib/connectorIcons';
 import IngestionWizard from '@/components/IngestionWizard';
 import api from '@/lib/api';
 import { getToken } from '@/lib/auth';
@@ -216,17 +216,6 @@ function getConfig(conn: Connection): Record<string, string> {
  * row does not, and printing its storage engine ("DUCKDB") told the user
  * nothing about what they connected.
  */
-const CONNECTOR_LABELS: Record<string, string> = {
-  exactonline: 'Exact Online',
-  odoo: 'Odoo',
-  excel: 'Excel',
-  sharepoint: 'SharePoint',
-  postgres: 'PostgreSQL',
-  mysql: 'MySQL',
-  sqlserver: 'SQL Server',
-  sqlite: 'SQLite',
-};
-
 function connectorLabel(id: string): string | undefined {
   return CONNECTOR_LABELS[id];
 }

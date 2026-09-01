@@ -73,6 +73,51 @@ export function validateConnectorMetadata(c: SourceConnector): string[] {
 }
 
 /**
+ * A catalog that declares business keys must EXPOSE them.
+ *
+ * The declaration on `EntityDescriptor.businessKey` is used by the warehouse
+ * writer either way, but the profiler can only read it through
+ * `getBusinessKeys` — and a connector that silently omits the accessor sends
+ * every one of its tables back to guessing the key from data, which is how a
+ * `Created` timestamp ends up identifying a bank statement line.
+ *
+ * Checked as its own rule rather than left to review, because the failure is
+ * invisible: nothing errors, the scores just quietly measure the wrong column.
+ */
+export function validateBusinessKeyExposure(
+  connectorType: string,
+  connector: SourceConnector,
+  entities: ReadonlyArray<EntityDescriptor>,
+): string[] {
+  const declared = entities.filter((e) => e.businessKey);
+  if (declared.length === 0) return [];
+  if (!connector.getBusinessKeys) {
+    return [`[${connectorType}] catalog declares ${declared.length} businessKey(s) but the connector does not implement getBusinessKeys() — the profiler will guess instead`];
+  }
+
+  const errs: string[] = [];
+  const exposed = connector.getBusinessKeys(entities.map((e) => e.name));
+  const byEntity = new Map(exposed.map((k) => [k.entity, k.column]));
+  for (const e of declared) {
+    const got = byEntity.get(e.name);
+    if (got === undefined) {
+      errs.push(`[${connectorType}] entity '${e.name}' declares businessKey '${e.businessKey}' but getBusinessKeys() omits it`);
+    } else if (got !== e.businessKey) {
+      errs.push(`[${connectorType}] entity '${e.name}': getBusinessKeys() says '${got}', catalog says '${e.businessKey}'`);
+    }
+  }
+  // The reverse direction: a key for an entity that is not in the catalog
+  // can never match a synced table, so it is a silent no-op at best.
+  const known = new Set(entities.map((e) => e.name));
+  for (const k of exposed) {
+    if (!known.has(k.entity)) {
+      errs.push(`[${connectorType}] getBusinessKeys() returns unknown entity '${k.entity}'`);
+    }
+  }
+  return errs;
+}
+
+/**
  * Entity-catalog invariants. Run against a connector's RAW catalog (the array
  * that carries `incrementalCursor` / `businessKey`) — the public
  * `listEntities` projection may strip those, so connectors export their

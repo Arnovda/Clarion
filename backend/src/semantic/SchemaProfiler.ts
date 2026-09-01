@@ -9,6 +9,7 @@ import {
 import type { TableContextOutput, FkCandidateLike } from '../ai/prompts/schemaContextPrompt';
 import { semanticDb } from '../db/knex';
 import { runQualityProfileWithConnector } from '../quality/QualityProfiler';
+import { declaredBusinessKeys } from '../services/declaredBusinessKeys';
 import { TableQualityStat } from '../ai/prompts/schemaDraftPrompt';
 import * as graph from '../db/semanticGraph';
 import {
@@ -434,6 +435,26 @@ export async function runSchemaProfiler(
   // registration slow for no user-visible gain — the full Analyse run
   // re-does it anyway.
   const qualityStats: TableQualityStat[] = [];
+  // Business keys available before any table is profiled:
+  //   • what the SOURCE declares  — a static catalog lookup, no network
+  //   • what a curator has chosen — read BEFORE the wipe-and-reinsert below,
+  //     which would otherwise drop it
+  const declaredBks = declaredBusinessKeys(connectorType);
+  const userBusinessKeys = new Map<string, string>();
+  try {
+    const rows = await semanticDb.transaction(async (trx) => {
+      if (tenantId != null) await setTenantContext(trx, tenantId);
+      const found: Array<{ table_name: string; business_key_column: string }> = await trx('source_tables')
+        .where({ connection_id: connectionId })
+        .whereNotNull('business_key_column')
+        .select('table_name', 'business_key_column');
+      return found;
+    });
+    for (const r of rows) userBusinessKeys.set(r.table_name, r.business_key_column);
+  } catch (err) {
+    log.warn({ err }, 'could not read existing business keys — re-profile proceeds without them');
+  }
+
   for (let ti = 0; !structural && ti < schema.tables.length; ti++) {
     const table = schema.tables[ti];
     emit({ phase: 'quality', message: `Step 2/7 — Profiling ${table.tableName} (${ti + 1}/${schema.tables.length}) — nulls, distincts, value distributions…`, table: table.tableName, tableIndex: ti, tableCount: schema.tables.length });
@@ -447,6 +468,11 @@ export async function runSchemaProfiler(
         table.tableName,
         connector,
         table.columns.map(c => ({ name: c.name, type: c.type })),
+        // Same precedence as the standalone profile route: the user's own
+        // pick, then what the SOURCE declares. Passing neither used to mean
+        // an Analyse silently re-guessed the key — and threw away a curator's
+        // choice every time.
+        userBusinessKeys.get(table.tableName) ?? declaredBks.get(table.tableName.toLowerCase()) ?? undefined,
       );
       qualityStats.push({
         table_name: table.tableName,
@@ -977,6 +1003,10 @@ export async function runSchemaProfiler(
           approval_status: tp.approvalStatus,
           vendor_description: tp.vendorDescription,
           edited_by_user:  tp.editedByUser,
+          // A curator's business-key choice is theirs, and the wipe-and-
+          // reinsert above would otherwise discard it on every Analyse —
+          // silently sending the table back to a guessed key.
+          business_key_column: userBusinessKeys.get(table.tableName) ?? null,
         })
         .returning('id');
 
