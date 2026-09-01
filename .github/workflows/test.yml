@@ -279,6 +279,34 @@ jobs:
   # any type draws no marks, errors, or is missing from the /dev/widgets
   # gallery. Headless spec-level checks demonstrably do NOT catch blank
   # charts; this does.
+  # P1-7: a frontend type error could reach production — next.config.mjs
+  # sets ignoreBuildErrors (so `next build` compiles type errors into the
+  # Docker image), and none of the other jobs type-checked the frontend.
+  # The deploy gate waits on this WORKFLOW succeeding for the commit, so
+  # this job is what finally blocks the deploy. It also runs the frontend
+  # unit tests (vitest + Testing Library) — the first ones the app has.
+  # Reproduced red before adding: `next build` exited 0 with a deliberate
+  # `const x: number = 'string'` in a page, while `tsc --noEmit` caught it.
+  frontend-checks:
+    name: Frontend type-check + unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+      - name: Type-check frontend (strict — next build does not)
+        working-directory: frontend
+        run: npx tsc --noEmit
+      - name: Frontend unit tests
+        working-directory: frontend
+        run: npx vitest run
+
   widget-render-gate:
     name: Widget Render Gate (real browser)
     runs-on: ubuntu-latest

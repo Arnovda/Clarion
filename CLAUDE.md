@@ -31,7 +31,54 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-09-01 (P1-2 REMEDIATION — rate limits share one Redis
+**Last updated:** 2026-09-01 (P1-7 REMEDIATION — a frontend type error can no
+longer reach production, and the frontend has its FIRST unit tests)
+
+**Fifth wave-2 PR of the market-readiness remediation plan (P1-7 pulled
+forward from the wave-3 list — small, and it closes a live deploy hazard).**
+- **Reproduced red first**: a deliberate `const x: number = 'string'` in a
+  page compiled clean through `next build` (exit 0 — `ignoreBuildErrors`)
+  while `tsc --noEmit` caught it. With deploy.yml gating only on the Tests
+  workflow, whose four jobs never type-checked the frontend, that error
+  ships into the production image.
+- **NEW test.yml job `frontend-checks`**: `npm ci` → `tsc --noEmit` →
+  `vitest run` in frontend/. The deploy gate requires the WHOLE Tests
+  workflow to succeed for the commit, so the new job blocks migrate-sql
+  and deploy automatically — no deploy.yml change needed.
+- **THE FRONTEND HAS A TEST HARNESS NOW** (`frontend/vitest.config.ts` +
+  `frontend/tests/`, deps: vitest/jsdom/@testing-library/react/
+  @vitejs/plugin-react — audit gate re-run clean): 13 tests. The step-tree
+  derivation + autoLabel (`app/query/steps.ts` — previously verified only
+  by throwaway dry-run scripts deleted after each session), the one SQL
+  formatter's contracts (string literals survive, unparseable input
+  returns verbatim instead of throwing in a render, {{placeholders}}
+  intact), and a first COMPONENT test (EmptyState — link vs button action,
+  children replacing actions). **The harness's very first run caught its
+  own trap**: Testing Library's between-test cleanup registers on the
+  GLOBAL afterEach, so without `globals: true` one test's rendered link
+  leaked into the next test's "no link" assertion.
+- **`ignoreBuildErrors` deliberately stays ON**, and its comment in
+  next.config.mjs now states the new truth: the gate refuses the commit
+  before any image build, so flipping the flag would change Docker /
+  widget-render-gate build behaviour for no remaining safety benefit.
+- **Drive-by that blocked the work**: frontend `npm install` (ANY install,
+  not just this one) failed with "Unable to resolve reference $postcss" —
+  npm 10's `$ref` override form only resolves against `dependencies`, and
+  postcss lives in devDependencies; only `npm ci` (lockfile-resolved) ever
+  worked, so nobody had hit it since the 2026-08-04 audit work introduced
+  the override. Literal `^8.5.25` now, with the keep-both-pins-in-step
+  warning in the `//overrides` note.
+- Validation: frontend `tsc` clean (tests included in the project glob),
+  new files lint-clean, frontend vitest **13/13**, `next build` green
+  **46/46** (tests/ invisible to the build), test.yml parses, frontend
+  audit gate clean with the new devDependencies; backend untouched.
+- **NOT in this PR, deliberately**: flipping `ignoreBuildErrors` (above);
+  broad component coverage (the harness + 13 meaningful tests is the
+  seed — grow it where bugs appear, per the house pattern); wiring
+  check.yml's now-redundant frontend tsc out (harmless duplication,
+  different workflow's concern).
+
+**Prior last updated:** 2026-09-01 (P1-2 REMEDIATION — rate limits share one Redis
 window across replicas and name the CALLER: tenant for authed traffic, the
 account under attack for brute force)
 
