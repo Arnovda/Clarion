@@ -118,8 +118,12 @@ export default function AuthLayout({ eyebrow, title, lede, children, footer }: A
               Where your business<br />comes into focus.
             </blockquote>
 
+            {/* Only claims that are TRUE may stand here. "SOC 2 Type II" was
+                removed 2026-09-01 (P0-4): no such certification exists yet —
+                a compliance claim on the sign-in screen is a representation,
+                not decoration. Re-add it the day the certificate is real. */}
             <div className="font-mono text-[10.5px] tracking-[0.08em] uppercase text-[#8891a0]">
-              SOC 2 Type II · EU-hosted · AES-256
+              EU-hosted · AES-256 · GDPR erasure built in
             </div>
           </div>
         </div>
@@ -143,6 +147,15 @@ export default function AuthLayout({ eyebrow, title, lede, children, footer }: A
               {footer}
             </div>
           )}
+          {/* Informational links only — deliberately NOT "by signing up you
+              agree": the documents are drafts pending legal review, and
+              presenting them as the binding agreement is the flip the owner
+              makes after that review (docs/legal/README.md). */}
+          <div className="mt-6 flex gap-3.5 font-mono text-[10px] tracking-[0.1em] uppercase text-muted-2">
+            <a href="/legal/terms" className="hover:text-muted no-underline text-inherit">Terms</a>
+            <a href="/legal/privacy" className="hover:text-muted no-underline text-inherit">Privacy</a>
+            <a href="/legal/subprocessors" className="hover:text-muted no-underline text-inherit">Subprocessors</a>
+          </div>
         </div>
       </div>
     </div>

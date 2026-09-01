@@ -137,6 +137,29 @@ getting paid is missing.
 
 ### P0-4 · No terms, privacy policy, or DPA
 
+> **DRAFTED 2026-09-01** (fifth wave-1 PR) — drafted, deliberately not yet in
+> force. Four documents exist as single-source string modules
+> (`frontend/lib/legal/`) rendered at `/legal/terms`, `/legal/privacy`,
+> `/legal/dpa` and `/legal/subprocessors`, each carrying a visible
+> "draft — not yet in force" banner (`LEGAL_IN_FORCE=false` in
+> `app/legal/LegalPage.tsx`). They are grounded in verified platform facts —
+> EU-only hosting except Anthropic (and the privacy policy says plainly that
+> questions, schema metadata, sampled values AND query results reach
+> Anthropic), the real retention windows from `services/retention.ts`, the
+> real erasure mechanics from `services/accountDeletion.ts`, and a DPA
+> Annex II listing only measures the platform demonstrably implements. Entity
+> name / KBO number / address / transfer-mechanism details are explicit
+> `[PLACEHOLDERS]`; `docs/legal/README.md` is the lawyer's checklist and the
+> go-live procedure (review → flip the banner → wire acceptance into
+> registration). **Registration acceptance is deliberately NOT wired**:
+> presenting unreviewed AI-drafted text as the binding agreement was the one
+> instruction this work carried, so the auth screens link to the documents
+> informationally only. Drive-by held to the same standard: the auth screen's
+> **"SOC 2 Type II" footer claim was removed** — no such certification exists,
+> and a compliance claim on the sign-in page is a representation, not
+> decoration. The finding is CLOSED only when the lawyer-reviewed versions are
+> in force and accepted at signup. The original finding follows.
+
 No legal surface exists in the frontend. Clarion processes Belgian SMB accounting
 data on its customers' behalf — a processor under GDPR. Article 28 requires a
 written contract **before** processing begins, naming subprocessors. The real
