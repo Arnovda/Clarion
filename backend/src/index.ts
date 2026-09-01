@@ -17,6 +17,7 @@ import path from 'path';
 import { requestLogger } from './middleware/requestLogger';
 import { logger } from './utils/logger';
 import { config, legacyJwtExpiresInSet } from './config';
+import { reapStaleWork } from './services/reapers';
 import { runRetentionSweep } from './services/retention';
 
 // Gate for the daily data-retention sweep (driven off the 5-min reaper tick).
@@ -513,58 +514,14 @@ if (!process.env.VITEST) {
       } catch { /* non-fatal */ }
     }, 30_000);
 
-    // Stale ingestion/profiling cleanup — mark any stuck in 'running' for >30min as failed.
-    // Runs every 5 minutes.
+    // Stale-work reapers — liveness-based since P1-1 (services/reapers.ts):
+    // a run is reaped when its HEARTBEAT goes quiet, not merely when it is
+    // old, so a healthy long first sync or big profiling survives while a
+    // dead process is cleaned within ~10 minutes. Runs every 5 minutes.
     setInterval(async () => {
       try {
         const { semanticDb } = await import('./db/knex');
-        const thirtyMinAgo = new Date(Date.now() - 30 * 60 * 1000).toISOString();
-        const staleIngestion = await semanticDb('connections')
-          .where('ingestion_status', 'running')
-          .where('created_at', '<', thirtyMinAgo)
-          .update({
-            ingestion_status: 'error',
-            ingestion_error: 'Ingestion timed out (>30 minutes)',
-          });
-        if (staleIngestion > 0) logger.info(`[cleanup] Marked ${staleIngestion} stale ingestion(s) as failed`);
-
-        const staleProfiling = await semanticDb('connections')
-          .where('profiling_status', 'running')
-          .whereNotNull('profiling_started_at')
-          .whereRaw("profiling_started_at < NOW() - INTERVAL '30 minutes'")
-          .update({
-            profiling_status: 'error',
-            profiling_phase: 'error',
-            profiling_message: 'Profiling timed out (>30 minutes)',
-            profiling_progress: 0,
-          });
-        if (staleProfiling > 0) logger.info(`[cleanup] Marked ${staleProfiling} stale profiling job(s) as failed`);
-
-        // Source-connector syncs stuck >30min. Mirrors the ingestion/profiling
-        // reaper. Without this a worker that hangs (no terminal event, no
-        // crash) keeps source_sync_runs 'running' forever and the in-flight
-        // guard blocks every future sync of that connection. Uses
-        // coalesce(started_at, queued_at) so a job that never started still
-        // ages out.
-        const staleSyncRuns = await semanticDb('source_sync_runs')
-          .whereIn('status', ['queued', 'running'])
-          .whereRaw("COALESCE(started_at, queued_at) < NOW() - INTERVAL '30 minutes'")
-          .update({
-            status: 'failed',
-            completed_at: new Date().toISOString(),
-            error_message: 'Sync timed out (>30 minutes)',
-          });
-        if (staleSyncRuns > 0) {
-          logger.info(`[cleanup] Marked ${staleSyncRuns} stale source sync run(s) as failed`);
-          await semanticDb('connections')
-            .whereIn('last_sync_status', ['queued', 'running'])
-            .whereRaw(`NOT EXISTS (
-              SELECT 1 FROM source_sync_runs s
-              WHERE s.connection_id = connections.id
-                AND s.status IN ('queued','running')
-            )`)
-            .update({ last_sync_status: 'failed' });
-        }
+        await reapStaleWork(semanticDb);
 
         // Retention: source_sync_runs grows unbounded otherwise (every
         // scheduled sync adds a fat row with log_excerpt + JSONB counts).

@@ -166,7 +166,7 @@ variable "jobs_worker_min_replicas" {
 variable "jobs_worker_max_replicas" {
   type        = number
   default     = 1
-  description = "Maximum jobs-worker replicas. MUST stay 1 until crash recovery and the 5-minute reaper are behind a leader election. Both run on startup / on a timer in EVERY worker process and reset rows stuck in 'running' using an age test with no owner or heartbeat — so a second replica starting up would mark the first replica's legitimately in-flight transformations as failed. BullMQ per-queue concurrency already provides parallelism inside one replica; scaling out is a follow-up that needs a Redis leader lock first."
+  description = "Maximum jobs-worker replicas. The old blockers are GONE (P1-1, 2026-09-01): RUN_SCHEDULERS=false already confines schedules, crash recovery and the reapers to the API process, and the reapers are liveness-based now (services/reapers.ts keys on a heartbeat going quiet, not on age), so parallel long-running work is safe and BullMQ handles multi-replica workers natively. The default stays 1 for a different reason: the worker has NO scale rule, and on Container Apps max_replicas without a rule is inert — raising this alone changes nothing. To actually scale out: either raise min replicas too (an always-on cost decision) or add a KEDA Redis queue-depth rule. Parallelism today comes from per-queue concurrency (2 on the AI queues, with per-tenant fairness)."
 }
 
 variable "duckdb_memory_limit" {

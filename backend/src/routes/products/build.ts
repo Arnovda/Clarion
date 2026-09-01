@@ -493,6 +493,25 @@ router.get('/bus-matrix/active', requireAuth, requireRole('admin', 'analyst'), a
     if (!match) { res.json({ ok: true, data: null }); return; }
 
     const state = await match.getState();
+
+    // P1-1 "show queue position meanwhile": with concurrency 2 and
+    // per-tenant fairness a build can genuinely wait behind other
+    // tenants' work now, and a spinner that cannot say why reads as
+    // broken. buildsAhead = jobs that will get a slot before this one
+    // (approximate — active ones finish in unknown order; a delayed job
+    // sits behind the whole waiting list by construction).
+    let buildsAhead: number | null = null;
+    if (state === 'waiting' || state === 'delayed') {
+      try {
+        const [active, waiting] = await Promise.all([
+          queue.getActive(0, 25),
+          queue.getWaiting(0, 100),
+        ]);
+        const idx = waiting.findIndex((j) => j.id === match.id);
+        buildsAhead = active.length + (idx >= 0 ? idx : waiting.length);
+      } catch { /* position is a nicety — never fail the endpoint for it */ }
+    }
+
     res.json({
       ok: true,
       data: {
@@ -501,6 +520,7 @@ router.get('/bus-matrix/active', requireAuth, requireRole('admin', 'analyst'), a
         connectionId: match.data.connectionId,
         progress: match.progress,
         createdAt: match.timestamp,
+        buildsAhead,
       },
     });
   } catch (err) {
