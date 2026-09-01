@@ -93,11 +93,40 @@ cons, cost, and whether Clarion chose right. Follow-up to
   urgent than un-scoping the query layer — an agent that can only query one
   source hits the same wall the chat does (`routes/query.ts:370` still takes one
   `connectionId`).
-- **BIGGER THAN MCP, AND NOBODY HAS ASKED IT YET: the Open Semantic Interchange**
-  (January 2026, vendor-neutral YAML for semantic metadata, Snowflake + dbt +
-  Cube + AtScale + Databricks + Tableau behind it) *(market claim, unverified)*.
-  If semantics become portable, "can I take my semantic layer with me?" becomes a
-  purchase criterion. Clarion's lives in Postgres + Neo4j and goes nowhere.
+- **BIGGER THAN MCP: APACHE OSSIE (formerly Open Semantic Interchange) — §9 of
+  the doc, added 2026-09-01 on the owner's follow-up, and it CORRECTS the first
+  version's unverified claim.** A vendor-neutral YAML/JSON spec for semantic
+  metadata: `semantic_model` → `dataset` → `field` / `relationship` / `metric`,
+  with `ai_context` as a first-class field at EVERY level and `custom_extensions`
+  so exporting never means discarding. Out of scope: data formats and query
+  interfaces — so it is not a rival to MCP (MCP moves answers, Ossie describes
+  models) nor to the warehouse.
+  **Maturity splits in two.** Governance is real: Apache 2.0, donated to the ASF,
+  in the Apache Incubator since June 2026 (`github.com/apache/ossie`), JSON
+  Schema plus merged reference converters for dbt/GoodData/Salesforce/Polaris.
+  **Adoption is zero**: as of July 2026 NO semantic-layer product ships a
+  user-facing import or export, and despite the "v1.0 finalized" announcement of
+  27 Jan 2026 the repo sits at **`0.2.0.dev0`** (last release 0.1.1) — the spec
+  still moves. Plus the structural objection: fragmentation is expensive for
+  users and strategically useful for platforms, and a customer locked into
+  Snowflake Semantic Views is a retained customer.
+  **Clarion's product layer is ALREADY almost an Ossie model** *(measured against
+  `20260402000017_create_data_products.ts`)* — `data_products`+`star_schemas` →
+  `semantic_model`, `product_tables` → `dataset`, `product_columns` → `field`
+  (with more detail than the spec asks), `product_relationships` → `relationship`
+  1:1, `product_kpis` → `metric`, and descriptions + `plain_summary` +
+  `question_text` + `business_glossary` overshoot `ai_context`. **The one real
+  friction: `expression` is per SQL dialect and the spec's list is
+  ANSI_SQL/SNOWFLAKE/DATABRICKS/MDX/TABLEAU — DuckDB is not on it**, so
+  non-ANSI expressions belong in `custom_extensions`.
+  **Recommendation: track it, do not build it.** No importer (nobody can produce
+  a file for you to import); do NOT reshape the semantic layer to be Ossie-shaped
+  (0.2.0.dev0 moves, and the shape already fits); the exporter is the only thing
+  that ever needs building and it is a few days over tables that already exist.
+  The trigger is commercial, not technical — the first prospect who asks, or the
+  first major vendor shipping a real import. What makes it cheap later is that
+  Clarion's semantics live in enumerable tables rather than in prompts or code;
+  that is a property to keep, not a task.
 - **Honest limits**: `peliqan.io` is still EGRESS_BLOCKED (retried 2026-09-01, not
   routed around), so no Peliqan feature was seen running; the market percentages
   are other people's numbers; and the comparison that would actually settle it —

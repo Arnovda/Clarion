@@ -263,14 +263,10 @@ query-laag un-scopen en een tweede bron (de spreadsheet-connector, inmiddels
 gebouwd). Een agent die maar één bron kan bevragen loopt tegen dezelfde muur als
 de chat.
 
-**6. Eén ding dat groter is dan MCP en hier boven water kwam.** In januari 2026
-is de **Open Semantic Interchange** gepubliceerd: een leveranciersneutrale
-YAML-standaard voor semantische metadata, met Snowflake, dbt, Cube, AtScale,
-Databricks, Salesforce en Tableau eronder *(markt, niet geverifieerd)*. Als
-semantiek een uitwisselbaar formaat krijgt, wordt "kan ik mijn semantische laag
-meenemen?" een aankoopcriterium. Clarion's semantiek zit vandaag in Postgres en
-Neo4j en gaat nergens heen. Dat is een strategische vraag van een grotere orde
-dan MCP, en hij is nog door niemand gesteld.
+**6. Eén ding dat groter is dan MCP en hier boven water kwam: Apache Ossie
+(voorheen Open Semantic Interchange).** Zie §9 — apart uitgezocht, want de eerste
+versie van dit document noemde het als onbevestigde marktclaim en dat was te
+slordig voor iets van deze omvang.
 
 ---
 
@@ -284,3 +280,119 @@ dan MCP, en hij is nog door niemand gesteld.
   dan dit hele document.
 - **De marktcijfers in §3 zijn andermans cijfers.** De richting is
   waarneembaar; de percentages heb ik niet gecontroleerd.
+
+---
+
+## 9. Apache Ossie / Open Semantic Interchange — nagekeken
+
+Toegevoegd 2026-09-01 op vraag van de eigenaar. **Dit corrigeert §7.6 van de
+eerste versie**, die OSI noemde als onbevestigde marktclaim onder een naam die
+inmiddels niet meer de juiste is.
+
+### 9.1 Wat het is
+
+Een leveranciersneutrale **YAML/JSON-specificatie voor semantische metadata**:
+een formaat waarin je opschrijft wat je datasets, velden, relaties en metrics
+*betekenen*, zodat een ander product dat kan lezen. De objecten
+*(geverifieerd tegen `core-spec/spec.yaml` in de repo)*:
+
+| Object | Verplicht | Optioneel |
+|---|---|---|
+| `semantic_model` | `name`, `datasets` | `description`, `ai_context`, `relationships`, `metrics`, `custom_extensions` |
+| `dataset` | `name`, `source` | `primary_key`, `unique_keys`, `description`, `ai_context`, `fields`, `custom_extensions` |
+| `field` | `name`, `expression` | `dimension`, `label`, `description`, `datatype`, `ai_context`, `custom_extensions` |
+| `relationship` | `name`, `from`, `to`, `from_columns`, `to_columns` | `custom_extensions` |
+| `metric` | `name`, `expression` | `description`, `datatype`, `ai_context`, `custom_extensions` |
+
+Twee dingen vallen op. **`ai_context` is een eersteklas veld op élk niveau** —
+de spec is expliciet ontworpen voor agenten, niet alleen voor BI-tools. En
+**`custom_extensions`** laat een leverancier eigen metadata meedragen zonder de
+compatibiliteit te breken, wat betekent dat exporteren nooit betekent dat je
+iets moet weggooien.
+
+**Buiten scope, en dat is de kern:** dataformaten en query-interfaces. Ossie
+standaardiseert de *beschrijving* van betekenis, niet de opslag en niet de
+uitvoering. Het is dus geen alternatief voor Clarion's warehouse of query-laag,
+en ook geen concurrent van MCP — MCP vervoert antwoorden, Ossie beschrijft
+modellen.
+
+### 9.2 Is het matuur? Gesplitst antwoord
+
+**De governance is echt volwassen.** Gestart september 2025, v1.0 aangekondigd
+op 27 januari 2026 onder Apache 2.0, in juni 2026 gedoneerd aan de Apache
+Software Foundation en als **Apache Ossie** in de Incubator gegaan
+(`github.com/apache/ossie`). Er is een JSON Schema, en referentie-converters
+voor dbt (MetricFlow), GoodData, Salesforce en Apache Polaris zijn gemerged.
+Dat is meer dan een persbericht.
+
+**De adoptie is nul.** Twee harde signalen:
+
+1. **Geen enkel semantic-layer-product levert vandaag een import- of
+   exportfunctie voor eindgebruikers** *(stand juli 2026)*. Wat er is, zijn
+   referentie-converters in de repo — geen productfuncties. De eerste native
+   import/export in een BI-tool wordt eind 2026 verwacht.
+2. **De spec beweegt nog.** Ondanks de "v1.0 finalized"-aankondiging van januari
+   staat de repo op **`0.2.0.dev0`**, met `0.1.1` als laatste release. Dat is
+   geen bevroren standaard; dat is een spec in ontwikkeling met een
+   marketingnummer eroverheen.
+
+En er is een structureel bezwaar dat serieus genomen moet worden: standaarden in
+data-infrastructuur mislukken doorgaans wanneer de grootste leveranciers baat
+hebben bij het probleem. **Semantische fragmentatie is duur voor gebruikers en
+strategisch nuttig voor platformen** — een klant die vastzit in Snowflake
+Semantic Views is een klant die blijft. De belofte is import en export overal;
+de huidige realiteit is smaller.
+
+### 9.3 Wat het Clarion zou kosten — gemeten
+
+Clarion's productlaag is **al bijna een Ossie-model**, alleen uitgedrukt in
+Postgres-tabellen in plaats van YAML *(gemeten in
+`20260402000017_create_data_products.ts`)*:
+
+| Ossie | Clarion | Past het? |
+|---|---|---|
+| `semantic_model` | `data_products` + `star_schemas` (incl. `grain`) | Ja |
+| `dataset` | `product_tables` (`table_name`, `display_name`, `description`, `table_role`) | Ja; `primary_key` via `business_key_column` |
+| `field` | `product_columns` (`column_name`, `data_type`, `transformation_expression`, `description`, `column_role`, `additivity`) | Ja, met meer detail dan de spec vraagt |
+| `relationship` | `product_relationships` (`from_table_id`, `from_column_name`, `to_…`) | Ja, 1:1 |
+| `metric` | `product_kpis` (`name`, `formula_sql`, `description`, `formula_plain_text`, `question_text`) | Ja |
+| `ai_context` | descriptions + `plain_summary` + `question_text` + `business_glossary` | **Clarion heeft hier méér dan de spec verwacht** |
+
+**Eén concrete wrijving, en het is de enige:** `expression` is per SQL-dialect,
+en de spec kent ANSI_SQL, SNOWFLAKE, DATABRICKS, MDX en TABLEAU — **DuckDB staat
+er niet bij**. Clarion's expressies zijn DuckDB-SQL. Simpele expressies zijn
+ANSI-conform en kunnen zo mee; wat dat niet is, hoort in `custom_extensions`.
+Geen blokkade, wel iets om te weten voordat iemand belooft dat de export
+"gewoon draait" op een ander platform.
+
+### 9.4 Aanbeveling: nu volgen, niet bouwen
+
+**Nu niets bouwen, en het kost ook niets om te wachten.**
+
+- **Geen importer.** Niemand kan vandaag een Ossie-bestand voor je produceren.
+  Een importfunctie zou nul klanten bedienen.
+- **De semantische laag niet herstructureren om Ossie-vormig te worden.** De
+  spec staat op 0.2.0.dev0 en beweegt; meebewegen betekent het twee keer doen.
+  En het is niet nodig — de vorm past al (§9.3).
+- **De exporter is het enige dat er ooit moet komen, en het is klein.** Omdat de
+  mapping bijna 1:1 is, is dit een generator over tabellen die al bestaan — een
+  paar dagen, geen migratie, geen risico voor draaiende klanten. Er is geen
+  enkele reden om die dagen nú te besteden.
+- **De aanleiding om te bouwen is commercieel, niet technisch.** De vraag "kan
+  ik mijn semantische laag meenemen?" is een bezwaar in een verkoopgesprek, niet
+  een technisch tekort. Het antwoord erop is één exportknop. Bouw hem bij het
+  eerste van deze twee signalen: **een prospect die het vraagt**, of **een grote
+  leverancier die een echte import levert** (want dan wordt "wij kunnen
+  exporteren naar X" pas een bruikbare zin).
+- **Wat vandaag wél waar is en waarde heeft:** dat Clarion's semantiek in
+  opsombare tabellen zit en niet in prompts of code verstopt zit, is precies wat
+  die export later goedkoop maakt. Dat is geen actie, dat is een eigenschap om
+  niet kwijt te raken.
+
+### 9.5 Grenzen van dit stuk
+
+De repo-inhoud (spec-objecten, versienummer) is direct gelezen. De
+adoptiestand, de tijdlijn en het strategische bezwaar komen uit
+zoekresultaten van september 2026, niet uit eigen waarneming; Snowflake's eigen
+aankondigingspagina is geblokkeerd door de egress-policy van deze omgeving. Ik
+heb geen enkel product een Ossie-bestand zien im- of exporteren.
