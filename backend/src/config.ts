@@ -57,11 +57,31 @@ export const config = {
 
   jwt: {
     secret: str('JWT_SECRET'),
-    /** Access-token lifetime. JWT_EXPIRES_IN kept as a legacy alias. */
-    accessExpiresIn: str('JWT_ACCESS_EXPIRES_IN') ?? str('JWT_EXPIRES_IN') ?? '15m',
+    /**
+     * Access-token lifetime. Deliberately NO LONGER honours the legacy
+     * JWT_EXPIRES_IN (P1-3): that variable predates the access/refresh
+     * split — it governed the only token there was — and production
+     * still carries JWT_EXPIRES_IN=8h, so treating it as the ACCESS
+     * lifetime silently kept production on 8-hour access tokens while
+     * the whole refresh apparatus (30-day refresh tokens, frontend
+     * silent auto-refresh, server-side revocation) sat idle. Shortening
+     * costs no logins: the frontend swaps tokens on 401 without user
+     * interaction. Set JWT_ACCESS_EXPIRES_IN to override deliberately.
+     */
+    accessExpiresIn: str('JWT_ACCESS_EXPIRES_IN') ?? '15m',
     refreshTokenDays: Number(process.env.REFRESH_TOKEN_DAYS ?? 30),
   },
 } as const;
+
+/**
+ * True when the environment still sets the deprecated JWT_EXPIRES_IN
+ * without the variable that replaced it. index.ts logs a boot-time
+ * notice off this — an operator who set the old variable is entitled to
+ * know it stopped steering the access-token lifetime. Exposed as a flag
+ * rather than logged here because config.ts stays import-free.
+ */
+export const legacyJwtExpiresInSet =
+  Boolean(str('JWT_EXPIRES_IN')) && !str('JWT_ACCESS_EXPIRES_IN');
 
 /**
  * Fetch the JWT secret or throw. Centralises the "secret must be set" check

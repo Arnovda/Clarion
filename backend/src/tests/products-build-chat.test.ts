@@ -26,6 +26,7 @@ let tenantId: number;
 let adminUserId: number;
 let connectionId: number;
 let otherTenantId: number;
+let otherAdminUserId: number;
 
 beforeAll(async () => {
   await cleanTestDb();
@@ -36,6 +37,7 @@ beforeAll(async () => {
 
   const other = await registerUser({ email: 'chat-other@test.com', companyName: 'OtherChatCo' });
   otherTenantId = other.user.tenantId;
+  otherAdminUserId = other.user.id;
 
   const db = getTestDb();
 
@@ -118,7 +120,10 @@ describe('POST /api/products/bus-matrix/extend-start', () => {
   });
 
   it("404s another tenant's connection (isolation, not 403)", async () => {
-    const otherAdmin = makeToken({ sub: adminUserId, tenantId: otherTenantId, role: 'admin' });
+    // A REAL user of the other tenant — since P1-3, requireAuth refuses a
+    // token whose (tenant, user) pair matches no row, so a mismatched
+    // forgery would 401 before the route's isolation gate ever ran.
+    const otherAdmin = makeToken({ sub: otherAdminUserId, tenantId: otherTenantId, role: 'admin' });
     const res = await start(otherAdmin, { connectionId, name: 'Quotations', entities: ['Quotations'] });
     expect(res.status).toBe(404);
   });

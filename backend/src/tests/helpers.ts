@@ -77,6 +77,37 @@ export async function registerUser(overrides: {
   };
 }
 
+/**
+ * Insert a REAL user row and forge a token for it.
+ *
+ * Since P1-3, requireAuth re-validates that the (tenant, user) pair
+ * exists and is active — a token for a nonexistent user (the old
+ * `makeToken({ sub: 999 })` trick) is refused with 401 before any route
+ * runs, so tests exercising role gates or tenant behaviour must forge
+ * tokens for rows that exist.
+ */
+export async function createUserWithToken(opts: {
+  tenantId: number;
+  role?: 'admin' | 'analyst' | 'viewer';
+  email?: string;
+}): Promise<{ id: number; token: string }> {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const db = (await import('../db/knex')).semanticDb as any;
+  const role = opts.role ?? 'viewer';
+  const email = opts.email ?? `forged-${Date.now()}-${Math.random().toString(36).slice(2)}@test.com`;
+  const [row] = await db('users')
+    .insert({
+      tenant_id: opts.tenantId,
+      email,
+      password_hash: 'x',
+      display_name: role,
+      role,
+    })
+    .returning('id');
+  const id = typeof row === 'object' ? (row as { id: number }).id : (row as number);
+  return { id, token: makeToken({ sub: id, tenantId: opts.tenantId, role, email }) };
+}
+
 /** Get the semantic DB instance (for direct cleanup queries) */
 export function getDb() {
   // eslint-disable-next-line @typescript-eslint/no-require-imports

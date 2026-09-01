@@ -21,7 +21,7 @@
  */
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { request, registerUser, makeToken } from './helpers';
+import { request, registerUser, createUserWithToken } from './helpers';
 import { cleanTestDb, closeTestDb, getTestDb } from './db-helpers';
 
 let adminToken: string;
@@ -155,7 +155,7 @@ describe('GET /api/products/build-overview', () => {
   });
 
   it('lets an analyst toggle visibility through PUT /products/:id', async () => {
-    const analystToken = makeToken({ tenantId, role: 'analyst', email: 'build-analyst@test.com' });
+    const analystToken = (await createUserWithToken({ tenantId, role: 'analyst', email: 'build-analyst@test.com' })).token;
     const put = await (await request())
       .put(`/api/products/${visibleProductId}`)
       .set('Authorization', `Bearer ${analystToken}`)
@@ -239,7 +239,7 @@ describe('GET /api/products/build-overview', () => {
   });
 
   it('refuses viewers', async () => {
-    const viewerToken = makeToken({ tenantId, role: 'viewer', email: 'build-viewer@test.com' });
+    const viewerToken = (await createUserWithToken({ tenantId, role: 'viewer', email: 'build-viewer@test.com' })).token;
     const res = await fetchOverview(viewerToken);
     expect(res.status).toBe(403);
   });

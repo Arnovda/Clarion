@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { request, registerUser, makeToken } from './helpers';
+import { request, registerUser, createUserWithToken } from './helpers';
 import { cleanTestDb, closeTestDb } from './db-helpers';
 import path from 'path';
 import fs from 'fs';
@@ -11,8 +11,9 @@ beforeAll(async () => {
   await cleanTestDb();
   const admin = await registerUser({ email: 'conn-admin@test.com', companyName: 'ConnCo' });
   adminToken = admin.token;
-  // Create a viewer token for the same tenant
-  viewerToken = makeToken({ sub: 999, tenantId: admin.user.tenantId, role: 'viewer' });
+  // A real viewer row — since P1-3, requireAuth refuses tokens for
+  // nonexistent users before any role gate runs.
+  viewerToken = (await createUserWithToken({ tenantId: admin.user.tenantId, role: 'viewer' })).token;
 });
 
 afterAll(async () => {

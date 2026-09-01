@@ -259,7 +259,7 @@ promoted to 100% traffic with nobody watching.
 |---|---|---|
 | **P1-1** | One customer's build blocks every other's. `schema-profiling` and `bus-matrix` both run at `concurrency: 1`, globally, and the jobs-worker is pinned to one replica because its reapers mark rows stale on age alone with no owner or heartbeat. | `jobs/workers.ts`, `infra/main.tf` |
 | **P1-2** | Rate limits are per-IP, in-memory, per-replica. With `max_replicas = 3` every published limit is effectively tripled, including brute-force (5/15min → ~15). No tenant can be throttled individually. | `index.ts:149-215` |
-| **P1-3** | Suspending a customer takes up to 8 hours. `tenants.status` is checked only at login; `requireAuth` re-validates the JWT signature and nothing else — not tenant status, not `users.is_active`. `JWT_EXPIRES_IN=8h`. | `middleware/auth.ts`, `routes/auth.ts:196` |
+| **P1-3** | **REMEDIATED 2026-09-01** (first wave-2 PR). `requireAuth` now re-validates `tenants.status` + `users.is_active` on every request behind a 30s-TTL cache (`services/accountStatus.ts`; fail-open on a DB error, fail-closed on a definitive negative), and `/auth/refresh` gained the tenant-status check it never had — before it, a suspended tenant's users could mint fresh access tokens for the refresh token's whole 30-day lifetime. Access tokens are genuinely 15m now: the code default already was, but production's legacy `JWT_EXPIRES_IN=8h` was honoured as the access lifetime; the alias is deprecated and ignored (`JWT_ACCESS_EXPIRES_IN` overrides deliberately), safe because the frontend silently auto-refreshes on 401. Proven live: suspension measured biting at exactly the 30s TTL on a running backend as `databridge_app`. Original finding: suspending a customer took up to 8 hours — `tenants.status` was checked only at login; `requireAuth` re-validated the JWT signature and nothing else. | `middleware/auth.ts`, `services/accountStatus.ts`, `services/refreshTokenService.ts` |
 | **P1-4** | Every stateful dependency is a SPOF. Postgres has no `high_availability` block. Redis is one replica with `--save '' --appendonly no` (no persistence). Neo4j is one replica on a 5 GiB file share with **no backup policy**, scaled to zero (30–60s cold start). Postgres has 14-day PITR; the graph has replication but no recovery point. | `infra/main.tf:131, 210, 287, 353` |
 | **P1-5** | No tenant administration and no support access. Operator surface is `/admin/features` and `/admin/ai-usage` only. No impersonation anywhere — reproducing a customer issue means a production database session. | `frontend/app/admin/` |
 | **P1-6** | No per-tenant observability. App Insights is wired and logging is structured, but nothing aggregates by tenant — no per-tenant error rate, latency, sync success or cost-to-serve. | repo-wide |
@@ -328,7 +328,8 @@ minute, and be supported without a database session.
    *(Owner decision 2026-09-01: DEFERRED — manual invoices at first; see the
    P0-3 addendum. Wave 2 starts at item 2.)*
 2. **P1-3** Re-validate tenant status and `is_active` in `requireAuth` behind a
-   short-TTL cache; shorten the access token.
+   short-TTL cache; shorten the access token. *(DONE 2026-09-01 — see the P1-3
+   row above; the refresh endpoint's missing tenant check closed with it.)*
 3. **P1-5** Operator console: tenant list with health/usage, suspend/resume,
    budget control, sync inspection, and audited time-boxed impersonation.
 4. **P1-1** Give the reapers an owner and heartbeat so the worker can scale past
