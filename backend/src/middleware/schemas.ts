@@ -746,6 +746,26 @@ export const updateNotebookCellSchema = z.object({
   }).passthrough(),
 });
 
+// POST /notebooks/generate — natural language → SQL/Python for a cell.
+export const generateNotebookCodeSchema = z.object({
+  body: z.object({
+    connectionId: z.number().int().positive(),
+    prompt: z.string().trim().min(1).max(4000),
+    cellType: z.enum(['sql', 'python']),
+    scope: z.enum(['sources', 'products']).optional(),
+    existingCode: z.string().max(50_000).optional(),
+    /**
+     * Prior turns of the same notebook conversation, so "now group it by
+     * month" means something. Capped: the schema context already dominates
+     * the prompt, and an unbounded history is an unbounded bill.
+     */
+    history: z.array(z.object({
+      role: z.enum(['user', 'assistant']),
+      content: z.string().max(20_000),
+    })).max(12).optional(),
+  }).passthrough(),
+});
+
 // DELETE /users/:id — GDPR erasure. No body required; schema present so the
 // validate-coverage ratchet is satisfied and extra fields are tolerated.
 export const eraseUserSchema = z.object({

@@ -12,7 +12,7 @@
 import { useEffect, useState, type FormEvent } from 'react';
 import api from '@/lib/api';
 import { getTokenPayload } from '@/lib/auth';
-import { BadgeCheck, Clock3, Trash2 } from 'lucide-react';
+import { BadgeCheck, Clock3, Square, Trash2 } from 'lucide-react';
 
 interface PersonalisedStarter {
   question: string;
@@ -50,6 +50,8 @@ interface EmptyStateProps {
   setInput:       (v: string) => void;
   onSubmit:       (e: FormEvent) => void;
   loading?:       boolean;
+  /** Stop the question that is running. Present whenever `loading` can be true. */
+  onStop?:        () => void;
   /** Admin + analyst per the role table — gates the source-layer toggle. */
   canQuerySource?: boolean;
   useSourceLayer?: boolean;
@@ -63,6 +65,7 @@ export default function EmptyState({
   setInput,
   onSubmit,
   loading,
+  onStop,
   canQuerySource,
   useSourceLayer,
   setUseSourceLayer,
@@ -208,13 +211,26 @@ export default function EmptyState({
                 Query source data
               </label>
             )}
-            <button
-              type="submit"
-              disabled={loading || !input.trim()}
-              className="inline-flex items-center gap-2 font-sans font-medium text-[13.5px] leading-none px-[18px] py-[10px] rounded-sm border bg-ocean text-white border-ocean hover:bg-ocean-hover hover:border-ocean-hover transition-all duration-1 ease-observatory disabled:opacity-50 disabled:cursor-not-allowed focus-visible:outline-none focus-visible:shadow-[0_0_0_3px_var(--ocean-soft)]"
-            >
-              {loading ? 'Thinking…' : 'Ask →'}
-            </button>
+            {loading && onStop ? (
+              // A running question is stoppable from the same place it was
+              // asked — see stopThinking in page.tsx.
+              <button
+                type="button"
+                onClick={onStop}
+                className="inline-flex items-center gap-2 font-sans font-medium text-[13.5px] leading-none px-[18px] py-[10px] rounded-sm border bg-raised text-ink-2 border-line-strong hover:border-warn hover:text-warn transition-all duration-1 ease-observatory focus-visible:outline-none focus-visible:shadow-[0_0_0_3px_var(--ocean-soft)]"
+              >
+                <Square className="w-3 h-3 fill-current" strokeWidth={0} aria-hidden="true" />
+                Stop
+              </button>
+            ) : (
+              <button
+                type="submit"
+                disabled={loading || !input.trim()}
+                className="inline-flex items-center gap-2 font-sans font-medium text-[13.5px] leading-none px-[18px] py-[10px] rounded-sm border bg-ocean text-white border-ocean hover:bg-ocean-hover hover:border-ocean-hover transition-all duration-1 ease-observatory disabled:opacity-50 disabled:cursor-not-allowed focus-visible:outline-none focus-visible:shadow-[0_0_0_3px_var(--ocean-soft)]"
+              >
+                {loading ? 'Thinking…' : 'Ask →'}
+              </button>
+            )}
           </div>
         </div>
       </form>

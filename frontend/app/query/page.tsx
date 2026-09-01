@@ -9,7 +9,7 @@ import { useRole, canCurate } from '@/lib/role';
 import { streamSSE, SSEHttpError } from '@/lib/sse';
 import { getItem, setItem, storageKeys } from '@/lib/storage';
 import { formatRelativeTime, getOverallFreshnessStatus } from '@/lib/freshness';
-import { X, Loader2, ArrowRight, PanelLeftClose, PanelLeftOpen, History } from 'lucide-react';
+import { X, ArrowRight, Square, PanelLeftClose, PanelLeftOpen, History } from 'lucide-react';
 import { type DataSource } from './components';
 import MessageBubble from './MessageBubble';
 import { ThinkingBubble, ThinkingPanel } from './thinking';
@@ -267,14 +267,59 @@ function QueryPageInner() {
     return newest > new Date(asOf).getTime() + 24 * 3600_000;
   }
 
-  // In-flight SSE streams (/think + /repair) — aborted on unmount so a
-  // navigated-away chat doesn't keep streaming into dead state setters.
+  // In-flight SSE streams (/think + /repair + investigate) — aborted on
+  // unmount so a navigated-away chat doesn't keep streaming into dead state
+  // setters, and by the user's own Stop (see stopThinking).
   const thinkAbortRef  = useRef<AbortController | null>(null);
   const repairAbortRef = useRef<AbortController | null>(null);
+  const investigateAbortRef = useRef<AbortController | null>(null);
   useEffect(() => () => {
     thinkAbortRef.current?.abort();
     repairAbortRef.current?.abort();
+    investigateAbortRef.current?.abort();
   }, []);
+  /** Set by stopThinking so the stream's own error paths stay quiet — an
+   *  answer the user cancelled must not come back as a red failure card. */
+  const stoppedRef = useRef(false);
+
+  /**
+   * Stop the question that is running.
+   *
+   * Aborting the stream disconnects the request, which the backend reads as
+   * "the asker went away" and uses to abort the model call itself (see
+   * services/sse.ts) — so this stops the work, not just the watching.
+   *
+   * Nothing is thrown away that the user could still want: an answer already
+   * produced and being double-checked is RELEASED into the thread (it was
+   * persisted before the check began), and the question itself goes back into
+   * the input box so stopping never costs you what you typed.
+   */
+  function stopThinking() {
+    stoppedRef.current = true;
+    thinkAbortRef.current?.abort();
+    thinkAbortRef.current = null;
+    investigateAbortRef.current?.abort();
+    investigateAbortRef.current = null;
+    // A held answer exists and is correct-as-far-as-we-know: keep it.
+    if (repairRef.current && !repairRef.current.revealed) releaseHeldAnswer();
+    resetRepair();
+    // An investigation that never concluded has nothing to show; drop its
+    // bubble rather than leaving a half-built trail in the thread.
+    setMessages((prev) => prev.filter((m) => !(
+      m.investigation && (m.investigation.streamStatus === 'starting' || m.investigation.streamStatus === 'running')
+    )));
+    const stoppedQuestion = pendingAsk?.question;
+    setPendingAsk(null);
+    setSelectedStepId(null);   // falls back to the last real step
+    setLoading(false);
+    setThinkingPhase('');
+    setThinkingText('');
+    setThinkingSql(null);
+    setThinkingConf(null);
+    setThinkingTables([]);
+    if (stoppedQuestion) setInput((cur) => (cur.trim() ? cur : stoppedQuestion));
+    setTimeout(() => inputRef.current?.focus(), 50);
+  }
 
   // Fetch data freshness info
   useEffect(() => {
@@ -949,6 +994,7 @@ function QueryPageInner() {
   const send = useCallback(async (question: string, opts?: SendOpts) => {
     const q = question.trim();
     if (!q || loading) return;
+    stoppedRef.current = false;
 
     // A new question ends any running double-check: release a still-held
     // answer into the transcript first (its original form was persisted), then
@@ -1048,6 +1094,7 @@ function QueryPageInner() {
       ]);
       landStep(investigateMsgId);
       const controller = new AbortController();
+      investigateAbortRef.current = controller;
       // Capture the final state so we can persist after the stream ends.
       // Using local refs avoids racing the React state batch.
       let finalConclusion: string | null = null;
@@ -1128,6 +1175,9 @@ function QueryPageInner() {
           }
         }
       } catch (err) {
+        // A user-initiated Stop is not a failure — stopThinking has already
+        // removed the bubble and put the question back in the box.
+        if ((err as Error)?.name === 'AbortError') return;
         const reason = err instanceof Error ? err.message : 'Investigation failed';
         setMessages((prev) => prev.map((m) =>
           m.id === investigateMsgId && m.investigation
@@ -1135,6 +1185,7 @@ function QueryPageInner() {
             : m,
         ));
       } finally {
+        if (investigateAbortRef.current === controller) investigateAbortRef.current = null;
         setLoading(false);
         setThinkingPhase('');
         setThinkingText('');
@@ -1415,6 +1466,7 @@ function QueryPageInner() {
       }
 
     } catch {
+      if (stoppedRef.current) return;   // the user stopped it — not an error
       const errId = nextId.current++;
       setMessages((prev) => [
         ...prev,
@@ -1423,13 +1475,17 @@ function QueryPageInner() {
       ]);
       landStep(errId);
     } finally {
-      setLoading(false);
-      setThinkingPhase('');
-      setThinkingText('');
-      setThinkingSql(null);
-      setThinkingConf(null);
-      setThinkingTables([]);
-      setTimeout(() => inputRef.current?.focus(), 50);
+      // stopThinking already reset the pane and put the question back in the
+      // box; re-running this would clobber both.
+      if (!stoppedRef.current) {
+        setLoading(false);
+        setThinkingPhase('');
+        setThinkingText('');
+        setThinkingSql(null);
+        setThinkingConf(null);
+        setThinkingTables([]);
+        setTimeout(() => inputRef.current?.focus(), 50);
+      }
     }
   // useSourceLayer is a dep on purpose: it used to be read through a stale
   // closure, so the first question after flipping the toggle ran against the
@@ -1502,23 +1558,35 @@ function QueryPageInner() {
           ref={inputRef}
           value={input}
           onChange={(e) => setInput(e.target.value)}
+          onKeyDown={(e) => { if (e.key === 'Escape' && loading) stopThinking(); }}
           placeholder={isNonLeaf ? 'Ask from here — this will branch…' : 'Ask a follow-up…'}
           disabled={loading}
           autoComplete="off"
           className="flex-1 font-sans text-[14px] px-[13px] py-[10px] rounded-sm border border-line bg-raised text-ink outline-none transition-all duration-1 ease-observatory placeholder:text-muted-2 focus:border-ocean focus:shadow-[0_0_0_3px_var(--ocean-soft)] disabled:opacity-50"
         />
-        <button
-          type="submit"
-          disabled={loading || !input.trim()}
-          className="inline-flex items-center gap-2 font-sans font-medium text-[13.5px] leading-none px-4 py-[10px] rounded-sm border bg-ocean text-white border-ocean hover:bg-ocean-hover hover:border-ocean-hover transition-all duration-1 ease-observatory disabled:opacity-50 disabled:cursor-not-allowed focus-visible:outline-none focus-visible:shadow-[0_0_0_3px_var(--ocean-soft)]"
-        >
-          {loading ? (
-            <Loader2 className="w-3.5 h-3.5 animate-spin" strokeWidth={2} aria-hidden="true" />
-          ) : (
+        {/* While a question runs, the primary button STOPS it. A run you
+            cannot call off is one you sit and wait out — and the answer is
+            usually already wrong by the time you know you want to stop. */}
+        {loading ? (
+          <button
+            type="button"
+            onClick={stopThinking}
+            title="Stop (Esc)"
+            className="inline-flex items-center gap-2 font-sans font-medium text-[13.5px] leading-none px-4 py-[10px] rounded-sm border bg-raised text-ink-2 border-line-strong hover:border-warn hover:text-warn transition-all duration-1 ease-observatory focus-visible:outline-none focus-visible:shadow-[0_0_0_3px_var(--ocean-soft)]"
+          >
+            <Square className="w-3 h-3 fill-current" strokeWidth={0} aria-hidden="true" />
+            Stop
+          </button>
+        ) : (
+          <button
+            type="submit"
+            disabled={!input.trim()}
+            className="inline-flex items-center gap-2 font-sans font-medium text-[13.5px] leading-none px-4 py-[10px] rounded-sm border bg-ocean text-white border-ocean hover:bg-ocean-hover hover:border-ocean-hover transition-all duration-1 ease-observatory disabled:opacity-50 disabled:cursor-not-allowed focus-visible:outline-none focus-visible:shadow-[0_0_0_3px_var(--ocean-soft)]"
+          >
             <ArrowRight className="w-3.5 h-3.5" strokeWidth={1.8} aria-hidden="true" />
-          )}
-          {loading ? 'Thinking…' : 'Ask'}
-        </button>
+            Ask
+          </button>
+        )}
       </form>
       {/* Mode hint — shows the auto-detected mode for the current input,
           lets the user flip it. Investigate requires a product context. */}
@@ -1745,6 +1813,7 @@ function QueryPageInner() {
                   setInput={setInput}
                   onSubmit={handleSubmit}
                   loading={loading}
+                  onStop={stopThinking}
                   canQuerySource={canSeeSql}
                   useSourceLayer={useSourceLayer}
                   setUseSourceLayer={setUseSourceLayer}
@@ -1757,15 +1826,27 @@ function QueryPageInner() {
                     {pendingAsk!.question}
                   </h1>
                   {loading && (
-                    <ThinkingBubble
-                      bare
-                      phase={thinkingPhase}
-                      liveText={thinkingText}
-                      sql={thinkingSql}
-                      confidence={thinkingConf}
-                      tables={thinkingTables}
-                      canSeeSql={canSeeSql}
-                    />
+                    <>
+                      <ThinkingBubble
+                        bare
+                        phase={thinkingPhase}
+                        liveText={thinkingText}
+                        sql={thinkingSql}
+                        confidence={thinkingConf}
+                        tables={thinkingTables}
+                        canSeeSql={canSeeSql}
+                      />
+                      {/* Also here, not only on the composer: this is where
+                          the eye is during the wait. */}
+                      <button
+                        type="button"
+                        onClick={stopThinking}
+                        className="inline-flex items-center gap-1.5 font-mono text-[10.5px] uppercase tracking-[0.08em] text-muted hover:text-warn transition-colors"
+                      >
+                        <Square className="w-2.5 h-2.5 fill-current" strokeWidth={0} aria-hidden="true" />
+                        Stop this question
+                      </button>
+                    </>
                   )}
                   {/* Double-checking while the answer is still HELD. */}
                   {repairState && !repairState.revealed && (

@@ -186,6 +186,10 @@ export default function DashboardsPage() {
   const [refineInput, setRefineInput] = useState('');
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [chatLoading, setChatLoading] = useState(false);
+  /** The assistant's in-flight call — the user's Stop aborts it. Aborting
+   *  disconnects the request, which is what lets the backend abort the model
+   *  call itself rather than merely stopping the browser listening. */
+  const chatAbortRef = useRef<AbortController | null>(null);
   // Mode for the chat input. Default is 'refine' because the user is
   // ON an open dashboard, so the most likely intent is to edit it.
   // The previous regex-based intent detection was unreliable and led
@@ -1077,6 +1081,8 @@ export default function DashboardsPage() {
     const userMsg: ChatMessage = { id: Date.now().toString(), role: 'user', text: input, type: intent };
     setChatMessages((prev) => [...prev, userMsg]);
     setChatLoading(true);
+    const ctrl = new AbortController();
+    chatAbortRef.current = ctrl;
 
     try {
       if (intent === 'query') {
@@ -1101,7 +1107,7 @@ export default function DashboardsPage() {
           connectionId: connectionId,
           question: fullQuestion,
           ...(dashboardContext ? { dashboardContext } : {}),
-        });
+        }, { signal: chatAbortRef.current?.signal });
         const answer: string = res.data.data?.answer ?? res.data.answer ?? 'No answer available.';
         setChatMessages((prev) => [...prev, { id: Date.now().toString() + '_a', role: 'assistant', text: answer, type: 'query' }]);
       } else {
@@ -1141,6 +1147,7 @@ export default function DashboardsPage() {
 
         const baseURL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001/api';
         await streamSSE(`${baseURL}/dashboards/refine-spec-stream`, {
+          signal: chatAbortRef.current?.signal,
           body: {
             connectionId: connectionId,
             refinement: input,
@@ -1245,6 +1252,9 @@ export default function DashboardsPage() {
         patchWorking((m) => ({ ...m, working: false, phase: undefined, text: summary }));
       }
     } catch (err: unknown) {
+      // A user Stop is not a failure — stopAssistant already turned the
+      // working bubble into a "Stopped" line and put the text back in the box.
+      if ((err as Error)?.name === 'AbortError' || (err as { code?: string })?.code === 'ERR_CANCELED') return;
       // Surface whatever detail the backend was willing to ship.
       // errorHandler.ts gates real error text to admins; non-admins
       // get the generic "Something went wrong." message in both
@@ -1266,8 +1276,41 @@ export default function DashboardsPage() {
         }];
       });
     } finally {
+      if (chatAbortRef.current === ctrl) chatAbortRef.current = null;
       setChatLoading(false);
     }
+  }
+
+  /**
+   * Stop the assistant mid-run.
+   *
+   * The dashboard is left exactly as it was — a refine only lands when its
+   * `done` event arrives with a complete spec, so a stop can never leave half
+   * an edit on screen. The request the user typed goes back into the composer.
+   */
+  function stopAssistant() {
+    if (!chatLoading) return;
+    chatAbortRef.current?.abort();
+    chatAbortRef.current = null;
+    setChatLoading(false);
+    // Put the request back in the box so stopping never costs what you typed.
+    const lastUser = [...chatMessages].reverse().find((m) => m.role === 'user');
+    if (lastUser && !refineInput.trim()) setRefineInput(lastUser.text);
+    setChatMessages((prev) => {
+      // The working bubble becomes the record that it was stopped, rather
+      // than a spinner that never resolves.
+      return prev.map((m) => m.working
+        ? {
+          ...m,
+          working: false,
+          phase: undefined,
+          text: m.text ? `${m.text}\n\n_Stopped._` : 'Stopped.',
+          // A step left mid-flight reads as never-run, not as failed — it
+          // was not a failure, and a dot that pulses forever is a lie.
+          steps: m.steps?.map((st) => st.status === 'running' ? { ...st, status: 'pending' as const, startedAt: undefined } : st),
+        }
+        : m);
+    });
   }
 
   // ── Effects ───────────────────────────────────────────────────────────────
@@ -2498,6 +2541,7 @@ export default function DashboardsPage() {
                 input={refineInput}
                 onInputChange={setRefineInput}
                 onSubmit={handleChatSubmit}
+                onStop={stopAssistant}
                 scope={editScope}
                 onClearScope={() => setEditScope(null)}
               />

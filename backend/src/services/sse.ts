@@ -13,8 +13,12 @@
  *   ...
  *   sse.end();               // closes the stream (safe to call twice)
  *   if (sse.closed) ...      // client disconnected — stop doing work
+ *   sse.signal               // fires when the CLIENT went away — hand it to
+ *                            // any long call (an Anthropic stream) so a
+ *                            // user's Stop actually stops the work
  */
 import type { Response } from 'express';
+import { clientAbort } from '../utils/requestAbort';
 
 export interface SseStream {
   /** Write one `data:` event. Safe after client disconnect (no-op + sets closed). */
@@ -23,6 +27,17 @@ export interface SseStream {
   end: () => void;
   /** True once the client disconnected or end() was called. */
   readonly closed: boolean;
+  /**
+   * Aborted when the CLIENT disconnects — a user pressing Stop, a closed tab,
+   * a navigation. Deliberately NOT aborted by our own `end()`: by then the
+   * work is finished and trailing best-effort calls (persisting, usage
+   * accounting) must still run.
+   *
+   * Pass it to anything expensive the request is driving. Without it a Stop
+   * only stops the browser listening: the model keeps generating and the
+   * tenant keeps paying for an answer nobody will see.
+   */
+  readonly signal: AbortSignal;
 }
 
 export interface SseOptions {
@@ -46,6 +61,9 @@ export function startSSE(res: Response, opts?: SseOptions): SseStream {
   res.flushHeaders();
 
   let closed = false;
+  // Only a CLIENT-side disconnect cancels the work: `end()` settles the
+  // abort first, so the 'close' that follows our own end() is ignored.
+  const abort = clientAbort(res);
   res.on('close', () => { closed = true; });
 
   return {
@@ -58,12 +76,16 @@ export function startSSE(res: Response, opts?: SseOptions): SseStream {
       }
     },
     end(): void {
+      abort.settle();
       if (closed) return;
       closed = true;
       try { res.end(); } catch { /* already gone */ }
     },
     get closed(): boolean {
       return closed;
+    },
+    get signal(): AbortSignal {
+      return abort.signal;
     },
   };
 }

@@ -31,7 +31,73 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-08-31 (DASHBOARD EDITING — the filter that never reached
+**Last updated:** 2026-09-01 (STOP MEANS STOP — a running question is cancellable
+everywhere, and the notebook gets the dashboard's assistant)
+
+**Owner: *"Be able to cancel a question if the AI is running"* and *"Have the same
+style of box for the AI in the notebook section (to write code) as in the dashboard
+session (right bottom corner and expandable)."* Two asks, one shared piece of
+plumbing underneath.**
+- **CANCEL WAS NOT EXPRESSIBLE ANYWHERE.** Every AI surface had an
+  `AbortController` already — and every one of them was aborted ONLY on unmount.
+  There was no control that said stop, so the answer to "I asked the wrong thing"
+  was to sit and wait for it. Now: **Ask AI** (the primary button becomes Stop
+  while a question runs, plus a Stop under the live timeline and Escape in the
+  box), the **dashboard assistant**, and the new **notebook assistant**.
+- **THE INTERESTING HALF IS THAT STOPPING NOW STOPS THE WORK, NOT THE WATCHING.**
+  Aborting the client stream only ever stopped the browser listening: the
+  Anthropic stream ran to completion and the tenant paid for an answer nobody
+  would see. New **`utils/requestAbort.clientAbort(res)`** turns a client
+  disconnect into an `AbortSignal`; `startSSE` exposes it as **`sse.signal`**;
+  `generateSqlStreaming` and `callClaudeMultiTurn` accept it and hand it to the
+  SDK. `/query/think` and `/query/repair` pass it, and also BAIL before running
+  the warehouse query and the answer-formatting call when the asker is already
+  gone. Bus-matrix's hand-rolled abort wiring collapsed into the same shared
+  `attachAbort` helper.
+- **THE ONE SUBTLETY, and it is the whole reason `settle()` exists**:
+  `res.on('close')` fires on a NORMAL completion too. Aborting there would cancel
+  the tail of a request that already succeeded — persisting the answer, usage
+  accounting, audit rows. So the route settles the abort when it finishes and a
+  later close is a no-op. Two of the four new tests pin exactly that direction,
+  and both were **verified to go red** when the guard is removed.
+- **NEW `frontend/app/notebooks/[id]/NotebookAssistant.tsx` — the dashboard's
+  panel, doing the notebook's job.** Same floating bottom-right box, same
+  collapsed pill that keeps reporting while closed, same "only the newest
+  exchange is expanded" rule, same elapsed counter. What differs is the job: it
+  writes CODE into a specific cell, so the dashboard's *scope* chip is here a
+  **TARGET** chip naming the cell about to be written — code landing in a cell
+  you were not looking at is the one outcome nobody catches by eye. Modes are
+  **This cell** / **New cell** (+ a SQL/Python pick for a new one); answers carry
+  the code with *Insert again* and *Copy*.
+- **THE PER-CELL AI PROMPT BAR IS DELETED and the cell's AI button now AIMS the
+  panel at that cell** — the wand pattern the dashboard already uses on widgets.
+  Two doors to the same generator, each with its own history, is how the two
+  quietly drift apart. The cell keeps the prompt that produced its code as
+  provenance; that state moved to the page.
+- **`POST /notebooks/generate` gained `history`** (≤12 turns) so "now group that
+  by month" edits the code the assistant just wrote instead of guessing from the
+  prompt alone — and gained **Zod validation**, which it never had: an
+  unvalidated AI route bills the tenant for garbage. **validate-coverage ratchet
+  lowered 160 → 159.**
+- **A cancelled run is never a red card and never costs what you typed.** On both
+  new Stop paths the request goes back into the composer, the working bubble is
+  dropped (notebook) or marked *Stopped* with its half-run steps reset to
+  pending (dashboard), and `AbortError` is swallowed instead of being rendered as
+  a failure. A new cell is created only once there is code to put in it, so a
+  cancelled "new cell" request leaves no empty cell behind.
+- Validation: backend **48 files / 486 passed** (8 new in `cancellation.test.ts`),
+  all eight ratchets green from the repo root, frontend `tsc` clean, new/changed
+  files lint-clean (the four findings in `notebooks/[id]/page.tsx` are
+  pre-existing — verified by re-running the linter against `HEAD`), `next build`
+  green 40/40 (`/notebooks/[id]` 8.4 → 14.8 kB). The panel was checked by
+  RENDERING it: a throwaway `/dev/notebook-ai` harness screenshotted in real
+  Chromium in three states (mid-run, idle-new-cell, collapsed pill), then deleted.
+- **NOT done, deliberately**: the collapsed pill has no stop of its own (a button
+  inside a button is invalid; open it, then stop). Neither Stop path has been
+  exercised against a live AI backend — watch the first real cancel, since that
+  is where `sse.signal` reaches the Anthropic stream for the first time.
+
+**Prior last updated:** 2026-08-31 (DASHBOARD EDITING — the filter that never reached
 the KPI cards, an assistant that gets out of the way, and one card at a time)
 
 **Owner, from a live dashboard whose Customer filter said "Commerce 5 Sa" while

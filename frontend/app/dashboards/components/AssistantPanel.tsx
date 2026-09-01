@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { motion } from 'framer-motion';
-import { ChevronDown, Sparkles, X } from 'lucide-react';
+import { ChevronDown, Sparkles, Square, X } from 'lucide-react';
 import { MarkdownAnswer } from './MarkdownAnswer';
 import type { ChatMessage, RefineStep } from '../types';
 
@@ -146,6 +146,9 @@ interface AssistantPanelProps {
   input: string;
   onInputChange: (value: string) => void;
   onSubmit: () => void;
+  /** Stop the run in flight. Leaves the dashboard untouched — a refine only
+   *  lands when its `done` event arrives with a complete spec. */
+  onStop: () => void;
   /** The single card the next message will be aimed at, if any. */
   scope: { id: string; title: string } | null;
   onClearScope: () => void;
@@ -161,6 +164,7 @@ export default function AssistantPanel({
   input,
   onInputChange,
   onSubmit,
+  onStop,
   scope,
   onClearScope,
 }: AssistantPanelProps) {
@@ -401,7 +405,8 @@ export default function AssistantPanel({
             onKeyDown={(e) => {
               if (e.key === 'Enter') onSubmit();
               if (e.key === 'Escape') {
-                if (scope) onClearScope();
+                if (loading) onStop();
+                else if (scope) onClearScope();
                 else onOpenChange(false);
               }
             }}
@@ -415,14 +420,29 @@ export default function AssistantPanel({
             disabled={loading}
             className="flex-1 min-w-0 px-3 py-2 text-[13px] rounded-md border border-line bg-raised text-ink-2 placeholder-muted-2 focus:outline-none focus:border-ocean focus:ring-1 focus:ring-ocean/30 disabled:opacity-50 transition-colors"
           />
-          <button
-            type="button"
-            onClick={onSubmit}
-            disabled={loading || !input.trim()}
-            className="px-4 py-2 text-[13px] font-medium text-white rounded-md bg-ocean hover:bg-ocean-hover disabled:opacity-50 disabled:cursor-not-allowed transition-colors whitespace-nowrap shrink-0"
-          >
-            {loading ? '…' : 'Send'}
-          </button>
+          {/* While something runs, the primary button STOPS it. A three-dot
+              button that does nothing is the worst thing to put in front of
+              someone who has decided they asked for the wrong thing. */}
+          {loading ? (
+            <button
+              type="button"
+              onClick={onStop}
+              title="Stop (Esc)"
+              className="px-4 py-2 text-[13px] font-medium rounded-md border border-line-strong bg-raised text-ink-2 hover:border-warn hover:text-warn transition-colors whitespace-nowrap shrink-0 inline-flex items-center gap-1.5"
+            >
+              <Square className="w-3 h-3 fill-current" strokeWidth={0} aria-hidden="true" />
+              Stop
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={onSubmit}
+              disabled={!input.trim()}
+              className="px-4 py-2 text-[13px] font-medium text-white rounded-md bg-ocean hover:bg-ocean-hover disabled:opacity-50 disabled:cursor-not-allowed transition-colors whitespace-nowrap shrink-0"
+            >
+              Send
+            </button>
+          )}
         </div>
       </div>
     </motion.div>
