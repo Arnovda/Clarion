@@ -31,7 +31,84 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-09-01 (P0-1 REMEDIATION, CODE HALF — `auth_lookup` is a
+**Last updated:** 2026-09-01 (P0-5 REMEDIATION — email verification, a default
+AI budget for self-registered tenants, and the second "Acme" no longer 500s;
+P0-1's production half ANSWERED the same day)
+
+**Second PR of the market-readiness remediation plan (wave 1). All three P0-5
+defects reproduced red before fixing (13 new tests in
+`signup-hardening.test.ts`, every one failing against the pre-fix handler with
+the exact predicted signature — second same-name register 500, budget NULL,
+no login gate, endpoints 404):**
+- **P0-1 IS FULLY CLOSED.** The owner ran the extended `prod-checks` preflight
+  against production: `databridge_app` is genuinely `bypassrls=false`,
+  tenant-isolation verified 71/71, `auth_lookup` 5/5. Combined with daily
+  logins since the role flip, this settles the history — the hand-run
+  `prod-fix-missing-policies.ts` HAD been applied and RLS was genuinely
+  enforcing; migration 88 made it reproducible. Recorded in the assessment
+  doc (§7 item 1 + both finding addenda).
+- **NEW MIGRATION 89 (`20260901000089_email_verification.ts`)** —
+  `email_verified_at` / `email_verification_token` (sha256, same discipline
+  as password reset) / `email_verification_expires` on `users`. **Every
+  existing user backfilled verified** — they predate the mechanism and
+  include the operators; leaving them NULL would lock every current account
+  out the moment enforcement turns on.
+- **ENFORCEMENT FOLLOWS DELIVERABILITY, deliberately** (`services/signup.ts`
+  `emailVerificationRequired()`): `REQUIRE_EMAIL_VERIFICATION=1/0` forces it;
+  unset, it is on exactly when an email provider is configured (ACS/SMTP).
+  An environment that cannot SEND the link must not demand it — emailService
+  no-ops without a provider, so enforcement there would be a permanent
+  lockout, not a control. That is also what keeps CI and local dev unchanged.
+  When enforcement is off, users are created PRE-VERIFIED so a later flip
+  cannot retroactively strand them. Production has ACS ⇒ enforced there with
+  zero new config.
+- **The flow**: register under enforcement returns `requiresVerification:
+  true` and **NO tokens**; login refuses 403 with machine-readable
+  `code: 'email_unverified'` (checked AFTER the password so it leaks nothing,
+  BEFORE the MFA gate so the user is told the real blocker); new
+  `POST /auth/verify-email` (token from the emailed link) and
+  `POST /auth/resend-verification` (enumeration-safe, rotates the token) —
+  both Zod-validated, so validate-coverage stayed at baseline 159 while the
+  route total went 230→232. **Redeeming a password-reset token also sets
+  `email_verified_at`** — the invite flow creates users unverified and
+  onboards them through reset-password, and without this every invitee would
+  be locked out; pinned by its own test.
+- **`monthly_token_budget` is stamped NON-NULL on self-registration**
+  (`defaultMonthlyTokenBudget()`: env `DEFAULT_MONTHLY_TOKEN_BUDGET`, literal
+  `unlimited` for the old behaviour, unparseable → built-in 2,000,000 with a
+  warning — failing open to unlimited on a typo would resurrect the hazard).
+  NULL still means unlimited for operator-managed tenants; only the
+  unauthenticated door changed.
+- **Slug collision is insert-and-retry over `slugCandidates()`** (base,
+  `-2`…`-7`, then a random suffix), catching 23505 — never check-then-insert
+  (the TOCTOU shape the sync-run dedupe already had to abandon). An
+  all-symbols company name slugs to `workspace` instead of `''`.
+- **Frontend**: new `/verify-email` landing page (posts the token on mount,
+  offers resend on an expired link; query read via `window.location` in a
+  mount effect — the house pattern, no Suspense boundary); register shows a
+  check-your-inbox panel when tokens are withheld; login recognises
+  `email_unverified` and offers "Send a new verification link" instead of
+  claiming the password was wrong.
+- **Drive-by held to the covenant**: forgot-password's dynamic
+  `import('../services/emailService')` became static (the new code needed the
+  static import anyway) — dynamic-import ratchet baseline LOWERED 89→88.
+- Validation: 13 new tests red→green; backend `npm run check` clean; full
+  vitest **51 files / 523 passed**; all eight ratchets green from the repo
+  root with per-ratchet exit codes; `e2e/rls.spec.ts` + `e2e/auth-login.spec.ts`
+  **8/8** against a live backend as `databridge_app` (a first run had 2
+  failures — cross-contamination from the vitest suite running against the
+  same database in parallel, clean re-run 8/8); the enforced path ALSO
+  curl-checked against a live backend with `REQUIRE_EMAIL_VERIFICATION=1`
+  (first attempt hit a leftover unenforced dev server holding port 3001 —
+  EADDRINUSE in the new server's log was the tell; killed it, clean re-run
+  correct); frontend `tsc` clean, 3 touched files lint-clean, `next build`
+  green 41/41 (`/verify-email` 1.28 kB).
+- **NOT in this PR, deliberately**: password breach-check/strength beyond 8
+  chars and org-wide MFA policy (P2-5), rate-limit hardening (P1-2), and any
+  captcha — verification + a bounded budget close the P0 cost hazard;
+  friction beyond that wants evidence of abuse first.
+
+**Prior last updated:** 2026-09-01 (P0-1 REMEDIATION, CODE HALF — `auth_lookup` is a
 migration at last, CI logs in as `databridge_app`, and the preflight reads
 policy PREDICATES instead of counting rows in `pg_policy`)
 

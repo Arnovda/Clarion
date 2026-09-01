@@ -65,6 +65,19 @@ export const resetPasswordSchema = z.object({
   }),
 });
 
+export const verifyEmailSchema = z.object({
+  body: z.object({
+    email,
+    token: nonEmptyString,
+  }),
+});
+
+export const resendVerificationSchema = z.object({
+  body: z.object({
+    email,
+  }),
+});
+
 // ---------------------------------------------------------------------------
 // Connections
 // ---------------------------------------------------------------------------
