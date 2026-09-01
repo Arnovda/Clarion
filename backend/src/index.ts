@@ -71,6 +71,7 @@ import addinRouter from './routes/addin';
 import aiUsageRouter         from './routes/aiUsage';
 import aiRoutingRouter       from './routes/aiRouting';
 import { featuresRouter, featureFlagsRouter } from './routes/featureFlags';
+import adminTenantsRouter    from './routes/adminTenants';
 import { startWorkers, stopWorkers } from './jobs/workers';
 import { closeQueues } from './jobs/queues';
 import { closeRedis } from './jobs/redis';
@@ -282,6 +283,10 @@ app.use('/api/addin',               computeLimiter, addinRouter);
 // (an env allowlist), NOT to tenant admins — see routes/featureFlags.ts.
 app.use('/api/features',            featuresRouter);
 app.use('/api/admin/feature-flags', featureFlagsRouter);
+
+// Operator console (P1-5): tenant list/health, suspend/resume, budget,
+// audited 15-minute impersonation. Same operator gate, same 404 refusal.
+app.use('/api/admin/tenants',       adminTenantsRouter);
 
 // Admin-only: re-run schema profiling for an existing connection
 app.post('/api/connections/:id/profile', requireAuth, requireRole('admin'), async (req, res, next) => {

@@ -986,3 +986,35 @@ export const runSavedQuestionSchema = z.object({
     limit: z.number().int().min(1).max(10_000).optional(),
   }).passthrough().optional(),
 });
+
+// ---------------------------------------------------------------------------
+// Operator console — tenant administration (P1-5)
+// ---------------------------------------------------------------------------
+
+const adminTenantParams = z
+  .object({ id: z.coerce.number().int().positive() })
+  .passthrough();
+
+export const adminTenantParamsSchema = z.object({ params: adminTenantParams });
+
+export const adminTenantBudgetSchema = z.object({
+  params: adminTenantParams,
+  body: z.object({
+    // null = unlimited — the operator-managed meaning NULL has carried since
+    // the budget shipped. Self-registration stamps a number (P0-5); only an
+    // operator can deliberately grant unlimited.
+    monthlyTokenBudget: z.number().int().min(0).max(100_000_000_000).nullable(),
+  }),
+});
+
+export const adminTenantImpersonateSchema = z.object({
+  params: adminTenantParams,
+  body: z.object({
+    userId: z.number().int().positive(),
+    // Free-text "why" — lands in the audit row so the trail answers the
+    // question a support session always raises later. Required: an
+    // impersonation without a stated reason is the pattern audits exist
+    // to prevent.
+    reason: z.string().trim().min(3).max(500),
+  }),
+});

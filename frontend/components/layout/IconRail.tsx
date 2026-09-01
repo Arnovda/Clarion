@@ -7,7 +7,7 @@ import {
   MessageSquare, LayoutGrid, Code2, BookOpen, Star,
   Plug, Inbox, Users, Shield, Library, Package, Workflow, Search,
   Home as HomeIcon, DollarSign, ChevronLeft, ChevronDown, Share2,
-  Blocks, Sparkles, Layers, Table2, ToggleRight,
+  Blocks, Sparkles, Layers, Table2, ToggleRight, Building2,
 } from 'lucide-react';
 import { getTokenPayload, TokenPayload } from '@/lib/auth';
 import { cn } from '@/lib/cn';
@@ -60,6 +60,7 @@ const ICONS = {
   layers:   <Layers         className={ICON_CLASS} strokeWidth={1.5} />,
   table:    <Table2         className={ICON_CLASS} strokeWidth={1.5} />,
   flag:     <ToggleRight    className={ICON_CLASS} strokeWidth={1.5} />,
+  tenants:  <Building2      className={ICON_CLASS} strokeWidth={1.5} />,
 };
 
 interface NavItem {
@@ -118,6 +119,7 @@ const NAV_ITEMS: NavItem[] = [
   { key: 'policies',   href: '/policies',   label: 'Policies',        icon: ICONS.shield,  roles: ['admin'],                       group: 'settings' },
   { key: 'ai-usage',   href: '/admin/ai-usage', label: 'AI usage',     icon: ICONS.dollar,  roles: ['admin'],                       group: 'settings' },
   { key: 'features',   href: '/admin/features', label: 'Who sees what', icon: ICONS.flag,  roles: ['admin', 'analyst', 'viewer'],  group: 'settings', operatorOnly: true },
+  { key: 'tenants',    href: '/admin/tenants',  label: 'Customers',     icon: ICONS.tenants, roles: ['admin', 'analyst', 'viewer'], group: 'settings', operatorOnly: true },
 ];
 
 const ROUTE_ALIASES: Record<string, string[]> = {
