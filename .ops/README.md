@@ -224,6 +224,42 @@ same reason a query that could not run is reported as *unknown*, never as clean.
 
 ---
 
+## `alerts` — who gets told when production is broken
+
+Contains an **email address**, or `off`.
+
+Editing it runs `alerts.yml`, which creates (or updates) an Azure Monitor
+action group routed to that address plus the alert rules listed in the file's
+own comment block: backend 5xx rate, backend and jobs-worker restarts,
+Postgres CPU and storage, `request failed` log lines (HTTP ≥500) and
+`sync run failed` lines. `off` deletes all of them. Changing the address is an
+edit + push — no redeploy.
+
+This is the other half of P0-6 next to the deep `/api/health` check: the
+health check stops a bad revision from being *promoted*; these rules are what
+notice production breaking *between* deploys. Until 2026-09-01 neither
+existed — promotion was automatic and nothing anywhere paged a human.
+
+Two deliberate limits, stated in `.ops/alerts` itself: no queue-depth alert
+(no Azure metric exists for BullMQ; the health check's queue-listener probe
+covers the dead-consumer case) and no continuous uptime probe (wants an App
+Insights web test — the P1-6 observability pass).
+
+The Container Apps metric names are **discovered** from
+`az monitor metrics list-definitions` at run time, and the discovered list is
+printed to the run summary — this workflow cannot be tested outside Azure,
+and a rule created against a guessed name would silently watch nothing. Any
+rule that cannot be created **fails the workflow**: an alert you believe
+exists but does not is precisely the failure this control replaces.
+`infra/alerts.tf` describes the same resources for a future
+`terraform import` reconciliation (same trade-off as `provision-jobs-worker`).
+
+After the first successful run, **send a test alert once** (Azure portal →
+action group `clarion-alerts` → Test) so the first real incident is not also
+the first test of the delivery path.
+
+---
+
 ## `.ops/operators` — who may release features to customers
 
 One email address per line; `#` starts a note. Editing it on `main` applies the

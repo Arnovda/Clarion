@@ -176,6 +176,34 @@ Two further defects in the same handler:
 
 ### P0-6 · Nothing reports that production is broken
 
+> **REMEDIATED 2026-09-01** (fourth wave-1 PR). Two halves. **The promote gate
+> asks a real question now**: `GET /api/health` (which ACA's own probes never
+> touch — they hit `/api/ping`, so a Redis blip can stop a promotion but never
+> restart healthy replicas) checks Postgres, Redis, Neo4j, blob storage and —
+> the sharpest one — whether anything is LISTENING on the transformation and
+> bus-matrix queues, via BullMQ's `getWorkers()` (Redis `CLIENT LIST`), which
+> measures the jobs-worker's liveness directly instead of trusting a
+> heartbeat. Per-component 5s budget, three-valued statuses (`ok` / `error` /
+> `skipped` for not-configured, so dev and CI are unchanged), no error detail
+> on the unauthenticated wire. The finding's exact scenario was reproduced red
+> first (Redis+Neo4j dead → pre-fix `200 ok`) and then all four states
+> verified against live processes, including Redis-alive-but-nobody-listening
+> → 503. deploy.yml now also echoes the failing component's name instead of a
+> bare status code. **The other half is alerting**: new GitOps control
+> `.ops/alerts` (email address or `off`) drives `alerts.yml`, which creates an
+> Azure Monitor action group plus rules for backend 5xx, backend/worker
+> restarts, Postgres CPU/storage, `request failed` (HTTP ≥500) and
+> `sync run failed` log lines — the last being a new load-bearing log line in
+> SyncOrchestrator, since failures were previously only a database row no
+> alert could read. ACA metric names are discovered at run time and printed to
+> the summary; a rule that cannot be created fails the workflow (an alert you
+> believe exists but does not is the failure this control replaces).
+> `infra/alerts.tf` mirrors the resources for a future `terraform import`.
+> Deliberately deferred, with reasons in `.ops/alerts`: queue-depth alerting
+> (needs a metrics exporter — P1-6; the queue-listener health probe covers the
+> dead-consumer case) and a continuous uptime web test. The original finding
+> follows.
+
 No alerting exists — no metric alerts, action groups or paging integration across
 `infra/` or any workflow. Meanwhile `deploy.yml` promotes automatically once a
 revision is `Provisioned` and answers one health probe.
@@ -250,6 +278,9 @@ wave 2 unverifiable.
 5. **P0-6** Deepen `/api/health` to Redis + Neo4j + blob + worker heartbeat and
    gate promotion on it. Add Azure metric alerts (5xx rate, restarts, queue
    depth, failed syncs, DB saturation) routed somewhere that reaches a human.
+   **DONE 2026-09-01** — deep health live-verified in all four states, alerts
+   via the `.ops/alerts` control (queue depth deferred to P1-6 with the
+   queue-listener probe covering the dead-consumer case; see the addendum).
 6. **P0-4** Publish terms, privacy policy, subprocessor list and DPA template.
    Lawyer-and-a-week — start day one, in parallel.
 

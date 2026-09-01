@@ -1,0 +1,230 @@
+# Production alerting — the GitOps control behind .ops/alerts (P0-6).
+#
+# Until 2026-09-01 NOTHING reported that production was broken: no metric
+# alerts, no action group, no paging integration. Deploys auto-promote, so
+# the absence of a "production is unhealthy" signal was the largest gap the
+# platform had (CLAUDE.md has called it "the next fundamental" since
+# 2026-08-29). This workflow creates the signal.
+#
+# Why `az` and not Terraform: no Terraform state storage exists in the
+# subscription (state lives on one laptop), so `terraform apply` from CI would
+# try to recreate live infrastructure — the same reasoning as
+# provision-jobs-worker.yml. infra/alerts.tf describes the same resources so
+# the definitions agree; reconcile with `terraform import` when state is
+# sorted out.
+#
+# The metric names for Container Apps are DISCOVERED from
+# `az monitor metrics list-definitions` rather than hardcoded: this workflow
+# cannot be tested outside Azure, and a rule created against a guessed metric
+# name would either error or — worse — silently watch nothing. The discovered
+# definitions are printed to the run summary so a wrong guess is diagnosable
+# from the run alone. Any rule that cannot be created FAILS the workflow:
+# an alert you believe exists but does not is precisely the failure mode this
+# control replaces.
+
+name: Production alerts
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.ops/alerts'
+  workflow_dispatch:
+
+concurrency:
+  group: alerts
+  cancel-in-progress: false
+
+jobs:
+  alerts:
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read desired routing
+        id: route
+        run: |
+          set -euo pipefail
+          VALUE=$(grep -vE '^[[:space:]]*(#|$)' .ops/alerts | head -1 | tr -d '[:space:]')
+          if [ "$VALUE" = "off" ]; then
+            echo "mode=off" >> "$GITHUB_OUTPUT"
+          elif printf '%s' "$VALUE" | grep -qE '^[^@[:space:]]+@[^@[:space:]]+\.[^@[:space:]]+$'; then
+            echo "mode=on" >> "$GITHUB_OUTPUT"
+            echo "email=$VALUE" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::.ops/alerts must contain an email address or 'off' (got '$VALUE')"
+            exit 1
+          fi
+
+      - name: Log in to Azure
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Apply alert configuration
+        env:
+          RG: ${{ secrets.AZURE_RESOURCE_GROUP }}
+          APP: ${{ secrets.BACKEND_APP_NAME }}
+          MODE: ${{ steps.route.outputs.mode }}
+          EMAIL: ${{ steps.route.outputs.email }}
+        run: |
+          set -uo pipefail
+          say() { printf '%s\n' "$1"; printf '%s\n' "$1" >> "$GITHUB_STEP_SUMMARY"; }
+
+          AG_NAME="clarion-alerts"
+          WORKER="${APP%-backend}-jobs-worker"
+          METRIC_RULES="clarion-backend-5xx clarion-backend-restarts clarion-worker-restarts clarion-pg-cpu clarion-pg-storage"
+          QUERY_RULES="clarion-server-errors clarion-failed-syncs"
+
+          if [ "$MODE" = "off" ]; then
+            say "## Production alerts — OFF"
+            for R in $METRIC_RULES; do az monitor metrics alert delete -g "$RG" -n "$R" >/dev/null 2>&1 || true; done
+            az extension add --name scheduled-query --only-show-errors >/dev/null 2>&1 || true
+            for R in $QUERY_RULES; do az monitor scheduled-query delete -g "$RG" -n "$R" --yes >/dev/null 2>&1 || true; done
+            az monitor action-group delete -g "$RG" -n "$AG_NAME" >/dev/null 2>&1 || true
+            say "Every alert rule and the action group are deleted. Nothing pages anyone now."
+            exit 0
+          fi
+
+          say "## Production alerts — routed to \`$EMAIL\`"
+          say ""
+
+          FAILED=""
+          note_fail() { FAILED="$FAILED $1"; say "  ✗ $1 — could not be created (see log)"; }
+          note_ok()   { say "  ✓ $1"; }
+
+          # ── Action group ────────────────────────────────────────────────
+          if az monitor action-group create -g "$RG" -n "$AG_NAME" \
+               --short-name clarion \
+               --action email owner "$EMAIL" >/dev/null; then
+            note_ok "action group $AG_NAME → $EMAIL"
+          else
+            echo "::error::could not create the action group — nothing else can route"
+            exit 1
+          fi
+          AG_ID=$(az monitor action-group show -g "$RG" -n "$AG_NAME" --query id -o tsv)
+
+          # ── Resource discovery ──────────────────────────────────────────
+          APP_ID=$(az containerapp show -n "$APP" -g "$RG" --query id -o tsv 2>/dev/null || echo "")
+          WORKER_ID=$(az containerapp show -n "$WORKER" -g "$RG" --query id -o tsv 2>/dev/null || echo "")
+          PG_ID=$(az postgres flexible-server list -g "$RG" --query "[0].id" -o tsv 2>/dev/null || echo "")
+          WS_ID=$(az monitor log-analytics workspace list --resource-group "$RG" --query "[0].id" -o tsv 2>/dev/null || echo "")
+
+          # Discover the Container Apps metric names instead of guessing them.
+          # Printed to the summary so a naming mismatch is diagnosable here.
+          DEFS=$(az monitor metrics list-definitions --resource "$APP_ID" -o json 2>/dev/null || echo '[]')
+          say ""
+          say "<details><summary>Container Apps metric definitions (discovered)</summary>"
+          say ""
+          say '```'
+          printf '%s' "$DEFS" | jq -r '.[] | "\(.name.value)  dims: \([.dimensions[]?.value] | join(","))"' | tee -a "$GITHUB_STEP_SUMMARY"
+          say '```'
+          say "</details>"
+          say ""
+
+          REQ_METRIC=$(printf '%s' "$DEFS" | jq -r '[.[] | select(.name.value == "Requests")][0].name.value // empty')
+          REQ_HAS_STATUS=$(printf '%s' "$DEFS" | jq -r '[.[] | select(.name.value == "Requests") | .dimensions[]?.value | select(. == "statusCodeCategory")] | length')
+          RESTART_METRIC=$(printf '%s' "$DEFS" | jq -r '[.[] | select(.name.value | test("Restart"; "i"))][0].name.value // empty')
+
+          # ── Metric alerts ───────────────────────────────────────────────
+          if [ -n "$REQ_METRIC" ] && [ "$REQ_HAS_STATUS" -gt 0 ]; then
+            az monitor metrics alert create -g "$RG" -n clarion-backend-5xx \
+              --scopes "$APP_ID" --action "$AG_ID" --severity 1 \
+              --evaluation-frequency 5m --window-size 15m \
+              --condition "total $REQ_METRIC >= 10 where statusCodeCategory includes 5xx" \
+              --description "Backend served 10+ HTTP 5xx responses in 15 minutes" >/dev/null \
+              && note_ok clarion-backend-5xx || note_fail clarion-backend-5xx
+          else
+            note_fail "clarion-backend-5xx (Requests/statusCodeCategory not in the discovered definitions above)"
+          fi
+
+          if [ -n "$RESTART_METRIC" ]; then
+            az monitor metrics alert create -g "$RG" -n clarion-backend-restarts \
+              --scopes "$APP_ID" --action "$AG_ID" --severity 1 \
+              --evaluation-frequency 5m --window-size 15m \
+              --condition "total $RESTART_METRIC >= 3" \
+              --description "Backend container restarted 3+ times in 15 minutes" >/dev/null \
+              && note_ok clarion-backend-restarts || note_fail clarion-backend-restarts
+            if [ -n "$WORKER_ID" ]; then
+              az monitor metrics alert create -g "$RG" -n clarion-worker-restarts \
+                --scopes "$WORKER_ID" --action "$AG_ID" --severity 2 \
+                --evaluation-frequency 5m --window-size 15m \
+                --condition "total $RESTART_METRIC >= 3" \
+                --description "Jobs-worker container restarted 3+ times in 15 minutes" >/dev/null \
+                && note_ok clarion-worker-restarts || note_fail clarion-worker-restarts
+            else
+              say "  – clarion-worker-restarts skipped: no jobs-worker app found"
+            fi
+          else
+            note_fail "clarion-backend-restarts (no restart metric in the discovered definitions above)"
+          fi
+
+          if [ -n "$PG_ID" ]; then
+            az monitor metrics alert create -g "$RG" -n clarion-pg-cpu \
+              --scopes "$PG_ID" --action "$AG_ID" --severity 2 \
+              --evaluation-frequency 5m --window-size 15m \
+              --condition "avg cpu_percent >= 90" \
+              --description "Postgres CPU at 90%+ for 15 minutes" >/dev/null \
+              && note_ok clarion-pg-cpu || note_fail clarion-pg-cpu
+            az monitor metrics alert create -g "$RG" -n clarion-pg-storage \
+              --scopes "$PG_ID" --action "$AG_ID" --severity 1 \
+              --evaluation-frequency 15m --window-size 30m \
+              --condition "avg storage_percent >= 85" \
+              --description "Postgres storage at 85%+ — act before writes start failing" >/dev/null \
+              && note_ok clarion-pg-storage || note_fail clarion-pg-storage
+          else
+            note_fail "clarion-pg-cpu/clarion-pg-storage (no Postgres flexible server found in $RG)"
+          fi
+
+          # ── Log-query alerts ────────────────────────────────────────────
+          # Same signatures as .ops/prod-logs: 'request failed' is what
+          # requestLogger emits at HTTP >=500, and 'sync run failed' is the
+          # load-bearing line SyncOrchestrator logs when a sync run is
+          # persisted as failed. Change either string in code and these go
+          # silently blind — both sites carry a comment saying so.
+          az extension add --name scheduled-query --only-show-errors >/dev/null 2>&1 || true
+          # create-then-update: unlike the ARM-PUT metric alerts, the
+          # scheduled-query extension may refuse an existing name, and this
+          # control must stay idempotent — re-pushing .ops/alerts IS the way
+          # to change a rule.
+          upsert_query_rule() {
+            local NAME="$1" SEV="$2" COND="$3" PLACEHOLDER="$4" KQL="$5" DESC="$6"
+            az monitor scheduled-query create -g "$RG" -n "$NAME" \
+              --scopes "$WS_ID" --action-groups "$AG_ID" --severity "$SEV" \
+              --evaluation-frequency 15m --window-size 15m \
+              --condition "$COND" \
+              --condition-query "$PLACEHOLDER=$KQL" \
+              --description "$DESC" >/dev/null 2>/tmp/sq-err \
+            || az monitor scheduled-query update -g "$RG" -n "$NAME" \
+              --action-groups "$AG_ID" --severity "$SEV" \
+              --evaluation-frequency 15m --window-size 15m \
+              --condition "$COND" \
+              --condition-query "$PLACEHOLDER=$KQL" \
+              --description "$DESC" >/dev/null 2>>/tmp/sq-err \
+            || { cat /tmp/sq-err; return 1; }
+          }
+          if [ -n "$WS_ID" ]; then
+            upsert_query_rule clarion-server-errors 1 "count 'Errors' >= 5" Errors \
+              "ContainerAppConsoleLogs_CL | where ContainerAppName_s in ('$APP', '$WORKER') | where Log_s contains 'request failed'" \
+              "5+ server errors (HTTP 5xx log lines) in 15 minutes" \
+              && note_ok clarion-server-errors || note_fail clarion-server-errors
+            upsert_query_rule clarion-failed-syncs 2 "count 'Failures' >= 1" Failures \
+              "ContainerAppConsoleLogs_CL | where Log_s contains 'sync run failed'" \
+              "A source sync run was persisted as failed" \
+              && note_ok clarion-failed-syncs || note_fail clarion-failed-syncs
+          else
+            note_fail "clarion-server-errors/clarion-failed-syncs (no Log Analytics workspace found in $RG)"
+          fi
+
+          say ""
+          if [ -n "$FAILED" ]; then
+            say "**INCOMPLETE** — these rules do not exist:$FAILED"
+            say ""
+            say "An alert you believe exists but does not is exactly what this control replaces,"
+            say "so this run fails. Fix the workflow (the discovered metric definitions above are"
+            say "the ground truth) and re-push .ops/alerts."
+            exit 1
+          fi
+          say "**All alert rules exist and route to \`$EMAIL\`.** Test the loop once from the"
+          say "Azure portal (action group → Test) so the first real alert is not the first test."

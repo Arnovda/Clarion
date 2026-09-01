@@ -69,7 +69,11 @@ export function requestLogger(req: Request, res: Response, next: NextFunction) {
       logContext.tenantId = req.user.tenantId;
     }
 
-    // Log at appropriate level based on status code
+    // Log at appropriate level based on status code.
+    // The words 'request failed' are LOAD-BEARING: the .ops/alerts
+    // `clarion-server-errors` rule and .ops/prod-logs's `server-error`
+    // signature both match this exact string. Rewording it makes the 5xx
+    // alert go silently blind.
     if (statusCode >= 500) {
       req.log.error(logContext, 'request failed');
     } else if (statusCode >= 400) {
