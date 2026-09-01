@@ -44,7 +44,7 @@
     "jsonwebtoken": "^9.0.2",
     "knex": "^3.1.0",
     "mssql": "^12.2.1",
-    "mysql2": "^3.20.0",
+    "mysql2": "^3.24.2",
     "neo4j-driver": "^5.27.0",
     "nodemailer": "^9.0.3",
     "otplib": "^12.0.1",
