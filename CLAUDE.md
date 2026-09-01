@@ -31,7 +31,81 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-09-01 (THE BUSINESS KEY COMES FROM THE SOURCE NOW — a
+**Last updated:** 2026-09-01 (MARKET READINESS ASSESSMENT — doc only, no code
+changed; the platform around the product is what is unfinished)
+
+**Owner: *"I want to bring Clarion to the market. What is still missing? What do
+I miss for multiple customers? Is this platform complete in all functional and
+non-functional aspects?"* Full audit against a seven-plane multi-tenant SaaS
+model, verified from code/migrations/workflows/Terraform rather than from these
+notes. NEW DOC: `docs/backlog/market-readiness-assessment.md`. Artifact:
+"Clarion Launch Preflight".**
+- **VERDICT: no-go for paid onboarding.** The data engine is ahead of where a
+  platform this young usually is; almost every gap sits AROUND it — the layer
+  that proves isolation, the layer that takes money, the layer that says
+  production is broken, and the paperwork that makes processing a customer's
+  accounting data lawful. 6 P0 / 7 P1 / 5 P2.
+- **P0-1 — `auth_lookup` EXISTS IN NO MIGRATION, and this is now measured, not
+  suspected.** The only thing that creates it is `backend/scripts/prod-fix-
+  missing-policies.ts`, which NO workflow and NO `.ops` control invokes. A
+  migration-only database gives `users` just `tenant_isolation`, whose predicate
+  under empty tenant context is `tenant_id = NULL` — zero rows. Under
+  `databridge_app` login/forgot-password/refresh/WebAuthn can only fail. **Three
+  controls all miss it and each for its own reason**: `e2e/rls.spec.ts` uses the
+  token `/register` RETURNS and never calls `/auth/login`; `auth.test.ts` does
+  test login but connects as the superuser, so RLS is inert; and
+  `preflight-role-flip.ts` asserts each table has ≥1 policy — `users` has one, so
+  it reports GO. **A preflight that counts policies cannot notice the wrong one.**
+- **P0-2 — the graph's tenant scoping is still 1 of 3 steps done.** Measured:
+  **0 tenant predicates across 90 `MATCH` clauses**; `.ops/graph-backfill` is
+  still `report`. Isolation rests on ~30 handlers each remembering a gate, which
+  has already failed once (the 2026-07-28 `/semantic/columns` leak).
+  `routes/catalog.ts:242` still calls the scope-free `getProductTree()` — read
+  only for counts of owned ids today, so latent rather than live.
+- **P0-3 — no commercial layer at all** (no plan/subscription/entitlement/
+  payment/trial/dunning). The METERING half is real though: `ai_usage` +
+  enforced `monthly_token_budget` is a usable base for usage pricing, so this is
+  a build-on, not a build-from-zero.
+- **P0-4 — no ToS, privacy policy, DPA or subprocessor list.** GDPR Art. 28
+  wants the contract BEFORE processing; the real subprocessors are Azure,
+  Anthropic, ACS. The engineering is ahead of the paperwork — EU residency,
+  `services/retention.ts`, `audit_events`, and a working `purgeTenant` all exist.
+- **P0-5 — open registration + `monthly_token_budget = NULL` (unlimited).** No
+  email verification. Two defects in the same handler: the duplicate-email check
+  goes through `unauthQuery` so under P0-1 it ALWAYS says the address is free
+  (and login's `.first()` is then non-deterministic), and the slug is derived
+  into a UNIQUE column with no collision handling — **the second customer called
+  "Acme" 500s on signup**.
+- **P0-6 — still no alerting, and `/api/health` probes POSTGRES ONLY** while
+  deploy auto-promotes on it. A revision with Redis/Neo4j/worker dead reports
+  `200 ok` and takes 100% traffic. The gap CLAUDE.md has called "the next
+  fundamental" since 2026-08-29, now compounded by automatic promotion.
+- **P1 highlights**: `schema-profiling` and `bus-matrix` both run
+  `concurrency: 1` GLOBALLY and the worker is pinned to one replica (the reapers
+  have no owner/heartbeat) — **one tenant's build blocks every other tenant's**;
+  rate limits are per-IP, in-memory, per-replica, so every published limit is
+  ~3× and brute-force is ~15/15min; `requireAuth` re-checks only the JWT
+  signature, so **suspension takes up to 8h to bite**; Postgres has no HA, Redis
+  no persistence, and Neo4j **no backup at all** (14-day PITR on Postgres vs a
+  5 GiB file share holding the semantic layer); no per-tenant observability; and
+  `ignoreBuildErrors` + a deploy gate that never type-checks the frontend, which
+  has **zero tests**.
+- **P2**: no i18n in a NL/FR market; `/onboarding` referenced from NOWHERE so
+  register lands on a cold `/sources`; `routes/query.ts` still single-
+  `connectionId` so the cross-system demo cannot be given; no status page or
+  support channel; MFA is per-user and cannot be required org-wide.
+- **Remediation is three waves with exit gates**, sequenced by dependency, not
+  preference: W1 *prove it is safe and make it lawful* (~3-4wk), W2 *be able to
+  charge and to operate* (~5-7wk), W3 *sell it into this market* (~4-6wk). Full
+  task list in the doc.
+- **TWO THINGS THIS ASSESSMENT COULD NOT ESTABLISH, both one production query
+  away and both owed before W1 closes**: the live database's actual `pg_policy` /
+  `rolbypassrls` state (P0-1 is unresolvable without it — either login is broken
+  or RLS is inert, and a 401 looks identical either way), and whether per-tenant
+  warehouse containers have taken any writes since the 2026-07-26 flip (last
+  measured: 0).
+
+**Prior last updated:** 2026-09-01 (THE BUSINESS KEY COMES FROM THE SOURCE NOW — a
 `Created` timestamp was identifying bank statement lines)
 
 **Owner, from the Quality tab on ExactOnline's `BankEntryLines`: *"the business
