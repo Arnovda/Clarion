@@ -13,6 +13,7 @@
  * POST   /api/notebooks/cells/:cellId/execute — execute SQL cell server-side
  * POST   /api/notebooks/:id/reorder           — bulk reorder cells
  * POST   /api/notebooks/:id/duplicate         — clone a notebook
+ * POST   /api/notebooks/generate              — AI writes SQL/Python for a cell
  */
 
 import { Router, Request, Response, NextFunction } from 'express';
@@ -21,6 +22,7 @@ import { requireAuth, requireRole } from '../middleware/auth';
 import { validate } from '../middleware/validate';
 import {
   createNotebookSchema, updateNotebookSchema, createNotebookCellSchema, updateNotebookCellSchema,
+  generateNotebookCodeSchema,
 } from '../middleware/schemas';
 import { reqDb } from '../db/reqDb';
 import { parsePagination, paginatedResponse } from '../utils/paginate';
@@ -34,6 +36,7 @@ import {
 } from '../services/warehouse';
 import { listSourceTables, listProductTablesByConnection } from '../services/tableCatalog';
 import { assertSafeReadQuery } from '../utils/sqlGuard';
+import { clientAbort } from '../utils/requestAbort';
 import { logger as rootLogger } from '../utils/logger';
 
 const log = rootLogger.child({ mod: 'notebooks' });
@@ -154,22 +157,23 @@ router.post('/query', async (req: Request, res: Response, next: NextFunction) =>
 });
 
 // ─── AI CODE GENERATION — generate SQL/Python from natural language ────────
-// POST /api/notebooks/generate { connectionId, prompt, cellType, existingCode? }
-router.post('/generate', async (req: Request, res: Response, next: NextFunction) => {
+// POST /api/notebooks/generate
+//   { connectionId, prompt, cellType, scope?, existingCode?, history? }
+//
+// `history` carries the earlier turns of the same notebook conversation, so a
+// follow-up ("now group that by month") lands as an edit of the code the
+// assistant just wrote instead of a fresh guess from the prompt alone.
+router.post('/generate', validate(generateNotebookCodeSchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const pgDb = reqDb(req);
-    const { connectionId, prompt, cellType, scope, existingCode } = req.body as {
+    const { connectionId, prompt, cellType, scope, existingCode, history } = req.body as {
       connectionId: number;
       prompt: string;
       cellType: 'sql' | 'python';
       scope?: 'sources' | 'products';
       existingCode?: string;
+      history?: Array<{ role: 'user' | 'assistant'; content: string }>;
     };
-
-    if (!connectionId || !prompt?.trim()) {
-      res.status(400).json({ ok: false, error: 'connectionId and prompt are required' });
-      return;
-    }
 
     // Build schema context string, filtered by scope
     const connection = await pgDb('connections').where({ id: connectionId }).first();
@@ -315,9 +319,22 @@ Rules:
 - If the user references a table or column, use the exact names from the schema above.
 - Write clean, concise code.${existingCode ? `\n\nThe user already has this code in the cell:\n${existingCode}` : ''}`;
 
-    const code = await callClaudeMultiTurn(systemPrompt, [
-      { role: 'user', content: prompt.trim() },
-    ]);
+    // A user pressing Stop closes the request; that has to stop the MODEL
+    // too, not just the browser's listening.
+    const abort = clientAbort(res);
+    let code: string;
+    try {
+      code = await callClaudeMultiTurn(
+        systemPrompt,
+        [
+          ...(history ?? []).map((m) => ({ role: m.role, content: m.content })),
+          { role: 'user' as const, content: prompt.trim() },
+        ],
+        { signal: abort.signal },
+      );
+    } finally {
+      abort.settle();
+    }
 
     // Strip markdown fences if Claude wraps the code
     const cleaned = code

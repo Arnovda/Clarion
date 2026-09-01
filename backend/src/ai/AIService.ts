@@ -534,6 +534,31 @@ export class AiCreditExhaustedError extends Error {
   }
 }
 
+/**
+ * Wire an external AbortSignal into an Anthropic stream.
+ *
+ * The signal comes from the request the stream is serving (see
+ * services/sse.ts): when the user presses Stop, or closes the tab, the model
+ * must stop generating. Without this a cancel only stops the BROWSER
+ * listening — the call runs to completion and the tenant pays for an answer
+ * nobody will ever see.
+ *
+ * `onAbort` lets a caller log the event on its own diagnostic channel.
+ */
+function attachAbort(
+  stream: unknown,
+  abortSignal: AbortSignal | undefined,
+  onAbort?: () => void,
+): void {
+  if (!abortSignal) return;
+  const kill = () => {
+    try { onAbort?.(); } catch { /* diagnostics must never break the abort */ }
+    try { (stream as { controller?: { abort?: () => void } }).controller?.abort?.(); } catch { /* ignore */ }
+  };
+  if (abortSignal.aborted) kill();
+  else abortSignal.addEventListener('abort', kill, { once: true });
+}
+
 // Streaming version of callClaude — uses streaming API to avoid SDK timeout for large responses
 // but collects the full text and returns it as a string (no event callbacks).
 async function callClaudeStreaming(
@@ -611,17 +636,21 @@ async function callClaudeStreaming(
 export async function callClaudeMultiTurn(
   systemPrompt: string,
   messages: Array<{ role: 'user' | 'assistant'; content: string }>,
-  opts: { temperature?: number } = {},
+  /** `signal` cancels the call when the requester goes away — see attachAbort. */
+  opts: { temperature?: number; signal?: AbortSignal } = {},
 ): Promise<string> {
   const tenantId = await enforceAiBudget('multi_turn');
   const start = Date.now();
-  const message = await getClient().messages.create({
-    model: MODEL,
-    max_tokens: 4096,
-    system: systemPrompt,
-    messages,
-    ...(opts.temperature !== undefined ? { temperature: opts.temperature } : {}),
-  });
+  const message = await getClient().messages.create(
+    {
+      model: MODEL,
+      max_tokens: 4096,
+      system: systemPrompt,
+      messages,
+      ...(opts.temperature !== undefined ? { temperature: opts.temperature } : {}),
+    },
+    opts.signal ? { signal: opts.signal } : undefined,
+  );
 
   const block = message.content[0];
   if (block.type !== 'text') {
@@ -1381,6 +1410,8 @@ export async function generateSqlStreaming(
   onEvent: (type: 'thinking' | 'text', delta: string) => void,
   dialect: SqlDialect = 'sqlite',
   conversationHistory?: Array<{ role: string; content: string }>,
+  /** Cancels the model call when the asker stops the question. */
+  abortSignal?: AbortSignal,
 ): Promise<NlToSqlOutput> {
   const tenantId = await enforceAiBudget('generate_sql_streaming');
   const streamCallLabel = 'generate_sql_streaming';
@@ -1411,6 +1442,7 @@ export async function generateSqlStreaming(
   };
 
   const stream = getClient().messages.stream(params);
+  attachAbort(stream, abortSignal);
   let fullText = '';
 
   for await (const event of stream) {
@@ -1795,16 +1827,7 @@ export async function generateBusMatrixStreaming(
   const stream = getClient().messages.stream(params);
 
   // Wire external abort (user-initiated cancel) into the Anthropic stream.
-  if (abortSignal) {
-    if (abortSignal.aborted) {
-      try { (stream as unknown as { controller?: { abort?: () => void } }).controller?.abort?.(); } catch { /* ignore */ }
-    } else {
-      abortSignal.addEventListener('abort', () => {
-        sendDiag('external abort received — aborting Anthropic stream');
-        try { (stream as unknown as { controller?: { abort?: () => void } }).controller?.abort?.(); } catch { /* ignore */ }
-      }, { once: true });
-    }
-  }
+  attachAbort(stream, abortSignal, () => sendDiag('external abort received — aborting Anthropic stream'));
 
   let fullText = '';
   let thinkingChars = 0;

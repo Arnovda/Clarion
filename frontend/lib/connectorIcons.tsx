@@ -147,6 +147,25 @@ export const CONNECTOR_MARKS: Record<string, ConnectorMark> = {
 };
 
 /** The mark for a connector id, or null when we have none for it. */
+/**
+ * Product name per connector type. A connection row stores its storage engine
+ * ("duckdb") rather than the product, so anywhere that prints a raw type shows
+ * the user something that means nothing to them.
+ *
+ * Lives here, beside the marks, because it answers the same question — how a
+ * connector is PRESENTED — and having a second copy is how the two drift.
+ */
+export const CONNECTOR_LABELS: Record<string, string> = {
+  exactonline: 'Exact Online',
+  odoo: 'Odoo',
+  excel: 'Excel',
+  sharepoint: 'SharePoint',
+  postgres: 'PostgreSQL',
+  mysql: 'MySQL',
+  sqlserver: 'SQL Server',
+  sqlite: 'SQLite',
+};
+
 export function connectorMark(id: string): ConnectorMark | null {
   return CONNECTOR_MARKS[id] ?? null;
 }

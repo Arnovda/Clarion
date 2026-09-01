@@ -16,7 +16,7 @@ import './exactonline';
 import './odoo';
 import './sharepoint';
 import { getConnector, listConnectorTypes } from './registry';
-import { validateConnectorMetadata, validateEntityCatalog, validateKnownRelationships } from './conformance';
+import { validateBusinessKeyExposure, validateConnectorMetadata, validateEntityCatalog, validateKnownRelationships } from './conformance';
 import { validateStarSchemaTemplate } from './starSchema';
 import { EXACT_ONLINE_ENTITIES } from './exactonline/entities';
 import { EXACT_ONLINE_COLUMN_DOCS } from './exactonline/docs';
@@ -48,6 +48,17 @@ describe('connector conformance — entity catalogs', () => {
 
   it.each(catalogs)('catalog for "%s" passes entity invariants', (type, entities) => {
     const errs = validateEntityCatalog(type, entities);
+    expect(errs).toEqual([]);
+  });
+
+  /**
+   * A declared business key that the connector does not EXPOSE is invisible to
+   * the profiler, which then guesses from the data — the failure that put a
+   * `Created` timestamp on BankEntryLines. Nothing throws when this is wrong,
+   * so it is a merge gate rather than a review item.
+   */
+  it.each(catalogs)('connector "%s" exposes the business keys its catalog declares', (type, entities) => {
+    const errs = validateBusinessKeyExposure(type, getConnector(type), entities);
     expect(errs).toEqual([]);
   });
 

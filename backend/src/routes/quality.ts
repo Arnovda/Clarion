@@ -27,6 +27,7 @@ import { resolveOwnerProductTable, OwnerResolveError } from '../services/product
 import { isAzurePath } from '../services/warehouse';
 import { resolveProductTableById, resolveSourceTable } from '../services/tableCatalog';
 import { tenantQuery } from '../services/tenantQuery';
+import { declaredBusinessKeyFor } from '../services/declaredBusinessKeys';
 import { generateQualityAlertContext } from '../ai/AIService';
 import { logger as rootLogger } from '../utils/logger';
 
@@ -979,12 +980,20 @@ router.post('/:connId/:table/profile', requireAuth, requireRole('admin', 'analys
       return;
     }
 
-    // Use user-configured BK column if one has been set for this table
+    // Business key, highest precedence first: the user's own pick, then what
+    // the SOURCE declares for this entity. Only if neither exists does the
+    // profiler fall back to reading name shapes off the data.
     const stRow = await db('source_tables')
       .where({ connection_id: connId, table_name: table })
       .select('business_key_column')
       .first() as { business_key_column: string | null } | undefined;
-    const bkOverride = stRow?.business_key_column ?? undefined;
+    const connRow = await db('connections')
+      .where({ id: connId })
+      .select('connector_type')
+      .first() as { connector_type: string | null } | undefined;
+    const bkOverride = stRow?.business_key_column
+      ?? declaredBusinessKeyFor(connRow?.connector_type, table)
+      ?? undefined;
 
     let result;
     try {
@@ -1043,9 +1052,20 @@ router.get('/:connId/:table/settings', requireAuth, async (req, res, next) => {
       .select('business_key_column')
       .first() as { business_key_column: string | null } | undefined;
 
+    // What the SOURCE says, so the screen can name its authority instead of
+    // labelling everything "auto-detected". "Exact Online says the key is ID"
+    // and "we guessed ID from your data" are not the same claim, and only one
+    // of them is worth trusting without a second look.
+    const connRow = await db('connections')
+      .where({ id: connId })
+      .select('connector_type')
+      .first() as { connector_type: string | null } | undefined;
+
     res.json({ ok: true, data: {
       user_bk:      stRow?.business_key_column         ?? null,
       suggested_bk: latestProfile?.business_key_column ?? null,
+      declared_bk:  declaredBusinessKeyFor(connRow?.connector_type, table),
+      connector_type: connRow?.connector_type ?? null,
     }});
   } catch (err) { next(err); }
 });

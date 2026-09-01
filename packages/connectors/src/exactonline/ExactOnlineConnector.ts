@@ -31,7 +31,9 @@ import {
   type SyncOptions,
   type SyncResult,
   type TestResult,
+  type EntityBusinessKey,
 } from '../types';
+import { businessKeysFromCatalog } from '../businessKeys';
 import { asEntityDescriptors, EXACT_ONLINE_ENTITIES, EXACT_ONLINE_KNOWN_RELATIONSHIPS, ENTITIES_BY_NAME, type ExactOnlineEntity } from './entities';
 import { EXACT_ONLINE_COLUMN_DOCS } from './docs';
 import { typesJoinable, joinableCandidates } from '../columnTypes';
@@ -534,6 +536,17 @@ export class ExactOnlineConnector extends BaseSourceConnector implements SourceC
     return EXACT_ONLINE_KNOWN_RELATIONSHIPS.filter(
       (r) => set.has(r.fromTable) && set.has(r.toTable),
     );
+  }
+
+  // ─── getBusinessKeys ───────────────────────────────────────────────────
+  /**
+   * The identifying column per entity, straight from the catalog — almost
+   * always `ID`, with the documented exceptions (`SalesInvoices.InvoiceID`,
+   * `Subscriptions.EntryID`). The warehouse writer already merges on these;
+   * this hands the same declaration to the profiler so it stops guessing.
+   */
+  getBusinessKeys(selectedEntities: readonly string[]): readonly EntityBusinessKey[] {
+    return businessKeysFromCatalog(EXACT_ONLINE_ENTITIES, selectedEntities);
   }
 
   // ─── getStarSchemaTemplate ─────────────────────────────────────────────

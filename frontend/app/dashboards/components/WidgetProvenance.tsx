@@ -23,6 +23,7 @@
  */
 
 import { useEffect, useState } from 'react';
+import { formatSql } from '@/lib/formatSql';
 import { useRouter } from 'next/navigation';
 import {
   X, Database, Boxes, Clock, Sparkles, ChevronRight, Loader2, AlertCircle,
@@ -236,8 +237,12 @@ export default function WidgetProvenance({ widget, dataLayer, isAdminOrAnalyst, 
                   Underlying SQL
                 </button>
                 {showSql && (
-                  <pre className="text-[11.5px] font-mono bg-ink text-white/85 rounded-md px-3 py-2.5 overflow-x-auto whitespace-pre-wrap leading-relaxed">
-                    {ctx.sql}
+                  // `whitespace-pre` + horizontal scroll, NOT pre-wrap: once
+                  // the query is indented, wrapping a long line re-flows it
+                  // under the wrong indent level and undoes the formatting.
+                  // A widget's SQL arrives as one long line — see formatSql.
+                  <pre className="text-[11.5px] font-mono bg-ink text-white/85 rounded-md px-3 py-2.5 overflow-x-auto whitespace-pre leading-relaxed">
+                    {formatSql(ctx.sql)}
                   </pre>
                 )}
               </section>

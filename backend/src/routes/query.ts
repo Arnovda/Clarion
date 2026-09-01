@@ -1402,6 +1402,9 @@ router.post('/think', requireAuth, validate(thinkQuerySchema), async (req: Reque
         (type, delta) => { if (type === 'thinking') emit({ type: 'thinking', text: delta }); },
         dialect,
         conversationHistory,
+        // A Stop in the browser disconnects the stream; this is what makes
+        // that stop the MODEL too, rather than just the listening.
+        sse.signal,
       );
 
       // Meta-question short-circuit (product layer). Skip SQL execution.
@@ -1487,6 +1490,11 @@ router.post('/think', requireAuth, validate(thinkQuerySchema), async (req: Reque
       if (privileged) {
         emit({ type: 'sql_ready', sql: nlResult.sql, confidence: nlResult.confidence, tablesUsed: nlResult.tables_used });
       }
+
+      // The asker stopped (Stop, closed tab). The SQL generation already
+      // cost what it cost; running the warehouse query and a second AI call
+      // to narrate rows nobody will read does not have to.
+      if (sse.closed) return;
 
       emit({ type: 'phase', text: 'Running your query…' });
       const thinkPolicyResult = await applyDataPolicies(nlResult.sql, req.user!.sub, req.user!.role, req.user!.tenantId);
@@ -1643,6 +1651,7 @@ router.post('/think', requireAuth, validate(thinkQuerySchema), async (req: Reque
       (type, delta) => { if (type === 'thinking') emit({ type: 'thinking', text: delta }); },
       dialect,
       conversationHistory,
+      sse.signal,
     );
 
     // ── Meta-question short-circuit ────────────────────────────────────────
@@ -1809,6 +1818,7 @@ router.post('/think', requireAuth, validate(thinkQuerySchema), async (req: Reque
     }
 
     // ── 7. Execute SQL ──────────────────────────────────────────────────────
+    if (sse.closed) return;   // asker stopped — see the product-layer note above
     emit({ type: 'phase', text: 'Running your query…' });
     const thinkSrcPolicy = await applyDataPolicies(nlResult.sql, req.user!.sub, req.user!.role, req.user!.tenantId);
     const queryConnector = await createConnector(connection);
@@ -2010,6 +2020,8 @@ router.post('/repair', requireAuth, validate(repairQuerySchema), async (req: Req
     // ── Repair loop (max 5 turns) ──
     const MAX_TURNS = 5;
     for (let turn = 0; turn < MAX_TURNS; turn++) {
+      // Nobody is watching the double-check any more — stop spending turns on it.
+      if (sse.closed) return;
       let raw: string;
       try {
         const repairDialect: SqlDialect = repairLayer === 'product'
@@ -2018,7 +2030,7 @@ router.post('/repair', requireAuth, validate(repairQuerySchema), async (req: Req
         // temperature 0: repair-loop fixes should be deterministic; the
         // accumulated messages (diagnostic results) change turn-to-turn,
         // which gives the loop natural variation without sampling noise.
-        raw = await callClaudeMultiTurn(getRepairSystem(repairDialect), messages, { temperature: 0 });
+        raw = await callClaudeMultiTurn(getRepairSystem(repairDialect), messages, { temperature: 0, signal: sse.signal });
       } catch (err: unknown) {
         send('error', { text: 'Claude API call failed. Please try again.' });
         break;

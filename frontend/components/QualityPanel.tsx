@@ -7,6 +7,7 @@
  */
 
 import React, { useState, useEffect, useCallback } from 'react';
+import { CONNECTOR_LABELS } from '@/lib/connectorIcons';
 import {
   LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer,
   BarChart, Bar,
@@ -95,8 +96,11 @@ interface NewRule {
 }
 
 interface BkSettings {
-  user_bk:      string | null;   // user-configured override
-  suggested_bk: string | null;   // auto-detected by last profile run
+  user_bk:      string | null;   // the user's own pick
+  suggested_bk: string | null;   // what the last profile run actually used
+  /** What the SOURCE declares for this table, if it declares anything. */
+  declared_bk?: string | null;
+  connector_type?: string | null;
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -716,6 +720,18 @@ export default function QualityPanel({
   // The effective BK column shown in the picker
   const effectiveBk = bkSettings?.user_bk ?? bkSettings?.suggested_bk ?? null;
 
+  // Where the key came from. Derived rather than stored: "the source declares
+  // X" and "we guessed X from your data" are different claims and only one is
+  // worth trusting unread, but the difference is already implied by the data
+  // we hold — the declaration and what the profile actually used.
+  const declaredBk = bkSettings?.declared_bk ?? null;
+  const sourceLabel = CONNECTOR_LABELS[bkSettings?.connector_type ?? ''] ?? 'the source';
+  const bkOrigin: 'user' | 'declared' | 'guessed' | 'none' =
+    bkSettings?.user_bk ? 'user'
+      : effectiveBk && declaredBk && effectiveBk.toLowerCase() === declaredBk.toLowerCase() ? 'declared'
+        : effectiveBk ? 'guessed'
+          : 'none';
+
   // ─── Render ───────────────────────────────────────────────────────────────
   return (
     <div className="flex-1 min-h-0 overflow-y-auto bg-softer">
@@ -734,11 +750,16 @@ export default function QualityPanel({
               <div>
                 <label className="block text-xs text-muted mb-1">
                   Column
-                  {bkSettings?.user_bk && (
-                    <span className="ml-2 px-1.5 py-0.5 bg-ocean-softer text-ocean border border-line rounded text-[10px] font-semibold">USER-SET</span>
+                  {bkOrigin === 'user' && (
+                    <span className="ml-2 px-1.5 py-0.5 bg-ocean-softer text-ocean border border-line rounded text-[10px] font-semibold">SET BY YOU</span>
                   )}
-                  {!bkSettings?.user_bk && bkSettings?.suggested_bk && (
-                    <span className="ml-2 px-1.5 py-0.5 bg-softer text-muted border border-line rounded text-[10px] font-semibold">AUTO-DETECTED</span>
+                  {bkOrigin === 'declared' && (
+                    <span className="ml-2 px-1.5 py-0.5 bg-ok-soft text-ok border border-line rounded text-[10px] font-semibold uppercase">
+                      From {sourceLabel}
+                    </span>
+                  )}
+                  {bkOrigin === 'guessed' && (
+                    <span className="ml-2 px-1.5 py-0.5 bg-softer text-muted border border-line rounded text-[10px] font-semibold">GUESSED FROM YOUR DATA</span>
                   )}
                 </label>
                 <select
@@ -776,9 +797,26 @@ export default function QualityPanel({
               )}
             </div>
           </div>
-          {!bkDirty && !effectiveBk && (
+          {!bkDirty && bkOrigin === 'declared' && (
+            <p className="text-xs text-muted mt-2">
+              {sourceLabel} documents <span className="font-mono text-ink-2">{declaredBk}</span> as the identifier for this
+              table, so it is used as-is. Pick another column only if you know better.
+            </p>
+          )}
+          {!bkDirty && bkOrigin === 'guessed' && (
+            <p className="text-xs text-muted mt-2">
+              {sourceLabel} does not document an identifier for this table, so this column was inferred from your
+              data — worth a look before you trust the scores below.
+            </p>
+          )}
+          {!bkDirty && bkOrigin === 'none' && (
             <p className="text-xs text-warn mt-2">
-              No profile has been run yet. Run a profile to auto-detect the business key, or select one manually.
+              {/* Deliberately not a guess. A wrong key scores 100% complete and
+                  100% unique while measuring nothing, and that reads as a good
+                  table rather than an unmeasured one. */}
+              No identifier could be established for this table — nothing here is both unique and shaped like a key,
+              so completeness and uniqueness are not scored. Pick the column that identifies a record and run the
+              profile again.
             </p>
           )}
         </div>

@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import { HelpCircle } from 'lucide-react';
+import { Bookmark, HelpCircle } from 'lucide-react';
 import { humanizeTableName } from '@/lib/humanize';
 import type { FilterSpec } from '../types';
 
@@ -11,6 +11,19 @@ interface FilterBarProps {
   filterOptions: Record<string, string[]>;
   onFilterChange: (key: string, value: string) => void;
   loading?: boolean;
+  /** False on an unsaved dashboard — there is no row to hang a view off yet. */
+  canSaveView?: boolean;
+  /** When the caller last saved their own filters, or null if they never have. */
+  myViewSavedAt?: string | null;
+  /**
+   * The values that were saved. Held so the bar can tell an untouched saved
+   * view from one the user has since changed — "Update my view" on a view
+   * that is already up to date is a button that does nothing.
+   */
+  myViewValues?: Record<string, string> | null;
+  myViewBusy?: boolean;
+  onSaveMyView?: () => void;
+  onClearMyView?: () => void;
 }
 
 /** Shared Observatory input/select styling for the filter bar. */
@@ -190,8 +203,23 @@ export function FilterBar({
   filterOptions,
   onFilterChange,
   loading,
+  canSaveView,
+  myViewSavedAt,
+  myViewValues,
+  myViewBusy,
+  onSaveMyView,
+  onClearMyView,
 }: FilterBarProps) {
   if (!filters.length) return null;
+
+  // Has anything moved since the view was saved? Compared over the union of
+  // both key sets so a filter that was ADDED to the dashboard (and so has no
+  // saved value) counts as a change rather than being silently ignored.
+  const viewDirty = !myViewValues || (() => {
+    const keys = new Set([...Object.keys(myViewValues), ...Object.keys(filterValues)]);
+    for (const k of keys) if ((myViewValues[k] ?? '') !== (filterValues[k] ?? '')) return true;
+    return false;
+  })();
 
   return (
     <div className="flex flex-wrap items-center gap-4 px-6 py-3 border-b border-line bg-raised shrink-0">
@@ -246,6 +274,51 @@ export function FilterBar({
           </div>
         );
       })}
+
+      {/* ── Your own view ──────────────────────────────────────────────────
+          Lives at the end of the filter bar because that is where the thing
+          being saved is. Private per person: saving here changes nothing for
+          anyone else looking at the same dashboard, which is the whole point
+          and therefore has to be said out loud. */}
+      {canSaveView && (
+        <div className="ml-auto flex items-center gap-1.5">
+          {myViewSavedAt && (
+            <span
+              className="inline-flex items-center gap-1.5 px-2 py-1 rounded-md bg-ocean-softer border border-ocean-soft text-[10px] font-mono tracking-[0.08em] uppercase text-ocean whitespace-nowrap"
+              title={`Saved ${new Date(myViewSavedAt).toLocaleString('en-GB')} — nobody else sees this`}
+            >
+              <Bookmark className="w-3 h-3" strokeWidth={2} />
+              Your view
+            </span>
+          )}
+          {/* Only offered when it would DO something: with no saved view, or
+              with filters that have moved since you saved. An "update" button
+              on an already-current view is a control that cannot change
+              anything, and it costs the bar a whole wrapped row. */}
+          {viewDirty && (
+            <button
+              type="button"
+              onClick={onSaveMyView}
+              disabled={myViewBusy}
+              className="text-[11px] px-2 py-1 rounded-md border border-line bg-raised text-muted hover:text-ink-2 hover:border-line-strong disabled:opacity-50 transition-colors whitespace-nowrap"
+              title="Remember these filters for you only — this dashboard opens on them next time, on any device"
+            >
+              {myViewSavedAt ? 'Update my view' : 'Save my view'}
+            </button>
+          )}
+          {myViewSavedAt && (
+            <button
+              type="button"
+              onClick={onClearMyView}
+              disabled={myViewBusy}
+              className="text-[11px] px-2 py-1 rounded-md border border-line bg-raised text-muted hover:text-warn hover:border-warn/50 disabled:opacity-50 transition-colors whitespace-nowrap"
+              title="Forget my filters and go back to this dashboard's defaults"
+            >
+              Reset
+            </button>
+          )}
+        </div>
+      )}
     </div>
   );
 }

@@ -43,7 +43,269 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-09-01 (REPO CLEANUP — dead code deleted, and CLAUDE.md
+**Last updated:** 2026-09-01 (YOUR OWN FILTERS, REMEMBERED — plus the provenance
+SQL is readable at last)
+
+**Owner, two asks off one screenshot: *"Format the SQL"* in the provenance panel,
+and *"be able to save a specific state of a report so next time their filters are
+already applied. This is per person. If someone else saves it, you don't see
+that."***
+- **THE FORMATTER ALREADY EXISTED AND THE PANEL DID NOT USE IT.** `sql-formatter`
+  has been a dependency for months and `app/query/utils.ts` wrapped it properly
+  (duckdb dialect, upper keywords, try/catch). There were **FOUR** treatments of
+  the same problem: that good one; a naive regex in `gaps/page.tsx` that inserted
+  a newline before every keyword — **including keywords inside string literals**,
+  which corrupts the query on screen; a bare `format()` in
+  `ProductTableDetailPanel` with **no guard, so unparseable SQL throws inside a
+  render**; and the provenance panel, which did nothing at all. All four now go
+  through **`lib/formatSql.ts`**.
+- **`whitespace-pre-wrap` → `whitespace-pre` + horizontal scroll** in the panel.
+  Once a query is indented, wrapping a long line re-flows it under the wrong
+  indent level and undoes the formatting. Verified against the owner's actual
+  widget SQL: 1 line → **43 lines, longest 79 chars, all 8 `{{placeholders}}`
+  intact**, CTEs reading properly.
+- **NEW `dashboard_user_views` (migration 87) — a private lens on a shared
+  dashboard.** One row per (dashboard, user); `filter_values` jsonb; canonical
+  RLS dance. `GET|PUT|DELETE /dashboards/:id/my-view`. Opening a dashboard
+  restores your own filters, on any device.
+- **SERVER-SIDE, NOT localStorage, deliberately**: "next time they look at the
+  dashboard" means from any device, and browser storage would lose the view on a
+  new laptop while appearing to work on the old one.
+- **Only filter VALUES are stored.** Layout, widget set and titles belong to the
+  dashboard and are shared by definition; a per-user copy of those forks the
+  artefact rather than filtering it.
+- **Restored through `carryFilterValues`, not applied raw** — the spec can have
+  changed since the view was saved, so a filter that is gone must not linger and
+  one that was added takes its default. Third caller of that already-tested
+  helper.
+- **THE PER-USER HALF IS NOT ENFORCED BY RLS AND THAT IS THE THING TO KNOW.** The
+  policy isolates TENANTS; "only you see your view" is an explicit `user_id`
+  filter on every query. Hence the test that a colleague **in the same tenant**
+  saving their own view leaves yours untouched — RLS cannot catch that one.
+- **A REAL ISOLATION GAP THE TESTS CAUGHT BEFORE IT SHIPPED**: the first
+  visibility query leant on RLS alone, and a request from ANOTHER TENANT read a
+  shared dashboard (200 instead of 404). `findVisibleDashboard` filters
+  `tenant_id` EXPLICITLY now, per the house rule that an authorization decision
+  must never depend on the session variable. **Note the pre-existing
+  `GET /dashboards/:id` has the same shape** — protected in production by RLS
+  since the role flip, but worth the same treatment on a future pass.
+- **THE RENDER CHECK CHANGED THE DESIGN, not just a colour.** First version showed
+  a chip plus *Update my view* plus *Reset* whenever a view existed — three
+  controls that **wrapped onto a second row of the filter bar**, permanently, on
+  the screen whose whole job is charts. Now *Save/Update* appears only when the
+  filters have actually MOVED from what was saved (compared over the union of
+  both key sets, so an added filter counts as a change). The steady state is a
+  chip and *Reset*, inline, no extra row — and a button that cannot change
+  anything is never shown.
+- Validation: backend **50 files / 510 passed** (10 new in
+  `dashboard-my-view.test.ts`), all eight ratchets green — validate-coverage
+  caught the unvalidated DELETE and it now carries a params-only schema, the same
+  catch the managed-grids work hit — frontend `tsc` + lint clean, `next build`
+  green 40/40. Four filter-bar states screenshotted in real Chromium, then the
+  harness deleted.
+- **NOT done, deliberately**: cross-filter state and the Arrange layout are not
+  saved — the first is a transient drill, the second is the dashboard's own
+  shape. And a saved view is not shareable as a link; that is a different
+  feature (a URL), not this one.
+
+**Prior last updated:** 2026-09-01 (THE BUSINESS KEY COMES FROM THE SOURCE NOW — a
+`Created` timestamp was identifying bank statement lines)
+
+**Owner, from the Quality tab on ExactOnline's `BankEntryLines`: *"the business
+key is proposed as Created, while that obviously can't be right… I think it just
+identifies the first column with 100% uniqueness. Include it in the source system
+list like ExactOnline where we already describe the relations?"* Right about the
+symptom, right about the fix — and the fix was already half-built.**
+- **THE OLD RULE WAS ONE LINE**: `fields.reduce((best, f) => f.distinct_pct >
+  best.distinct_pct ? f : best, fields[0])` — highest uniqueness wins, and
+  because `>` is strict, **ties go to whichever column came first**. On an
+  append-only table `ID`, `Created` and `Modified` are all 100% unique, so field
+  order decided it. **No AI was involved at any point** (the owner assumed there
+  was); it is measured stats and a tie-break.
+- **THE HARM IS NOT THE LABEL, IT IS THE SCORE.** BK Completeness and BK
+  Uniqueness are computed FROM the key column, so both read 100% while measuring
+  a timestamp — a timestamp is trivially complete and trivially unique. **A wrong
+  key does not look like a broken table, it looks like a perfect one.**
+- **THE DECLARATION ALREADY EXISTED AND NOTHING READ IT.**
+  `EntityDescriptor.businessKey` has been in the connector contract since the
+  framework was built, the warehouse writer merges rows on it every sync, and
+  conformance already enforces `incrementalCursor ⇒ businessKey`.
+  **`BankEntryLines` declares `businessKey: 'ID'`.** 55 of 61 EO entities declare
+  one (the six that do not are the report-shaped endpoints); Odoo declares `id`
+  for all 21. The quality profiler was simply the one consumer that never asked.
+  So this is not a new list — it is wiring the list that exists, which is exactly
+  the `declared > curated > ai` ladder `SOURCE_ONBOARDING.md` already states.
+- **NEW `getBusinessKeys()` on `SourceConnector`**, deliberately the same shape
+  as `getKnownRelationships`: SYNCHRONOUS and network-free, because it is a
+  compile-time constant and a live-metadata failure must never be able to cost
+  us it. Both connectors implement it in one line over the shared
+  **`businessKeysFromCatalog`** (new `packages/connectors/src/businessKeys.ts`).
+  An entity with no declared key is OMITTED, never returned blank — "the source
+  does not say" and "the source says none" must stay distinguishable.
+- **Precedence is now `user's own pick > the source's declaration > a name-shape
+  guess > nothing`**, resolved by the CALLER (`declaredBusinessKeys.ts`) and
+  passed in as the existing `overrideBkColumn`, so the profiler needed no new
+  parameter. Matching is case-insensitive: a declaration says `ID`, a parquet
+  header may say `Id`, and a key that fails to match its own column is the exact
+  failure being removed.
+- **THE FALLBACK NO LONGER GUESSES WILDLY, AND REFUSES WHEN IT CANNOT TELL.**
+  New pure exported `chooseBusinessKey(fields, tableName)`: a candidate must be
+  100% distinct AND 0% null AND not a date/time/bool/float, and must be
+  key-SHAPED (`id`, `<table>id`, `code`, `number`, `guid`, `*_id`…). Ranked
+  best-shape → shortest → alphabetical, so the same data always yields the same
+  answer. **Nothing key-shaped ⇒ null, and null scores** — because an unmeasured
+  table must not render as a perfect one. `overall/completeness/uniqueness` are
+  now `number | null`; every consumer already handled null
+  (`checkAndCreateAlerts` returns early on it, home.ts filters it out), so
+  nothing else had to change.
+- **A SECOND BUG FOUND WHILE FIXING THE FIRST: an Analyse threw away the
+  curator's business key.** The profiler's persist step is wipe-and-reinsert and
+  never carried `business_key_column`, so a hand-picked key survived until the
+  next Analyse and then silently reverted to a guess. It is read before the wipe
+  and written back now — and the Analyse-time quality pass, which passed NO key
+  at all, now gets `user ?? declared` like the standalone route.
+- **The screen names its authority instead of saying AUTO-DETECTED for
+  everything**: *From Exact Online* / *Guessed from your data* / *Set by you* /
+  *none established*, with a sentence explaining which. Derived from
+  `declared_bk` (new on the settings endpoint) versus what the profile used —
+  **no migration and no new stored column**, because the distinction was already
+  implied by data we hold. `CONNECTOR_LABELS` moved from `sources/page.tsx` to
+  `lib/connectorIcons.tsx` so the second consumer imports it rather than copying.
+- **Conformance gained `validateBusinessKeyExposure`**: a catalog that declares
+  keys must EXPOSE them. Verified to fail — renaming EO's accessor turns the
+  suite red. Without it a new connector silently sends every table back to
+  guessing, and nothing errors.
+- Validation: backend **49 files / 500 passed** (14 new in `businessKey.test.ts`,
+  10 of which were confirmed to go RED against the old rule), connectors **231
+  passed** (8 new), all eight ratchets green, frontend `tsc` + `next build` green
+  40/40, new/changed files lint-clean (the four in `sources/page.tsx` are the
+  documented pre-existing ones). The provenance derivation was dry-run over its
+  nine states in real Node. **NOT render-checked** — unlike the notebook panel
+  this adds no new component or layout, only a chip and copy inside an existing
+  card.
+- **TAKES EFFECT ON THE NEXT ANALYSE OR PROFILE RUN.** Existing
+  `dataset_profiles` rows keep their old key until the table is re-profiled;
+  clicking **Run profile** on one table is enough to see it change.
+- **NOT done, deliberately**: direct-database sources (Postgres/MySQL/SQL Server/
+  SQLite) still get the heuristic — their real primary key IS knowable by
+  introspection and is not plumbed into the profiler. That is the obvious next
+  slice, and it is why the fallback refuses rather than guesses.
+
+**Prior last updated:** 2026-09-01 (STOP MEANS STOP — a running question is cancellable
+everywhere, and the notebook gets the dashboard's assistant)
+
+**Owner: *"Be able to cancel a question if the AI is running"* and *"Have the same
+style of box for the AI in the notebook section (to write code) as in the dashboard
+session (right bottom corner and expandable)."* Two asks, one shared piece of
+plumbing underneath.**
+- **CANCEL WAS NOT EXPRESSIBLE ANYWHERE.** Every AI surface had an
+  `AbortController` already — and every one of them was aborted ONLY on unmount.
+  There was no control that said stop, so the answer to "I asked the wrong thing"
+  was to sit and wait for it. Now: **Ask AI** (the primary button becomes Stop
+  while a question runs, plus a Stop under the live timeline and Escape in the
+  box), the **dashboard assistant**, and the new **notebook assistant**.
+- **THE INTERESTING HALF IS THAT STOPPING NOW STOPS THE WORK, NOT THE WATCHING.**
+  Aborting the client stream only ever stopped the browser listening: the
+  Anthropic stream ran to completion and the tenant paid for an answer nobody
+  would see. New **`utils/requestAbort.clientAbort(res)`** turns a client
+  disconnect into an `AbortSignal`; `startSSE` exposes it as **`sse.signal`**;
+  `generateSqlStreaming` and `callClaudeMultiTurn` accept it and hand it to the
+  SDK. `/query/think` and `/query/repair` pass it, and also BAIL before running
+  the warehouse query and the answer-formatting call when the asker is already
+  gone. Bus-matrix's hand-rolled abort wiring collapsed into the same shared
+  `attachAbort` helper.
+- **THE ONE SUBTLETY, and it is the whole reason `settle()` exists**:
+  `res.on('close')` fires on a NORMAL completion too. Aborting there would cancel
+  the tail of a request that already succeeded — persisting the answer, usage
+  accounting, audit rows. So the route settles the abort when it finishes and a
+  later close is a no-op. Two of the four new tests pin exactly that direction,
+  and both were **verified to go red** when the guard is removed.
+- **NEW `frontend/app/notebooks/[id]/NotebookAssistant.tsx` — the dashboard's
+  panel, doing the notebook's job.** Same floating bottom-right box, same
+  collapsed pill that keeps reporting while closed, same "only the newest
+  exchange is expanded" rule, same elapsed counter. What differs is the job: it
+  writes CODE into a specific cell, so the dashboard's *scope* chip is here a
+  **TARGET** chip naming the cell about to be written — code landing in a cell
+  you were not looking at is the one outcome nobody catches by eye. Modes are
+  **This cell** / **New cell** (+ a SQL/Python pick for a new one); answers carry
+  the code with *Insert again* and *Copy*.
+- **THE PER-CELL AI PROMPT BAR IS DELETED and the cell's AI button now AIMS the
+  panel at that cell** — the wand pattern the dashboard already uses on widgets.
+  Two doors to the same generator, each with its own history, is how the two
+  quietly drift apart. The cell keeps the prompt that produced its code as
+  provenance; that state moved to the page.
+- **`POST /notebooks/generate` gained `history`** (≤12 turns) so "now group that
+  by month" edits the code the assistant just wrote instead of guessing from the
+  prompt alone — and gained **Zod validation**, which it never had: an
+  unvalidated AI route bills the tenant for garbage. **validate-coverage ratchet
+  lowered 160 → 159.**
+- **A cancelled run is never a red card and never costs what you typed.** On both
+  new Stop paths the request goes back into the composer, the working bubble is
+  dropped (notebook) or marked *Stopped* with its half-run steps reset to
+  pending (dashboard), and `AbortError` is swallowed instead of being rendered as
+  a failure. A new cell is created only once there is code to put in it, so a
+  cancelled "new cell" request leaves no empty cell behind.
+- Validation: backend **48 files / 486 passed** (8 new in `cancellation.test.ts`),
+  all eight ratchets green from the repo root, frontend `tsc` clean, new/changed
+  files lint-clean (the four findings in `notebooks/[id]/page.tsx` are
+  pre-existing — verified by re-running the linter against `HEAD`), `next build`
+  green 40/40 (`/notebooks/[id]` 8.4 → 16.9 kB), diff engine dry-run 20/20 in
+  real Node. Both the panel and the diff were checked by RENDERING them: a
+  throwaway `/dev/notebook-ai` harness screenshotted in real Chromium (mid-run,
+  idle-new-cell, collapsed pill; then a real SQL edit, a folded 30-line cell, a
+  brand-new cell, and the panel's kept/waiting history), then deleted. That
+  check is what caught the green pending bubble and a duplicated instruction.
+- **THE AI NO LONGER WRITES A CELL — IT PROPOSES ONE (same day, owner: *"show
+  what will be deleted from the code and what will be added, then the user can
+  accept or reject… check the new logic and if it's not right reject it and keep
+  his old code"* — the Databricks pattern).** The first version overwrote the
+  cell and offered *Insert again*, which is not the same thing at all: once the
+  old code is gone, "keep my old code" is an undo the product does not have.
+  Now a generated answer lands as a **pending proposal** on the target cell,
+  rendered as a diff with **Keep** / **Discard**, and nothing is written until
+  Keep.
+- **NEW `frontend/app/notebooks/[id]/diff.ts`** — a classic LCS line diff, pure
+  and dependency-free (the same house call as the hand-rolled xlsx reader).
+  **Minimality is the whole point**: a naive implementation renders a one-line
+  edit as "everything removed, everything added", which tells the reviewer
+  nothing. Verified by DRY-RUN in real Node over 20 cases — identical text,
+  single-line edit, pure insert, pure delete, empty either side, reordering,
+  and two the eye would miss: **a trailing newline is not a line** and **CRLF vs
+  LF is not a change**, both of which would otherwise show a phantom diff.
+  `collapseUnchanged` folds long untouched runs to `⋯ N unchanged lines` (click
+  to expand) so a one-line edit in a 200-line query is not 199 lines from the
+  change. Above 2,000 lines it degrades honestly to block replacement rather
+  than building a four-million-cell table.
+- **NEW `CellDiff.tsx` renders IN THE CELL, not in the panel.** The panel is
+  440px and code needs width — but the real reason is that "is this logic
+  right?" is a question about the cell, and it is easiest to answer where the
+  code will live. Old and new line numbers side by side, `+`/`−` gutter,
+  green/red rows, `whitespace-pre-wrap` so a long SQL line cannot hide off the
+  right edge unreviewed. The decision bar LEADS so a long diff never pushes the
+  buttons below the fold.
+- **Three rules that make reject mean what it says.** (a) The editor is
+  REPLACED by the diff while a decision is pending — two editable versions of
+  one cell is a state nobody can reason about. (b) **Run and Run All refuse a
+  cell with a pending suggestion**: the cell still holds the OLD code, so
+  running it would attribute an old result to the new logic. (c) The reject
+  baseline is the user's OWN code, carried across a chain of follow-ups, so
+  discarding the third suggestion restores what the user wrote — not the first
+  suggestion's output. A proposal that CREATED its cell deletes it on discard.
+- **The outcome comes back to the panel**: messages carry
+  `decision: pending | accepted | rejected | superseded`, so the history reads
+  *Waiting for you* / *Kept* / *Discarded* instead of implying every suggestion
+  was applied. **A pending decision is deliberately NOT green** — the render
+  check caught it rendering in the success colour, which says "done" about the
+  one thing that is not.
+- **NOT done, deliberately**: the collapsed pill has no stop of its own (a button
+  inside a button is invalid; open it, then stop). The dashboard assistant is
+  NOT given a diff — it edits a spec, not code the user wrote, and it already
+  has the equivalent (unsaved state + Discard). Neither Stop path nor the
+  proposal flow has been exercised against a live AI backend — watch the first
+  real cancel, since that is where `sse.signal` reaches the Anthropic stream for
+  the first time.
+
+**Prior last updated:** 2026-09-01 (REPO CLEANUP — dead code deleted, and CLAUDE.md
 made readable again)
 
 **Owner: *"Kan je de repo wat opkuisen? Bestanden of teksten die outdated zijn,
@@ -2277,11 +2539,11 @@ clarion/                              ← on disk: databridge/
 
 ### Database Migrations
 
-**87 migrations**, in `backend/src/db/migrations/`, newest
-`20260831000086_create_api_tokens`.
+**88 migrations**, in `backend/src/db/migrations/`, newest
+`20260901000087_create_dashboard_user_views`.
 
 The list that used to live here was hand-kept, stopped at 30 while the
-directory grew to 87, and told anyone reading it that the next
+directory grew to 88, and told anyone reading it that the next
 migration number was 39. **Do not restore it** — `ls backend/src/db/migrations/`
 is the only version that cannot go stale. Migrations are applied with
 `npx knex migrate:latest` from `backend/`; the suite needs them run before

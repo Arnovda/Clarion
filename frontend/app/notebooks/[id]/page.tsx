@@ -6,6 +6,8 @@ import dynamic from 'next/dynamic';
 import api from '@/lib/api';
 import { usePyodide } from '@/components/notebooks/usePyodide';
 import SchemaExplorer from '@/components/notebooks/SchemaExplorer';
+import NotebookAssistant, { type AssistantTarget, type NotebookChatMessage } from './NotebookAssistant';
+import CellDiff from './CellDiff';
 
 // Lazy-load CellEditor to avoid SSR issues with CodeMirror
 const CellEditor = dynamic(() => import('@/components/notebooks/CellEditor'), { ssr: false });
@@ -33,6 +35,32 @@ interface Notebook {
 interface Connection {
   id: number;
   name: string;
+}
+
+/**
+ * A change the AI wants to make to a cell, waiting on the user.
+ *
+ * The AI does not write code any more — it PROPOSES, and the user reads what
+ * would go and what would come before it lands. That is the whole point:
+ * "check the new logic and if it's not right, reject it and keep your old
+ * code" is not possible once the old code has already been overwritten.
+ */
+interface CellProposal {
+  /** The code the AI is proposing. */
+  code: string;
+  /**
+   * The cell's source BEFORE the AI touched it — what Reject restores.
+   * Set from the first proposal and never updated, so a chain of follow-ups
+   * ("now group by month", "now only 2026") still rejects all the way back
+   * to what the user themself wrote, never to an intermediate AI draft.
+   */
+  previous: string;
+  /** The request that produced it, kept on the cell after accepting. */
+  prompt: string;
+  /** True when the proposal created this cell — Reject removes it again. */
+  createdCell: boolean;
+  /** Ties the proposal to its message in the assistant's history. */
+  messageId: string;
 }
 
 interface CellOutput {
@@ -64,6 +92,25 @@ export default function NotebookEditorPage() {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [activeCellId, setActiveCellId] = useState<number | null>(null);
   const [scope, setScope] = useState<'sources' | 'products'>('products');
+
+  // ── The assistant (floating, bottom-right — see NotebookAssistant) ──────
+  const [aiOpen, setAiOpen] = useState(false);
+  const [aiInput, setAiInput] = useState('');
+  const [aiLoading, setAiLoading] = useState(false);
+  const [aiMessages, setAiMessages] = useState<NotebookChatMessage[]>([]);
+  const [aiMode, setAiMode] = useState<'edit' | 'new'>('edit');
+  const [aiNewLanguage, setAiNewLanguage] = useState<'sql' | 'python'>('sql');
+  /** Which cell the panel is aimed at. Null = the active cell decides. */
+  const [aiTargetCellId, setAiTargetCellId] = useState<number | null>(null);
+  /** Per-cell record of the request that produced its current code. */
+  const [cellPrompts, setCellPrompts] = useState<Map<number, string>>(new Map());
+  /** Cells with a change waiting to be accepted or rejected. */
+  const [proposals, setProposals] = useState<Map<number, CellProposal>>(new Map());
+  /** runAll loops over cells asynchronously and must read the live set. */
+  const proposalsRef = useRef(proposals);
+  useEffect(() => { proposalsRef.current = proposals; }, [proposals]);
+  const aiAbortRef = useRef<AbortController | null>(null);
+  useEffect(() => () => aiAbortRef.current?.abort(), []);
 
   const titleInputRef = useRef<HTMLInputElement>(null);
   /** Map of cell ID → insert callback (set by CellEditor via onReady) */
@@ -158,6 +205,9 @@ export default function NotebookEditorPage() {
     if (cells.length <= 1) return; // keep at least one cell
     await api.delete(`/notebooks/cells/${cellId}`);
     setCells((prev) => prev.filter((c) => c.id !== cellId));
+    // A pending suggestion for a cell that no longer exists would keep the
+    // assistant reporting a decision nobody can make.
+    setProposals((prev) => { const next = new Map(prev); next.delete(cellId); return next; });
     setOutputs((prev) => {
       const next = new Map(prev);
       next.delete(cellId);
@@ -227,11 +277,226 @@ export default function NotebookEditorPage() {
   const runAll = async () => {
     setRunningAll(true);
     for (const cell of cells) {
+      // A cell with a suggestion waiting still holds the old code; running it
+      // would attribute an old result to the new logic. Skipped, same as the
+      // per-cell Run button refuses.
+      if (proposalsRef.current.has(cell.id)) continue;
       if (cell.source.trim() && (cell.cell_type === 'sql' || cell.cell_type === 'python')) {
         await executeCell(cell.id);
       }
     }
     setRunningAll(false);
+  };
+
+  // ── The assistant ──────────────────────────────────────────────────
+  //
+  // One AI entry point for the whole notebook (the per-cell prompt bar is
+  // gone — two doors to the same generator, each with its own history, is how
+  // the two quietly drift apart). A cell's AI button aims THIS panel at that
+  // cell instead.
+
+  /** The cell the panel is aimed at: an explicit pick, else the active one. */
+  const aiTargetCell = cells.find((c) => c.id === (aiTargetCellId ?? activeCellId))
+    ?? cells.find((c) => c.cell_type !== 'markdown')
+    ?? null;
+
+  /** Markdown cells have no code to write, so they are never a target. */
+  const aiTarget: AssistantTarget | null = aiTargetCell && aiTargetCell.cell_type !== 'markdown'
+    ? {
+      cellId: aiTargetCell.id,
+      index: cells.findIndex((c) => c.id === aiTargetCell.id) + 1,
+      language: aiTargetCell.cell_type,
+      hasCode: !!aiTargetCell.source.trim(),
+    }
+    : null;
+
+  /** Point the panel at one cell and open it — the wand on a cell's toolbar. */
+  const aimAssistantAt = (cellId: number) => {
+    setAiTargetCellId(cellId);
+    setActiveCellId(cellId);
+    setAiMode('edit');
+    setAiOpen(true);
+  };
+
+  /** Write code into a cell and persist it, exactly as typing would. */
+  const applyCodeToCell = (cellId: number, code: string) => {
+    updateCellSource(cellId, code);
+    debouncedSave(cellId, code);
+  };
+
+  /**
+   * Take the proposal: the code becomes the cell's, as if it had been typed.
+   * Only now is anything written — up to this point the cell still holds the
+   * user's own code and the AI's version lives only in the pending diff.
+   */
+  const acceptProposal = (cellId: number) => {
+    const proposal = proposals.get(cellId);
+    if (!proposal) return;
+    applyCodeToCell(cellId, proposal.code);
+    setCellPrompts((prev) => new Map(prev).set(cellId, proposal.prompt));
+    setProposals((prev) => { const next = new Map(prev); next.delete(cellId); return next; });
+    setAiMessages((prev) => prev.map((m) => m.id === proposal.messageId
+      ? { ...m, decision: 'accepted' as const }
+      : m));
+  };
+
+  /**
+   * Refuse it. The cell goes back to exactly what it held before the AI ran
+   * — and a cell the proposal itself created is removed, so rejecting never
+   * leaves the notebook holding something the user did not want.
+   */
+  const rejectProposal = async (cellId: number) => {
+    const proposal = proposals.get(cellId);
+    if (!proposal) return;
+    setProposals((prev) => { const next = new Map(prev); next.delete(cellId); return next; });
+    setAiMessages((prev) => prev.map((m) => m.id === proposal.messageId
+      ? { ...m, decision: 'rejected' as const }
+      : m));
+    if (proposal.createdCell) {
+      // deleteCell keeps the notebook's last cell alive; in that one case the
+      // cell stays but is emptied, which is the same outcome for the user.
+      if (cells.length > 1) {
+        if (aiTargetCellId === cellId) setAiTargetCellId(null);
+        await deleteCell(cellId);
+        return;
+      }
+      applyCodeToCell(cellId, '');
+      return;
+    }
+    // Nothing to restore: the cell was never changed. Persist anyway, because
+    // an earlier accepted proposal may have left an unsaved debounce pending.
+    applyCodeToCell(cellId, proposal.previous);
+  };
+
+  const stopAssistant = () => {
+    aiAbortRef.current?.abort();
+    aiAbortRef.current = null;
+    setAiLoading(false);
+    // Put the request back in the box so stopping never costs what you typed.
+    const lastUser = [...aiMessages].reverse().find((m) => m.role === 'user');
+    if (lastUser) setAiInput((cur) => (cur.trim() ? cur : lastUser.text));
+    // Drop the working bubble entirely: it has no code, so there is nothing
+    // to keep, and a stopped request is not a failure worth a red card.
+    setAiMessages((prev) => prev.filter((m) => !m.working));
+  };
+
+  const runAssistant = async () => {
+    const prompt = aiInput.trim();
+    if (!prompt || aiLoading || !notebook?.connection_id) return;
+
+    // Resolve the destination BEFORE the call, so the chip the user read is
+    // the cell that gets written.
+    const useNewCell = aiMode === 'new' || !aiTarget;
+    const language: 'sql' | 'python' = useNewCell ? aiNewLanguage : aiTarget!.language;
+    // A follow-up iterates on what the user is LOOKING AT: the pending
+    // proposal when there is one, the cell's own code otherwise.
+    const pending = !useNewCell ? proposals.get(aiTarget!.cellId) : undefined;
+    const currentCode = pending?.code ?? (!useNewCell ? cells.find((c) => c.id === aiTarget!.cellId)?.source : undefined);
+    const existingCode = currentCode?.trim() ? currentCode : undefined;
+
+    const userMsgId = `${Date.now()}_u`;
+    const workingId = `${Date.now()}_a`;
+    setAiInput('');
+    setAiMessages((prev) => [
+      ...prev,
+      { id: userMsgId, role: 'user', text: prompt },
+      { id: workingId, role: 'assistant', text: '', working: true, startedAt: Date.now(), language },
+    ]);
+    setAiLoading(true);
+
+    const ctrl = new AbortController();
+    aiAbortRef.current = ctrl;
+
+    try {
+      // Earlier turns, so "now group that by month" edits the code the
+      // assistant just wrote instead of guessing from the prompt alone.
+      // Capped at 6 exchanges — the schema context already dominates the call.
+      const history: Array<{ role: 'user' | 'assistant'; content: string }> = aiMessages
+        .flatMap((m): Array<{ role: 'user' | 'assistant'; content: string }> => {
+          if (m.role === 'user') return [{ role: 'user', content: m.text }];
+          return m.code ? [{ role: 'assistant', content: m.code }] : [];
+        })
+        .slice(-12);
+
+      const res = await api.post('/notebooks/generate', {
+        connectionId: notebook.connection_id,
+        prompt,
+        cellType: language,
+        scope,
+        ...(existingCode ? { existingCode } : {}),
+        ...(history.length ? { history } : {}),
+      }, { signal: ctrl.signal });
+
+      if (!res.data.ok) throw new Error(res.data.error ?? 'The assistant could not write that.');
+      const code: string = res.data.data.code;
+
+      // Nothing is written. The code becomes a PROPOSAL on the target cell,
+      // rendered as a diff the user accepts or rejects. For a new cell that
+      // means creating it EMPTY and proposing into it, so a rejected
+      // suggestion can be removed cleanly and an accepted one lands the same
+      // way as every other.
+      let targetCellId: number;
+      let previous: string;
+      let createdCell = false;
+      let targetLabel: string;
+
+      if (useNewCell) {
+        const lastPosition = cells.length ? cells[cells.length - 1].position : -1;
+        const created = await api.post(`/notebooks/${notebookId}/cells`, {
+          cellType: language,
+          position: lastPosition + 1,
+          source: '',
+        });
+        if (!created.data.ok) throw new Error('Could not add the cell.');
+        const cell = created.data.data as Cell;
+        setCells((prev) => [...prev, cell].sort((a, b) => a.position - b.position));
+        targetCellId = cell.id;
+        previous = '';
+        createdCell = true;
+        setActiveCellId(cell.id);
+        setAiTargetCellId(cell.id);
+        setAiMode('edit');
+        targetLabel = `Cell ${cells.length + 1} · ${language === 'sql' ? 'SQL' : 'Python'}`;
+      } else {
+        targetCellId = aiTarget!.cellId;
+        // The baseline is the user's OWN code, carried across a chain of
+        // follow-ups — rejecting the third suggestion must not leave the
+        // first one's code behind.
+        previous = pending?.previous ?? cells.find((c) => c.id === targetCellId)?.source ?? '';
+        targetLabel = `Cell ${aiTarget!.index} · ${language === 'sql' ? 'SQL' : 'Python'}`;
+      }
+
+      // A superseded proposal's message is no longer awaiting a decision.
+      const supersededId = pending?.messageId;
+      setProposals((prev) => new Map(prev).set(targetCellId, {
+        code, previous, prompt, createdCell, messageId: workingId,
+      }));
+
+      setAiMessages((prev) => prev.map((m) => {
+        if (supersededId && m.id === supersededId) return { ...m, decision: 'superseded' as const };
+        if (m.id !== workingId) return m;
+        return {
+          ...m,
+          working: false,
+          // Short: the "keep or discard it in <cell>" line below says the
+          // rest, and saying it twice is how a panel starts being skimmed.
+          text: `Suggested a change to ${targetLabel}.`,
+          code, language, targetLabel,
+          decision: 'pending' as const,
+        };
+      }));
+    } catch (err: unknown) {
+      // A user Stop is not a failure — stopAssistant already cleaned up.
+      if ((err as Error)?.name === 'AbortError' || (err as { code?: string })?.code === 'ERR_CANCELED') return;
+      const e = err as { response?: { data?: { error?: string } }; message?: string };
+      const detail = e.response?.data?.error ?? e.message ?? 'Unknown error';
+      setAiMessages((prev) => prev.map((m) => m.id === workingId
+        ? { ...m, working: false, text: 'The assistant could not write that code.', errorDetail: detail }
+        : m));
+    } finally {
+      if (aiAbortRef.current === ctrl) aiAbortRef.current = null;
+      setAiLoading(false);
+    }
   };
 
   // ── Move cell ──────────────────────────────────────────────────────
@@ -357,7 +622,9 @@ export default function NotebookEditorPage() {
       </div>
 
       {/* ── Main area: Schema Sidebar + Cells ────────────────────────── */}
-      <div className="flex-1 flex overflow-hidden">
+      {/* `relative` is load-bearing: the assistant is positioned against this
+          box so it floats OVER the cells instead of taking their space. */}
+      <div className="flex-1 flex overflow-hidden relative">
         {/* Schema Sidebar — left */}
         {sidebarOpen && (
           <div className="w-[280px] min-w-[280px] border-r border-outline-variant/10 bg-surface-container-lowest flex flex-col min-h-0 overflow-hidden">
@@ -387,8 +654,6 @@ export default function NotebookEditorPage() {
                   isFirst={idx === 0}
                   isLast={idx === cells.length - 1}
                   canDelete={cells.length > 1}
-                  connectionId={notebook.connection_id}
-                  scope={scope}
                   onSourceChange={(s) => { updateCellSource(cell.id, s); debouncedSave(cell.id, s); }}
                   onRun={() => executeCell(cell.id)}
                   onDelete={() => deleteCell(cell.id)}
@@ -397,6 +662,17 @@ export default function NotebookEditorPage() {
                   onMoveDown={() => moveCell(cell.id, 'down')}
                   onFocus={() => setActiveCellId(cell.id)}
                   onRegisterInsert={(fn) => insertCallbacks.current.set(cell.id, fn)}
+                  aiPrompt={cellPrompts.get(cell.id) ?? null}
+                  onDismissAiPrompt={() => setCellPrompts((prev) => {
+                    const next = new Map(prev);
+                    next.delete(cell.id);
+                    return next;
+                  })}
+                  onAskAi={() => aimAssistantAt(cell.id)}
+                  aiAimedHere={aiOpen && aiMode === 'edit' && aiTarget?.cellId === cell.id}
+                  proposal={proposals.get(cell.id) ?? null}
+                  onAcceptProposal={() => acceptProposal(cell.id)}
+                  onRejectProposal={() => rejectProposal(cell.id)}
                 />
                 {/* Add cell button between cells */}
                 <AddCellButton onAdd={(type) => addCell(cell.position, type)} />
@@ -408,6 +684,44 @@ export default function NotebookEditorPage() {
             )}
           </div>
         </div>
+
+        {/* The assistant floats OVER the cells rather than sitting in their
+            layout, so closing it returns every pixel to the notebook.
+            See ./NotebookAssistant.tsx. */}
+        <NotebookAssistant
+          open={aiOpen}
+          onOpenChange={setAiOpen}
+          messages={aiMessages}
+          loading={aiLoading}
+          input={aiInput}
+          onInputChange={setAiInput}
+          onSubmit={runAssistant}
+          onStop={stopAssistant}
+          mode={aiTarget ? aiMode : 'new'}
+          onModeChange={setAiMode}
+          newLanguage={aiNewLanguage}
+          onNewLanguageChange={setAiNewLanguage}
+          target={aiTarget}
+          onClearTarget={() => { setAiTargetCellId(null); setAiMode('new'); }}
+          onProposeAgain={(code) => {
+            // Put an earlier suggestion back in front of the user as a fresh
+            // proposal — never straight into the cell, which would be the
+            // silent overwrite this whole flow exists to remove.
+            const cellId = aiTarget?.cellId ?? activeCellId;
+            if (cellId == null) return;
+            const existing = proposals.get(cellId);
+            setProposals((prev) => new Map(prev).set(cellId, {
+              code,
+              previous: existing?.previous ?? cells.find((c) => c.id === cellId)?.source ?? '',
+              prompt: cellPrompts.get(cellId) ?? 'Suggested again',
+              createdCell: existing?.createdCell ?? false,
+              messageId: existing?.messageId ?? `${Date.now()}_again`,
+            }));
+          }}
+          disabledReason={notebook.connection_id
+            ? null
+            : 'Pick a data source for this notebook first — the assistant writes against its schema.'}
+        />
       </div>
     </div>
   );
@@ -421,8 +735,6 @@ function NotebookCell({
   isFirst,
   isLast,
   canDelete,
-  connectionId,
-  scope,
   onSourceChange,
   onRun,
   onDelete,
@@ -431,6 +743,13 @@ function NotebookCell({
   onMoveDown,
   onFocus,
   onRegisterInsert,
+  aiPrompt,
+  onDismissAiPrompt,
+  onAskAi,
+  aiAimedHere,
+  proposal,
+  onAcceptProposal,
+  onRejectProposal,
 }: {
   cell: Cell;
   output?: CellOutput;
@@ -438,8 +757,6 @@ function NotebookCell({
   isFirst: boolean;
   isLast: boolean;
   canDelete: boolean;
-  connectionId: number | null;
-  scope: 'sources' | 'products';
   onSourceChange: (s: string) => void;
   onRun: () => void;
   onDelete: () => void;
@@ -448,37 +765,18 @@ function NotebookCell({
   onMoveDown: () => void;
   onFocus?: () => void;
   onRegisterInsert?: (fn: (text: string) => void) => void;
+  /** The request that produced this cell's current code, if the AI wrote it. */
+  aiPrompt: string | null;
+  onDismissAiPrompt: () => void;
+  /** Aim the notebook assistant at this cell and open it. */
+  onAskAi: () => void;
+  /** True while the assistant is pointed here — so the wand reads as active. */
+  aiAimedHere: boolean;
+  /** A change the AI wants to make, waiting on the user. */
+  proposal: { code: string; previous: string } | null;
+  onAcceptProposal: () => void;
+  onRejectProposal: () => void;
 }) {
-  const [aiOpen, setAiOpen] = useState(false);
-  const [aiPrompt, setAiPrompt] = useState('');
-  const [aiLoading, setAiLoading] = useState(false);
-  const [lastAiPrompt, setLastAiPrompt] = useState<string | null>(null);
-  const aiInputRef = useRef<HTMLInputElement>(null);
-
-  const generateCode = async () => {
-    if (!aiPrompt.trim() || !connectionId) return;
-    setAiLoading(true);
-    try {
-      const res = await api.post('/notebooks/generate', {
-        connectionId,
-        prompt: aiPrompt.trim(),
-        cellType: cell.cell_type,
-        scope,
-        existingCode: cell.source || undefined,
-      });
-      if (res.data.ok) {
-        setLastAiPrompt(aiPrompt.trim());
-        onSourceChange(res.data.data.code);
-        setAiPrompt('');
-        setAiOpen(false);
-      }
-    } catch {
-      // ignore
-    } finally {
-      setAiLoading(false);
-    }
-  };
-
   const typeColors = {
     sql: { bg: 'bg-blue-50', text: 'text-blue-700', border: 'border-blue-200', ring: 'ring-blue-200' },
     python: { bg: 'bg-amber-50', text: 'text-amber-700', border: 'border-amber-200', ring: 'ring-amber-200' },
@@ -487,7 +785,11 @@ function NotebookCell({
   const colors = typeColors[cell.cell_type];
 
   return (
-    <div className={`group rounded-xl border ${output?.error ? 'border-red-200' : 'border-outline-variant/15'} bg-surface-container-lowest overflow-hidden transition-all hover:border-outline-variant/30`}>
+    <div className={`group rounded-xl border ${
+      proposal ? 'border-violet-300 ring-1 ring-violet-200/60'
+        : output?.error ? 'border-red-200'
+          : 'border-outline-variant/15 hover:border-outline-variant/30'
+    } bg-surface-container-lowest overflow-hidden transition-all`}>
       {/* Cell toolbar */}
       <div className="flex items-center gap-2 px-3 py-1.5 bg-surface-container-low/50 border-b border-outline-variant/10">
         {/* Type selector */}
@@ -501,12 +803,14 @@ function NotebookCell({
           <option value="markdown">Markdown</option>
         </select>
 
-        {/* AI generate button */}
+        {/* AI button — aims the notebook assistant at THIS cell and opens it.
+            The prompt bar that used to live here is gone: one generator with
+            one history, reachable from every cell. */}
         {cell.cell_type !== 'markdown' && (
           <button
-            onClick={() => { setAiOpen(!aiOpen); setTimeout(() => aiInputRef.current?.focus(), 50); }}
-            className={`flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] font-semibold transition-colors ${aiOpen ? 'bg-violet-100 text-violet-700' : 'text-violet-500 hover:bg-violet-50'}`}
-            title="Ask AI to generate code (Ctrl+I)"
+            onClick={onAskAi}
+            className={`flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] font-semibold transition-colors ${aiAimedHere ? 'bg-violet-100 text-violet-700' : 'text-violet-500 hover:bg-violet-50'}`}
+            title="Ask AI to write this cell"
           >
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
               <path d="M12 2a4 4 0 0 1 4 4c0 1.95-1.4 3.58-3.25 3.93L12 22" />
@@ -539,12 +843,16 @@ function NotebookCell({
           </button>
         </div>
 
-        {/* Run button */}
+        {/* Run button. Disabled while a suggestion is pending: the cell still
+            holds the OLD code, so running it now would answer with the code
+            the user is in the middle of deciding to replace — a wrong result
+            attributed to the new logic is worse than no result. */}
         {cell.cell_type !== 'markdown' && (
           <button
             onClick={onRun}
-            disabled={isRunning}
-            className="flex items-center gap-1 px-2 py-1 rounded-md bg-emerald-50 text-emerald-700 text-[11px] font-semibold hover:bg-emerald-100 disabled:opacity-50 transition-colors"
+            disabled={isRunning || !!proposal}
+            title={proposal ? 'Keep or discard the suggested change first' : undefined}
+            className="flex items-center gap-1 px-2 py-1 rounded-md bg-emerald-50 text-emerald-700 text-[11px] font-semibold hover:bg-emerald-100 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
           >
             {isRunning ? (
               <div className="w-3 h-3 border-2 border-emerald-300 border-t-emerald-700 rounded-full animate-spin" />
@@ -571,54 +879,15 @@ function NotebookCell({
         )}
       </div>
 
-      {/* AI prompt bar */}
-      {aiOpen && cell.cell_type !== 'markdown' && (
-        <div className="flex items-center gap-2 px-3 py-2 bg-violet-50/50 border-b border-violet-200/30">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#7c3aed" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="flex-shrink-0">
-            <path d="M12 2a4 4 0 0 1 4 4c0 1.95-1.4 3.58-3.25 3.93L12 22" />
-            <path d="M8 6a4 4 0 0 1 8 0" />
-            <circle cx="12" cy="6" r="1" fill="#7c3aed" stroke="none" />
-          </svg>
-          <input
-            ref={aiInputRef}
-            value={aiPrompt}
-            onChange={(e) => setAiPrompt(e.target.value)}
-            onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); generateCode(); } if (e.key === 'Escape') setAiOpen(false); }}
-            placeholder={cell.cell_type === 'sql'
-              ? 'Describe the query you want... e.g. "top 10 customers by revenue"'
-              : 'Describe what you want... e.g. "plot monthly revenue trend"'}
-            className="flex-1 text-[12px] bg-transparent text-on-surface outline-none placeholder:text-on-surface-variant/40"
-            disabled={aiLoading}
-          />
-          {aiLoading ? (
-            <div className="w-4 h-4 border-2 border-violet-300 border-t-violet-600 rounded-full animate-spin flex-shrink-0" />
-          ) : (
-            <button
-              onClick={generateCode}
-              disabled={!aiPrompt.trim() || !connectionId}
-              className="text-[11px] font-semibold text-violet-700 bg-violet-100 hover:bg-violet-200 disabled:opacity-40 px-2.5 py-1 rounded-md transition-colors flex-shrink-0"
-            >
-              Generate
-            </button>
-          )}
-          <button
-            onClick={() => setAiOpen(false)}
-            className="p-0.5 rounded text-on-surface-variant/50 hover:text-on-surface-variant transition-colors flex-shrink-0"
-          >
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><path d="M18 6L6 18M6 6l12 12" /></svg>
-          </button>
-        </div>
-      )}
-
-      {/* AI prompt label */}
-      {lastAiPrompt && (
+      {/* What the AI was asked for, kept on the cell as provenance. */}
+      {aiPrompt && (
         <div className="flex items-center gap-2 px-3 py-1.5 bg-violet-50/60 border-b border-violet-100">
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#7c3aed" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="flex-shrink-0">
             <path d="M12 2a4 4 0 014 4c0 1.5-.8 2.8-2 3.5V11h-4V9.5A4 4 0 0112 2z" /><path d="M8 14h8" /><path d="M9 18h6" /><path d="M10 22h4" />
           </svg>
-          <span className="text-[11px] text-violet-600 italic truncate flex-1">{lastAiPrompt}</span>
+          <span className="text-[11px] text-violet-600 italic truncate flex-1">{aiPrompt}</span>
           <button
-            onClick={() => setLastAiPrompt(null)}
+            onClick={onDismissAiPrompt}
             className="text-violet-300 hover:text-violet-500 flex-shrink-0"
             title="Dismiss"
           >
@@ -627,18 +896,30 @@ function NotebookCell({
         </div>
       )}
 
-      {/* Editor */}
-      <div className="min-h-[60px]">
-        <CellEditor
-          value={cell.source}
-          onChange={onSourceChange}
-          language={cell.cell_type}
-          onRun={onRun}
-          onFocus={onFocus}
-          onReady={onRegisterInsert}
-          placeholder={cell.cell_type === 'sql' ? 'SELECT * FROM ...' : cell.cell_type === 'python' ? '# Python code...' : 'Write markdown...'}
+      {/* Editor. While a proposal is pending it is REPLACED by the diff:
+          two editable versions of the same cell on screen at once is a state
+          nobody can reason about, and the cell's own code is right there in
+          the diff's left column anyway. */}
+      {proposal ? (
+        <CellDiff
+          previous={proposal.previous}
+          proposed={proposal.code}
+          onAccept={onAcceptProposal}
+          onReject={onRejectProposal}
         />
-      </div>
+      ) : (
+        <div className="min-h-[60px]">
+          <CellEditor
+            value={cell.source}
+            onChange={onSourceChange}
+            language={cell.cell_type}
+            onRun={onRun}
+            onFocus={onFocus}
+            onReady={onRegisterInsert}
+            placeholder={cell.cell_type === 'sql' ? 'SELECT * FROM ...' : cell.cell_type === 'python' ? '# Python code...' : 'Write markdown...'}
+          />
+        </div>
+      )}
 
       {/* Output */}
       {output && <CellOutput output={output} cellType={cell.cell_type} />}
