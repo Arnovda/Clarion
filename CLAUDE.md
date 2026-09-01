@@ -31,7 +31,80 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-08-31 (DASHBOARD EDITING — the filter that never reached
+**Last updated:** 2026-09-01 (MCP vs IN-PRODUCT AI — competitive analysis, doc only,
+no code changed)
+
+**NEW DOC: `docs/backlog/mcp-vs-in-product-ai.md` (2026-09-01, doc only).** Owner
+asked what to make of the single MCP endpoint Peliqan leads with, versus
+Clarion's approach of having the AI inside the platform for everything — pros,
+cons, cost, and whether Clarion chose right. Follow-up to
+`clarion-vs-peliqan.md`, which treated MCP in one paragraph.
+- **THE QUESTION SETS TWO THINGS AGAINST EACH OTHER THAT SIT ON DIFFERENT
+  LAYERS.** MCP is transport; in-product AI is the experience. The serious
+  players ship both — Snowflake has Cortex Analyst AND an MCP server, Databricks
+  has Genie AND one; dbt, Cube and AtScale all ship one on top of their semantic
+  layer *(market claim, not verified)*. They stack, they don't compete.
+- **THE STRONGEST SIGNAL IS PELIQAN'S OWN REPOSITIONING: they now call
+  themselves "the trust layer for AI & BI"** *(claim — their homepage title in
+  September 2026 search results)*. In August they sold pipes plus activation.
+  Their positioning is moving TOWARD Clarion's, not the other way round — which
+  is the best available evidence that the trust layer was the right thing to
+  build.
+- **"MCP only" would have been fatal for Clarion and is rational for Peliqan,
+  for the same reason: MCP turns your product into a SOURCE.** When your value is
+  breadth (300 connectors) being a source is excellent. When your value is
+  understanding (6 connectors, understood deeply), being a source gives away the
+  only reason to choose you.
+- **MEASURED, AND THE SURPRISE OF THE RESEARCH: an MCP endpoint is DAYS, not a
+  quarter.** Eight prerequisites, seven already built — `api_tokens` +
+  `middleware/apiToken.ts` (machine auth, role resolved live), `routes/addin.ts`
+  (the narrow read-only surface as a pattern; its own header already names MCP as
+  "the obvious next caller"), `applyDataPolicies`, `assertSafeReadQuery`,
+  `/query/think`, `saved_questions`. Only the MCP transport + tool definitions are
+  missing (repo-wide grep for "mcp" returns comments and docs only). Not having
+  built it was a priority call, not an architectural gap.
+- **THE DESIGN REQUIREMENT THAT DECIDES WHETHER IT IS WORTH ANYTHING: the trust
+  payload must travel as STRUCTURED fields.** `/query/think`'s done payload
+  already carries `verified`, `sources`, `confidence`, `policyNotice`,
+  `tablesUsed` (`routes/query.ts:1355`). Ship those over MCP or Clarion is
+  indistinguishable from a SQL endpoint — the differentiator stripped out at the
+  one place it had to count.
+- **A REAL WEAKNESS THE ANALYSIS TURNED UP: verified answers are bypassable by
+  rephrasing.** `findVerifiedQuestion` matches normalized EXACT question text; an
+  agent rephrases without thinking, misses the match, and falls back to
+  generation — the path human verification existed to replace.
+- **COST, and Clarion is the only side of this comparison that can actually
+  answer it** *(measured)*: `ai_call_log` records model + tokens + `cost_usd` per
+  call, `ai_usage` rolls up per tenant per month, `/admin/ai-usage` renders it,
+  and soft budgets refuse with a 402 BEFORE the call so an overrun costs nothing.
+  Plus Haiku/Sonnet splitting, prompt caching on 23 system prompts (0.1x reads),
+  per-category Claude/Azure routing, and the deterministic paths that skip the
+  model entirely. The structural trade: **in-product AI = Clarion pays every
+  token, margin falls with use; MCP = the customer pays, margin holds — but you
+  hand answer quality to a model you did not choose**, which is not a detail for
+  a product that sells trust in the answer.
+- **Recommendation**: keep in-product AI as the product (do not thin it); add MCP
+  as a DOOR on the same guarded surface — three read-only tools
+  (`list_questions`, `run_saved_question`, `ask`) on the existing token
+  mechanism; trust payload mandatory. **Do NOT**: expose a raw-SQL tool (then you
+  are a database with extra steps), allow any write (writeback is a different
+  risk class), widen `api_tokens` beyond the narrow surface, or replace the own
+  chat with "just use Claude". **Sequencing**: cheap enough not to wait, but less
+  urgent than un-scoping the query layer — an agent that can only query one
+  source hits the same wall the chat does (`routes/query.ts:370` still takes one
+  `connectionId`).
+- **BIGGER THAN MCP, AND NOBODY HAS ASKED IT YET: the Open Semantic Interchange**
+  (January 2026, vendor-neutral YAML for semantic metadata, Snowflake + dbt +
+  Cube + AtScale + Databricks + Tableau behind it) *(market claim, unverified)*.
+  If semantics become portable, "can I take my semantic layer with me?" becomes a
+  purchase criterion. Clarion's lives in Postgres + Neo4j and goes nowhere.
+- **Honest limits**: `peliqan.io` is still EGRESS_BLOCKED (retried 2026-09-01, not
+  routed around), so no Peliqan feature was seen running; the market percentages
+  are other people's numbers; and the comparison that would actually settle it —
+  the same ten questions over the same Exact Online data, once through Clarion's
+  chat and once through an agent on an MCP endpoint — has not been run.
+
+**Prior last updated:** 2026-08-31 (DASHBOARD EDITING — the filter that never reached
 the KPI cards, an assistant that gets out of the way, and one card at a time)
 
 **Owner, from a live dashboard whose Customer filter said "Commerce 5 Sa" while
