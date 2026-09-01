@@ -1,4 +1,4 @@
-apply
+prune
 
 # Stamp `tenantId` onto Neo4j nodes written before the write paths started
 # setting it. Step 2 of 3 towards tenant-scoping the semantic graph:
@@ -12,23 +12,21 @@ apply
 # which is a quieter outage and a harder one to attribute.
 #
 #   report   count what is unstamped and change nothing
-#   apply    stamp it. Idempotent — re-running IS the check
+#   apply    stamp what is attributable. Idempotent — re-running IS the check
+#   prune    apply, then DELETE leftovers that provably belong to nobody:
+#            owner key points at a deleted Postgres row, or no key at all.
+#            Leftovers whose owner IS live are never deleted — they are
+#            reported as INVESTIGATE (a broken apply match, not an orphan).
+#            2026-09-01: the first full apply left 5,089 such orphans from
+#            months of deleted test tenants and re-created connections.
 #   noop     do nothing
 #
 # Why this needs its own control rather than living in `prod-checks`: Neo4j runs
 # with `external_enabled = false`, so no GitHub runner can reach it. That is the
 # correct posture and not worth weakening for a maintenance script. Instead the
 # work runs where it belongs — a one-shot Container Apps Job inside the
-# environment, from the backend's own image. The job is created on demand,
-# re-imaged to the backend's current build on every run, and left in place
-# because re-running is how step 3 gets its go-ahead.
+# environment, from the backend's own image, recreated fresh on every run.
 #
 # The script reads tenant ownership from the Postgres mirror rows and REFUSES TO
-# GUESS: an entity whose mirror row is gone (a CrossSourceView with no
-# connectionId) is reported, never attributed. It exits non-zero while anything
-# remains unstamped, and that exit code is the gate on step 3.
-
-# 2026-09-01: re-run after fixing the workflow update path (az job update --args)
-# 2026-09-01: trigger apply under image main-c8f8675 (env-var mode fix deployed)
-# 2026-09-01: re-run with config-visibility diagnostics (auth failure triage)
-# 2026-09-01: re-run after fixing the tsv null-collapse env cloning (jq parse)
+# GUESS. It exits non-zero while anything remains unstamped, and that exit code
+# is the gate on step 3.
