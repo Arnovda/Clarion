@@ -31,7 +31,68 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-09-01 (P1-1 REMEDIATION — one tenant's build no longer
+**Last updated:** 2026-09-01 (P1-2 REMEDIATION — rate limits share one Redis
+window across replicas and name the CALLER: tenant for authed traffic, the
+account under attack for brute force)
+
+**Fourth wave-2 PR of the market-readiness remediation plan.**
+- **NEW `middleware/rateLimitStore.ts`** — a hand-rolled fixed-window store
+  for express-rate-limit v8 on the EXISTING ioredis singleton (no new
+  dependency): INCR + PEXPIRE-on-first-hit, PTTL for resetTime, DECR for
+  the skipSuccessfulRequests refund, `rl:<limiter>:<key>` namespacing. All
+  five limiters (global/auth/brute-ip/ai/compute) use it, so **replicas
+  count together** — the per-replica MemoryStore was multiplying every
+  published limit ~3× at max_replicas=3, brute force included (5/15min →
+  ~15). Degradation is deliberate both ways: no Redis (dev/CI) → factory
+  returns undefined and the MemoryStore applies (a single process was
+  never wrong); Redis ERRORS → fail OPEN with a loud warn (a blip must
+  not 429 the product). `redis` param injectable for tests (healthCheck
+  pattern).
+- **KEYS NAME THE CALLER NOW.** `tenantOrIpKey`: a request with a VALID
+  access token buckets as `t:<tenantId>`; anything else falls to
+  `ip:<ipKeyGenerator(ip)>`. **Verified, not merely decoded, on purpose**:
+  an unverified decode would let any caller CHOOSE their bucket —
+  including another tenant's, turning the limiter into a DoS lever
+  against them; HMAC verify costs microseconds. An office NAT no longer
+  spends one shared IP budget for a whole company.
+- **THE BRUTE-FORCE SURFACE HAS TWO DIMENSIONS NOW**: the existing per-IP
+  limiter (one machine spraying many accounts) plus a NEW
+  `accountBruteLimiter` keyed by the submitted email (`acct:<email>`,
+  case-folded) — many machines converging on ONE account walk straight
+  past per-IP, the hole the old comment itself conceded to a botnet.
+  Both 5/15min, both skipSuccessfulRequests, both on the shared store.
+  No-email probes fall back to the IP bucket rather than sharing one
+  global key. Mounted beside the IP limiter on login/forgot/reset (body
+  parsing precedes the limiters — verified before relying on req.body).
+- **`app.set('trust proxy', 1)` was checked and already present** — the
+  key generators would otherwise have keyed every request to the ACA
+  ingress IP.
+- **PROVEN LIVE against real Redis** (the fake in tests could mask ioredis
+  API misuse): a dev-mode backend on the shared store took 5 wrong
+  passwords (401) and refused the 6th and 7th (429), with
+  `rl:brute-ip:127.0.0.1`, `rl:brute-acct:acct:victim@test.com`,
+  `rl:auth:ip:…`, `rl:global:ip:…` all observed in redis-cli; an authed
+  /dashboards call then produced `rl:compute:t:634` + `rl:global:t:634` —
+  tenant keying confirmed end to end.
+- Validation: backend `npm run check` clean; full vitest **56 files / 570
+  passed / 4 skipped** (7 new in `rate-limit-store.test.ts`: two store
+  instances = two replicas sharing ONE counter — the fix pinned, since the
+  per-replica defect itself is architectural and cannot fire in one
+  process; window-set-once; decrement/reset; fail-open on a broken redis;
+  undefined-without-redis; verified-token→tenant + forged-token→IP;
+  account key case-folding); all nine ratchets green from the repo root;
+  `e2e/rls.spec.ts` + `e2e/auth-login.spec.ts` **8/8** as `databridge_app`
+  (limiters skip under NODE_ENV=test, unchanged); frontend untouched.
+  `dump.rdb` (from the live demo's redis) added to .gitignore.
+- **NOT in this PR, deliberately**: per-tenant CONFIGURABLE limits (the
+  operator console could carry overrides — wants a customer actually
+  hitting a limit first); sliding-window or token-bucket semantics (the
+  fixed window matches what MemoryStore did — same behaviour, shared);
+  lockout/alerting on `rl:brute-acct` bursts (the P0-6 alert rules watch
+  5xx and log signatures; a brute-force alert wants its own signature
+  and belongs with P1-6's observability pass).
+
+**Prior last updated:** 2026-09-01 (P1-1 REMEDIATION — one tenant's build no longer
 blocks every other's, and the reapers judge LIVENESS instead of age)
 
 **Third wave-2 PR of the market-readiness remediation plan. Two coupled

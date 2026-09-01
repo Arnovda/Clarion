@@ -18,6 +18,7 @@ import { requestLogger } from './middleware/requestLogger';
 import { logger } from './utils/logger';
 import { config, legacyJwtExpiresInSet } from './config';
 import { reapStaleWork } from './services/reapers';
+import { redisRateLimitStore, tenantOrIpKey, accountKey } from './middleware/rateLimitStore';
 import { runRetentionSweep } from './services/retention';
 
 // Gate for the daily data-retention sweep (driven off the 5-min reaper tick).
@@ -149,12 +150,20 @@ app.use(requestLogger);
 const skipRateLimit = (): boolean => process.env.NODE_ENV === 'test';
 
 // Global rate limiter: 200 requests per minute per IP
+// P1-2: counters live in Redis so replicas share ONE window (memory made
+// every limit ~3x at max_replicas=3), and authenticated traffic is keyed
+// by TENANT — an office NAT shares one IP across a whole company, and a
+// company is the unit these limits are published for. Without Redis
+// (local dev / CI) the store is undefined and the per-process MemoryStore
+// applies, which was never wrong in a single process.
 const globalLimiter = rateLimit({
   windowMs:  60 * 1000,
   max:       200,
   standardHeaders: true,
   legacyHeaders:   false,
   skip:      skipRateLimit,
+  store:     redisRateLimitStore('global'),
+  keyGenerator: tenantOrIpKey,
   message: { ok: false, error: 'Too many requests, please try again later' },
 });
 app.use(globalLimiter);
@@ -168,6 +177,8 @@ const authLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders:   false,
   skip:      skipRateLimit,
+  store:     redisRateLimitStore('auth'),
+  keyGenerator: tenantOrIpKey,
   message: { ok: false, error: 'Too many authentication attempts, please try again later' },
 });
 
@@ -188,8 +199,26 @@ const bruteForceLimiter = rateLimit({
   legacyHeaders:   false,
   message: { ok: false, error: 'Too many attempts. Please wait 15 minutes and try again.' },
   skip:      skipRateLimit,
+  store:     redisRateLimitStore('brute-ip'),
   // Only count failed attempts so a legit user who logs in successfully
   // doesn't consume a "slot" needed for a retry on a typo.
+  skipSuccessfulRequests: true,
+});
+
+// The other half of brute-force (P1-2): the ACCOUNT under attack. The
+// per-IP limiter above stops one machine spraying many accounts; a botnet
+// converging on ONE account walks straight past it — the caveat its own
+// comment conceded. Keyed by the submitted email, so however many IPs the
+// attempts come from, an account takes at most 5 failed tries per window.
+const accountBruteLimiter = rateLimit({
+  windowMs:  15 * 60 * 1000,
+  max:       5,
+  standardHeaders: true,
+  legacyHeaders:   false,
+  message: { ok: false, error: 'Too many attempts for this account. Please wait 15 minutes and try again.' },
+  skip:      skipRateLimit,
+  store:     redisRateLimitStore('brute-acct'),
+  keyGenerator: accountKey,
   skipSuccessfulRequests: true,
 });
 
@@ -200,6 +229,8 @@ const aiLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders:   false,
   skip:      skipRateLimit,
+  store:     redisRateLimitStore('ai'),
+  keyGenerator: tenantOrIpKey,
   message: { ok: false, error: 'AI rate limit reached, please try again shortly' },
 });
 
@@ -214,6 +245,8 @@ const computeLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders:   false,
   skip:      skipRateLimit,
+  store:     redisRateLimitStore('compute'),
+  keyGenerator: tenantOrIpKey,
   message: { ok: false, error: 'Too many requests, please slow down for a moment' },
 });
 
@@ -224,9 +257,9 @@ const computeLimiter = rateLimit({
 // Strict brute-force limiters apply to the specific routes BEFORE the
 // general authLimiter. Order matters — express-rate-limit checks each
 // middleware in the chain; the stricter one fires first.
-app.use('/api/auth/login', bruteForceLimiter);
-app.use('/api/auth/forgot-password', bruteForceLimiter);
-app.use('/api/auth/reset-password', bruteForceLimiter);
+app.use('/api/auth/login', bruteForceLimiter, accountBruteLimiter);
+app.use('/api/auth/forgot-password', bruteForceLimiter, accountBruteLimiter);
+app.use('/api/auth/reset-password', bruteForceLimiter, accountBruteLimiter);
 app.use('/api/auth', authLimiter, authRouter);
 
 // ---------------------------------------------------------------------------
