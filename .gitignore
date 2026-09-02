@@ -41,3 +41,5 @@ __pycache__/
 .DS_Store
 Thumbs.db
 dump.rdb
+# Playwright output from local e2e runs
+test-results/

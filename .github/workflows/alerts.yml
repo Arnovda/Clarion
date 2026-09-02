@@ -75,7 +75,7 @@ jobs:
           AG_NAME="clarion-alerts"
           WORKER="${APP%-backend}-jobs-worker"
           METRIC_RULES="clarion-backend-5xx clarion-backend-restarts clarion-worker-restarts clarion-pg-cpu clarion-pg-storage"
-          QUERY_RULES="clarion-server-errors clarion-failed-syncs"
+          QUERY_RULES="clarion-server-errors clarion-failed-syncs clarion-brute-force clarion-queue-depth"
 
           if [ "$MODE" = "off" ]; then
             say "## Production alerts — OFF"
@@ -213,8 +213,25 @@ jobs:
               "ContainerAppConsoleLogs_CL | where Log_s contains 'sync run failed'" \
               "A source sync run was persisted as failed" \
               && note_ok clarion-failed-syncs || note_fail clarion-failed-syncs
+            # P1-6 pass — two more load-bearing strings, each documented at
+            # its emit site: 'brute force limit hit' is what BOTH brute
+            # limiters (per-IP and per-account) log on every refused request
+            # (middleware/rateLimitStore.ts bruteLimitHandler); 'queue depth high' is what the
+            # queue-depth monitor logs once a minute while a queue's WAITING
+            # count sits at/above QUEUE_DEPTH_WARN (jobs/queueDepthMonitor.ts).
+            # Thresholds: 10 brute lines ≈ a real burst, not one user
+            # fat-fingering a password twice past the limit; 3 depth lines ≈
+            # 3+ minutes of sustained backlog, not a spike one sweep saw.
+            upsert_query_rule clarion-brute-force 2 "count 'Hits' >= 10" Hits \
+              "ContainerAppConsoleLogs_CL | where ContainerAppName_s == '$APP' | where Log_s contains 'brute force limit hit'" \
+              "A brute-force burst is being rate-limited (10+ refused attempts in 15 minutes)" \
+              && note_ok clarion-brute-force || note_fail clarion-brute-force
+            upsert_query_rule clarion-queue-depth 2 "count 'Sweeps' >= 3" Sweeps \
+              "ContainerAppConsoleLogs_CL | where Log_s contains 'queue depth high'" \
+              "A job queue has had a deep waiting backlog for several minutes — consumers dead or drowning" \
+              && note_ok clarion-queue-depth || note_fail clarion-queue-depth
           else
-            note_fail "clarion-server-errors/clarion-failed-syncs (no Log Analytics workspace found in $RG)"
+            note_fail "clarion-server-errors/clarion-failed-syncs/clarion-brute-force/clarion-queue-depth (no Log Analytics workspace found in $RG)"
           fi
 
           say ""

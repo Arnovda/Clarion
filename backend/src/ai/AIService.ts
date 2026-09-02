@@ -368,12 +368,14 @@ export async function callClaude(
         : await callAzureBackend(routerOpts);
       const durationMs = Date.now() - azureStart;
       const backendLabel = `${resolved.provider}:${resolved.modelId}`;
-      const props = { callLabel, model: backendLabel, attempt: '1' };
+      // tenantId rides every AI metric as a dimension (P1-6) so per-tenant
+      // AI latency/volume is aggregatable, not just the Postgres ai_usage sums.
+      const props = { callLabel, model: backendLabel, attempt: '1', ...(tenantId ? { tenantId: String(tenantId) } : {}) };
       trackMetric('ai_call_duration_ms', durationMs, props);
       trackMetric('ai_input_tokens',     result.inputTokens,  props);
       trackMetric('ai_output_tokens',    result.outputTokens, props);
       trackMetric('ai_total_tokens',     result.inputTokens + result.outputTokens, props);
-      logger.info({ callLabel, backend: resolved.provider, model: resolved.modelId, durationMs, inputTokens: result.inputTokens, outputTokens: result.outputTokens }, 'AI call completed via per-category override');
+      logger.info({ callLabel, tenantId, backend: resolved.provider, model: resolved.modelId, durationMs, inputTokens: result.inputTokens, outputTokens: result.outputTokens }, 'AI call completed via per-category override');
       if (tenantId) recordTenantAiUsage(tenantId, result.inputTokens, result.outputTokens).catch(() => { /* noop */ });
       logAiCall({ callLabel: callLabel!, model: backendLabel, inputTokens: result.inputTokens, outputTokens: result.outputTokens, cacheReadTokens: 0, cacheCreationTokens: 0, durationMs });
       return result.text;
@@ -401,12 +403,12 @@ export async function callClaude(
         temperature:  opts.temperature,
       });
       const durationMs = Date.now() - azureStart;
-      const props = { callLabel, model: 'azure-foundry', attempt: '1' };
+      const props = { callLabel, model: 'azure-foundry', attempt: '1', ...(tenantId ? { tenantId: String(tenantId) } : {}) };
       trackMetric('ai_call_duration_ms', durationMs, props);
       trackMetric('ai_input_tokens',     result.inputTokens,  props);
       trackMetric('ai_output_tokens',    result.outputTokens, props);
       trackMetric('ai_total_tokens',     result.inputTokens + result.outputTokens, props);
-      logger.info({ callLabel, backend: 'azure', durationMs, inputTokens: result.inputTokens, outputTokens: result.outputTokens }, 'AI call completed via Azure');
+      logger.info({ callLabel, tenantId, backend: 'azure', durationMs, inputTokens: result.inputTokens, outputTokens: result.outputTokens }, 'AI call completed via Azure');
       if (tenantId) recordTenantAiUsage(tenantId, result.inputTokens, result.outputTokens).catch(() => { /* noop */ });
       logAiCall({ callLabel: callLabel!, model: 'azure-foundry', inputTokens: result.inputTokens, outputTokens: result.outputTokens, cacheReadTokens: 0, cacheCreationTokens: 0, durationMs });
       return result.text;
@@ -452,7 +454,7 @@ export async function callClaude(
       const usage: any = message.usage ?? {};
       const cacheReadTokens     = usage.cache_read_input_tokens     ?? 0;
       const cacheCreationTokens = usage.cache_creation_input_tokens ?? 0;
-      const props = { callLabel, model, attempt: String(attempt + 1) };
+      const props = { callLabel, model, attempt: String(attempt + 1), ...(tenantId ? { tenantId: String(tenantId) } : {}) };
       trackMetric('ai_call_duration_ms', durationMs, props);
       trackMetric('ai_input_tokens',     inputTokens, props);
       trackMetric('ai_output_tokens',    outputTokens, props);
@@ -460,7 +462,7 @@ export async function callClaude(
       if (cacheReadTokens > 0)     trackMetric('ai_cache_read_tokens',     cacheReadTokens, props);
       if (cacheCreationTokens > 0) trackMetric('ai_cache_creation_tokens', cacheCreationTokens, props);
       logger.info({
-        callLabel, model, durationMs, inputTokens, outputTokens,
+        callLabel, tenantId, model, durationMs, inputTokens, outputTokens,
         cacheReadTokens, cacheCreationTokens, attempt: attempt + 1,
       }, 'AI call completed');
 
@@ -597,7 +599,7 @@ async function callClaudeStreaming(
   }
 
   const durationMs = Date.now() - start;
-  const props = { callLabel, model: MODEL, streaming: 'true' };
+  const props = { callLabel, model: MODEL, streaming: 'true', ...(tenantId ? { tenantId: String(tenantId) } : {}) };
   trackMetric('ai_call_duration_ms', durationMs, props);
 
   // Usage attribution for streaming: the final message on the stream

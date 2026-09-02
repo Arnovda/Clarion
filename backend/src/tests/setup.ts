@@ -21,3 +21,8 @@ process.env.NODE_ENV = 'test';
 
 // Disable Neo4j in tests (avoid connection errors)
 process.env.NEO4J_URI = '';
+
+// No Redis in tests, whatever the developer's .env says — the suite asserts
+// inline-execution and "no data" behaviours (rate-limit MemoryStore fallback,
+// null traffic stats on /admin/tenants), which a live Redis would flip.
+process.env.REDIS_URL = '';

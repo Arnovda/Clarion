@@ -11,7 +11,7 @@
 
 import { describe, it, expect } from 'vitest';
 import type { Options } from 'express-rate-limit';
-import { redisRateLimitStore, tenantOrIpKey, accountKey } from '../middleware/rateLimitStore';
+import { redisRateLimitStore, tenantOrIpKey, accountKey, bruteLimitHandler } from '../middleware/rateLimitStore';
 import { signToken } from '../middleware/auth';
 
 /** Just enough of ioredis for the store: INCR/PEXPIRE/PTTL/DECR/DEL. */
@@ -104,5 +104,27 @@ describe('key generators', () => {
     expect(accountKey(reqWith({ body: { email: '  Victim@Test.com ' } }))).toBe('acct:victim@test.com');
     expect(accountKey(reqWith({ body: {} }))).toMatch(/^ip:/);
     expect(accountKey(reqWith({ body: { email: 42 } }))).toMatch(/^ip:/);
+  });
+});
+
+describe('bruteLimitHandler (P1-6)', () => {
+  it('logs the load-bearing line and mirrors the default 429 response', () => {
+    const handler = bruteLimitHandler('brute-acct');
+    let sentStatus = 0;
+    let sentBody: unknown;
+    const res = { status(code: number) { sentStatus = code; return { json(b: unknown) { sentBody = b; return b; } }; } };
+    const message = { ok: false, error: 'Too many attempts for this account. Please wait 15 minutes and try again.' };
+
+    handler(
+      { ip: '203.0.113.9', path: '/api/auth/login', headers: {} } as never,
+      res,
+      undefined,
+      { statusCode: 429, message },
+    );
+
+    // The response must be indistinguishable from express-rate-limit's own
+    // default handler — the log line is the only behavioural addition.
+    expect(sentStatus).toBe(429);
+    expect(sentBody).toBe(message);
   });
 });

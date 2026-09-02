@@ -48,6 +48,7 @@ import { semanticDb } from '../db/knex';
 import { tenantQuery } from '../services/tenantQuery';
 import { isPlatformOperator } from '../services/featureFlags';
 import { recordAuditForTenant } from '../services/auditService';
+import { readTenantRequestStats } from '../services/tenantRequestStats';
 import { logger } from '../utils/logger';
 
 const log = logger.child({ component: 'adminTenants' });
@@ -127,15 +128,31 @@ router.get('/', async (req: Request, res: Response, next: NextFunction) => {
       .orderBy('created_at', 'desc')
       .limit(200);
 
+    // P1-6: the last-24h per-tenant request window (error rate + latency)
+    // from Redis, read ONCE for every tenant. readTenantRequestStats already
+    // fails to an empty map — a Redis blip degrades these columns to
+    // "no data", never blanks the console.
+    const reqStats = await readTenantRequestStats();
+
     const enriched = await Promise.all(
       tenants.map(async (t) => {
+        // null, not zero, when the window has nothing for this tenant —
+        // "no traffic measured" and "0% errors over N requests" must stay
+        // distinguishable on the console.
+        const s = reqStats.get(t.id);
+        const traffic = {
+          requests24h: s?.requests ?? null,
+          errors24h: s ? s.errors : null,
+          avgMs24h: s?.avgMs ?? null,
+          p95Ms24h: s?.p95Ms ?? null,
+        };
         try {
           const health = await tenantHealth(t.id);
-          return { ...shapeTenant(t), ...health };
+          return { ...shapeTenant(t), ...health, ...traffic };
         } catch (err) {
           // One broken tenant must not blank the whole console.
           log.warn({ err, tenantId: t.id }, 'tenant health read failed');
-          return { ...shapeTenant(t), healthError: true };
+          return { ...shapeTenant(t), healthError: true, ...traffic };
         }
       }),
     );

@@ -45,6 +45,12 @@ interface TenantRow {
   aiTokensThisMonth?: number;
   aiCallsThisMonth?: number;
   healthError?: boolean;
+  // P1-6 — last-24h request window (null = no data measured, which the
+  // console must show differently from "0 errors over N requests").
+  requests24h?: number | null;
+  errors24h?: number | null;
+  avgMs24h?: number | null;
+  p95Ms24h?: number | null;
 }
 
 interface TenantDetail {
@@ -55,6 +61,17 @@ interface TenantDetail {
 }
 
 const num = (n: number | undefined) => (n ?? 0).toLocaleString('en-GB');
+
+/**
+ * The p95 the server reports is the UPPER BOUND of a coarse histogram bucket
+ * (see services/tenantRequestStats.ts) — render it as such. 30000 is the
+ * last bound and doubles as the overflow report, so it reads "at least".
+ */
+function p95Label(p95Ms: number | null | undefined): string {
+  if (p95Ms == null) return '';
+  if (p95Ms >= 30000) return 'p95 ≥ 30 s';
+  return p95Ms >= 1000 ? `p95 ≤ ${p95Ms / 1000} s` : `p95 ≤ ${p95Ms} ms`;
+}
 
 function StatusPill({ status }: { status: string }) {
   const suspended = status !== 'active';
@@ -247,6 +264,7 @@ function TenantConsole() {
               <th className="px-3 py-2.5 font-medium text-right">Users</th>
               <th className="px-3 py-2.5 font-medium text-right">Sources</th>
               <th className="px-3 py-2.5 font-medium">Last sync</th>
+              <th className="px-3 py-2.5 font-medium text-right">Traffic (24h)</th>
               <th className="px-3 py-2.5 font-medium text-right">AI this month</th>
               <th className="px-3 py-2.5 font-medium text-right">Budget</th>
               <th className="px-3 py-2.5" />
@@ -320,6 +338,19 @@ function TenantRows(props: {
           )}
         </td>
         <td className="px-3 py-3 text-muted">{t.lastSyncAt ? formatRelative(t.lastSyncAt) : 'never'}</td>
+        <td className="px-3 py-3 text-right tabular-nums">
+          {t.requests24h == null ? (
+            <span className="text-muted-2" title="No request data measured in the last 24 hours (no traffic, or the stats window is unavailable)">—</span>
+          ) : (
+            <span title={`${num(t.requests24h)} requests · ${num(t.errors24h ?? 0)} server errors · avg ${t.avgMs24h ?? 0} ms · p95 ${p95Label(t.p95Ms24h)}`}>
+              {num(t.requests24h)}
+              <span className={cn('ml-1.5', (t.errors24h ?? 0) > 0 ? 'text-err' : 'text-muted-2')}>
+                {num(t.errors24h ?? 0)} err
+              </span>
+              <span className="text-muted-2 ml-1.5">{p95Label(t.p95Ms24h)}</span>
+            </span>
+          )}
+        </td>
         <td className="px-3 py-3 text-right tabular-nums">{t.healthError ? '—' : `${num(t.aiTokensThisMonth)} tok`}</td>
         <td className="px-3 py-3 text-right tabular-nums text-muted">
           {t.monthlyTokenBudget == null ? 'unlimited' : num(t.monthlyTokenBudget)}
@@ -348,7 +379,7 @@ function TenantRows(props: {
 
       {isOpen && (
         <tr className="border-b border-softer bg-soft">
-          <td colSpan={8} className="px-6 py-4">
+          <td colSpan={9} className="px-6 py-4">
             {detailLoading && (
               <div className="flex items-center gap-2 text-muted text-[12.5px]">
                 <Loader2 className="w-3.5 h-3.5 animate-spin" /> Loading…
