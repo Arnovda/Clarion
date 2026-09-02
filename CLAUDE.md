@@ -31,7 +31,80 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-09-02 (SAME DAY, SECOND FINDING — STREAMED AI CALLS NOW
+**Last updated:** 2026-09-02 (SAME DAY, THIRD FINDING — A "PER SUPPLIER OVER
+TIME" ANSWER IS ONE LINE PER SUPPLIER NOW; the chart drew the long-format rows
+in row order, and the product-layer prompt never asked for a chart shape at all)
+
+**Owner's third screenshot: "I want cumulative per supplier" rendered as ONE
+zigzag line over 192 rows with supplier names on the x-axis.** *"The AI must
+think better about which visualisation it shows and how I think."* Two
+defects, one on each side of the wire, plus a prompt sentence pushing the
+wrong axis:
+- **THE PRODUCT-LAYER PROMPT HAD NO VISUALIZATION RULES.** `nlToSqlPrompt.ts`
+  (source layer) carried a VISUALIZATION HINT block and put `"visualization"`
+  in its JSON example; `nlToSqlPromptDuckDB.ts` — the prompt Ask AI actually
+  runs — had NEITHER. Worse, its "Step 8" said *"place the name column FIRST —
+  it becomes the chart label"*, which for a time series is exactly the wrong
+  axis. And the source-layer rules only asked for `groupBy` on `stacked_bar`,
+  so a multi-line series was inexpressible everywhere.
+- **THE RENDERER ONLY PIVOTED FOR STACKED BARS.** `ResultVisualizer`'s `line`
+  branch drew a single `<Line>` over the long-format rows; three suppliers'
+  values interleaved into one zigzag. Any model hint also overrode the
+  ">60 rows → table" guard.
+- **NEW `frontend/app/query/chartShape.ts` — `resolveChartShape(rows, hint)`,
+  pure.** The hint is a strong suggestion, never trusted past what the data
+  supports. Rules in order: the series column is the hint's `groupBy` when
+  real, else the ONE other categorical column with 2–8 distinct values (two
+  candidates is ambiguous → no guess); **Rule 1b, the production case**: when
+  x itself is the low-cardinality category and the only other text column is
+  period-like, that is the series/x swap; Rule 2 puts time on x whenever a
+  period column exists beside a small category; **more than `MAX_SERIES` (8)
+  groups → no series chart — the palette is a fixed ordered set and is never
+  cycled** (`SERIES[i]`, the old `i % SERIES.length` wrap is gone); long →
+  wide pivot sorted by period. A period x-axis charts at ANY length; the
+  60-row cap applies to categorical x only. Per the dataviz skill's
+  series-count ladder and "assign categorical hues in fixed order, never
+  cycled" non-negotiable.
+- **`MessageBubble.tsx`** hands the whole shape to the resolver; `line` and
+  `bar` with a series render one `<Line>`/`<Bar>` per group with a `<Legend>`
+  (≥2 series → legend always); pie is disabled when a series exists; the
+  unused `pickLabelColumn` import went with the inline resolution.
+- **ONE SHARED `VISUALIZATION_HINT_RULES` block** (exported from
+  `nlToSqlPrompt.ts`), spliced into ALL THREE system prompts (source, DuckDB,
+  cross-DuckDB) and referenced by the cross-source one-liner: a line's x MUST
+  be the period column, never a name; set `groupBy` WHENEVER the SELECT has
+  two non-numeric columns and one measure — line and bar as well as
+  stacked_bar; keep the series ≤8 (LIMIT / top-N) else `table`. The DuckDB
+  JSON example now carries `"visualization": {… "groupBy": "supplier_name"}`
+  and Step 8 says the name column is the LABEL of a ranking and the SERIES
+  of a time series.
+- Validation: frontend vitest **4 files / 21 passed** (8 new in
+  `tests/chartShape.test.ts` — the exact production shape, 64 months × 3
+  suppliers = 192 long rows → x = month, 3 groups, 64 wide rows sorted;
+  hint-less detection; explicit groupBy; the cap via a hinted wide groupBy;
+  single-series ranking byte-identical; category×category stays stacked;
+  two candidates → no guess; a 90-row period series still charts); **both
+  load-bearing guards verified red** (Rule 1b removed → production test
+  fails; cap removed → cap test fails). **THE CAP TEST WAS A TEST THAT COULD
+  NOT FAIL ON ITS FIRST VERSION** — with nine suppliers the detector's
+  cardinality filter already refused the column, so the cap was never
+  reached; it was rewritten to drive the one path that reaches it, a model
+  hint naming a wide `groupBy`, and only then went red on sabotage. Frontend
+  `tsc` clean, touched files lint-clean, `next build` green 46/46 (`/query`
+  41.5 kB); backend `npm run check` clean, prompt-touching tests 13/13, all
+  nine ratchets green from the repo root.
+- **NOT runtime-exercised against a live model** — the new rules have not
+  seen a real Anthropic response; the resolver, however, fixes the shipped
+  case even when the model's hint is wrong, which is the point. Watch the
+  first production "per X over time" answer: it should land as N lines with
+  a legend; a table where a chart was expected means the series column
+  exceeded 8 values (the prompt now asks for a LIMIT) or two category
+  columns tied.
+- **NOT done, deliberately**: an "Other" fold for the 9th+ series (the
+  skill's alternative; a table is honest and cheaper today); small
+  multiples; a dual-axis anything (never).
+
+**Prior last updated:** 2026-09-02 (SAME DAY, SECOND FINDING — STREAMED AI CALLS NOW
 RETRY A 529; the non-streaming path had retried overload for months while the
 one Ask AI actually uses called the SDK bare)
 
