@@ -561,6 +561,85 @@ function attachAbort(
   else abortSignal.addEventListener('abort', kill, { once: true });
 }
 
+// ---------------------------------------------------------------------------
+// Stream-open retry.
+//
+// callClaude (non-streaming) has retried 529/503/500/429 with backoff for a
+// long time. Every messages.stream() site called the SDK bare — so under real
+// overload the SDK's own quick attempts exhaust and the raw 529 falls straight
+// through to whatever surface asked. Ask AI's /think is one of those, and it
+// rendered the SDK's JSON on a dead-end card.
+//
+// The retry is deliberately limited to OPENING the stream: a 529 / 503 / 429
+// is an answer to the request, so it always arrives before the first event.
+// Once any event has been consumed, a retry would replay text the caller has
+// already streamed to a user — so from that point failures propagate as they
+// did before. That is also what lets every existing loop stay untouched: the
+// real MessageStream is handed back, so attachAbort, the bus-matrix watchdog
+// and finalMessage() all keep working on it.
+// ---------------------------------------------------------------------------
+
+/** 529 from Anthropic — capacity, not the caller's request. */
+export function isOverloadedError(err: unknown): boolean {
+  const e = err as { status?: number; type?: string; error?: { type?: string } };
+  return e?.status === 529 || e?.type === 'overloaded_error' || e?.error?.type === 'overloaded_error';
+}
+
+function isRetryableStatus(err: unknown): boolean {
+  const status = (err as { status?: number })?.status;
+  return status === 529 || status === 503 || status === 500 || status === 429;
+}
+
+/** The subset of the SDK MessageStream this helper needs. */
+export interface OpenedStream<E> {
+  /** The underlying stream, for attachAbort / watchdog / finalMessage. */
+  stream: unknown;
+  /** Every event, the first one already fetched, in order. */
+  events: AsyncIterable<E>;
+}
+
+/**
+ * Open a stream, retrying with the callClaude backoff while it has produced
+ * nothing. `makeStream` must return a fresh stream on every call.
+ */
+export async function openStreamWithRetry<E>(
+  makeStream: () => AsyncIterable<E>,
+  opts: { callLabel: string; abortSignal?: AbortSignal },
+): Promise<OpenedStream<E>> {
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    const stream = makeStream();
+    const it = stream[Symbol.asyncIterator]();
+    let first: IteratorResult<E>;
+    try {
+      first = await it.next();
+    } catch (err) {
+      // The asker stopped: an abort is not overload, and retrying would
+      // spend a model call on an answer nobody is waiting for.
+      const canRetry = isRetryableStatus(err) && attempt < MAX_RETRIES && !opts.abortSignal?.aborted;
+      if (!canRetry) throw err;
+      const delay = RETRY_DELAYS[attempt] ?? 10000;
+      logger.warn(
+        { callLabel: opts.callLabel, status: (err as { status?: number }).status, attempt: attempt + 1, retryIn: delay },
+        'AI stream open retrying',
+      );
+      await new Promise((r) => setTimeout(r, delay));
+      continue;
+    }
+    const events: AsyncIterable<E> = {
+      async *[Symbol.asyncIterator]() {
+        if (!first.done) yield first.value;
+        for (;;) {
+          const n = await it.next();
+          if (n.done) return;
+          yield n.value;
+        }
+      },
+    };
+    return { stream, events };
+  }
+  throw new Error('AIService: exhausted stream-open retries');
+}
+
 // Streaming version of callClaude — uses streaming API to avoid SDK timeout for large responses
 // but collects the full text and returns it as a string (no event callbacks).
 async function callClaudeStreaming(
@@ -585,10 +664,11 @@ async function callClaudeStreaming(
     ...(temperature !== undefined ? { temperature } : {}),
   };
 
-  const stream = getClient().messages.stream(params);
+  const opened = await openStreamWithRetry(() => getClient().messages.stream(params), { callLabel });
+  const stream = opened.stream as ReturnType<ReturnType<typeof getClient>['messages']['stream']>;
   let fullText = '';
 
-  for await (const event of stream) {
+  for await (const event of opened.events) {
     if (event.type === 'content_block_delta') {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const delta = (event as any).delta as Record<string, unknown>;
@@ -1443,11 +1523,17 @@ export async function generateSqlStreaming(
     messages,
   };
 
-  const stream = getClient().messages.stream(params);
-  attachAbort(stream, abortSignal);
+  // attachAbort is wired inside the factory so every attempt's stream is
+  // abortable, not just the one that happens to succeed.
+  const opened = await openStreamWithRetry(() => {
+    const st = getClient().messages.stream(params);
+    attachAbort(st, abortSignal);
+    return st;
+  }, { callLabel: streamCallLabel, abortSignal });
+  const stream = opened.stream as ReturnType<ReturnType<typeof getClient>['messages']['stream']>;
   let fullText = '';
 
-  for await (const event of stream) {
+  for await (const event of opened.events) {
     if (event.type === 'content_block_delta') {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const delta = (event as any).delta as Record<string, unknown>;
@@ -1751,10 +1837,11 @@ export async function generateStarSchemaDesignStreaming(
     messages: [{ role: 'user', content: buildStarSchemaDesignUser(dataProductName, dataProductDescription, sourceTablesContext) }],
   };
 
-  const stream = getClient().messages.stream(params);
+  const opened = await openStreamWithRetry(() => getClient().messages.stream(params), { callLabel: 'star_schema_design_streaming' });
+  const stream = opened.stream as ReturnType<ReturnType<typeof getClient>['messages']['stream']>;
   let fullText = '';
 
-  for await (const event of stream) {
+  for await (const event of opened.events) {
     if (event.type === 'content_block_delta') {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const delta = (event as any).delta as Record<string, unknown>;
@@ -1826,10 +1913,13 @@ export async function generateBusMatrixStreaming(
 
   sendDiag(`AI call starting (model=${MODEL}, max_tokens=${params.max_tokens}, thinking_budget=${params.thinking.budget_tokens}, contextChars=${sourceTablesContext.length})`);
 
-  const stream = getClient().messages.stream(params);
-
-  // Wire external abort (user-initiated cancel) into the Anthropic stream.
-  attachAbort(stream, abortSignal, () => sendDiag('external abort received — aborting Anthropic stream'));
+  const opened = await openStreamWithRetry(() => {
+    const st = getClient().messages.stream(params);
+    // Wire external abort (user-initiated cancel) into every attempt's stream.
+    attachAbort(st, abortSignal, () => sendDiag('external abort received — aborting Anthropic stream'));
+    return st;
+  }, { callLabel: 'bus_matrix_design_streaming', abortSignal });
+  const stream = opened.stream as ReturnType<ReturnType<typeof getClient>['messages']['stream']>;
 
   let fullText = '';
   let thinkingChars = 0;
@@ -1862,7 +1952,7 @@ export async function generateBusMatrixStreaming(
   }, HEARTBEAT_MS);
 
   try {
-    for await (const event of stream) {
+    for await (const event of opened.events) {
       lastEventAt = Date.now();
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const ev = event as any;

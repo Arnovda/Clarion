@@ -72,6 +72,7 @@ import { isSafeReadQuery, assertSafeReadQuery } from '../utils/sqlGuard';
 import { trackMetric, trackEvent } from '../utils/monitoring';
 import { logger as rootLogger } from '../utils/logger';
 import { executeWithSelfHeal, SelfHealOutcome } from '../services/sqlSelfHeal';
+import { isOverloadedError } from '../ai/AIService';
 
 const log = rootLogger.child({ mod: 'query' });
 
@@ -1923,7 +1924,12 @@ router.post('/think', requireAuth, validate(thinkQuerySchema), async (req: Reque
     sse.end();
 
   } catch (err) {
-    log.error({ err }, '[/think] Error');
+    // An Anthropic 529 is capacity, not a fault in the question or the
+    // platform — and it reaches here only after the stream-open retries in
+    // AIService are exhausted. Say so: "try again in a moment" is the true
+    // instruction, and "Something went wrong" reads as a bug.
+    const overloaded = isOverloadedError(err);
+    log[overloaded ? 'warn' : 'error']({ err }, overloaded ? '[/think] AI overloaded after retries' : '[/think] Error');
     // Show the real error to admin/analyst — viewers still get the generic
     // message because raw errors can leak SQL / file paths / internals.
     const role = req.user?.role;
@@ -1932,7 +1938,9 @@ router.post('/think', requireAuth, validate(thinkQuerySchema), async (req: Reque
     const stack = err instanceof Error ? err.stack : undefined;
     emit({
       type: 'error',
-      message: 'Something went wrong. Please try again.',
+      message: overloaded
+        ? 'The AI is very busy right now. Please try again in a moment.'
+        : 'Something went wrong. Please try again.',
       ...(canSeeDetails ? { errorDetail: detail, errorStack: stack } : {}),
     });
     sse.end();
