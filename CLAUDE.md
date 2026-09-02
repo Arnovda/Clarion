@@ -31,7 +31,145 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-09-02 (OWNER DECISION — WAVE 3 IS STOPPED; the
+**Last updated:** 2026-09-02 (SAME DAY, SECOND FINDING — STREAMED AI CALLS NOW
+RETRY A 529; the non-streaming path had retried overload for months while the
+one Ask AI actually uses called the SDK bare)
+
+**Owner's second screenshot, minutes after the first: the same red card, this
+time with `529 {"type":"error","error":{"type":"overloaded_error"…}}` —
+Anthropic capacity, not a SQL slip.** The diagnosis is the same asymmetry
+one layer down. `callClaude` (non-streaming) has had a hand-rolled retry
+for 529/503/500/429 with `RETRY_DELAYS = [2s, 5s, 10s]` for a long time;
+ALL FOUR `messages.stream()` sites — `callClaudeStreaming`,
+`generateSqlStreaming` (the /think generator that failed), star-schema and
+bus-matrix design — called the SDK bare. Under real overload the SDK's own
+quick attempts exhaust and the raw 529 fell straight to /think's outer
+catch → "Something went wrong" + the SDK's JSON.
+- **NEW `openStreamWithRetry()` in AIService**, applied to all four sites
+  and reusing the SAME `MAX_RETRIES`/`RETRY_DELAYS` — one policy, not two.
+  **The retry is limited to OPENING the stream, on purpose**: a 529/503/429
+  answers the request, so it always arrives before the first event; once
+  any event has been consumed a retry would replay text the caller already
+  streamed to a user, so from that point failures propagate as before.
+  That constraint is also what let every existing loop stay untouched — the
+  REAL `MessageStream` is handed back, so `attachAbort`, the bus-matrix
+  watchdog and `finalMessage()` keep working on it. `attachAbort` is wired
+  INSIDE the factory so every attempt's stream is abortable, and an aborted
+  signal stops retrying (Stop must not spend a model call on an answer
+  nobody waits for).
+- **/think says the truth on a 529**: new exported `isOverloadedError()`;
+  after retries are exhausted the card reads "The AI is very busy right
+  now. Please try again in a moment." (logged at warn, not error — it is
+  capacity, not a fault), errorDetail still admin/analyst-only.
+- Validation: backend `npm run check` clean; **9 new tests in
+  `ai-stream-retry.test.ts`** on fake streams (pass-through once; 529 then
+  success with events delivered exactly once and the WORKING stream handed
+  back; 503/500/429 retried; 400 not; **never after an event was consumed**;
+  exhausted after 4 attempts; aborted stops) — both load-bearing guards
+  **verified red** (retry removed → 3 fail; replay-after-event → 1 fail);
+  full vitest **59 files / 602 passed / 4 skipped**; all nine ratchets
+  green from the repo root. Frontend untouched (message is server-side).
+- **SANDBOX LESSON, recorded because it cost a diagnosis**: the first full
+  run came back **29 files failed / 225 skipped** and looked like a
+  catastrophic regression from a two-file diff. It was `ECONNREFUSED
+  127.0.0.1:5432` — the hand-started Postgres (`service postgresql start`,
+  unsupervised in this container) had died between long commands. A
+  two-file diff cannot break 29 files; read one failure's text before
+  believing the count. Restart → 59/602 green.
+- **NOT runtime-exercised against a real 529** (needs Anthropic to be
+  overloaded on cue). Watch production for `'AI stream open retrying'`
+  WARN lines followed by a normal `'AI streaming call completed'`; a run of
+  `'[/think] AI overloaded after retries'` means the schedule is too short
+  for the outage, not that the retry is broken.
+
+**Prior last updated:** 2026-09-02 (ASK AI SELF-HEALS SQL THAT WON'T COMPILE — the
+dead-end "Something went wrong" card for a model bookkeeping slip is gone)
+
+**Owner screenshot from production: Ask AI answered "how does total purchase
+cost compare across suppliers?" with a red card — `Binder Error: Values list
+"pe" does not have a column named "AccountCode"` — and a Retry button that
+re-runs the same generator into the same slip.** The model wrote a CTE and then
+grouped by a column the CTE never projected. Mechanical, self-describing, and
+the one failure class the platform ALREADY knew how to fix — on the other
+path.
+- **THE ASYMMETRY WAS THE FINDING.** `transformationRunner` has run a
+  one-shot AI repair on Binder/Catalog/Parser errors for months
+  (`repairTransformationSql`), and its prompt literally names `"Values list
+  X does not have a column named Y"` as pattern #1. The read path had
+  nothing: in `/query/think` an execution error fell straight through to the
+  outer catch, and the multi-turn `/query/repair` agent never saw it because
+  it is triggered only by a SUSPICIOUS RESULT — a query that ran. So the
+  most repairable failure was the one that never reached the repair.
+- **NEW `services/sqlSelfHeal.ts` — `executeWithSelfHeal`**, the read twin
+  of the transformation repair: apply policies → run → on a compile-shaped
+  error (`isRepairableSqlError`: DuckDB Binder/Catalog/Parser, Postgres
+  `column … does not exist`, MySQL `Unknown column`, MSSQL `Invalid column
+  name`, SQLite `no such column`, `syntax error` — NOT timeouts, permission
+  refusals, connection loss or OOM) → ONE `repairReadQuerySql` call (new in
+  AIService, temperature 0) → re-run. Every refusal throws the ORIGINAL
+  error: repair identical to the input (the prompt's declined-to-fix
+  signal), prose instead of SQL (`isSqlShaped`, moved from
+  transformationRunner into `utils/sqlGuard.ts` so both paths share it),
+  model unavailable, or the repaired query failing too. Wired into BOTH
+  layers of `/think`; the source-layer `finally` also closes a real leak —
+  that connector was disconnected on the success line only, so every failing
+  source query left its connection open.
+- **THE ORDERING RULE THE MODULE EXISTS TO MAKE STRUCTURAL: repair the
+  PRE-policy SQL, re-apply policies to the result.** `applyDataPolicies`
+  WRAPS the query (`SELECT * FROM (…) AS _policy_filtered WHERE …`) and
+  rewrites masked columns to `'***'`; handing the model the wrapped text and
+  trusting its rewrite would let it drop the wrapper — a policy bypass that
+  looks exactly like a successful repair. So the service owns the whole
+  sequence and callers never see the intermediate. Three more gates on the
+  repaired text, each pinned by a test verified to go RED when its guard is
+  removed: `assertSafeReadQuery` runs again (fresh model output carries the
+  same zero trust as first-pass generation — a repair naming
+  `read_parquet('az://…other tenant…')` is refused), policies are re-applied
+  to the repaired SQL rather than carried over, and a repair that attracts
+  FEWER policies than the original is refused (a dropped join is
+  occasionally legitimate, but it is also what evasion looks like and the
+  two are indistinguishable from here — the safe direction costs a repair,
+  the other costs a viewer rows a policy hides).
+- **The card reuses the vocabulary it already had.** `done` now carries
+  `wasRepaired` + a one-line plain-prose `repairSummary` → the existing
+  "✓ Checked & corrected" trust mark and "What I checked" trail, which
+  render for every role — hence no SQL and no raw DB error in the line.
+  The phase strip says "Fixing the query…" while it runs; `sql_ready` is
+  re-emitted to admin/analyst with the corrected SQL so the timeline and
+  the card never disagree; `query_log.generated_sql` is corrected to the
+  SQL that ran (the log feeds the gaps review). Confidence is the ORIGINAL
+  score on purpose: it measured the question→intent mapping, which the
+  repair does not touch — it fixes a compile slip — and the mark says so.
+  `wasRepaired` turned out to already be a first-class persisted column
+  (`was_repaired`), not a meta field; a first draft duplicated it and tsc
+  caught the overwrite.
+- Validation: backend `npm run check` clean; full vitest **58 files / 593
+  passed / 4 skipped** (14 new in `sql-self-heal.test.ts`: the dialect
+  matrix both directions, the production Binder error repaired with the
+  corrected SQL reported as the one that ran, the pre-policy/re-apply
+  ordering, cross-tenant read refused, dropped-policy refused, prose
+  refused, identical refused, non-repairable never calls the model,
+  original error reported on second failure and on model failure,
+  onRepairStart once/never); all nine ratchets green from the repo root;
+  frontend `tsc` clean, `page.tsx` lint-clean (the one warning is
+  pre-existing on an untouched line), `next build` green 46/46 (`/query`
+  40.9 kB). SANDBOX: backend `npm install` built DuckDB natively (~12
+  min); connectors installed `--ignore-scripts` with the backend's
+  `duckdb.node` copied across (both 1.4.2), per the hook recipe.
+- **NOT runtime-exercised against a live model** — the repair prompt has not
+  seen a real Anthropic response. Watch the first production `'[self-heal]
+  query failed to compile — attempting one repair'` line and whether
+  `'[self-heal] repair succeeded'` follows it; a run of `repair returned
+  prose` warnings means the prompt needs tightening.
+- **NOT in this PR, deliberately**: the non-streaming `POST /query` (used by
+  the dashboard assistant's Ask mode), `/cross-view` and `/forecast` — same
+  dead-end shape, same helper would fit, but each has its own error
+  surface and the Ask AI page was the named pain. The Stop button during
+  the repair call: `sse.closed` is checked before execution, but the one
+  extra model call is not abortable (no signal is threaded to it) — bounded
+  at 2048 tokens, noted rather than plumbed.
+
+**Prior last updated:** 2026-09-02 (OWNER DECISION — WAVE 3 IS STOPPED; the
 market-readiness remediation ends at wave 2, complete)
 
 **Doc-only entry recording a decision, not code.** Asked "We're doing

@@ -71,8 +71,28 @@ import { findVerifiedQuestion, recordVerifiedUse } from '../services/savedQuesti
 import { isSafeReadQuery, assertSafeReadQuery } from '../utils/sqlGuard';
 import { trackMetric, trackEvent } from '../utils/monitoring';
 import { logger as rootLogger } from '../utils/logger';
+import { executeWithSelfHeal, SelfHealOutcome } from '../services/sqlSelfHeal';
+import { isOverloadedError } from '../ai/AIService';
 
 const log = rootLogger.child({ mod: 'query' });
+
+/**
+ * Turn a self-heal into the two fields the answer card already understands:
+ * `wasRepaired` drives the "✓ Checked & corrected" trust mark, and
+ * `repairSummary` fills the "What I checked" trail. Absent when nothing was
+ * repaired — an always-on mark says nothing.
+ *
+ * The trail renders for EVERY role, so the line is plain prose: no SQL, no raw
+ * database error. The failing SQL and the error are in the server log, and the
+ * corrected SQL is on the card for the roles allowed to see SQL at all.
+ */
+function selfHealReport(outcome: SelfHealOutcome): { wasRepaired?: boolean; repairSummary?: string[] } {
+  if (!outcome.repair) return {};
+  return {
+    wasRepaired: true,
+    repairSummary: ['My first query had a mistake in it. I corrected it and ran it again — this answer is from the corrected query.'],
+  };
+}
 
 function shouldBlockQuery(r: NlToSqlOutput): { blocked: boolean; reason: string } {
   // Safety gate FIRST: the generated SQL must be a single read-only
@@ -1497,15 +1517,32 @@ router.post('/think', requireAuth, validate(thinkQuerySchema), async (req: Reque
       if (sse.closed) return;
 
       emit({ type: 'phase', text: 'Running your query…' });
-      const thinkPolicyResult = await applyDataPolicies(nlResult.sql, req.user!.sub, req.user!.role, req.user!.tenantId);
       const connector = await createProductConnector(thinkProductWarehouse, connection.id, req.user!.tenantId);
       await connector.connect();
-      let queryRows: Record<string, unknown>[];
+      let healed: SelfHealOutcome;
       try {
-        const result = await connector.executeQuery(thinkPolicyResult.sql);
-        queryRows = result.rows;
+        // Self-heal: SQL the warehouse refuses to compile is the model's own
+        // slip, and the error text says exactly what it was. One repair here
+        // beats a dead-end error card the user can only retry into the same
+        // failure. Policies are applied inside — see services/sqlSelfHeal.ts.
+        healed = await executeWithSelfHeal({
+          sql: nlResult.sql,
+          question,
+          schemaContext: thinkProductCtx.semanticContext,
+          userId: req.user!.sub, userRole: req.user!.role, tenantId: req.user!.tenantId,
+          execute: async (s) => (await connector.executeQuery(s)).rows,
+          onRepairStart: () => emit({ type: 'phase', text: 'Fixing the query…' }),
+        });
       } finally {
         connector.disconnect();
+      }
+      const queryRows = healed.rows;
+      const thinkPolicyResult = healed.policy;
+      const thinkSql = healed.sql;
+      // The timeline already showed the SQL that failed; after a repair it
+      // must agree with the card, which shows the SQL that produced the rows.
+      if (healed.repair && privileged) {
+        emit({ type: 'sql_ready', sql: thinkSql, confidence: nlResult.confidence, tablesUsed: nlResult.tables_used });
       }
 
       emit({ type: 'phase', text: 'Writing the answer…' });
@@ -1514,7 +1551,12 @@ router.post('/think', requireAuth, validate(thinkQuerySchema), async (req: Reque
         validateQueryResultIfNeeded(nlResult.confidence, question, thinkPolicyResult.sql, queryRows),
         resolveAnswerSources(db, thinkTenantId, nlResult.tables_used),
       ]);
-      await db('query_log').where({ id: queryLogId }).update({ executed: true, result_summary: answer });
+      // On a repair the log was written with the SQL that failed. Correct it:
+      // this table is the record of what ran, and it feeds the gaps review.
+      await db('query_log').where({ id: queryLogId }).update({
+        executed: true, result_summary: answer,
+        ...(healed.repair ? { generated_sql: thinkSql } : {}),
+      });
 
       emit({ type: 'done', data: {
         answer, confidence: nlResult.confidence,
@@ -1524,10 +1566,11 @@ router.post('/think', requireAuth, validate(thinkQuerySchema), async (req: Reque
         blocked: false, tablesUsed: nlResult.tables_used, queryLayer: 'product',
         ...(validation.ok ? {} : { warning: (validation as { ok: boolean; warning?: string }).warning }),
         ...(thinkPolicyResult.policiesApplied > 0 ? { policyNotice: 'Results filtered by data access policies' } : {}),
-        rows: queryRows.slice(0, 200), sql: nlResult.sql,
+        rows: queryRows.slice(0, 200), sql: thinkSql,
         sources,
         answeredInMs: Date.now() - askedAt,
         ...(nlResult.visualization ? { visualization: nlResult.visualization } : {}),
+        ...selfHealReport(healed),
         debug: { hint: `Query executed against product layer with confidence ${Math.round(nlResult.confidence * 100)}%.` },
       }});
       sse.end(); return;
@@ -1820,11 +1863,30 @@ router.post('/think', requireAuth, validate(thinkQuerySchema), async (req: Reque
     // ── 7. Execute SQL ──────────────────────────────────────────────────────
     if (sse.closed) return;   // asker stopped — see the product-layer note above
     emit({ type: 'phase', text: 'Running your query…' });
-    const thinkSrcPolicy = await applyDataPolicies(nlResult.sql, req.user!.sub, req.user!.role, req.user!.tenantId);
     const queryConnector = await createConnector(connection);
     await queryConnector.connect();
-    const queryResult = await queryConnector.executeQuery(thinkSrcPolicy.sql);
-    queryConnector.disconnect();
+    let srcHealed: SelfHealOutcome;
+    try {
+      // Same self-heal as the product layer. The `finally` also fixes a real
+      // leak: this connector used to be disconnected on the success line only,
+      // so a failing query left the source connection open.
+      srcHealed = await executeWithSelfHeal({
+        sql: nlResult.sql,
+        question,
+        schemaContext: semanticContext,
+        userId: req.user!.sub, userRole: req.user!.role, tenantId: req.user!.tenantId,
+        execute: async (s) => (await queryConnector.executeQuery(s)).rows,
+        onRepairStart: () => emit({ type: 'phase', text: 'Fixing the query…' }),
+      });
+    } finally {
+      queryConnector.disconnect();
+    }
+    const queryResult = { rows: srcHealed.rows };
+    const thinkSrcPolicy = srcHealed.policy;
+    const thinkSrcSql = srcHealed.sql;
+    if (srcHealed.repair && privileged) {
+      emit({ type: 'sql_ready', sql: thinkSrcSql, confidence: nlResult.confidence, tablesUsed: nlResult.tables_used });
+    }
 
     // ── 8. Format answer ────────────────────────────────────────────────────
     emit({ type: 'phase', text: 'Writing the answer…' });
@@ -1834,7 +1896,11 @@ router.post('/think', requireAuth, validate(thinkQuerySchema), async (req: Reque
       resolveAnswerSources(db, thinkTenantId, nlResult.tables_used),
     ]);
 
-    await db('query_log').where({ id: queryLogId }).update({ executed: true, result_summary: answer });
+    // See the product-layer note: the log must hold the SQL that ran.
+    await db('query_log').where({ id: queryLogId }).update({
+      executed: true, result_summary: answer,
+      ...(srcHealed.repair ? { generated_sql: thinkSrcSql } : {}),
+    });
 
     emit({ type: 'done', data: {
       answer, confidence: nlResult.confidence,
@@ -1846,10 +1912,11 @@ router.post('/think', requireAuth, validate(thinkQuerySchema), async (req: Reque
       ...(validation.ok ? {} : { warning: (validation as { ok: boolean; warning?: string }).warning }),
       ...(thinkSrcPolicy.policiesApplied > 0 ? { policyNotice: 'Results filtered by data access policies' } : {}),
       rows: queryResult.rows.slice(0, 200),
-      sql: nlResult.sql,
+      sql: thinkSrcSql,
       sources,
       answeredInMs: Date.now() - askedAt,
       ...(nlResult.visualization ? { visualization: nlResult.visualization } : {}),
+      ...selfHealReport(srcHealed),
       debug: { confirmedTables: tables.length, confirmedColumns: columns.length, confirmedRelationships: relationships.length, confirmedKpis: kpis.length,
         hint: `Query executed successfully with confidence ${Math.round(nlResult.confidence * 100)}%.`,
         semanticContext, relationshipContext, kpiFormulas },
@@ -1857,7 +1924,12 @@ router.post('/think', requireAuth, validate(thinkQuerySchema), async (req: Reque
     sse.end();
 
   } catch (err) {
-    log.error({ err }, '[/think] Error');
+    // An Anthropic 529 is capacity, not a fault in the question or the
+    // platform — and it reaches here only after the stream-open retries in
+    // AIService are exhausted. Say so: "try again in a moment" is the true
+    // instruction, and "Something went wrong" reads as a bug.
+    const overloaded = isOverloadedError(err);
+    log[overloaded ? 'warn' : 'error']({ err }, overloaded ? '[/think] AI overloaded after retries' : '[/think] Error');
     // Show the real error to admin/analyst — viewers still get the generic
     // message because raw errors can leak SQL / file paths / internals.
     const role = req.user?.role;
@@ -1866,7 +1938,9 @@ router.post('/think', requireAuth, validate(thinkQuerySchema), async (req: Reque
     const stack = err instanceof Error ? err.stack : undefined;
     emit({
       type: 'error',
-      message: 'Something went wrong. Please try again.',
+      message: overloaded
+        ? 'The AI is very busy right now. Please try again in a moment.'
+        : 'Something went wrong. Please try again.',
       ...(canSeeDetails ? { errorDetail: detail, errorStack: stack } : {}),
     });
     sse.end();

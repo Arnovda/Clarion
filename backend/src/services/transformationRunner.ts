@@ -18,6 +18,7 @@ import { invalidateWidgetCache } from './widgetCache';
 import { invalidateFilterOptionsCache } from './filterOptionsCache';
 import { publishInvalidation } from '../jobs/cacheBus';
 import { trackMetric, trackEvent } from '../utils/monitoring';
+import { isSqlShaped } from '../utils/sqlGuard';
 import {
   publishProductTable,
   publishRollup,
@@ -147,27 +148,10 @@ async function syncProductColumns(
 // Path / Azure / view / writer primitives now live in services/warehouse/.
 // Keep this file focused on transformation orchestration.
 
-/**
- * Cheap, conservative "is this even SQL?" check before we hand a string to
- * DuckDB or to the AI repair loop. We only check the OPENING token — that
- * catches the common failure mode (LLM apology / reasoning text persisted
- * as transformation_sql) without trying to parse the whole query
- * client-side.
- *
- * Comments / leading whitespace / parenthesis are tolerated. Anything else
- * starting with a non-SQL word (e.g. "I cannot", "Since", "Sorry") is
- * treated as prose and triggers a regenerate-from-scratch path higher up.
- */
-export function isSqlShaped(sql: string): boolean {
-  if (!sql || typeof sql !== 'string') return false;
-  // Strip line comments + leading whitespace + leading '('
-  const stripped = sql
-    .replace(/^\s*--[^\n]*\n/g, '')
-    .replace(/^\s+/, '')
-    .replace(/^\(+/, '')
-    .replace(/^\s+/, '');
-  return /^(SELECT|WITH)\b/i.test(stripped);
-}
+// `isSqlShaped` now lives in utils/sqlGuard.ts so the read paths (Ask AI's
+// self-heal) can share one definition of "is this SQL or is it prose?".
+// Re-exported here because this module's callers and tests import it.
+export { isSqlShaped };
 
 /**
  * Collect a compact text listing of every table/view currently registered in

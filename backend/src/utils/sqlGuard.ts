@@ -205,3 +205,28 @@ export function isSafeReadQuery(sql: string): boolean {
     return false;
   }
 }
+
+/**
+ * Cheap, conservative "is this even SQL?" check before we hand a model's
+ * output to a database or persist it. We only check the OPENING token — that
+ * catches the common failure mode (an LLM apology or reasoning text returned
+ * where SQL was asked for) without trying to parse the whole query.
+ *
+ * Comments / leading whitespace / parenthesis are tolerated. Anything else
+ * starting with a non-SQL word (e.g. "I cannot", "Since", "Sorry") is
+ * treated as prose and is rejected by the caller.
+ *
+ * This is a SHAPE check, not a safety check — it says nothing about whether
+ * the query is safe to run. Every execution path must still go through
+ * {@link assertSafeReadQuery} (reads) or the write-path guards.
+ */
+export function isSqlShaped(sql: string): boolean {
+  if (!sql || typeof sql !== 'string') return false;
+  // Strip line comments + leading whitespace + leading '('
+  const stripped = sql
+    .replace(/^\s*--[^\n]*\n/g, '')
+    .replace(/^\s+/, '')
+    .replace(/^\(+/, '')
+    .replace(/^\s+/, '');
+  return /^(SELECT|WITH)\b/i.test(stripped);
+}
