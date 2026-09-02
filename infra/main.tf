@@ -137,8 +137,25 @@ resource "azurerm_postgresql_flexible_server" "main" {
   public_network_access_enabled = true
   tags                          = var.tags
 
+  # Zone-redundant HA (P1-4) — a synchronous standby in a second zone with
+  # automatic failover (RPO 0, RTO 60-120s). Gated on a variable rather than
+  # on by default because Azure does NOT support HA on the Burstable tier and
+  # pg_sku defaults to B_Standard_B1ms: enabling this requires a General
+  # Purpose SKU too (~10× the Postgres bill). Until then the recovery story
+  # is the 14-day PITR + geo-redundant backup above — documented, with the
+  # RTO/RPO it actually delivers, in docs/runbooks/disaster-recovery.md.
+  dynamic "high_availability" {
+    for_each = var.pg_high_availability ? [1] : []
+    content {
+      mode = "ZoneRedundant"
+    }
+  }
+
   lifecycle {
-    ignore_changes = [zone]
+    # `zone` was assigned by Azure at creation; the standby zone is likewise
+    # Azure's pick when HA is on. Ignoring both keeps a later plan from
+    # proposing a pointless (and disruptive) zone move.
+    ignore_changes = [zone, high_availability[0].standby_availability_zone]
   }
 }
 
@@ -197,6 +214,17 @@ resource "azurerm_storage_account" "warehouse" {
     versioning_enabled = true
   }
 
+  # Soft-delete for FILE SHARES (P1-4). The blob_properties block above does
+  # NOT cover shares — before this, deleting the neo4j-data share (and every
+  # snapshot on it) was unrecoverable. Azure Backup for file shares requires
+  # this anyway; keep >= the backup policy's retention so a deleted share can
+  # outlive its newest snapshot.
+  share_properties {
+    retention_policy {
+      days = 30
+    }
+  }
+
   tags = var.tags
 }
 
@@ -210,6 +238,76 @@ resource "azurerm_storage_share" "neo4j_data" {
   name                 = "neo4j-data"
   storage_account_name = azurerm_storage_account.warehouse.name
   quota                = 5
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Neo4j backup (P1-4) — daily Azure Backup snapshots of the neo4j-data share
+#
+# WHY SNAPSHOTS AND NOT DUMPS: Neo4j 5 Community has no online backup —
+# `neo4j-admin database dump` requires the database STOPPED, so a scheduled
+# dump means scheduled downtime. A share snapshot is crash-consistent, and
+# Neo4j's transaction log recovers from one exactly as from a power cut, so
+# the snapshot needs no cooperation from the running container. This was the
+# graph's FIRST recovery point of any kind: before it, the share had GRS
+# replication (which faithfully replicates corruption) and nothing else.
+#
+# WHERE THE SNAPSHOTS LIVE: inside the storage account itself — the vault
+# holds only metadata. Loss of the account is covered by the account-level
+# protections (GRS + the 30-day share soft-delete above + the vault's own
+# soft delete), not by the snapshots. Cost is a small protected-instance fee
+# plus snapshot delta storage — single-digit EUR/month at this share size.
+#
+# RESTORE is a portal/az operation (whole share or single files, in place or
+# to another share) — the step-by-step, and the rehearsal checklist this
+# control is not complete without, live in docs/runbooks/disaster-recovery.md.
+# ─────────────────────────────────────────────────────────────────────────────
+
+resource "azurerm_recovery_services_vault" "main" {
+  name                = "${var.project_name}-${var.environment}-rsv"
+  location            = azurerm_resource_group.main.location
+  resource_group_name = azurerm_resource_group.main.name
+  sku                 = "Standard"
+  # Vault soft delete: a deleted backup item stays recoverable for 14 days —
+  # protects the backups themselves from a bad script or a bad day.
+  soft_delete_enabled = true
+  # File-share backups are snapshot-based and live in the storage account, so
+  # the vault's own storage redundancy protects only its metadata; LRS is
+  # enough and the cheapest.
+  storage_mode_type = "LocallyRedundant"
+  tags              = var.tags
+}
+
+resource "azurerm_backup_container_storage_account" "warehouse" {
+  resource_group_name = azurerm_resource_group.main.name
+  recovery_vault_name = azurerm_recovery_services_vault.main.name
+  storage_account_id  = azurerm_storage_account.warehouse.id
+}
+
+resource "azurerm_backup_policy_file_share" "neo4j_daily" {
+  name                = "${var.project_name}-${var.environment}-neo4j-daily"
+  resource_group_name = azurerm_resource_group.main.name
+  recovery_vault_name = azurerm_recovery_services_vault.main.name
+  timezone            = "UTC"
+
+  backup {
+    frequency = "Daily"
+    # 02:30 UTC — the platform's quietest hour for graph WRITES (profiling
+    # and builds are user-triggered, daytime CET), which minimises how much
+    # the crash-consistent snapshot asks of Neo4j's recovery on restore.
+    time = "02:30"
+  }
+
+  retention_daily {
+    count = var.neo4j_backup_retention_days
+  }
+}
+
+resource "azurerm_backup_protected_file_share" "neo4j_data" {
+  resource_group_name       = azurerm_resource_group.main.name
+  recovery_vault_name       = azurerm_recovery_services_vault.main.name
+  source_storage_account_id = azurerm_backup_container_storage_account.warehouse.storage_account_id
+  source_file_share_name    = azurerm_storage_share.neo4j_data.name
+  backup_policy_id          = azurerm_backup_policy_file_share.neo4j_daily.id
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -269,7 +367,25 @@ resource "azurerm_container_app_environment" "main" {
   tags                       = var.tags
 }
 
-# Persistent storage for Neo4j data
+# Backing share for optional Redis AOF persistence (P1-4). Created only when
+# the flag is on so the default posture costs nothing.
+resource "azurerm_storage_share" "redis_data" {
+  count                = var.redis_persistence_enabled ? 1 : 0
+  name                 = "redis-data"
+  storage_account_name = azurerm_storage_account.warehouse.name
+  quota                = 1
+}
+
+resource "azurerm_container_app_environment_storage" "redis_data" {
+  count                        = var.redis_persistence_enabled ? 1 : 0
+  name                         = "redisdata"
+  container_app_environment_id = azurerm_container_app_environment.main.id
+  account_name                 = azurerm_storage_account.warehouse.name
+  share_name                   = azurerm_storage_share.redis_data[0].name
+  access_key                   = azurerm_storage_account.warehouse.primary_access_key
+  access_mode                  = "ReadWrite"
+}
+
 # Redis Container App — required for BullMQ queues + repeatable jobs.
 # Without Redis: scheduled transformations, scheduled email reports, AND the
 # new scheduled connection syncs are all dormant. Adding it as a Container
@@ -287,15 +403,33 @@ resource "azurerm_container_app" "redis" {
     min_replicas = 1
     max_replicas = 1
 
+    # AOF persistence (P1-4) — OFF by default; see redis_persistence_enabled
+    # in variables.tf for the full trade-off. The default posture is a
+    # DECISION, not an oversight: everything durable that rides Redis has a
+    # Postgres source of truth, and the residual loss on a restart (delayed
+    # one-shot jobs, in-flight queue entries, rate-limit windows) fails
+    # visibly and is re-triggerable. The written RPO for both postures is in
+    # docs/runbooks/disaster-recovery.md.
+    dynamic "volume" {
+      for_each = var.redis_persistence_enabled ? [1] : []
+      content {
+        name         = "redis-data"
+        storage_name = azurerm_container_app_environment_storage.redis_data[0].name
+        storage_type = "AzureFile"
+      }
+    }
+
     container {
       name   = "redis"
       image  = "redis:7-alpine"
       cpu    = 0.25
       memory = "0.5Gi"
 
-      # Persistence intentionally OFF (no AOF/RDB) — queue state is
+      # Persistence intentionally OFF by default (no AOF/RDB) — queue state is
       # recoverable from Postgres + the orchestrator's idempotency, and
-      # bullmq doesn't depend on durability for repeatable jobs.
+      # bullmq doesn't depend on durability for repeatable jobs. The
+      # persistent variant keeps RDB off and uses AOF everysec on the Azure
+      # Files mount (fsync over SMB — measure queue latency before trusting).
       # Wrap the empty-string arg in `sh -c` because the azurerm provider
       # can't represent empty strings in the `command` array.
       # `maxmemory-policy noeviction` is not optional: BullMQ's own production
@@ -304,7 +438,15 @@ resource "azurerm_container_app" "redis" {
       # hash or a lock key and jobs silently vanish or stall. Redis defaults to
       # noeviction when no maxmemory is set, but we set it explicitly so the
       # guarantee survives someone later capping memory.
-      command = ["sh", "-c", "exec redis-server --save '' --appendonly no --maxmemory-policy noeviction"]
+      command = var.redis_persistence_enabled ? ["sh", "-c", "exec redis-server --dir /data --save '' --appendonly yes --appendfsync everysec --maxmemory-policy noeviction"] : ["sh", "-c", "exec redis-server --save '' --appendonly no --maxmemory-policy noeviction"]
+
+      dynamic "volume_mounts" {
+        for_each = var.redis_persistence_enabled ? [1] : []
+        content {
+          name = "redis-data"
+          path = "/data"
+        }
+      }
     }
   }
 

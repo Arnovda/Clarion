@@ -102,6 +102,32 @@ variable "custom_domain" {
   description = "Custom domain name. Leave empty to skip DNS zone creation."
 }
 
+# ── Resilience & backup (P1-4) ──────────────────────────────────────────────
+# The written RTO/RPO these settings deliver lives in
+# docs/runbooks/disaster-recovery.md — keep the two in step.
+
+variable "pg_high_availability" {
+  type        = bool
+  default     = false
+  description = "Zone-redundant HA for PostgreSQL (a synchronous standby in a second availability zone; automatic failover, RPO 0, RTO 60-120s). Default OFF for a hard reason, not preference: Azure does not support HA on the Burstable tier, and pg_sku defaults to B_Standard_B1ms — flipping this alone would fail the apply. Enabling it therefore means BOTH pg_sku >= GP_Standard_D2ds_v4 AND this flag, which roughly 10×es the Postgres bill (~25 -> ~260 EUR/month: General Purpose compute, twice, plus HA storage). Until a customer's contract needs RPO 0 on Postgres, the 14-day PITR + geo-redundant backups below it are the recovery story — restore-from-backup, not failover. See docs/runbooks/disaster-recovery.md for the RTO/RPO either way."
+}
+
+variable "redis_persistence_enabled" {
+  type        = bool
+  default     = false
+  description = "AOF persistence for Redis on an Azure Files mount. Default OFF because ephemerality is a DECISION here, not an oversight (recorded in the redis app's command comment since the Fase-2 split): Postgres is the source of truth for every schedule, jobs/scheduleReconciler re-registers repeatable jobs on reconnect, startup crash-recovery closes interrupted runs, and the liveness reapers fail orphans within ~10 minutes — so a Redis restart today loses only delayed one-shot jobs and in-flight queue entries, all of which fail visibly and are re-triggerable. What flipping this buys is a narrower window on exactly those; what it costs is AOF fsync over SMB on every queue operation and a new failure mode (a corrupt AOF tail can refuse to load and turn an ephemeral blip into an outage — redis 7's aof-load-truncated default tolerates clean truncation, not corruption). If you flip it, VALIDATE LIVE before trusting it: restart the redis revision and watch a delayed job survive; nothing in CI exercises this path."
+}
+
+variable "neo4j_backup_retention_days" {
+  type        = number
+  default     = 30
+  description = "Daily-snapshot retention for the Neo4j file share via Azure Backup. Snapshots are crash-consistent: Neo4j 5's transaction log recovers from one exactly as from a power cut, which is why share snapshots — not neo4j-admin dumps — are the mechanism (Community edition has no online backup; a dump requires the database STOPPED, i.e. scheduled downtime). RPO is therefore up to 24h on the graph; the residual loss is bounded because most of the graph is rebuildable from Postgres (migrateSemanticToNeo4j + syncAllProducts + re-Analyse) — the true 24h exposure is un-mirrored human edits (the revert/approve/import paths CLAUDE.md lists as un-mirrored)."
+  validation {
+    condition     = var.neo4j_backup_retention_days >= 7 && var.neo4j_backup_retention_days <= 180
+    error_message = "neo4j_backup_retention_days must be between 7 and 180."
+  }
+}
+
 # ── Warehouse & compute (storage-layer hardening) ───────────────────────────
 
 variable "warehouse_container_mode" {

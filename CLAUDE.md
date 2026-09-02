@@ -31,7 +31,67 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-09-01 (P1-7 REMEDIATION — a frontend type error can no
+**Last updated:** 2026-09-02 (P1-4 REMEDIATION, HCL HALF — the graph gets its
+first recovery point, and the RTO/RPO the platform offers is WRITTEN DOWN;
+the apply and the restore rehearsal are the owner's acts)
+
+**Sixth wave-2 PR of the market-readiness remediation plan. Infra + docs
+only — no application code, and deliberately NOTHING APPLIED (the standing
+boundary: no workflow runs terraform, state lives on the owner's machine, so
+`terraform plan`/`apply` from infra/ is the owner's act).**
+- **THE SUBSTANTIVE FIX IS THE NEO4J RECOVERY POINT.** Daily Azure Backup
+  snapshots of the `neo4j-data` share (Recovery Services vault + file-share
+  policy 02:30 UTC + protected share; retention `neo4j_backup_retention_days`,
+  default 30) — **snapshots, not dumps, on purpose**: Neo4j 5 Community has
+  no online backup (`neo4j-admin database dump` needs the database STOPPED =
+  scheduled downtime), while a crash-consistent share snapshot is exactly a
+  power cut to Neo4j's WAL, needing no cooperation from the running
+  container. Before this the graph had GRS replication — which faithfully
+  replicates corruption — and NO recovery point of any kind. Plus 30-day
+  **share soft-delete** on the storage account (`share_properties` — the
+  existing blob soft-delete never covered file shares, so deleting the share
+  and every snapshot on it was unrecoverable).
+- **TWO FINDINGS SHARPENED on verification, both now variable-gated instead
+  of switched on blind.** (a) Postgres HA **cannot simply be enabled**:
+  Azure does not support zone-redundant HA on the Burstable tier and
+  `pg_sku` is `B_Standard_B1ms` — an unconditional `high_availability`
+  block would fail the apply. Ships as `pg_high_availability` (default
+  false) with the real prerequisite (GP SKU, ~10× the Postgres bill) in the
+  description; the standby zone joins `lifecycle.ignore_changes`. (b) Redis
+  ephemerality **was a decision, not an oversight** — the command comment
+  has said so since the Fase-2 split (Postgres is the source of truth,
+  `scheduleReconciler` re-registers repeatables on reconnect, the P1-1
+  liveness reapers bound orphan lifetime to ~10min); a restart loses only
+  delayed one-shots and in-flight entries, all visible and re-triggerable.
+  Ships as `redis_persistence_enabled` (default false): AOF-everysec on an
+  Azure Files mount, RDB stays off, with the costs stated (fsync over SMB
+  per queue op; a corrupt AOF tail can refuse to load — worse than
+  ephemeral) and a flip-then-rehearse instruction.
+- **NEW `docs/runbooks/disaster-recovery.md` — the written RTO/RPO offer**,
+  per store (Postgres ≤~15min/PITR 14d + geo-restore; Neo4j ≤24h with the
+  residual bounded because most of the graph rebuilds from Postgres — the
+  true 24h exposure is the un-mirrored revert/approve/import edits; Redis
+  "everything in flight", deliberately; blob GRS + soft-delete + re-sync as
+  the ultimate fallback), restore procedures (Postgres PITR incl. the
+  role-check step a naive restore misses — the restored server must be
+  verified with `preflight-role-flip.ts` and the `database-url` secret
+  re-spliced with `databridge_app`, not the admin login; Neo4j snapshot
+  restore AND the rebuild-from-Postgres path B), and **§6 the rehearsal
+  checklist** — stated plainly that NO restore has been rehearsed and
+  nothing may be quoted to a customer before those boxes are ticked.
+- Validation: both edited .tf files parse clean under python-hcl2 (a step
+  better than the previous hand-check standard; still NOT
+  `terraform validate` — no terraform binary in the sandbox, the standing
+  limitation on every infra edit); every file path the runbook cites
+  verified to exist; backend/frontend untouched (git status).
+- **NOT in this PR, deliberately**: the apply (owner's act, leads §6);
+  the restore rehearsal (ditto — the RTO/RPO table says its numbers are
+  unquotable until measured); flipping either default-off flag (HA wants a
+  paying contract that needs RPO 0; Redis AOF wants the live
+  delayed-job-survives-restart check first); Neo4j HA/clustering
+  (Enterprise-only, out of scope at this size).
+
+**Prior last updated:** 2026-09-01 (P1-7 REMEDIATION — a frontend type error can no
 longer reach production, and the frontend has its FIRST unit tests)
 
 **Fifth wave-2 PR of the market-readiness remediation plan (P1-7 pulled
