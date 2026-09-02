@@ -31,7 +31,97 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-09-02 (P1-4 REMEDIATION, HCL HALF — the graph gets its
+**Last updated:** 2026-09-02 (P1-6 REMEDIATION — every metric and worker
+failure names its TENANT, and /admin/tenants answers "whose experience is
+broken?"; WAVE 2 IS COMPLETE)
+
+**Seventh and final wave-2 PR of the market-readiness remediation plan.**
+- **THE FINDING NEEDED SHARPENING FIRST**: request LOG lines have carried
+  tenantId since requestLogger was written; what dropped it was every
+  METRIC (`api_response_time_ms` and all four `ai_*` metrics had `tenantId`
+  in scope at every call site and omitted it from props), every worker
+  `failed` log line + `trackException` (11 handlers — queue and jobId only),
+  and there was no aggregation surface at all.
+- **NEW `services/tenantRequestStats.ts`** — a 24h rolling per-tenant window
+  in Redis fed by requestLogger on every authed request: ONE hash per hour
+  (`obs:req:<hourIndex>`), fields namespaced per tenant (`<tid>:n/err/dur/
+  b0..b9`), so reading the whole window is 24 pipelined HGETALLs whatever
+  the tenant count and replicas share counters via HINCRBY exactly like the
+  P1-2 rate-limit store. `err` counts 5xx ONLY (a 4xx is the caller's
+  behaviour). p95 is honestly a HISTOGRAM-BUCKET UPPER BOUND (bounds 50ms →
+  30s; overflow reports the last bound as "at least") — the console decides
+  between 500ms and 10s, not between 480 and 500. Fail-open both ways: no
+  Redis → no-op and "no data" (null, NEVER fabricated zeros — pinned by the
+  console test), Redis error → sample dropped / read empty at debug.
+- **THE "ONE DASHBOARD" IS `/admin/tenants`** — deliberately not an Azure
+  workbook: the P1-5 console already showed sync success and AI cost per
+  tenant, so the new Traffic (24h) column (requests · 5xx in red · bucket
+  p95) completes all four of the finding's quantities where the operator
+  already looks. Route reads the stats ONCE for the whole list; a stats
+  failure degrades the column, never the console.
+- **tenantId now rides every AI metric + both "AI call completed" info
+  lines** (AIService, 4 props sites) **and every worker failure** (11
+  handlers via `tenantOf`/`tenantProp` — platform-wide queues simply have
+  no tenant and omit it).
+- **THE THREE PARKED ALERT ITEMS SHIPPED WITH IT** (the doc itself filed
+  them under this pass): (a) **`clarion-brute-force`** — both brute
+  limiters now route through `bruteLimitHandler`
+  (middleware/rateLimitStore.ts, unit-tested: response byte-identical to
+  the default handler) which logs the LOAD-BEARING `'brute force limit
+  hit'` line per refused request (no email in the line — an address in an
+  alertable log is a disclosure; IP+path+limiter suffice); (b)
+  **`clarion-queue-depth`** — `jobs/queueDepthMonitor.ts` sweeps BullMQ
+  WAITING counts (waiting, not delayed — delayed holds legitimate
+  scheduled work and P1-1 fairness retries) every 60s in the
+  scheduler-owning process only (depth is global Redis state; every
+  replica emitting would double-count), ships a `queue_depth` metric and
+  logs `'queue depth high'` at ≥`QUEUE_DEPTH_WARN` (default 25); both
+  rules added to alerts.yml's upsert list + `.ops/alerts` (whose edit
+  re-runs the workflow on merge — that run CREATES the rules; read its
+  summary); (c) the **uptime web test is deferred a second time, now with
+  the decision recorded in `.ops/alerts`**: an untestable az ARM blob
+  inside a control whose contract is "any rule that fails to create fails
+  the run" risks the working alert path — it is ONE portal act (~3 min:
+  App Insights → Availability → standard test on /api/ping → route to
+  clarion-alerts).
+- **PROVEN LIVE, after a trap worth recording**: the first live demo hit a
+  STALE pre-change backend still squatting the port from an earlier
+  session — 429s with zero log lines, which read as a defect and was
+  evidence of nothing. On a verified-fresh process: `queue depth monitor
+  started` at boot; 5×401 → 2×429 with two `'brute force limit hit'` WARN
+  lines; a real tenant's three authed 200s accumulating as
+  `775:n=3/dur=38/b0=3` in redis-cli; and the service itself round-tripped
+  against real ioredis (pipeline shape, 26h TTL, avg/p95 math all
+  confirmed — the fake in tests could have masked API misuse, the P1-2
+  lesson). Also self-inflicted proof the limiter works: the demo's 5
+  failed logins locked the sandbox IP out of login for the full window.
+- **Drive-bys**: tests force `REDIS_URL=''` in setup.ts (the suite asserts
+  no-redis behaviours; a developer's .env must not flip them);
+  `test-results/` gitignored.
+- Validation: backend `npm run check` clean; full vitest **57 files / 579
+  passed / 4 skipped** (9 new: 6 stats incl. two-replicas-share, 5xx-only,
+  p95 bucket math both directions, 24h window exclusion, anonymous-skip +
+  three-way fail-open; 2 queue-depth incl. one-dead-queue-hides-nothing;
+  1 bruteLimitHandler; plus the console list test grew null-traffic
+  assertions); all nine ratchets green from the repo root; frontend `tsc`
+  clean, `/admin/tenants` lint-clean, frontend vitest 13/13, `next build`
+  green 46/46 (`/admin/tenants` 5.93 kB); `e2e/rls.spec.ts` +
+  `e2e/auth-login.spec.ts` **8/8** as `databridge_app`; alerts.yml parses.
+- **New env vars** (in `.env.example`): `QUEUE_DEPTH_WARN` (25),
+  `QUEUE_DEPTH_CHECK_MS` (60000).
+- **NOT in this PR, deliberately**: an Azure workbook (the console is the
+  dashboard; KQL over the now-stamped dimensions is available for
+  deep-dives); the uptime web test (portal act, above); distributed
+  TRACES beyond what App Insights auto-collects (the finding's "trace"
+  is served by tenantId on requests/metrics/exceptions; OpenTelemetry
+  spans want their own slice); per-tenant compute-cost beyond AI + request
+  volume (DuckDB per-query tenant attribution is a bigger lift).
+- **WAVE 2 IS COMPLETE** (P1-3, P1-5, P1-1, P1-2, P1-7, P1-4-HCL, P1-6).
+  Owed to the owner from it: terraform apply + restore rehearsal (P1-4,
+  runbook §6), the portal availability test (above), one action-group
+  test alert (P0-6). Next: WAVE 3 in doc order — P2-1 NL/FR i18n first.
+
+**Prior last updated:** 2026-09-02 (P1-4 REMEDIATION, HCL HALF — the graph gets its
 first recovery point, and the RTO/RPO the platform offers is WRITTEN DOWN;
 the apply and the restore rehearsal are the owner's acts)
 

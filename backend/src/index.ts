@@ -18,7 +18,7 @@ import { requestLogger } from './middleware/requestLogger';
 import { logger } from './utils/logger';
 import { config, legacyJwtExpiresInSet } from './config';
 import { reapStaleWork } from './services/reapers';
-import { redisRateLimitStore, tenantOrIpKey, accountKey } from './middleware/rateLimitStore';
+import { redisRateLimitStore, tenantOrIpKey, accountKey, bruteLimitHandler } from './middleware/rateLimitStore';
 import { runRetentionSweep } from './services/retention';
 
 // Gate for the daily data-retention sweep (driven off the 5-min reaper tick).
@@ -82,6 +82,7 @@ import { loadConnectionSyncSchedules } from './jobs/connectionSyncScheduler';
 import { loadEmailSchedules } from './jobs/emailScheduler';
 import { loadPipelineSchedules } from './jobs/pipelineScheduler';
 import { startScheduleReconciler } from './jobs/scheduleReconciler';
+import { startQueueDepthMonitor, stopQueueDepthMonitor } from './jobs/queueDepthMonitor';
 import { subscribeToInvalidations, closeCacheBus } from './jobs/cacheBus';
 import { drainPool } from './connectors/ConnectorPool';
 import { drainAll as drainDuckDBPool } from './connectors/DuckDBPool';
@@ -200,6 +201,7 @@ const bruteForceLimiter = rateLimit({
   message: { ok: false, error: 'Too many attempts. Please wait 15 minutes and try again.' },
   skip:      skipRateLimit,
   store:     redisRateLimitStore('brute-ip'),
+  handler:   bruteLimitHandler('brute-ip'),
   // Only count failed attempts so a legit user who logs in successfully
   // doesn't consume a "slot" needed for a retry on a typo.
   skipSuccessfulRequests: true,
@@ -219,6 +221,7 @@ const accountBruteLimiter = rateLimit({
   skip:      skipRateLimit,
   store:     redisRateLimitStore('brute-acct'),
   keyGenerator: accountKey,
+  handler:   bruteLimitHandler('brute-acct'),
   skipSuccessfulRequests: true,
 });
 
@@ -444,6 +447,11 @@ if (!process.env.VITEST) {
     // gone and cron work stops silently — this re-registers them on reconnect.
     startScheduleReconciler();
 
+    // Queue-depth visibility (P1-6, deferred from P0-6): one process emits —
+    // depth is global Redis state, so every replica emitting would
+    // double-count. Rides the same RUN_SCHEDULERS ownership as the reapers.
+    startQueueDepthMonitor();
+
     // On startup, reset any profiling stuck in 'running' (from a previous crash/restart)
     (async () => {
       try {
@@ -583,6 +591,7 @@ if (!process.env.VITEST) {
     await drainPool();
     await drainDuckDBPool();
     drainRunners();
+    stopQueueDepthMonitor();
     await stopWorkers();
     await closeScheduler();
     await closeQueues();

@@ -48,6 +48,22 @@ const log = rootLogger.child({ mod: 'workers' });
 
 const workers: Worker[] = [];
 
+/**
+ * P1-6 — a worker failure must be attributable to its tenant in one query.
+ * Every queue's job data that has a tenant carries it as `tenantId`; the
+ * platform-wide queues (maintenance, briefs) simply have none.
+ */
+function tenantOf(job: { data?: unknown } | undefined): number | undefined {
+  const t = (job?.data as { tenantId?: unknown } | undefined)?.tenantId;
+  return typeof t === 'number' ? t : undefined;
+}
+
+/** Same tenant, as a telemetry property (omitted entirely when absent). */
+function tenantProp(job: { data?: unknown } | undefined): Record<string, string> {
+  const t = tenantOf(job);
+  return t == null ? {} : { tenantId: String(t) };
+}
+
 // ---------------------------------------------------------------------------
 // Schema Profiling Worker
 // ---------------------------------------------------------------------------
@@ -354,8 +370,8 @@ export function startWorkers(): void {
     { ...defaultOpts, concurrency: 2 },
   );
   schemaWorker?.on('failed', (job, err) => {
-    log.error({ err }, `schema-profiling job ${job?.id} failed`);
-    trackException(err, { queue: 'schema-profiling', jobId: job?.id ?? 'unknown' });
+    log.error({ err, tenantId: tenantOf(job) }, `schema-profiling job ${job?.id} failed`);
+    trackException(err, { queue: 'schema-profiling', jobId: job?.id ?? 'unknown', ...tenantProp(job) });
   });
 
   // Ingestion worker
@@ -365,8 +381,8 @@ export function startWorkers(): void {
     defaultOpts,
   );
   ingestionWorker?.on('failed', (job, err) => {
-    log.error({ err }, `ingestion job ${job?.id} failed`);
-    trackException(err, { queue: 'ingestion', jobId: job?.id ?? 'unknown' });
+    log.error({ err, tenantId: tenantOf(job) }, `ingestion job ${job?.id} failed`);
+    trackException(err, { queue: 'ingestion', jobId: job?.id ?? 'unknown', ...tenantProp(job) });
   });
 
   // Transformation worker
@@ -376,8 +392,8 @@ export function startWorkers(): void {
     defaultOpts,
   );
   transformationWorker?.on('failed', (job, err) => {
-    log.error({ err }, `transformation job ${job?.id} failed`);
-    trackException(err, { queue: 'transformation', jobId: job?.id ?? 'unknown' });
+    log.error({ err, tenantId: tenantOf(job) }, `transformation job ${job?.id} failed`);
+    trackException(err, { queue: 'transformation', jobId: job?.id ?? 'unknown', ...tenantProp(job) });
   });
 
   // Scheduled transformation worker (same logic, separate queue for repeatable jobs)
@@ -458,8 +474,8 @@ export function startWorkers(): void {
     { ...defaultOpts, concurrency: 1 },
   );
   scheduledTransWorker?.on('failed', (job, err) => {
-    log.error({ err }, `scheduled-transformation job ${job?.id} failed`);
-    trackException(err, { queue: 'scheduled-transformation', jobId: job?.id ?? 'unknown' });
+    log.error({ err, tenantId: tenantOf(job) }, `scheduled-transformation job ${job?.id} failed`);
+    trackException(err, { queue: 'scheduled-transformation', jobId: job?.id ?? 'unknown', ...tenantProp(job) });
   });
 
   // Bus matrix worker — long-running (AI design + DB build + transformations).
@@ -487,8 +503,8 @@ export function startWorkers(): void {
     },
   );
   busMatrixWorker?.on('failed', (job, err) => {
-    log.error({ err }, `bus-matrix job ${job?.id} failed`);
-    trackException(err, { queue: 'bus-matrix', jobId: job?.id ?? 'unknown' });
+    log.error({ err, tenantId: tenantOf(job) }, `bus-matrix job ${job?.id} failed`);
+    trackException(err, { queue: 'bus-matrix', jobId: job?.id ?? 'unknown', ...tenantProp(job) });
   });
 
   // Email report worker
@@ -502,8 +518,8 @@ export function startWorkers(): void {
     { ...defaultOpts, concurrency: 3 },
   );
   emailReportWorker?.on('failed', (job, err) => {
-    log.error({ err }, `email-report job ${job?.id} failed`);
-    trackException(err, { queue: 'email-report', jobId: job?.id ?? 'unknown' });
+    log.error({ err, tenantId: tenantOf(job) }, `email-report job ${job?.id} failed`);
+    trackException(err, { queue: 'email-report', jobId: job?.id ?? 'unknown', ...tenantProp(job) });
   });
 
   // Connection sync schedule worker — fires `triggerSync` for each
@@ -524,7 +540,7 @@ export function startWorkers(): void {
     { connection: conn, concurrency: 4 },
   );
   connSyncWorker?.on('failed', (job, err) => {
-    trackException(err, { queue: 'connection-sync-schedule', jobId: job?.id ?? 'unknown' });
+    trackException(err, { queue: 'connection-sync-schedule', jobId: job?.id ?? 'unknown', ...tenantProp(job) });
   });
 
   // pipeline-schedule worker — drains cron-fired pipeline triggers.
@@ -545,7 +561,7 @@ export function startWorkers(): void {
     { connection: conn, concurrency: 4 },
   );
   pipelineSchedWorker?.on('failed', (job, err) => {
-    trackException(err, { queue: 'pipeline-schedule', jobId: job?.id ?? 'unknown' });
+    trackException(err, { queue: 'pipeline-schedule', jobId: job?.id ?? 'unknown', ...tenantProp(job) });
   });
 
   // Warehouse maintenance — weekly OPTIMIZE + VACUUM

@@ -20,12 +20,28 @@ arnovda@telenet.be
 #   clarion-failed-syncs       any 'sync run failed' line (the load-bearing
 #                              string SyncOrchestrator logs when a sync run is
 #                              persisted as failed)
+#   clarion-brute-force        ≥10 'brute force limit hit' lines in 15 min —
+#                              the brute limiters (per-IP and per-account,
+#                              P1-2) log this exact string every time they
+#                              refuse a request (middleware/rateLimitStore.ts bruteLimitHandler)
+#   clarion-queue-depth        ≥3 'queue depth high' lines in 15 min — the
+#                              queue-depth monitor (jobs/queueDepthMonitor.ts,
+#                              P1-6) sweeps every minute and logs the string
+#                              while a queue's WAITING count is at or above
+#                              QUEUE_DEPTH_WARN (default 25), so 3+ lines
+#                              means several minutes of sustained backlog,
+#                              not a blip
 #
 # Deliberately NOT here (and why):
-#   queue depth      no Azure metric exists for BullMQ; needs a metrics
-#                    exporter (P1-6). The deep /api/health check covers the
-#                    dead-consumer half — a queue nobody listens on fails the
-#                    promote gate.
 #   uptime probing   a continuous availability test wants an App Insights
-#                    web test; the deploy gate + 5xx/restart alerts cover the
-#                    P0. Belongs with the P1-6 observability pass.
+#                    standard web test. Creating one via az from this
+#                    workflow means an untestable ARM blob inside a control
+#                    whose contract is "any rule that fails to create fails
+#                    the run" — a bad trade against the working alert path.
+#                    It is ONE resource with a guided form: create it in the
+#                    portal (Application Insights → Availability → Add
+#                    standard test, URL = the backend /api/ping), point its
+#                    alert at the clarion-alerts action group, done in ~3
+#                    minutes. The deploy gate + 5xx/restart alerts cover the
+#                    broken-under-traffic case meanwhile; the web test adds
+#                    the down-while-idle and ingress/DNS cases.

@@ -116,3 +116,30 @@ export function accountKey(req: Request): string {
     : '';
   return email ? `acct:${email}` : `ip:${ipKeyGenerator(req.ip ?? '')}`;
 }
+
+/**
+ * When a brute limiter actually FIRES, say so in the logs (P1-6). The 429
+ * itself is visible only to the attacker; this line is what the
+ * `clarion-brute-force` alert rule in .ops/alerts matches, closing the
+ * "lockout/alerting on rl:brute-acct bursts" gap the P1-2 PR parked here.
+ *
+ * LOAD-BEARING STRING: 'brute force limit hit' — reword it and that alert
+ * goes silently blind (the requestLogger 'request failed' covenant).
+ *
+ * Deliberately NO email in the line: the limiter name + IP + path identify
+ * the attack, and the account under it is readable from the audit trail —
+ * an address in an alertable log line is a disclosure nothing here needs.
+ * The response mirrors express-rate-limit's default handler (status +
+ * configured message) so switching handlers changes nothing on the wire.
+ */
+export function bruteLimitHandler(limiter: string) {
+  return (
+    req: Request,
+    res: { status(code: number): { json(body: unknown): unknown } },
+    _next: unknown,
+    options: { statusCode: number; message: unknown },
+  ): void => {
+    log.warn({ limiter, ip: req.ip, path: req.path }, 'brute force limit hit');
+    res.status(options.statusCode).json(options.message);
+  };
+}

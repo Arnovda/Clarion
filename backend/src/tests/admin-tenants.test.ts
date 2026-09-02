@@ -75,6 +75,14 @@ describe('GET /api/admin/tenants', () => {
     // the global total and this splits them apart.
     expect(Number(target.users)).toBeGreaterThanOrEqual(4);
     expect(Number(operator.users)).toBeLessThan(Number(target.users));
+
+    // P1-6 traffic columns: present on every row, and NULL here — the test
+    // process has no Redis, and "no data" must never render as zeros
+    // pretending to be measurements.
+    expect('requests24h' in target).toBe(true);
+    expect(target.requests24h).toBeNull();
+    expect(target.errors24h).toBeNull();
+    expect(target.p95Ms24h).toBeNull();
   });
 });
 

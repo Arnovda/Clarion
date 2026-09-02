@@ -13,6 +13,7 @@ import { Request, Response, NextFunction } from 'express';
 import { v4 as uuidv4 } from 'uuid';
 import { logger, createChildLogger } from '../utils/logger';
 import { trackMetric } from '../utils/monitoring';
+import { recordTenantRequest } from '../services/tenantRequestStats';
 
 // Extend Express Request to include our additions
 declare global {
@@ -87,12 +88,20 @@ export function requestLogger(req: Request, res: Response, next: NextFunction) {
       }
     }
 
-    // Track response time metric in Application Insights
+    // Track response time metric in Application Insights. tenantId rides as
+    // a dimension (P1-6) so per-tenant latency is aggregatable in KQL, not
+    // just readable line-by-line in the logs.
     trackMetric('api_response_time_ms', durationMs, {
       method:     req.method,
       route:      req.route?.path ?? req.originalUrl,
       statusCode: String(statusCode),
+      ...(req.user ? { tenantId: String(req.user.tenantId) } : {}),
     });
+
+    // Per-tenant rolling window (P1-6) feeding /admin/tenants' error-rate and
+    // latency columns. Fire-and-forget by contract: recordTenantRequest never
+    // rejects, and observability must never break serving.
+    void recordTenantRequest(req.user?.tenantId, statusCode, durationMs);
   });
 
   next();
