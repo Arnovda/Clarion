@@ -18,8 +18,9 @@ import {
 import { Code, ThumbsUp, ThumbsDown, FileDown, BarChart3, LineChart as LineIcon, PieChart as PieIcon, Layers, Table as TableIcon, Eye, EyeOff, ChevronRight, BookmarkPlus, Pin } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { RichText, ConfidenceBadge, QueryLayerBadge } from './components';
-import { formatSql, formatCellValue, pickLabelColumn } from './utils';
+import { formatSql, formatCellValue } from './utils';
 import { OBSERVATORY, SERIES } from '@/lib/observatory';
+import { resolveChartShape } from './chartShape';
 import { humanizeTableName } from '@/lib/humanize';
 import { getTokenPayload } from '@/lib/auth';
 import { formatRelativeTime, getFreshnessStatus } from '@/lib/freshness';
@@ -63,51 +64,15 @@ function looksTechnical(col: string, sample: unknown): boolean {
 // ─── Result visualizer ───────────────────────────────────────────────────────
 
 function ResultVisualizer({ rows, hint }: { rows: Record<string, unknown>[]; hint?: VisualizationHint }) {
-  // ── Derive columns + numeric detection ──
-  const { columns, numericCols, defaultLabelCol, defaultValueCol } = (() => {
-    if (!rows || rows.length === 0) {
-      return { columns: [] as string[], numericCols: [] as string[], defaultLabelCol: undefined as string | undefined, defaultValueCol: undefined as string | undefined };
-    }
-    const columns = Object.keys(rows[0]);
-    const numericCols = columns.filter((col) =>
-      rows.some((r) => r[col] !== null && r[col] !== undefined) &&
-      rows.every((r) =>
-        r[col] === null || r[col] === undefined ||
-        typeof r[col] === 'number' ||
-        (typeof r[col] === 'string' && !isNaN(Number(r[col])) && (r[col] as string) !== ''),
-      ),
-    );
-    const labelCol = pickLabelColumn(columns, numericCols);
-    const isPctCol = (c: string) => /(_pct|_percent|_percentage|_rate|_ratio|_share)$/i.test(c);
-    const isIdCol  = (c: string) => /(_id|_key|_nr|_number|_code)$/i.test(c);
-    const candidateValueCols = numericCols.filter((c) => !isIdCol(c));
-    const absoluteCols = candidateValueCols.filter((c) => !isPctCol(c));
-    const valueColPool = absoluteCols.length > 0 ? absoluteCols : candidateValueCols;
-    const valueCol = valueColPool.length > 0
-      ? valueColPool.reduce((best, col) => {
-          const maxBest = Math.max(...rows.map((r) => Number(r[best]) || 0));
-          const maxCol  = Math.max(...rows.map((r) => Number(r[col])  || 0));
-          return maxCol > maxBest ? col : best;
-        })
-      : undefined;
-    return { columns, numericCols, defaultLabelCol: labelCol, defaultValueCol: valueCol };
-  })();
-
-  // Resolve the columns the chart will use — hint takes priority, fall back to heuristics
-  const xKey    = (hint?.xKey    && columns.includes(hint.xKey))    ? hint.xKey    : defaultLabelCol;
-  const yKey    = (hint?.yKey    && columns.includes(hint.yKey))    ? hint.yKey    : defaultValueCol;
-  const groupBy = (hint?.groupBy && columns.includes(hint.groupBy)) ? hint.groupBy : undefined;
-
-  // Decide an initial chart type — hint wins, otherwise heuristic
-  const heuristicType: VisualizationType = (() => {
-    if (!xKey || !yKey) return 'table';
-    if (rows.length > 60) return 'table';
-    // Two-cat + numeric → stacked
-    const otherCats = columns.filter((c) => c !== xKey && c !== yKey && !numericCols.includes(c));
-    if (otherCats.length >= 1 && rows.length >= 2) return 'stacked_bar';
-    return 'bar';
-  })();
-  const initialType: VisualizationType = hint?.type ?? heuristicType;
+  // The shape — which column is x, which is the value, which (if any) is the
+  // series — is resolved from the DATA, with the model's hint as a strong
+  // suggestion. See chartShape.ts for why the hint is not simply trusted: a
+  // "per supplier over time" answer arrives one row per (month, supplier), and
+  // drawing that as a single line in row order is a zigzag, not a chart.
+  const shape = resolveChartShape(rows, hint);
+  const { columns, numericCols, xKey, yKey, seriesKey, groups, data: chartData } = shape;
+  const groupBy = seriesKey;
+  const initialType: VisualizationType = shape.type;
 
   const [active, setActive] = useState<VisualizationType>(initialType);
 
@@ -120,28 +85,16 @@ function ResultVisualizer({ rows, hint }: { rows: Record<string, unknown>[]; hin
     return Math.abs(v) >= 1000 ? `${(v / 1000).toFixed(1)}k` : String(v);
   };
 
-  // For stacked bar: pivot rows into one row per xKey with a column per groupBy value
-  const pivoted = (() => {
-    if (active !== 'stacked_bar' || !xKey || !yKey || !groupBy) return null;
-    const map = new Map<string, Record<string, unknown>>();
-    const groups = new Set<string>();
-    for (const r of rows) {
-      const x = String(r[xKey] ?? '');
-      const g = String(r[groupBy] ?? '');
-      groups.add(g);
-      const acc = map.get(x) ?? { [xKey]: x };
-      acc[g] = (Number(acc[g]) || 0) + (Number(r[yKey]) || 0);
-      map.set(x, acc);
-    }
-    return { data: Array.from(map.values()), groups: Array.from(groups) };
-  })();
+  // Long → wide is done once, by the resolver, for every series chart.
+  const pivoted = groupBy && xKey && yKey ? { data: chartData, groups } : null;
 
-  const chartH = Math.min(Math.max(rows.length * 26, 220), 360);
-  const colourOf = (i: number) => SERIES[i % SERIES.length] ?? OBSERVATORY.ocean;
+  const chartH = Math.min(Math.max((pivoted ? pivoted.data.length : rows.length) * 26, 220), 360);
+  // Fixed order, never cycled: chartShape caps the series count at the palette's slots.
+  const colourOf = (i: number) => SERIES[i] ?? OBSERVATORY.ocean;
 
   // ── Toolbar ──
   const toolbarBtn = (t: VisualizationType, label: string, Icon: React.ComponentType<{ size?: number; strokeWidth?: number; className?: string }> | LucideIcon) => {
-    const ok = t === 'stacked_bar' ? !!groupBy : t === 'pie' ? !!xKey && !!yKey && rows.length <= 12 : t === 'table' ? true : !!xKey && !!yKey;
+    const ok = t === 'stacked_bar' ? !!groupBy : t === 'pie' ? !!xKey && !!yKey && !groupBy && rows.length <= 12 : t === 'table' ? true : !!xKey && !!yKey;
     if (!ok) return null;
     const isActive = active === t;
     return (
@@ -169,7 +122,24 @@ function ResultVisualizer({ rows, hint }: { rows: Record<string, unknown>[]; hin
         {toolbarBtn('table',       'Table',   TableIcon)}
       </div>
 
-      {active === 'bar' && xKey && yKey && (
+      {active === 'bar' && xKey && yKey && pivoted && (
+        <div className="rounded-md bg-softer border border-line p-3">
+          <ResponsiveContainer width="100%" height={chartH}>
+            <BarChart data={pivoted.data} margin={{ top: 8, right: 24, bottom: 8, left: 8 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke="rgba(13,28,47,0.08)" />
+              <XAxis dataKey={xKey} tick={{ fontSize: 10, fill: OBSERVATORY.muted }} axisLine={false} tickLine={false} />
+              <YAxis tick={{ fontSize: 10, fill: OBSERVATORY.muted }} axisLine={false} tickLine={false} tickFormatter={tickFmt} />
+              <Tooltip contentStyle={{ fontSize: 11, borderRadius: 8, border: `1px solid ${OBSERVATORY.line}`, background: OBSERVATORY.raised }} />
+              <Legend wrapperStyle={{ fontSize: 11 }} />
+              {pivoted.groups.map((g, i) => (
+                <Bar key={g} dataKey={g} fill={colourOf(i)} maxBarSize={22} radius={[4, 4, 0, 0]} />
+              ))}
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+      )}
+
+      {active === 'bar' && xKey && yKey && !pivoted && (
         <div className="rounded-md bg-softer border border-line p-3">
           <ResponsiveContainer width="100%" height={chartH}>
             <BarChart data={rows} layout="vertical" margin={{ top: 4, right: 48, bottom: 4, left: 8 }}>
@@ -186,7 +156,27 @@ function ResultVisualizer({ rows, hint }: { rows: Record<string, unknown>[]; hin
         </div>
       )}
 
-      {active === 'line' && xKey && yKey && (
+      {active === 'line' && xKey && yKey && pivoted && (
+        <div className="rounded-md bg-softer border border-line p-3">
+          <ResponsiveContainer width="100%" height={chartH}>
+            <LineChart data={pivoted.data} margin={{ top: 8, right: 24, bottom: 8, left: 8 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke="rgba(13,28,47,0.08)" />
+              <XAxis dataKey={xKey} tick={{ fontSize: 10, fill: OBSERVATORY.muted }} axisLine={false} tickLine={false} />
+              <YAxis tick={{ fontSize: 10, fill: OBSERVATORY.muted }} axisLine={false} tickLine={false} tickFormatter={tickFmt} />
+              <Tooltip
+                formatter={(value: unknown, name: unknown) => [formatCellValue(value, yKey), String(name)]}
+                contentStyle={{ fontSize: 11, borderRadius: 8, border: `1px solid ${OBSERVATORY.line}`, background: OBSERVATORY.raised }}
+              />
+              <Legend wrapperStyle={{ fontSize: 11 }} />
+              {pivoted.groups.map((g, i) => (
+                <Line key={g} type="monotone" dataKey={g} stroke={colourOf(i)} strokeWidth={2} dot={false} activeDot={{ r: 4 }} />
+              ))}
+            </LineChart>
+          </ResponsiveContainer>
+        </div>
+      )}
+
+      {active === 'line' && xKey && yKey && !pivoted && (
         <div className="rounded-md bg-softer border border-line p-3">
           <ResponsiveContainer width="100%" height={chartH}>
             <LineChart data={rows} margin={{ top: 8, right: 24, bottom: 8, left: 8 }}>

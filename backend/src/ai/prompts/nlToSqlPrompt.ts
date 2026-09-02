@@ -1,3 +1,29 @@
+/** Chart-shape rules shared by every NL→SQL system prompt (source, product/DuckDB, cross). */
+export const VISUALIZATION_HINT_RULES = `━━━ VISUALIZATION HINT ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+The rows are drawn as a chart. Describe the SHAPE of the result so the chart is
+honest — think about how a business owner reads it, not about which column comes
+first in the SELECT.
+
+• "line"         — change over time. "xKey" MUST be the period column (date / month /
+                   quarter / year), never a name. If the result has one row per
+                   (period, category) — e.g. cumulative cost per supplier per month —
+                   set "groupBy" to the category column: the chart draws ONE LINE PER
+                   CATEGORY. Never put the category on the x-axis of a line.
+• "bar"          — compare categories at one moment. Default for top-N / ranking.
+                   One row per (category, sub-category) → set "groupBy" to the
+                   sub-category (grouped bars).
+• "stacked_bar"  — parts of a total per category (month × status × count).
+                   Set "groupBy" to the part column.
+• "pie"          — parts of a whole, ≤8 slices, no time axis, no groupBy.
+• "table"        — many columns, no clear shape, or the user asked for a table.
+
+Always set "xKey" and "yKey" (the numeric measure) when type ≠ "table".
+Set "groupBy" WHENEVER the SELECT has two non-numeric columns and one measure — for
+line and bar as well as stacked_bar. Keep the series column to ≤8 distinct values
+(add a LIMIT or a top-N filter if the category is wide); above that, use "table".
+If the user explicitly requests a chart type ("in a bar chart", "as a line"), honour it.`;
+
 export const NL_TO_SQL_SYSTEM = (
   semanticContext: string,
   relationshipContext: string,
@@ -159,22 +185,7 @@ Score your confidence in three dimensions:
 The overall "confidence" should be the MINIMUM of these three sub-scores.
 List any remaining uncertainties in "uncertainty_notes" — be specific (e.g. "unsure if status refers to order status or customer status").
 
-━━━ VISUALIZATION HINT ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-Pick the best chart type for the expected result shape AND any explicit user
-intent in the question (e.g. "as a bar chart", "show a line", "pie"):
-
-• "bar"          — categorical x-axis, one numeric series. Default for top-N / ranking.
-• "line"         — time series (date/month/year on x-axis), one numeric series.
-• "stacked_bar"  — categorical x-axis, numeric value, broken down by a second category.
-                   Use when the SELECT has TWO categorical columns + one numeric (e.g. month × status × count).
-• "pie"          — single categorical breakdown of one numeric, ≤8 slices, parts-of-a-whole.
-• "table"        — many columns, no clear chart shape, or user explicitly wants a table.
-
-Always set "xKey" (categorical/time axis) and "yKey" (numeric) when type ≠ "table".
-Set "groupBy" to the second categorical column when type = "stacked_bar".
-If the user explicitly requests a chart type ("in a bar chart", "as a line"), honour it.
-
+${VISUALIZATION_HINT_RULES}
 ━━━ ASSUMPTIONS — state, don't ask ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 When the question contains a MATERIAL ambiguity (one whose answer would
@@ -602,7 +613,7 @@ For genuinely ambiguous questions (rare):
   ]
 }
 
-Same visualization rules as the single-source prompt: pick "bar" / "line" / "stacked_bar" / "pie" / "table" based on the expected result shape and any explicit user intent. Set xKey/yKey for non-table types and groupBy for stacked_bar.`;
+${VISUALIZATION_HINT_RULES}`;
 
 export function buildNlToSqlCrossUser(question: string): string {
   return `Question: "${question}"`;

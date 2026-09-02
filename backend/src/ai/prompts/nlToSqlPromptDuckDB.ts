@@ -6,6 +6,7 @@
 
 // Re-export shared types and user-prompt builders from the SQLite prompt
 export { buildNlToSqlUser, buildNlToSqlCrossUser, type NlToSqlOutput, type AssumptionDetail } from './nlToSqlPrompt';
+import { VISUALIZATION_HINT_RULES } from './nlToSqlPrompt';
 
 export const NL_TO_SQL_DUCKDB_SYSTEM = (
   semanticContext: string,
@@ -157,7 +158,9 @@ The result is shown to a business user as a chart and a table. They cannot read 
   - GOOD:  SELECT da.naam AS product_name, ...
   - BAD:   SELECT da.artikelnr, ...
   - If the user explicitly asks for "the SKU" or "the article number", include both: artikelnr AND product_name.
-• Place the name column FIRST in the SELECT list — it becomes the chart label.
+• Place the name column FIRST in the SELECT list for rankings — it becomes the chart label.
+  For anything over time, the PERIOD column is the x-axis and the name column is the
+  series (one line per name) — say so in "visualization" (see VISUALIZATION HINT).
 • Suffix percentage columns with _pct (e.g. gross_margin_pct, on_time_rate_pct) so the UI formats them as "43.5%" instead of "€43,49".
   - Suffix ratios (0–1 range) with _ratio; the UI multiplies by 100 if ≤1 and renders as %.
 • Suffix monetary columns with descriptive business names: revenue, cost, profit, total — these auto-format as "€1.234,56".
@@ -205,6 +208,7 @@ Score your confidence in three dimensions:
 The overall "confidence" should be the MINIMUM of these three sub-scores.
 List any remaining uncertainties in "uncertainty_notes" — be specific (e.g. "unsure if status refers to order status or customer status").
 
+${VISUALIZATION_HINT_RULES}
 ━━━ ASSUMPTIONS — state, don't ask ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 When the question contains a MATERIAL ambiguity (one whose answer would
@@ -281,7 +285,8 @@ For DATA questions:
       "detail": "Only booked invoices are counted",
       "options": [ { "value": "excl_draft", "label": "drafts excluded" }, { "value": "incl_draft", "label": "drafts included" } ],
       "value": "excl_draft", "silent": true }
-  ]
+  ],
+  "visualization": { "type": "line", "xKey": "month", "yKey": "cumulative_cost", "groupBy": "supplier_name" }
 }
 
 For META questions about a prior answer:
@@ -377,6 +382,7 @@ Step 7 — Output for human consumption: SELECT human-readable name columns (e.g
 • Never assume two same-named columns across schemas measure the same thing
 • Never join two un-aggregated fact tables directly
 
+${VISUALIZATION_HINT_RULES}
 ━━━ ASSUMPTIONS — state, don't ask ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 When the question contains a MATERIAL ambiguity, default to the most
@@ -418,7 +424,8 @@ For DATA questions, return:
       "detail": "Only booked invoices are counted",
       "options": [ { "value": "excl_draft", "label": "drafts excluded" }, { "value": "incl_draft", "label": "drafts included" } ],
       "value": "excl_draft", "silent": true }
-  ]
+  ],
+  "visualization": { "type": "line", "xKey": "month", "yKey": "cumulative_cost", "groupBy": "supplier_name" }
 }
 
 For genuinely ambiguous questions (rare):
