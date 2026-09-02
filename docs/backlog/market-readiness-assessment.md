@@ -272,6 +272,21 @@ promoted to 100% traffic with nobody watching.
 - **P2-1 · English-only in a Dutch/French market.** No i18n library, no locale
   files, `lang` hardcoded. Sharpened by the AI now mirroring the question's
   language — Clarion replies in Dutch inside an English interface.
+  *(IN PROGRESS 2026-09-02, PR 1 of the pass: the MECHANISM plus the frame in
+  Dutch. Language is a per-user preference (`users.locale` + a switcher in the
+  avatar menu), not a URL — a logged-in B2B tool must not churn its deep
+  links; hand-rolled TYPED dictionaries (`lib/i18n/en.ts` is the contract,
+  `nl.ts: Dictionary`) so a missing translation is a COMPILE error the P1-7
+  gate refuses to deploy — verified red. Converted: the chrome (rail, top
+  bar, command palette), both auth screens, /subjects; dates locale-aware.
+  Render-checked in real Chromium: an nl-BE browser gets a fully Dutch
+  sign-in screen unaided, `<html lang="nl">`. Found and fixed while wiring:
+  `PATCH /users/profile` had been DEAD since `PATCH /users/:id` was added —
+  Express matched 'profile' as :id → NaN → 500 for admins, 403 for everyone
+  else; the first test ever to hit the route caught it; param routes now
+  carry a numeric constraint. Remaining PRs: Home, /query (Ask), dashboards,
+  the rest of the surfaces, then French — the switcher only ever offers
+  languages with a complete dictionary.)*
 - **P2-2 · A new customer lands on an empty screen.** `/register` pushes to
   `/sources`; `/onboarding` is referenced from **nowhere** in the frontend.
 - **P2-3 · The cross-system promise is still not expressible.**
@@ -353,7 +368,8 @@ minute, and be supported without a database session.
 **Exit gate:** a Belgian SMB reaches a first answer, in Dutch, unaided.
 
 1. **P2-1** Internationalise to NL and FR — mechanical but wide; before the sales
-   push, not after.
+   push, not after. *(IN PROGRESS 2026-09-02 — mechanism + chrome + auth +
+   /subjects in Dutch shipped as PR 1; see the P2-1 bullet above.)*
 2. **P2-2** A real first-run flow: connect → sync → build → first question.
 3. **P2-3** Un-scope the query layer from `connectionId` to tenant.
 4. **P1-7** Frontend type-check into the deploy gate; first component tests.

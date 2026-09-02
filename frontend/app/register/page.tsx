@@ -6,11 +6,13 @@ import { useRouter } from 'next/navigation';
 import api from '@/lib/api';
 import { setAuthTokens } from '@/lib/auth';
 import AuthLayout from '@/components/layout/AuthLayout';
+import { useT } from '@/lib/i18n';
 import { Input } from '@/components/ui/Input';
 import { Button } from '@/components/ui/Button';
 
 export default function RegisterPage() {
   const router = useRouter();
+  const t = useT();
   const [companyName, setCompanyName]         = useState('');
   const [displayName, setDisplayName]         = useState('');
   const [email, setEmail]                     = useState('');
@@ -25,8 +27,8 @@ export default function RegisterPage() {
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError('');
-    if (password !== confirmPassword) { setError('Passwords do not match.'); return; }
-    if (password.length < 8)          { setError('Password must be at least 8 characters.'); return; }
+    if (password !== confirmPassword) { setError(t.register.passwordsDontMatch); return; }
+    if (password.length < 8)          { setError(t.register.passwordTooShort); return; }
 
     setLoading(true);
     try {
@@ -41,7 +43,7 @@ export default function RegisterPage() {
       router.push('/sources');
     } catch (err: unknown) {
       const msg = (err as { response?: { data?: { error?: string } } })?.response?.data?.error;
-      setError(msg || 'Registration failed. Please try again.');
+      setError(msg || t.register.registrationFailed);
     } finally {
       setLoading(false);
     }
@@ -50,26 +52,25 @@ export default function RegisterPage() {
   if (awaitingVerification) {
     return (
       <AuthLayout
-        eyebrow="Almost there"
-        title={<em>Check your inbox.</em>}
-        lede="One click left before your workspace opens."
+        eyebrow={t.register.almostThere}
+        title={<em>{t.register.checkInbox}</em>}
+        lede={t.register.oneClickLeft}
         footer={
           <>
-            Wrong address?{' '}
+            {t.register.wrongAddress}{' '}
             <Link href="/register" className="text-ocean font-medium hover:text-ocean-hover transition-colors duration-1">
-              Register again
+              {t.register.registerAgain}
             </Link>
           </>
         }
       >
         <div className="flex flex-col gap-4">
           <div className="text-[13px] text-ink-2 leading-relaxed">
-            We sent a confirmation link to <span className="font-medium">{email}</span>.
-            Click it to activate your workspace, then sign in. The link is valid for 24 hours.
+            {t.register.sentLinkBefore} <span className="font-medium">{email}</span>
+            {t.register.sentLinkAfter}
           </div>
           <div className="text-[13px] text-muted leading-relaxed">
-            Nothing arriving? Check your spam folder, or request a new link from the sign-in
-            screen once you try to log in.
+            {t.register.nothingArriving}
           </div>
         </div>
       </AuthLayout>
@@ -78,59 +79,59 @@ export default function RegisterPage() {
 
   return (
     <AuthLayout
-      eyebrow="Create workspace"
-      title={<em>Start observing.</em>}
-      lede="A workspace is your company's private view. Invite teammates after you connect your first source."
+      eyebrow={t.register.eyebrow}
+      title={<em>{t.register.title}</em>}
+      lede={t.register.lede}
       footer={
         <>
-          Already have an account?{' '}
+          {t.register.alreadyAccount}{' '}
           <Link href="/" className="text-ocean font-medium hover:text-ocean-hover transition-colors duration-1">
-            Sign in
+            {t.register.signIn}
           </Link>
         </>
       }
     >
       <form onSubmit={handleSubmit} className="flex flex-col gap-4" suppressHydrationWarning>
         <Input
-          label="Workspace name"
+          label={t.register.workspaceName}
           value={companyName}
           onChange={(e) => setCompanyName(e.target.value)}
-          placeholder="Acme BV"
+          placeholder={t.register.workspacePlaceholder}
           autoComplete="organization"
           required
           disabled={loading}
         />
         <Input
-          label="Your name"
+          label={t.register.yourName}
           value={displayName}
           onChange={(e) => setDisplayName(e.target.value)}
-          placeholder="Jan Janssens"
+          placeholder={t.register.namePlaceholder}
           autoComplete="name"
           required
           disabled={loading}
         />
         <Input
-          label="Work email"
+          label={t.register.workEmail}
           type="email"
           value={email}
           onChange={(e) => setEmail(e.target.value)}
-          placeholder="you@company.com"
+          placeholder={t.register.emailPlaceholder}
           autoComplete="email"
           required
           disabled={loading}
         />
         <Input
-          label="Password"
+          label={t.register.password}
           type="password"
           value={password}
           onChange={(e) => setPassword(e.target.value)}
-          placeholder="Minimum 8 characters"
+          placeholder={t.register.passwordPlaceholder}
           autoComplete="new-password"
           required
           disabled={loading}
         />
         <Input
-          label="Confirm password"
+          label={t.register.confirmPassword}
           type="password"
           value={confirmPassword}
           onChange={(e) => setConfirmPassword(e.target.value)}
@@ -146,7 +147,7 @@ export default function RegisterPage() {
         )}
 
         <Button type="submit" size="lg" className="w-full justify-center mt-3" loading={loading}>
-          {loading ? 'Creating workspace…' : 'Create workspace'}
+          {loading ? t.register.creatingWorkspace : t.register.createWorkspace}
         </Button>
       </form>
     </AuthLayout>

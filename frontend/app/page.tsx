@@ -7,11 +7,13 @@ import { startAuthentication } from '@simplewebauthn/browser';
 import api from '@/lib/api';
 import { setAuthTokens, getTokenPayload } from '@/lib/auth';
 import AuthLayout from '@/components/layout/AuthLayout';
+import { useT } from '@/lib/i18n';
 import { Input } from '@/components/ui/Input';
 import { Button } from '@/components/ui/Button';
 
 export default function LoginPage() {
   const router = useRouter();
+  const t = useT();
   const [email, setEmail]       = useState('');
   const [password, setPassword] = useState('');
   const [error, setError]       = useState('');
@@ -90,9 +92,9 @@ export default function LoginPage() {
       if (body?.code === 'email_unverified') {
         // The password was right; the address just isn't confirmed yet.
         setUnverified(true);
-        setError('Confirm your email address first — check your inbox for the link.');
+        setError(t.login.confirmEmailFirst);
       } else {
-        setError('Invalid email or password.');
+        setError(t.login.invalidCredentials);
       }
     } finally {
       setLoading(false);
@@ -112,7 +114,7 @@ export default function LoginPage() {
       clearChallenge();
       await landAfterLogin();
     } catch {
-      setError('Invalid code. Try again or use a backup code.');
+      setError(t.login.invalidCode);
     } finally {
       setLoading(false);
     }
@@ -139,7 +141,7 @@ export default function LoginPage() {
     } catch (err: unknown) {
       const msg = (err as { response?: { data?: { error?: string } }; message?: string })?.response?.data?.error
         ?? (err as { message?: string })?.message
-        ?? 'Could not sign in with security key';
+        ?? t.login.webauthnFailed;
       setError(msg);
     } finally {
       setLoading(false);
@@ -159,17 +161,17 @@ export default function LoginPage() {
 
   return (
     <AuthLayout
-      eyebrow="Sign in"
-      title={<em>Welcome back.</em>}
-      lede="Your workspace is one step away."
+      eyebrow={t.login.eyebrow}
+      title={<em>{t.login.title}</em>}
+      lede={t.login.lede}
       footer={
         <>
-          New to Clarion?{' '}
+          {t.login.newTo}{' '}
           <Link
             href="/register"
             className="text-ocean font-medium hover:text-ocean-hover transition-colors duration-1"
           >
-            Request an invite →
+            {t.login.requestInvite}
           </Link>
         </>
       }
@@ -183,8 +185,7 @@ export default function LoginPage() {
           {preferredMethod === 'webauthn' && webauthnOptions ? (
             <>
               <div className="text-[13px] text-ink-2 leading-relaxed">
-                Use your security key, Touch ID, Windows Hello, or your saved
-                passkey to sign in.
+                {t.login.webauthnPrompt}
               </div>
               {error && (
                 <div className="font-mono text-[10.5px] text-err uppercase tracking-[0.04em]">
@@ -198,7 +199,7 @@ export default function LoginPage() {
                 loading={loading}
                 onClick={handleWebauthnSubmit}
               >
-                {loading ? 'Waiting…' : 'Use security key'}
+                {loading ? t.login.waiting : t.login.useSecurityKey}
               </Button>
               {mfaChallenge && (
                 <button
@@ -206,18 +207,17 @@ export default function LoginPage() {
                   onClick={() => { setPreferredMethod('totp'); setError(''); }}
                   className="text-[11px] font-mono uppercase tracking-[0.08em] text-ocean hover:text-ocean-hover"
                 >
-                  Use an authenticator code instead →
+                  {t.login.useTotpInstead}
                 </button>
               )}
             </>
           ) : (
             <form onSubmit={handleMfaSubmit} className="flex flex-col gap-4">
               <div className="text-[13px] text-ink-2 leading-relaxed">
-                Enter the 6-digit code from your authenticator app — or a backup
-                code in <code className="text-[12px] font-mono">XXXXX-XXXXX</code> format.
+                {t.login.mfaPrompt}
               </div>
               <Input
-                label="Code"
+                label={t.login.code}
                 type="text"
                 value={mfaCode}
                 onChange={(e) => setMfaCode(e.target.value)}
@@ -233,7 +233,7 @@ export default function LoginPage() {
                 </div>
               )}
               <Button type="submit" size="lg" className="w-full justify-center mt-3" loading={loading}>
-                {loading ? 'Verifying…' : 'Verify'}
+                {loading ? t.login.verifying : t.login.verify}
               </Button>
               {webauthnOptions != null && (
                 <button
@@ -241,7 +241,7 @@ export default function LoginPage() {
                   onClick={() => { setPreferredMethod('webauthn'); setError(''); }}
                   className="text-[11px] font-mono uppercase tracking-[0.08em] text-ocean hover:text-ocean-hover"
                 >
-                  Use security key instead →
+                  {t.login.useWebauthnInstead}
                 </button>
               )}
             </form>
@@ -251,17 +251,17 @@ export default function LoginPage() {
             onClick={clearChallenge}
             className="text-[11px] font-mono uppercase tracking-[0.08em] text-muted hover:text-ink"
           >
-            Back to sign in
+            {t.login.backToSignIn}
           </button>
         </div>
       ) : (
       <form onSubmit={handleSubmit} className="flex flex-col gap-4" suppressHydrationWarning>
         <Input
-          label="Work email"
+          label={t.login.workEmail}
           type="email"
           value={email}
           onChange={(e) => setEmail(e.target.value)}
-          placeholder="you@company.com"
+          placeholder={t.login.emailPlaceholder}
           autoComplete="email"
           required
           disabled={loading}
@@ -273,13 +273,13 @@ export default function LoginPage() {
               htmlFor="login-password"
               className="font-mono text-[10.5px] uppercase tracking-[0.1em] text-muted font-medium"
             >
-              Password
+              {t.login.password}
             </label>
             <Link
               href="/forgot-password"
               className="font-mono text-[10.5px] uppercase tracking-[0.08em] text-ocean hover:text-ocean-hover transition-colors duration-1"
             >
-              Forgot?
+              {t.login.forgot}
             </Link>
           </div>
           <input
@@ -308,15 +308,15 @@ export default function LoginPage() {
             className="self-start text-[11px] font-mono uppercase tracking-[0.08em] text-ocean hover:text-ocean-hover disabled:opacity-50"
           >
             {resendState === 'sent'
-              ? 'Link sent — check your inbox'
+              ? t.login.resendSent
               : resendState === 'sending'
-                ? 'Sending…'
-                : 'Send a new verification link →'}
+                ? t.login.resendSending
+                : t.login.resendLink}
           </button>
         )}
 
         <Button type="submit" size="lg" className="w-full justify-center mt-3" loading={loading}>
-          {loading ? 'Signing in…' : 'Sign in'}
+          {loading ? t.login.signingIn : t.login.signIn}
         </Button>
       </form>
       )}

@@ -70,3 +70,43 @@ describe('POST /api/users/invite', () => {
     expect(res.status).toBe(409);
   });
 });
+
+describe('PATCH /api/users/profile — interface locale (P2-1)', () => {
+  it('round-trips a locale choice, and null reverts to browser-guess', async () => {
+    const agent = await request();
+    const set = await agent
+      .patch('/api/users/profile')
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({ locale: 'nl' });
+    expect(set.status).toBe(200);
+
+    let profile = await agent.get('/api/users/profile').set('Authorization', `Bearer ${adminToken}`);
+    expect(profile.body.data.locale).toBe('nl');
+
+    // null = "no stored choice": the client falls back to the browser guess.
+    const clear = await agent
+      .patch('/api/users/profile')
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({ locale: null });
+    expect(clear.status).toBe(200);
+    profile = await agent.get('/api/users/profile').set('Authorization', `Bearer ${adminToken}`);
+    expect(profile.body.data.locale).toBeNull();
+  });
+
+  it('refuses a locale with no complete dictionary, and an empty patch', async () => {
+    const agent = await request();
+    // 'fr' joins the enum when fr.ts exists — storing it before then would
+    // put users on a language the switcher does not offer.
+    const fr = await agent
+      .patch('/api/users/profile')
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({ locale: 'fr' });
+    expect(fr.status).toBe(400);
+
+    const empty = await agent
+      .patch('/api/users/profile')
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({});
+    expect(empty.status).toBe(400);
+  });
+});

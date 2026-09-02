@@ -5,6 +5,8 @@ import { useRouter } from 'next/navigation';
 import api from '@/lib/api';
 import { cn } from '@/lib/cn';
 import { getTokenPayload } from '@/lib/auth';
+import { useT } from '@/lib/i18n';
+import type { Dictionary } from '@/lib/i18n/en';
 
 type Role = 'admin' | 'analyst' | 'viewer';
 
@@ -47,24 +49,32 @@ const PALETTE_ICONS: Record<IconKey, React.ReactNode> = {
 // Business-first ordering: the things everyone does come first; builder/admin
 // actions are role-gated so a viewer never sees "Connect a source" or "Team".
 
-interface ActionDef extends SearchResult { roles: Role[] }
+// Titles/subtitles live in the i18n dictionary (t.palette.actions), looked up
+// by this id at render — the config here stays translation-free (P2-1). The
+// trailing comments record the English titles for grep-ability.
+interface ActionDef {
+  id: keyof Dictionary['palette']['actions'];
+  icon: IconKey;
+  href: string;
+  roles: Role[];
+}
 
 const ALL: ['admin', 'analyst', 'viewer'] = ['admin', 'analyst', 'viewer'];
 
 const ACTIONS_ALL: ActionDef[] = [
-  { type: 'action', id: 'ask',        title: 'Ask a question',     subtitle: 'Get an answer in plain language', icon: 'chat',  href: '/query',      roles: ALL },
-  { type: 'action', id: 'dashboard',  title: 'Create a dashboard', subtitle: 'Describe a report, AI builds it',  icon: 'grid',  href: '/dashboards', roles: ALL },
-  { type: 'action', id: 'subjects',   title: 'Subjects',           subtitle: 'Everything your team can ask about', icon: 'grid', href: '/subjects',   roles: ALL },
-  { type: 'action', id: 'catalog',    title: 'Browse the catalog', subtitle: 'Find & understand your data',      icon: 'book',  href: '/catalog',    roles: ALL },
-  { type: 'action', id: 'glossary',   title: 'Business glossary',  subtitle: 'Shared terms & definitions',       icon: 'book',  href: '/glossary',   roles: ALL },
-  { type: 'action', id: 'connect',    title: 'Connect a source',   subtitle: 'Studio · add a data source',       icon: 'plug',  href: '/sources',    roles: ['admin', 'analyst'] },
-  { type: 'action', id: 'shared',     title: 'Shared data',        subtitle: 'Studio · the lookups every topic slices by', icon: 'book', href: '/shared-data', roles: ['admin', 'analyst'] },
-  { type: 'action', id: 'grids',      title: 'Your tables',        subtitle: 'Studio · budgets, mappings & lists you keep in Clarion', icon: 'columns', href: '/grids', roles: ['admin', 'analyst'] },
+  { id: 'ask',        icon: 'chat',  href: '/query',      roles: ALL },                  // Ask a question
+  { id: 'dashboard',  icon: 'grid',  href: '/dashboards', roles: ALL },                  // Create a dashboard
+  { id: 'subjects',   icon: 'grid',  href: '/subjects',   roles: ALL },                  // Subjects
+  { id: 'catalog',    icon: 'book',  href: '/catalog',    roles: ALL },                  // Browse the catalog
+  { id: 'glossary',   icon: 'book',  href: '/glossary',   roles: ALL },                  // Business glossary
+  { id: 'connect',    icon: 'plug',  href: '/sources',    roles: ['admin', 'analyst'] }, // Connect a source
+  { id: 'shared',     icon: 'book',  href: '/shared-data', roles: ['admin', 'analyst'] }, // Shared data
+  { id: 'grids',      icon: 'columns', href: '/grids',    roles: ['admin', 'analyst'] }, // Your tables
   // The topic rows in the rail replaced this as the way IN to a subject area;
   // the workshop is still where a NEW topic gets built, so it keeps a door here.
-  { type: 'action', id: 'products',   title: 'Build workshop',     subtitle: 'Studio · design a new topic',       icon: 'star',  href: '/products',   roles: ['admin', 'analyst'] },
-  { type: 'action', id: 'suggestions',title: 'Suggestions',        subtitle: 'Studio · confirm AI proposals',     icon: 'bolt',  href: '/review',     roles: ['admin', 'analyst'] },
-  { type: 'action', id: 'team',       title: 'Team & roles',       subtitle: 'Settings · users & invites',        icon: 'users', href: '/users',      roles: ['admin'] },
+  { id: 'products',   icon: 'star',  href: '/products',   roles: ['admin', 'analyst'] }, // Build workshop
+  { id: 'suggestions', icon: 'bolt', href: '/review',     roles: ['admin', 'analyst'] }, // Suggestions
+  { id: 'team',       icon: 'users', href: '/users',      roles: ['admin'] },            // Team & roles
 ];
 
 function iconForType(type: SearchResult['type']): IconKey {
@@ -82,6 +92,7 @@ function iconForType(type: SearchResult['type']): IconKey {
 
 export default function CommandPalette() {
   const router = useRouter();
+  const t = useT();
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<SearchResult[]>([]);
@@ -91,8 +102,22 @@ export default function CommandPalette() {
   const debounceRef = useRef<ReturnType<typeof setTimeout>>();
   const [role, setRole] = useState<Role>('viewer');
   useEffect(() => { setRole(getTokenPayload()?.role ?? 'viewer'); }, []);
-  // Role-filtered actions — viewers never see builder/admin commands.
-  const actions = useMemo(() => ACTIONS_ALL.filter((a) => a.roles.includes(role)), [role]);
+  // Role-filtered actions — viewers never see builder/admin commands. The
+  // display text resolves from the dictionary HERE so the query filter
+  // below matches what the user actually reads, in their language.
+  const actions = useMemo<SearchResult[]>(
+    () => ACTIONS_ALL
+      .filter((a) => a.roles.includes(role))
+      .map((a) => ({
+        type: 'action' as const,
+        id: a.id,
+        title: t.palette.actions[a.id].title,
+        subtitle: t.palette.actions[a.id].subtitle,
+        icon: a.icon,
+        href: a.href,
+      })),
+    [role, t],
+  );
 
   // Cmd+K / Ctrl+K toggle (unchanged keybinds)
   useEffect(() => {
@@ -132,14 +157,15 @@ export default function CommandPalette() {
     try {
       const res = await api.get(`/semantic/search?q=${encodeURIComponent(q)}&limit=8`);
       const items: SearchResult[] = (res.data.data ?? []).map((item: { type: string; id: number; name: string; parent?: string; connectionName?: string }) => {
-        const t = item.type as SearchResult['type'];
+        // `rt`, not `t` — the dictionary is `t` in this component's scope.
+        const rt = item.type as SearchResult['type'];
         return {
-          type: t,
+          type: rt,
           id: item.id,
           title: item.name,
           subtitle: item.parent ?? item.connectionName ?? '',
-          icon: iconForType(t),
-          href: t === 'dashboard' ? `/dashboards?id=${item.id}` : '/catalog',
+          icon: iconForType(rt),
+          href: rt === 'dashboard' ? `/dashboards?id=${item.id}` : '/catalog',
         };
       });
       setResults([...items, ...actionMatches].slice(0, 10));
@@ -194,7 +220,7 @@ export default function CommandPalette() {
         <div
           role="dialog"
           aria-modal="true"
-          aria-label="Command palette"
+          aria-label={t.palette.ariaLabel}
           className="bg-raised rounded-lg shadow-3 border border-line overflow-hidden"
           onMouseDown={(e) => e.stopPropagation()}
         >
@@ -206,7 +232,7 @@ export default function CommandPalette() {
               value={query}
               onChange={(e) => { setQuery(e.target.value); setSelectedIdx(0); }}
               onKeyDown={onKeyDown}
-              placeholder="Search tables, columns, dashboards, or type a command…"
+              placeholder={t.palette.placeholder}
               className="flex-1 bg-transparent text-[14px] text-ink placeholder:text-muted-2 focus:outline-none font-sans"
             />
             <kbd className="hidden sm:inline-block font-mono text-[10px] tracking-[0.04em] text-muted-2 uppercase">
@@ -218,19 +244,19 @@ export default function CommandPalette() {
           <div className="max-h-[360px] overflow-y-auto py-1.5">
             {loading && (
               <div className="px-5 py-4 font-mono text-[10.5px] uppercase tracking-[0.08em] text-muted-2 text-center">
-                Searching…
+                {t.palette.searching}
               </div>
             )}
 
             {!loading && results.length === 0 && query.trim() && (
               <div className="px-5 py-8 text-center">
-                <div className="font-display text-[18px] text-ink tracking-[-0.01em]">No results.</div>
+                <div className="font-display text-[18px] text-ink tracking-[-0.01em]">{t.palette.noResults}</div>
                 <button
                   type="button"
                   onClick={() => { setOpen(false); router.push(`/query?q=${encodeURIComponent(query)}`); }}
                   className="mt-2 font-mono text-[10.5px] uppercase tracking-[0.08em] text-ocean hover:text-ocean-hover transition-colors duration-1"
                 >
-                  Ask AI instead →
+                  {t.palette.askAiInstead}
                 </button>
               </div>
             )}
@@ -256,7 +282,7 @@ export default function CommandPalette() {
                   )}
                 </span>
                 <span className="font-mono text-[10px] uppercase tracking-[0.04em] text-muted-2 bg-softer px-1.5 py-0.5 rounded shrink-0">
-                  {r.type}
+                  {t.palette.types[r.type]}
                 </span>
               </button>
             ))}
@@ -264,9 +290,9 @@ export default function CommandPalette() {
 
           {/* Footer */}
           <div className="px-5 py-2.5 border-t border-softer flex items-center gap-4 font-mono text-[10px] uppercase tracking-[0.08em] text-muted-2">
-            <span className="flex items-center gap-1.5"><kbd className="text-ink-3 bg-softer px-1 rounded normal-case tracking-normal">↑↓</kbd> navigate</span>
-            <span className="flex items-center gap-1.5"><kbd className="text-ink-3 bg-softer px-1 rounded normal-case tracking-normal">↵</kbd> select</span>
-            <span className="flex items-center gap-1.5"><kbd className="text-ink-3 bg-softer px-1 rounded normal-case tracking-normal">esc</kbd> close</span>
+            <span className="flex items-center gap-1.5"><kbd className="text-ink-3 bg-softer px-1 rounded normal-case tracking-normal">↑↓</kbd> {t.palette.navigate}</span>
+            <span className="flex items-center gap-1.5"><kbd className="text-ink-3 bg-softer px-1 rounded normal-case tracking-normal">↵</kbd> {t.palette.select}</span>
+            <span className="flex items-center gap-1.5"><kbd className="text-ink-3 bg-softer px-1 rounded normal-case tracking-normal">esc</kbd> {t.palette.close}</span>
           </div>
         </div>
       </div>

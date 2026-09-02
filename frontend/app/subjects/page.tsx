@@ -20,6 +20,7 @@ import { useRouter } from 'next/navigation';
 import { ArrowRight, Layers, Library, Loader2, MessageSquare, Sparkles } from 'lucide-react';
 import api from '@/lib/api';
 import { getTokenPayload } from '@/lib/auth';
+import { useT } from '@/lib/i18n';
 import { formatRelativeLong } from '@/lib/dates';
 import { iconForAnalytics } from '@/components/catalog/entityIcons';
 import { cleanTopicName } from '@/app/products/helpers';
@@ -35,8 +36,9 @@ interface Subject {
 
 export default function SubjectsPage() {
   const router = useRouter();
+  const t = useT();
   const [subjects, setSubjects] = useState<Subject[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [loadFailed, setLoadFailed] = useState(false);
   const [question, setQuestion] = useState('');
   const role = getTokenPayload()?.role ?? 'viewer';
 
@@ -66,7 +68,9 @@ export default function SubjectsPage() {
             .sort((a, b) => a.name.localeCompare(b.name)),
         );
       })
-      .catch(() => { if (!cancelled) setError('Could not load your subjects.'); });
+      // A boolean, resolved to copy at RENDER time, so the message follows
+      // a locale switch and the effect closes over no dictionary strings.
+      .catch(() => { if (!cancelled) setLoadFailed(true); });
     return () => { cancelled = true; };
   }, []);
 
@@ -79,10 +83,10 @@ export default function SubjectsPage() {
     <div className="flex-1 overflow-y-auto px-10 pb-10 pt-10">
       <div className="mx-auto max-w-[880px]">
         <header className="mb-6">
-          <p className="font-mono text-[10px] uppercase tracking-[0.14em] text-muted-2">Uncover</p>
-          <h1 className="mt-1.5 font-display text-[30px] leading-[1.15] tracking-[-0.02em] text-ink">Subjects</h1>
+          <p className="font-mono text-[10px] uppercase tracking-[0.14em] text-muted-2">{t.subjects.eyebrow}</p>
+          <h1 className="mt-1.5 font-display text-[30px] leading-[1.15] tracking-[-0.02em] text-ink">{t.subjects.title}</h1>
           <p className="mt-1.5 max-w-[560px] text-[14px] leading-[1.6] text-ink-3 [text-wrap:pretty]">
-            Everything your team can ask about, in one place.
+            {t.subjects.lede}
           </p>
         </header>
 
@@ -93,7 +97,7 @@ export default function SubjectsPage() {
             value={question}
             onChange={(e) => setQuestion(e.target.value)}
             onKeyDown={(e) => { if (e.key === 'Enter') ask(); }}
-            placeholder="Ask anything, or jump to a subject…"
+            placeholder={t.subjects.askPlaceholder}
             className="min-w-0 flex-1 bg-transparent text-[13.5px] text-ink placeholder:text-muted-2 focus:outline-none"
           />
           <button
@@ -101,29 +105,29 @@ export default function SubjectsPage() {
             onClick={ask}
             className="shrink-0 rounded-[8px] bg-ocean px-4 py-2 text-[13px] font-medium text-white hover:opacity-90"
           >
-            Ask
+            {t.subjects.ask}
           </button>
         </div>
 
-        {error && <p className="text-[13px] text-err">{error}</p>}
+        {loadFailed && <p className="text-[13px] text-err">{t.subjects.loadFailed}</p>}
 
-        {!subjects && !error && (
+        {!subjects && !loadFailed && (
           <div className="flex items-center gap-2 text-[13px] text-muted">
-            <Loader2 className="h-4 w-4 animate-spin" strokeWidth={2} aria-hidden /> Loading…
+            <Loader2 className="h-4 w-4 animate-spin" strokeWidth={2} aria-hidden /> {t.common.loading}
           </div>
         )}
 
         {subjects && subjects.length === 0 && (
           <div className="rounded-[10px] border border-line bg-raised px-6 py-8 text-center">
             <Layers className="mx-auto mb-3 h-7 w-7 text-muted-2" strokeWidth={1.5} aria-hidden />
-            <p className="text-[14px] text-ink-2">No subjects yet.</p>
+            <p className="text-[14px] text-ink-2">{t.subjects.noneYet}</p>
             {role === 'admin' || role === 'analyst' ? (
               <a href="/build" className="mt-3 inline-flex items-center gap-1.5 rounded-[8px] bg-ocean px-4 py-2 text-[13px] font-medium text-white hover:opacity-90">
                 <Sparkles className="h-4 w-4" strokeWidth={1.8} aria-hidden />
-                Create your topics
+                {t.subjects.createTopics}
               </a>
             ) : (
-              <p className="mt-1 text-[13px] text-muted">Your team is still setting things up.</p>
+              <p className="mt-1 text-[13px] text-muted">{t.subjects.stillSettingUp}</p>
             )}
           </div>
         )}
@@ -139,9 +143,9 @@ export default function SubjectsPage() {
           className="group mt-5 flex items-center gap-3 rounded-[10px] border border-line bg-raised px-4 py-3.5 transition-colors duration-1 ease-observatory hover:border-ocean"
         >
           <Library className="h-[17px] w-[17px] shrink-0 text-ocean" strokeWidth={1.6} aria-hidden />
-          <span className="shrink-0 text-[13.5px] font-medium text-ink group-hover:text-ocean">Shared data</span>
+          <span className="shrink-0 text-[13.5px] font-medium text-ink group-hover:text-ocean">{t.subjects.sharedData}</span>
           <span className="min-w-0 flex-1 truncate text-[12px] text-muted">
-            The lookups every subject slices by — your customers, items, accounts and terms.
+            {t.subjects.sharedDataLede}
           </span>
           <ArrowRight className="h-3.5 w-3.5 shrink-0 text-muted-2" strokeWidth={2} aria-hidden />
         </a>
@@ -151,16 +155,17 @@ export default function SubjectsPage() {
 }
 
 function SubjectCard({ subject }: { subject: Subject }) {
+  const t = useT();
   const Glyph = iconForAnalytics(subject.name);
   const name = cleanTopicName(subject.name);
   // Same honesty rule as the Build page rows: a built subject whose tables
   // all hold zero rows is "waiting for data", not "refreshed just now".
   const waiting = subject.lastRefreshedAt !== null && subject.rowsTotal === 0;
   const fresh = !subject.lastRefreshedAt
-    ? 'getting ready'
+    ? t.subjects.gettingReady
     : waiting
-      ? 'waiting for data from your source'
-      : `refreshed ${formatRelativeLong(subject.lastRefreshedAt)}`;
+      ? t.subjects.waitingForData
+      : t.subjects.refreshed(formatRelativeLong(subject.lastRefreshedAt));
   const dot = !subject.lastRefreshedAt || waiting ? 'bg-warn' : 'bg-ok';
 
   return (
@@ -181,7 +186,7 @@ function SubjectCard({ subject }: { subject: Subject }) {
         <span className={`h-[7px] w-[7px] shrink-0 rounded-full ${dot}`} aria-hidden />
         <span className="min-w-0 flex-1 truncate text-[11.5px] text-muted-2">{fresh}</span>
         <span className="flex shrink-0 items-center gap-1 text-[12px] font-medium text-ocean">
-          Ask <ArrowRight className="h-3 w-3" strokeWidth={2} aria-hidden />
+          {t.subjects.ask} <ArrowRight className="h-3 w-3" strokeWidth={2} aria-hidden />
         </span>
       </div>
     </a>

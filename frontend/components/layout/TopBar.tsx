@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { Search } from 'lucide-react';
 import { clearToken, getRefreshToken, getTokenPayload, TokenPayload } from '@/lib/auth';
+import { AVAILABLE_LOCALES, useI18n } from '@/lib/i18n';
 import api from '@/lib/api';
 import { removeSessionItem, storageKeys } from '@/lib/storage';
 import { cn } from '@/lib/cn';
@@ -33,6 +34,7 @@ function initialsOf(name?: string, email?: string): string {
 
 export default function TopBar({ showSearch = true }: TopBarProps) {
   const router = useRouter();
+  const { t, locale, setLocale } = useI18n();
   const [payload, setPayload] = useState<TokenPayload | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement | null>(null);
@@ -103,7 +105,7 @@ export default function TopBar({ showSearch = true }: TopBarProps) {
           <button
             type="button"
             onClick={openPalette}
-            aria-label="Search (Cmd+K)"
+            aria-label={t.topbar.searchAria}
             className={cn(
               'hidden md:flex items-center gap-2 px-3 h-8 rounded-sm border border-line bg-surface',
               'text-[12.5px] text-muted',
@@ -112,7 +114,7 @@ export default function TopBar({ showSearch = true }: TopBarProps) {
             )}
           >
             <Search className="w-3 h-3" strokeWidth={1.75} aria-hidden="true" />
-            <span className="w-40 text-left truncate">Search or ask…</span>
+            <span className="w-40 text-left truncate">{t.topbar.searchOrAsk}</span>
             <kbd className="font-mono text-[10px] tracking-[0.04em] text-muted-2">⌘K</kbd>
           </button>
         )}
@@ -124,7 +126,7 @@ export default function TopBar({ showSearch = true }: TopBarProps) {
           <button
             type="button"
             onClick={() => setMenuOpen((v) => !v)}
-            aria-label={`Account menu for ${payload?.displayName ?? 'you'}`}
+            aria-label={t.topbar.accountMenuFor(payload?.displayName ?? t.topbar.you)}
             aria-expanded={menuOpen}
             className={cn(
               'w-[26px] h-[26px] rounded-full bg-ocean-softer text-ocean font-sans font-semibold text-[11px]',
@@ -143,7 +145,7 @@ export default function TopBar({ showSearch = true }: TopBarProps) {
               {payload && (
                 <div className="px-3 pt-2 pb-2.5 border-b border-softer">
                   <div className="font-sans font-medium text-[13.5px] text-ink truncate">
-                    {payload.displayName || 'Account'}
+                    {payload.displayName || t.topbar.account}
                   </div>
                   <div className="font-mono text-[10.5px] text-muted tracking-[0.04em] mt-0.5 truncate">
                     {payload.email}
@@ -156,15 +158,43 @@ export default function TopBar({ showSearch = true }: TopBarProps) {
                 className="block px-3 py-2 text-[13px] text-ink-2 hover:bg-softer hover:text-ink transition-colors duration-1"
                 role="menuitem"
               >
-                Profile
+                {t.topbar.profile}
               </Link>
+              {/* Language (P2-1) — the switcher lives here, in the frame,
+                  so it exists on every screen and needed no page of its own.
+                  Only locales with a COMPLETE dictionary are listed
+                  (AVAILABLE_LOCALES); the choice persists to users.locale
+                  for a signed-in user and applies instantly either way. */}
+              <div className="px-3 pt-2 pb-1 border-t border-softer mt-1">
+                <div className="font-mono text-[9.5px] uppercase tracking-[0.1em] text-muted-2 mb-1.5">
+                  {t.common.language}
+                </div>
+                <div className="flex gap-1.5" role="group" aria-label={t.common.language}>
+                  {AVAILABLE_LOCALES.map((l) => (
+                    <button
+                      key={l.code}
+                      type="button"
+                      onClick={() => setLocale(l.code)}
+                      aria-pressed={locale === l.code}
+                      className={cn(
+                        'px-2 py-1 rounded-sm text-[12px] border transition-colors duration-1',
+                        locale === l.code
+                          ? 'border-ocean bg-ocean-softer text-ocean font-medium'
+                          : 'border-line text-ink-2 hover:bg-softer',
+                      )}
+                    >
+                      {l.name}
+                    </button>
+                  ))}
+                </div>
+              </div>
               <button
                 type="button"
                 onClick={signOut}
-                className="w-full text-left px-3 py-2 text-[13px] text-err hover:bg-err-soft/50 transition-colors duration-1"
+                className="w-full text-left px-3 py-2 mt-1 text-[13px] text-err hover:bg-err-soft/50 transition-colors duration-1"
                 role="menuitem"
               >
-                Sign out
+                {t.topbar.signOut}
               </button>
             </div>
           )}

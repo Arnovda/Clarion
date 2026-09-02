@@ -17,7 +17,7 @@ import { reqDb } from '../db/reqDb';
 import { requireAuth, requireRole, hashPassword, verifyPassword } from '../middleware/auth';
 import { config } from '../config';
 import { validate } from '../middleware/validate';
-import { inviteUserSchema, eraseUserSchema } from '../middleware/schemas';
+import { inviteUserSchema, eraseUserSchema, updateProfileSchema } from '../middleware/schemas';
 import { recordAudit } from '../services/auditService';
 import { eraseUser } from '../services/accountDeletion';
 import { revokeAllForUser } from '../services/refreshTokenService';
@@ -128,7 +128,13 @@ router.post('/invite', requireRole('admin'), validate(inviteUserSchema), async (
 // ---------------------------------------------------------------------------
 // PATCH /api/users/:id — update role or display name (admin only)
 // ---------------------------------------------------------------------------
-router.patch('/:id', requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
+// NOTE (P2-1, found by the first test to ever hit PATCH /profile): these
+// param routes are registered ABOVE the literal /profile routes, so without
+// the (\\d+) constraint Express matched PATCH /users/profile here with
+// id='profile' -> NaN -> 500 for admins (403 for everyone else) — "update
+// own display name" had been dead since this route was added. The numeric
+// constraint makes every literal path unreachable by the param routes.
+router.patch('/:id(\\d+)', requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const db = reqDb(req);
     const userId = Number(req.params.id);
@@ -192,7 +198,7 @@ router.patch('/:id', requireRole('admin'), async (req: Request, res: Response, n
 // ---------------------------------------------------------------------------
 // PATCH /api/users/:id/deactivate — soft-delete
 // ---------------------------------------------------------------------------
-router.patch('/:id/deactivate', requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
+router.patch('/:id(\\d+)/deactivate', requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const db = reqDb(req);
     const userId = Number(req.params.id);
@@ -233,7 +239,7 @@ router.patch('/:id/deactivate', requireRole('admin'), async (req: Request, res: 
 // ---------------------------------------------------------------------------
 // DELETE /api/users/:id — GDPR erasure (anonymise PII + drop credentials)
 // ---------------------------------------------------------------------------
-router.delete('/:id', requireRole('admin'), validate(eraseUserSchema), async (req: Request, res: Response, next: NextFunction) => {
+router.delete('/:id(\\d+)', requireRole('admin'), validate(eraseUserSchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const db = reqDb(req);
     const userId = Number(req.params.id);
@@ -280,7 +286,7 @@ router.delete('/:id', requireRole('admin'), validate(eraseUserSchema), async (re
 // ---------------------------------------------------------------------------
 // PATCH /api/users/:id/reactivate — restore a deactivated user
 // ---------------------------------------------------------------------------
-router.patch('/:id/reactivate', requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
+router.patch('/:id(\\d+)/reactivate', requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const db = reqDb(req);
     const userId = Number(req.params.id);
@@ -316,7 +322,7 @@ router.patch('/:id/reactivate', requireRole('admin'), async (req: Request, res: 
 // Going through this endpoint would let a compromised admin session
 // remove MFA without proving identity.
 // ---------------------------------------------------------------------------
-router.post('/:id/reset-mfa', requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
+router.post('/:id(\\d+)/reset-mfa', requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const db = reqDb(req);
     const userId = Number(req.params.id);
@@ -438,7 +444,7 @@ router.get('/profile', async (req: Request, res: Response, next: NextFunction) =
     const db = reqDb(req);
     const user = await db('users')
       .where({ id: req.user!.sub })
-      .select('id', 'email', 'display_name', 'role', 'is_active', 'avatar_url', 'created_at')
+      .select('id', 'email', 'display_name', 'role', 'is_active', 'avatar_url', 'created_at', 'locale')
       .first();
 
     if (!user) {
@@ -457,21 +463,21 @@ router.get('/profile', async (req: Request, res: Response, next: NextFunction) =
 });
 
 // ---------------------------------------------------------------------------
-// PATCH /api/users/profile — update own display name
+// PATCH /api/users/profile — update own display name and/or interface locale
+// (P2-1). Locale values are gated by updateProfileSchema's enum — only
+// languages with a complete dictionary are storable; null reverts to the
+// browser guess.
 // ---------------------------------------------------------------------------
-router.patch('/profile', async (req: Request, res: Response, next: NextFunction) => {
+router.patch('/profile', validate(updateProfileSchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const db = reqDb(req);
-    const { displayName } = req.body as { displayName: string };
+    const { displayName, locale } = req.body as { displayName?: string; locale?: 'en' | 'nl' | null };
 
-    if (!displayName?.trim()) {
-      res.status(400).json({ ok: false, error: 'Display name is required' });
-      return;
-    }
+    const patch: Record<string, unknown> = { updated_at: new Date().toISOString() };
+    if (displayName !== undefined) patch.display_name = displayName.trim();
+    if (locale !== undefined) patch.locale = locale;
 
-    await db('users')
-      .where({ id: req.user!.sub })
-      .update({ display_name: displayName.trim(), updated_at: new Date().toISOString() });
+    await db('users').where({ id: req.user!.sub }).update(patch);
 
     res.json({ ok: true });
   } catch (err) { next(err); }

@@ -1,6 +1,7 @@
 'use client';
 
 import { ReactNode } from 'react';
+import { useT } from '@/lib/i18n';
 
 function ObservatoryArt() {
   return (
@@ -99,6 +100,7 @@ export interface AuthLayoutProps {
 }
 
 export default function AuthLayout({ eyebrow, title, lede, children, footer }: AuthLayoutProps) {
+  const t = useT();
   return (
     <div className="min-h-screen bg-bg flex items-center justify-center p-4 md:p-10">
       <div className="w-full max-w-[1280px] grid md:grid-cols-[1.1fr_1fr] bg-raised border border-line rounded-lg shadow-2 overflow-hidden">
@@ -115,7 +117,7 @@ export default function AuthLayout({ eyebrow, title, lede, children, footer }: A
               <span className="block font-mono not-italic font-medium text-[11px] tracking-[0.14em] uppercase text-white mb-3.5">
                 Observatory · Est. 2025
               </span>
-              Where your business<br />comes into focus.
+              {t.authArt.tagline1}<br />{t.authArt.tagline2}
             </blockquote>
 
             {/* Only claims that are TRUE may stand here. "SOC 2 Type II" was
@@ -123,7 +125,7 @@ export default function AuthLayout({ eyebrow, title, lede, children, footer }: A
                 a compliance claim on the sign-in screen is a representation,
                 not decoration. Re-add it the day the certificate is real. */}
             <div className="font-mono text-[10.5px] tracking-[0.08em] uppercase text-[#8891a0]">
-              EU-hosted · AES-256 · GDPR erasure built in
+              {t.authArt.trustLine}
             </div>
           </div>
         </div>
@@ -152,9 +154,9 @@ export default function AuthLayout({ eyebrow, title, lede, children, footer }: A
               presenting them as the binding agreement is the flip the owner
               makes after that review (docs/legal/README.md). */}
           <div className="mt-6 flex gap-3.5 font-mono text-[10px] tracking-[0.1em] uppercase text-muted-2">
-            <a href="/legal/terms" className="hover:text-muted no-underline text-inherit">Terms</a>
-            <a href="/legal/privacy" className="hover:text-muted no-underline text-inherit">Privacy</a>
-            <a href="/legal/subprocessors" className="hover:text-muted no-underline text-inherit">Subprocessors</a>
+            <a href="/legal/terms" className="hover:text-muted no-underline text-inherit">{t.authArt.terms}</a>
+            <a href="/legal/privacy" className="hover:text-muted no-underline text-inherit">{t.authArt.privacy}</a>
+            <a href="/legal/subprocessors" className="hover:text-muted no-underline text-inherit">{t.authArt.subprocessors}</a>
           </div>
         </div>
       </div>

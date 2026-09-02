@@ -1018,3 +1018,25 @@ export const adminTenantImpersonateSchema = z.object({
     reason: z.string().trim().min(3).max(500),
   }),
 });
+
+// ---------------------------------------------------------------------------
+// Profile (P2-1 i18n)
+// ---------------------------------------------------------------------------
+
+/**
+ * PATCH /users/profile — display name and/or interface locale. The locale
+ * enum lists ONLY languages with a COMPLETE dictionary in frontend/lib/i18n
+ * (the switcher offers no half-translated pretence); 'fr' joins when its
+ * translation lands, not before. `null` clears the stored choice back to
+ * browser-guess.
+ */
+export const updateProfileSchema = z.object({
+  body: z
+    .object({
+      displayName: z.string().trim().min(1).max(120).optional(),
+      locale: z.enum(['en', 'nl']).nullable().optional(),
+    })
+    .refine((b) => b.displayName !== undefined || b.locale !== undefined, {
+      message: 'Nothing to update',
+    }),
+});

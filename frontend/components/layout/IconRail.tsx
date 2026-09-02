@@ -12,6 +12,8 @@ import {
 import { getTokenPayload, TokenPayload } from '@/lib/auth';
 import { cn } from '@/lib/cn';
 import { useIsOperator } from '@/lib/features';
+import { useT } from '@/lib/i18n';
+import type { Dictionary } from '@/lib/i18n/en';
 import api from '@/lib/api';
 import { getItem, setItem, storageKeys } from '@/lib/storage';
 
@@ -64,9 +66,14 @@ const ICONS = {
 };
 
 interface NavItem {
-  key: string;
+  /**
+   * Doubles as the label key into the i18n dictionary (t.nav.items) — the
+   * item list itself carries no display text, so the rail follows the
+   * interface language with no second list to keep in step (P2-1). The
+   * `label:` comments below record the English label for grep-ability.
+   */
+  key: keyof Dictionary['nav']['items'];
   href: string;
-  label: string;
   icon: React.ReactNode;
   roles: Role[];
   group: Group;
@@ -81,45 +88,45 @@ interface NavItem {
 
 const NAV_ITEMS: NavItem[] = [
   // ── Workspace — Home alone, unlabelled, above everything ─────────────────
-  { key: 'home',       href: '/home',       label: 'Home',            icon: ICONS.home,    roles: ['admin', 'analyst', 'viewer'],  group: 'workspace' },
+  { key: 'home',       href: '/home',       /* Home */            icon: ICONS.home,    roles: ['admin', 'analyst', 'viewer'],  group: 'workspace' },
   // ── Uncover — the ways you interrogate the data ──────────────────────────
-  { key: 'ask',        href: '/query',      label: 'Ask',             icon: ICONS.chat,    roles: ['admin', 'analyst', 'viewer'],  group: 'uncover' },
-  { key: 'dashboards', href: '/dashboards', label: 'Dashboards',      icon: ICONS.grid,    roles: ['admin', 'analyst', 'viewer'],  group: 'uncover' },
+  { key: 'ask',        href: '/query',      /* Ask */             icon: ICONS.chat,    roles: ['admin', 'analyst', 'viewer'],  group: 'uncover' },
+  { key: 'dashboards', href: '/dashboards', /* Dashboards */      icon: ICONS.grid,    roles: ['admin', 'analyst', 'viewer'],  group: 'uncover' },
   // The root-cause agent — fully built since months but had ZERO nav links
   // (gap analysis G10). Ask AI's "Why?" chips escalate here too.
-  { key: 'investigate', href: '/investigate', label: 'Investigate',   icon: ICONS.search,  roles: ['admin', 'analyst', 'viewer'],  group: 'uncover' },
+  { key: 'investigate', href: '/investigate', /* Investigate */   icon: ICONS.search,  roles: ['admin', 'analyst', 'viewer'],  group: 'uncover' },
   // The Subjects hub — every topic plus Shared data, with the descriptions
   // and freshness a rail row could never show. Stays lit on /topics/* and
   // /shared-data via ROUTE_ALIASES so deep links don't orphan the state.
-  { key: 'subjects',   href: '/subjects',   label: 'Subjects',        icon: ICONS.layers,  roles: ['admin', 'analyst', 'viewer'],  group: 'uncover' },
-  { key: 'notebooks',  href: '/notebooks',  label: 'Notebooks',       icon: ICONS.code,    roles: ['admin', 'analyst'],            group: 'uncover' },
+  { key: 'subjects',   href: '/subjects',   /* Subjects */        icon: ICONS.layers,  roles: ['admin', 'analyst', 'viewer'],  group: 'uncover' },
+  { key: 'notebooks',  href: '/notebooks',  /* Notebooks */       icon: ICONS.code,    roles: ['admin', 'analyst'],            group: 'uncover' },
   // ── Studio — the builder's pipeline, in pipeline order ───────────────────
-  { key: 'sources',    href: '/sources',    label: 'Sources',         icon: ICONS.plug,    roles: ['admin', 'analyst'],            group: 'studio', badgeKey: 'sources' },
+  { key: 'sources',    href: '/sources',    /* Sources */         icon: ICONS.plug,    roles: ['admin', 'analyst'],            group: 'studio', badgeKey: 'sources' },
   // Managed grids — budgets, mappings and lists edited inside Clarion. Sits
   // with Sources because it IS a source of data (the manual one); the rows
   // live in Postgres and materialise into the warehouse on every save.
-  { key: 'grids',      href: '/grids',      label: 'Your tables',     icon: ICONS.table,   roles: ['admin', 'analyst'],            group: 'studio' },
+  { key: 'grids',      href: '/grids',      /* Your tables */     icon: ICONS.table,   roles: ['admin', 'analyst'],            group: 'studio' },
   // Where a source becomes topics — the tenant-level front door to the
   // bus-matrix flow (build, show/hide, guarded rebuild). Tenant-level on
   // purpose: preparing data spans sources (shared data is conformed across
   // them), so this is NOT a per-source action on the source card.
-  { key: 'build',      href: '/build',      label: 'Build',           icon: ICONS.blocks,  roles: ['admin', 'analyst'],            group: 'studio' },
+  { key: 'build',      href: '/build',      /* Build */           icon: ICONS.blocks,  roles: ['admin', 'analyst'],            group: 'studio' },
   // Where the relationship canvas lives. Studio on purpose — it is a repair and
   // escape-hatch tool for people who already know their data, not the front
   // door. A new customer must never meet 170 edges on day one.
-  { key: 'relations',  href: '/relationships', label: 'Relations',    icon: ICONS.relations, roles: ['admin', 'analyst'],          group: 'studio' },
+  { key: 'relations',  href: '/relationships', /* Relations */    icon: ICONS.relations, roles: ['admin', 'analyst'],          group: 'studio' },
   // The curator's working surface: browse both layers, edit definitions,
   // preview data. The one relationship surface stays /relationships — the
   // catalog's own diagram tab was retired the day this entry returned.
-  { key: 'catalog',    href: '/catalog',    label: 'Catalog',         icon: ICONS.book,    roles: ['admin', 'analyst'],            group: 'studio' },
-  { key: 'pipelines',  href: '/pipelines',  label: 'Refresh',         icon: ICONS.workflow,roles: ['admin', 'analyst'],            group: 'studio' },
-  { key: 'review',     href: '/review',     label: 'Suggestions',     icon: ICONS.inbox,   roles: ['admin', 'analyst'],            group: 'studio', badgeKey: 'review' },
+  { key: 'catalog',    href: '/catalog',    /* Catalog */         icon: ICONS.book,    roles: ['admin', 'analyst'],            group: 'studio' },
+  { key: 'pipelines',  href: '/pipelines',  /* Refresh */         icon: ICONS.workflow,roles: ['admin', 'analyst'],            group: 'studio' },
+  { key: 'review',     href: '/review',     /* Suggestions */     icon: ICONS.inbox,   roles: ['admin', 'analyst'],            group: 'studio', badgeKey: 'review' },
   // ── Settings — admin-only org config ────────────────────────────────────
-  { key: 'team',       href: '/users',      label: 'Team & roles',    icon: ICONS.users,   roles: ['admin'],                       group: 'settings' },
-  { key: 'policies',   href: '/policies',   label: 'Policies',        icon: ICONS.shield,  roles: ['admin'],                       group: 'settings' },
-  { key: 'ai-usage',   href: '/admin/ai-usage', label: 'AI usage',     icon: ICONS.dollar,  roles: ['admin'],                       group: 'settings' },
-  { key: 'features',   href: '/admin/features', label: 'Who sees what', icon: ICONS.flag,  roles: ['admin', 'analyst', 'viewer'],  group: 'settings', operatorOnly: true },
-  { key: 'tenants',    href: '/admin/tenants',  label: 'Customers',     icon: ICONS.tenants, roles: ['admin', 'analyst', 'viewer'], group: 'settings', operatorOnly: true },
+  { key: 'team',       href: '/users',      /* Team & roles */    icon: ICONS.users,   roles: ['admin'],                       group: 'settings' },
+  { key: 'policies',   href: '/policies',   /* Policies */        icon: ICONS.shield,  roles: ['admin'],                       group: 'settings' },
+  { key: 'ai-usage',   href: '/admin/ai-usage', /* AI usage */     icon: ICONS.dollar,  roles: ['admin'],                       group: 'settings' },
+  { key: 'features',   href: '/admin/features', /* Who sees what */ icon: ICONS.flag,  roles: ['admin', 'analyst', 'viewer'],  group: 'settings', operatorOnly: true },
+  { key: 'tenants',    href: '/admin/tenants',  /* Customers */     icon: ICONS.tenants, roles: ['admin', 'analyst', 'viewer'], group: 'settings', operatorOnly: true },
 ];
 
 const ROUTE_ALIASES: Record<string, string[]> = {
@@ -139,15 +146,6 @@ const ROUTE_ALIASES: Record<string, string[]> = {
   '/review':     ['/review', '/gaps', '/suggestions'],
   '/users':      ['/users'],
   '/policies':   ['/policies'],
-};
-
-const GROUP_LABELS: Record<Group, string> = {
-  // No eyebrow on the workspace group — it's the unlabelled default surface
-  // (just Home), which keeps the top of the rail calm. The rest are labelled.
-  workspace: '',
-  uncover:   'Uncover',
-  studio:    'Studio',
-  settings:  'Settings',
 };
 
 const GROUP_ORDER: Group[] = ['workspace', 'uncover', 'studio', 'settings'];
@@ -176,6 +174,10 @@ interface PersistedState {
 
 export default function IconRail() {
   const pathname = usePathname();
+  const t = useT();
+  // No eyebrow on the workspace group — it's the unlabelled default surface
+  // (just Home), which keeps the top of the rail calm. The rest are labelled.
+  const groupLabel = (g: Group) => (g === 'workspace' ? '' : t.nav.groups[g]);
   const [payload, setPayload] = useState<TokenPayload | null>(null);
   const [reviewCount, setReviewCount] = useState<number>(0);
   const [sourcesCount, setSourcesCount] = useState<number>(0);
@@ -307,11 +309,12 @@ export default function IconRail() {
   function renderNavLink(it: NavItem) {
     const active = isActive(it.href);
     const badge = badgeFor(it);
+    const label = t.nav.items[it.key];
     return (
       <Link
         key={it.key}
         href={it.href}
-        title={collapsed ? `${it.label}${badge > 0 ? ` · ${badge}` : ''}` : undefined}
+        title={collapsed ? `${label}${badge > 0 ? ` · ${badge}` : ''}` : undefined}
         className={cn(
           // Full-bleed row with a left accent bar rather than an inset pill:
           // the bar reads as "you are here" from the rail's edge, and it is
@@ -331,7 +334,7 @@ export default function IconRail() {
         </span>
         {!collapsed && (
           <>
-            <span className="truncate flex-1">{it.label}</span>
+            <span className="truncate flex-1">{label}</span>
             {badge > 0 && (
               <span className={cn(
                 'inline-flex items-center justify-center min-w-[20px] h-[18px] px-1.5 rounded-full text-[10px] font-mono font-medium tabular-nums',
@@ -345,7 +348,7 @@ export default function IconRail() {
         {collapsed && badge > 0 && (
           <span
             className="absolute top-1.5 right-2 w-[7px] h-[7px] rounded-full bg-ocean ring-2 ring-[var(--soft)]"
-            aria-label={`${badge} pending`}
+            aria-label={t.nav.pending(badge)}
           />
         )}
       </Link>
@@ -358,7 +361,7 @@ export default function IconRail() {
       style={{ width: effectiveWidth }}
     >
       <aside
-        aria-label="Primary navigation"
+        aria-label={t.nav.primaryNav}
         className={cn(
           'h-full w-full flex flex-col overflow-hidden',
           // Light chrome, one step DEEPER than the panels beside it. That
@@ -389,7 +392,7 @@ export default function IconRail() {
                 {/* Group header. Workspace has none (it's the default surface).
                     Studio/Settings are clickable disclosures; collapsed-rail
                     mode falls back to a plain divider. */}
-                {GROUP_LABELS[g] && (
+                {groupLabel(g) && (
                   collapsed ? (
                     <div className="mx-3 my-2 border-t border-line" aria-hidden />
                   ) : isCollapsible ? (
@@ -400,7 +403,7 @@ export default function IconRail() {
                       className="group/disc mt-3 flex w-full items-center gap-1.5 px-4 pt-1 pb-1.5 text-left"
                     >
                       <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-muted-2 font-medium group-hover/disc:text-muted transition-colors">
-                        {GROUP_LABELS[g]}
+                        {groupLabel(g)}
                       </span>
                       {/* The chevron is a hover affordance while the section is
                           open — an open group should read as a plain eyebrow,
@@ -418,12 +421,12 @@ export default function IconRail() {
                       {/* Attention dot when the section is closed but something
                           inside needs the user (pending reviews / sources). */}
                       {!openGroups.includes(g) && pending > 0 && (
-                        <span className="ml-1 w-[7px] h-[7px] rounded-full bg-ocean" aria-label={`${pending} pending`} />
+                        <span className="ml-1 w-[7px] h-[7px] rounded-full bg-ocean" aria-label={t.nav.pending(pending)} />
                       )}
                     </button>
                   ) : (
                     <div className="font-mono text-[10px] uppercase tracking-[0.14em] text-muted-2 px-4 pt-4 pb-1.5 font-medium">
-                      {GROUP_LABELS[g]}
+                      {groupLabel(g)}
                     </div>
                   )
                 )}
@@ -444,8 +447,8 @@ export default function IconRail() {
               'text-muted-2 hover:text-ink-2 hover:bg-softer transition-colors',
               collapsed ? 'justify-center px-2' : 'gap-2 px-2.5',
             )}
-            title={collapsed ? 'Expand navigation' : 'Collapse navigation'}
-            aria-label={collapsed ? 'Expand navigation' : 'Collapse navigation'}
+            title={collapsed ? t.nav.expandNav : t.nav.collapseNav}
+            aria-label={collapsed ? t.nav.expandNav : t.nav.collapseNav}
           >
             <ChevronLeft
               className={cn('w-4 h-4 transition-transform duration-150', collapsed && 'rotate-180')}
@@ -453,7 +456,7 @@ export default function IconRail() {
             />
             {!collapsed && (
               <span className="font-mono uppercase tracking-[0.1em] text-[10.5px]">
-                Collapse
+                {t.nav.collapse}
               </span>
             )}
           </button>
@@ -471,7 +474,7 @@ export default function IconRail() {
             'transition-colors duration-150',
             'hover:bg-ocean/25 active:bg-ocean/40',
           )}
-          title="Drag to resize"
+          title={t.nav.dragToResize}
           aria-hidden
         />
       )}

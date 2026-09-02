@@ -19,7 +19,7 @@ import { readdirSync, statSync, readFileSync } from 'fs';
 import { join } from 'path';
 
 const ROUTES_DIR = 'backend/src/routes';
-const BASELINE_UNVALIDATED = 159;
+const BASELINE_UNVALIDATED = 158;
 
 const ROUTE_DECL = /\brouter\.(post|patch|put|delete)\s*\(/;
 

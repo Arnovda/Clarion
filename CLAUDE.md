@@ -31,7 +31,79 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-09-02 (P1-6 REMEDIATION — every metric and worker
+**Last updated:** 2026-09-02 (P2-1 i18n, PR 1 — the app SPEAKS DUTCH where
+the frame is: mechanism + chrome + auth + /subjects; WAVE 3 BEGINS. Also:
+PATCH /users/profile had been dead since /:id was added — found and fixed)
+
+**First wave-3 PR; first PR of the P2-1 pass (i18n is one finding, several
+mechanical PRs — the P0-2 precedent).**
+- **LANGUAGE IS A USER PREFERENCE, NOT A URL.** Migration 91 adds
+  `users.locale` (nullable; values gated by `updateProfileSchema`'s enum —
+  ONLY locales with a complete dictionary are storable, so 'fr' joins when
+  its translation exists, not before). A logged-in B2B tool must not churn
+  every deep link with /nl/ prefixes. Resolution: stored preference >
+  browser guess (`navigator.language` startsWith 'nl') > English — so a
+  Dutch machine gets a DUTCH SIGN-IN SCREEN before any account exists.
+  The switcher lives in the TopBar avatar menu (exists on every screen,
+  needed no page of its own); a signed-in choice persists via
+  PATCH /users/profile, pre-login the guess simply re-runs.
+- **HAND-ROLLED TYPED DICTIONARIES, deliberately no i18n library.**
+  `lib/i18n/en.ts` is the contract (`type Dictionary = typeof en` — no
+  `as const`, literals must widen so translations can differ);
+  `nl.ts: Dictionary` means a missing key is a COMPILE error, and since
+  P1-7 the type-check gates the deploy — an incomplete translation cannot
+  ship. **Verified red**: deleting one nl key → TS2741. `t.login.signIn`
+  is checked; `t('login.signIn')` is hoped. Interpolations are functions,
+  not template strings.
+- **The provider mounts ONCE in the root layout** — above every page and
+  BOTH copies of the app chrome, the FeaturesProvider lesson solved by
+  construction; nesting is a no-op (outermost wins) and the hooks THROW
+  outside the provider so a misplaced call fails `next build`'s prerender.
+  It stamps `document.documentElement.lang` and drives `setDatesLocale`
+  (lib/dates.ts is locale-aware now — nl-BE date rendering + Dutch
+  relative words; module-level on purpose, it is called from plain
+  modules).
+- **Converted in this PR** (labels resolve from the dictionary; config
+  lists like NAV_ITEMS/ACTIONS_ALL carry keys, not display text): IconRail
+  (incl. group eyebrows, a11y labels), TopBar (+ the language switcher),
+  CommandPalette (actions, result-type chips, footer), AuthLayout, login,
+  register, /subjects. **NOT yet converted — the following PRs of the
+  pass**: Home, /query (the biggest single surface), dashboards, and the
+  rest; then French (fr.ts + one AVAILABLE_LOCALES entry + the enum).
+- **RENDER-CHECKED in real Chromium, not just compiled**: an nl-BE context
+  renders the sign-in screen fully in Dutch (`Welkom terug.`, WERK-E-MAIL,
+  VERGETEN?, the Dutch trust line) with `<html lang="nl">` and zero page
+  errors; en-GB stays English. Screenshots taken via a throwaway harness
+  against `next start`, then deleted.
+- **A REAL PRE-EXISTING DEFECT, found by the first test ever to hit the
+  route**: `PATCH /users/profile` ("update own display name") has been
+  DEAD since `PATCH /users/:id` was added — Express registered /:id first
+  and matched 'profile' as the id → `WHERE id = NaN` → 500 for admins,
+  requireRole 403 for everyone else. All five param routes in users.ts now
+  carry a numeric constraint (`/:id(\\d+)`), the literal /profile routes
+  are unreachable by them, and the route gained `validate()` (Zod:
+  optional displayName/locale, at-least-one) — **validate-coverage
+  baseline LOWERED 159→158**.
+- Validation: backend `npm run check` clean; full vitest **57 files / 581
+  passed / 4 skipped** (2 new in users.test.ts: locale round-trip incl.
+  null-reverts, fr-and-empty-patch 400); all nine ratchets green from the
+  repo root; frontend `tsc` clean (the brace verified red first), frontend
+  vitest **19/19** (6 new in i18n.test.tsx: runtime shape parity en↔nl,
+  own-language locale names, browser guess incl. fr→en-while-no-fr-dict,
+  provider serves/nests-as-no-op/throws-outside), all touched files
+  lint-clean (the one exhaustive-deps warning fixed properly — subjects'
+  load error became a boolean resolved to copy at render, so the message
+  follows a locale switch), `next build` green 46/46; `e2e/rls.spec.ts` +
+  `e2e/auth-login.spec.ts` **8/8** as `databridge_app` (migration 91
+  applied).
+- **NOT in this PR, deliberately**: Home//query/dashboards conversions
+  (next PRs — each is a big surface wanting its own review); French (no
+  half-translated pretence — the switcher offers only complete
+  dictionaries); translating AI OUTPUT (already mirrors the question's
+  language); localizing the four /legal drafts (counsel reviews the
+  English drafts first — translating a draft that may change is waste).
+
+**Prior last updated:** 2026-09-02 (P1-6 REMEDIATION — every metric and worker
 failure names its TENANT, and /admin/tenants answers "whose experience is
 broken?"; WAVE 2 IS COMPLETE)
 
