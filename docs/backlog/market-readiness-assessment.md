@@ -350,6 +350,20 @@ minute, and be supported without a database session.
 
 ### Wave 3 — Sell it into this market (≈4–6 weeks)
 
+> **OWNER DECISION (2026-09-02): wave 3 is STOPPED — do not start any item in
+> this section.** Asked directly ("We're doing nothing from part 3 right?"),
+> the owner chose "Stop wave 3 entirely" over continuing or pausing. This
+> was decided AFTER a first P2-1 slice had already been built and validated:
+> [PR #114](https://github.com/Arnovda/Clarion/pull/114) (the i18n mechanism —
+> typed dictionaries, per-user `users.locale`, the chrome/auth//subjects
+> surfaces in Dutch, plus a real drive-by fix: `PATCH /users/profile` had
+> been dead since `PATCH /users/:id` was added, shadowed by route order).
+> That PR was **closed unmerged on purpose** and holds the finished,
+> green-validated work should this decision ever be revisited — restarting
+> wave 3 begins by reopening it, not by rebuilding. Until the owner says
+> otherwise, the remediation plan ends at wave 2 (all seven P1 items DONE;
+> P1-4's terraform apply + restore rehearsal remain owner acts).
+
 **Exit gate:** a Belgian SMB reaches a first answer, in Dutch, unaided.
 
 1. **P2-1** Internationalise to NL and FR — mechanical but wide; before the sales

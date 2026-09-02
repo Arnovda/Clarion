@@ -31,7 +31,35 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-09-02 (P1-6 REMEDIATION — every metric and worker
+**Last updated:** 2026-09-02 (OWNER DECISION — WAVE 3 IS STOPPED; the
+market-readiness remediation ends at wave 2, complete)
+
+**Doc-only entry recording a decision, not code.** Asked "We're doing
+nothing from part 3 right?", the owner chose **"Stop wave 3 entirely"** over
+continuing or pausing (AskUserQuestion, 2026-09-02). Recorded as a binding
+addendum on the assessment doc's Wave 3 section — **do not start any P2
+item** (i18n, first-run flow, query un-scoping, status page, auth policy)
+without a fresh owner ask.
+- The decision landed AFTER a first P2-1 slice was already built and fully
+  validated (typed-dictionary i18n mechanism, per-user `users.locale`,
+  chrome + auth + /subjects in Dutch, render-checked in real Chromium in
+  nl-BE; plus a real drive-by find — `PATCH /users/profile` had been DEAD
+  since `PATCH /users/:id` was added, shadowed by Express route order, 500
+  for admins / 403 for everyone else). That work is **PR #114, closed
+  unmerged on purpose** — it is the restart point if wave 3 is ever
+  revived, not something to rebuild. The route-shadowing bug therefore
+  also remains UNFIXED on main (its fix rode the closed PR); if a user
+  reports display-name saves failing on /profile, cherry-pick the
+  `users.ts` numeric-constraint hunk from PR #114's head (24602c4).
+- **Standing state after this decision**: waves 1+2 fully shipped (P0-1/2/
+  5/6 closed; P0-3 deferred to manual invoicing by the 2026-09-01 owner
+  decision; P0-4 drafted awaiting counsel; P1-1/2/3/5/6/7 live; P1-4 HCL
+  written awaiting the owner's terraform apply + restore rehearsal).
+  Owner-side queue: DR runbook §6 (apply + rehearse), the 3-minute portal
+  availability test (.ops/alerts explains), one action-group test alert,
+  lawyer review of docs/legal.
+
+**Prior last updated:** 2026-09-02 (P1-6 REMEDIATION — every metric and worker
 failure names its TENANT, and /admin/tenants answers "whose experience is
 broken?"; WAVE 2 IS COMPLETE)
 
