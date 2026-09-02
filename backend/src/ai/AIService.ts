@@ -2479,6 +2479,83 @@ Return only the corrected SELECT.`;
 }
 
 // ---------------------------------------------------------------------------
+// Read-query self-heal — one shot, for a question that generated SQL the
+// database refused to compile.
+//
+// This is the READ twin of repairTransformationSql. The failure it exists for
+// is the model's own bookkeeping slip: it writes a CTE, then selects or groups
+// by a column the CTE never projected. That is not a data problem and not an
+// ambiguity — it is a mechanical error, and the fix is mechanical, so it needs
+// one call and not the multi-turn /query/repair agent (which exists for the
+// different question "this ran, but are the numbers right?").
+//
+// Deliberately NOT given the policy-applied SQL: data policies wrap the query
+// and mask columns, and a model handed that text could return a rewrite with
+// the wrapper dropped. The caller repairs the pre-policy SQL and re-applies
+// policies to the result. See services/sqlSelfHeal.ts.
+// ---------------------------------------------------------------------------
+
+const REPAIR_READ_QUERY_SYSTEM = `You repair a single failing read-only SELECT that was written to answer a business question. Output ONLY the corrected SELECT — no markdown, no code fences, no commentary.
+
+The query already expresses the right INTENT. Your job is to make it compile, changing as little as possible.
+
+Common failure patterns and how to fix them:
+- "Values list X does not have a column named Y" / "Table X does not have a column named Y" — the query selects, groups or orders by X.Y, but the CTE or subquery aliased X never projected Y. Fix by ADDING Y to that CTE's SELECT list when the CTE's source really has it, or otherwise by REMOVING the X.Y reference. Never invent a column.
+- "Referenced column X not found" / "column X does not exist" / "Unknown column X" / "Invalid column name X" — the column is not on the table or alias used. Use the correct column from the schema, or drop the reference.
+- "Binder Error: ... must appear in the GROUP BY clause" — add the column to GROUP BY, or aggregate it.
+- Parser / syntax error — fix the syntax only.
+
+Hard rules:
+- Reference ONLY tables and columns that appear in the SCHEMA section. If it is not listed there, you may not reference it.
+- Preserve what the question asked for: keep the same measures, the same grain, and every filter that encodes the question. Do not broaden the query to make it compile.
+- Keep it a single read-only SELECT (a leading WITH is fine). Never emit INSERT, UPDATE, DELETE, CREATE, COPY, ATTACH or any file/URI-reading function.
+- If the error cannot be fixed with the columns in the SCHEMA section, return the ORIGINAL SQL unchanged rather than guessing.
+- No trailing semicolon. No comments.`;
+
+/**
+ * Repair a failing read query. Returns the corrected SQL, or the original
+ * text when the model declines to change it.
+ *
+ * The caller MUST re-run the read-safety guard and re-apply data policies on
+ * whatever comes back — this is fresh model output and carries exactly the
+ * same trust as first-pass generation, which is to say none.
+ */
+export async function repairReadQuerySql(
+  question: string,
+  failingSql: string,
+  errorMessage: string,
+  schemaContext: string,
+): Promise<string> {
+  const userPrompt = `The user asked: ${question}
+
+━━━ FAILING SQL ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+${failingSql}
+
+━━━ DATABASE ERROR ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+${errorMessage}
+
+━━━ SCHEMA (these are the only tables/views/columns you may reference) ━━━
+${schemaContext}
+
+Return only the corrected SELECT.`;
+
+  const raw = await callClaude(REPAIR_READ_QUERY_SYSTEM, userPrompt, {
+    model: MODEL,
+    maxTokens: 2048,
+    callLabel: 'read_query_repair',
+    // temperature 0: same failing SQL + same error → same fix, so a retry of
+    // the same question does not produce a different answer each time.
+    temperature: 0,
+  });
+
+  // Strip any markdown code fences the model may add despite instructions.
+  return raw
+    .replace(/^```(?:sql)?\s*\n?/i, '')
+    .replace(/\n?```\s*$/i, '')
+    .trim();
+}
+
+// ---------------------------------------------------------------------------
 // Forecast Query — detect forecast intent and generate historical SQL
 // ---------------------------------------------------------------------------
 

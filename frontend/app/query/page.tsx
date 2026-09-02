@@ -1359,6 +1359,8 @@ function QueryPageInner() {
               policyNotice?: string;
               adminNotified?: boolean;
               verified?: boolean;
+              wasRepaired?: boolean;
+              repairSummary?: string[];
             };
             assistantId = nextId.current++;
             const assistantMsg: Message = {
@@ -1378,6 +1380,11 @@ function QueryPageInner() {
               policyNotice: d.policyNotice,
               adminNotified: d.adminNotified,
               verified: d.verified,
+              // Set when the server self-healed SQL that failed to compile:
+              // drives the "✓ Checked & corrected" mark + the "What I checked"
+              // trail, the same vocabulary the repair loop already uses.
+              wasRepaired: d.wasRepaired,
+              repairSummary: d.repairSummary,
               parentServerId: parent.serverId ?? null,
               parentLocalId: parent.localId ?? undefined,
               ...(opts?.labelOverride ? { label: opts.labelOverride } : {}),
