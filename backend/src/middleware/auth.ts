@@ -259,7 +259,7 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
   // inside `next()` inherits the scope automatically.
   if (payload.tenantId) {
     withTenantAiContext(
-      { tenantId: payload.tenantId, userId: payload.sub ?? null },
+      { tenantId: payload.tenantId, userId: payload.sub ?? null, requestId: req.requestId },
       async () => { next(); },
     ).catch(next);
   } else {

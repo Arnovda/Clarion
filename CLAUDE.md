@@ -31,9 +31,70 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-09-05 (WAVE B IN PROGRESS — owner: *"Start wave B"*; items 1–2 landed. Below it, WAVE A REMEDIATION COMPLETE — owner: *"You
+**Last updated:** 2026-09-05 (WAVE B IN PROGRESS — owner: *"Start wave B"*; items 1–3 landed. Below it, WAVE A REMEDIATION COMPLETE — owner: *"You
 can push to main and begin fixing the waves"*; the assessment v2 was
 fast-forwarded to main and each item landed as its own push, seven pushes)
+
+**Wave B, item 3 — 6-1/6-2/6-4/6-5/6-6 CLOSED: the operator can find a
+customer's error, cancel their stuck job, tell every customer about an
+incident and administer their users — each from a screen.**
+- **6-1 CORRELATION.** NEW `utils/requestScope.ts` is the ONE
+  AsyncLocalStorage (aiBudget's `TenantAiContext` is now an alias of it):
+  `requestId`, `jobId`, `queue` beside `tenantId`/`userId`. requireAuth
+  puts `req.requestId` in; every Queue stamps it into job data at `add()`
+  (`stampCorrelation` in `jobs/queues.ts` — no enqueue site has to
+  remember); `makeWorker` re-enters the job's scope (a processor's own
+  `withTenantAiContext(tenantId)` INHERITS the correlation fields);
+  `SyncOrchestrator` records it on `source_sync_runs.request_id`
+  (migration 93) and hands it to the sync child as `WORKER_REQUEST_ID`,
+  which the worker puts on every log event; and the pino logger's `mixin`
+  writes `requestId`/`jobId`/`queue` onto EVERY line emitted inside a
+  scope. `.ops/prod-logs` accepts `tenant <id>` / `request <id>` lines —
+  the tenant filter no log tooling had.
+- **6-2 NEW `routes/adminOps.ts`** (`/api/admin/ops`, operator gate,
+  404-not-403): `GET /errors?tenantId=` merges failed/partial syncs
+  (with `request_id` + `failed_entities`), failed transformation runs,
+  failed pipeline runs, tables whose last run failed, and failed AI calls
+  (14 days) per tenant under `tenantQuery` with explicit tenant filters;
+  an unreadable tenant is named, never blanked.
+- **6-6 RETRY POLICY + DEAD LETTER.** `defaultJobOptions` per queue:
+  idempotent work (profiling, ingestion, transformation, both schedule
+  queues) retries 3× exponential from 15 s; bus-matrix design and report
+  emails do NOT retry (a second AI design costs money and may have
+  half-persisted; a retry after a send that then threw mails twice) — the
+  failed set IS the dead-letter queue, worked from `/admin/ops` → Queues
+  (counts + active/waiting/delayed/failed jobs with tenant, attempt,
+  reason, requestId; Retry; Cancel = remove before it runs, `cancelJob`
+  for an active one, remove from the failed set). Retention is
+  count-capped as well as age-capped (5-5, Redis is `noeviction`).
+- **6-4 ANNOUNCEMENTS.** Migration 93's `announcements` (operator record,
+  no tenant_id, no RLS — the feature_flags shape; grants to the app role).
+  `services/announcements.ts` (20 s cache, unreadable → no banner, not
+  cached); `GET /api/announcements` (any role); operator CRUD + "end now"
+  under `/admin/ops/announcements`. `components/layout/AnnouncementBanner`
+  is mounted in TopBar so BOTH chromes carry it; polls every 60 s; dismiss
+  is per tab (sessionStorage) so an incident notice comes back.
+- **6-5 OPERATOR USER-ADMIN** on `/admin/tenants/:id/users/…`: invite
+  (seat cap applies), role/active PATCH (refuses to strip the workspace's
+  ONLY active admin; a reactivation checks seats), reset-MFA — each with
+  a required reason, audited into the CUSTOMER's trail as
+  `platform_operator`, tokens revoked on demote/deactivate/MFA reset. The
+  invite body moved out of `routes/users.ts` into NEW
+  `services/invites.ts` (`inviteUser`, string discriminant `kind` because
+  `tsconfig.build.json` is non-strict and `ok: true|false` did not
+  narrow); both doors call it. Customer console: per-user role select,
+  Deactivate/Reactivate, Reset 2FA, "+ Invite a user for them".
+- **NEW `/admin/ops` page** ("Operations", rail entry, operatorOnly):
+  Errors (workspace filter, request id column) · Queues · Announcements.
+- Tests: `tests/admin-ops.test.ts` (7): correlation inherits through a
+  nested tenant scope and is replaced only when named; `X-Request-ID` on
+  a sync trigger lands on the run row; retry constants; the errors feed
+  lists every kind with the id, filters by tenant, and never leaks the
+  other tenant's message; queues answer `available:false` without Redis;
+  announcement publish → seen by a viewer → ended → gone, history kept,
+  tenant admin 404; user-admin round trip incl. last-admin refusals, MFA
+  reset, four audit actions, foreign tenant 404. Ratchet allowlist gained
+  `announcements.ts` + `invites.ts` (root-pool reads of no-RLS tables).
 
 **Wave B, item 2 — P0-8 CLOSED: a customer record on `tenants`, caps on
 what is not AI, a 15-minute floor on every schedule, and the month-end CSV.**

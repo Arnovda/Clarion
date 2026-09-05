@@ -45,7 +45,14 @@ import {
   adminTenantImpersonateSchema,
   adminTenantCustomerSchema,
   adminUsageCsvSchema,
+  adminTenantUserPatchSchema,
+  adminTenantUserResetMfaSchema,
+  adminTenantInviteSchema,
 } from '../middleware/schemas';
+import { inviteUser } from '../services/invites';
+import { checkSeatCap } from '../services/tenantLimits';
+import { revokeAllForUser } from '../services/refreshTokenService';
+import { disableMfa } from '../services/mfaService';
 import { semanticDb } from '../db/knex';
 import { tenantQuery } from '../services/tenantQuery';
 import { isPlatformOperator } from '../services/featureFlags';
@@ -446,6 +453,118 @@ router.patch('/:id/customer', validate(adminTenantCustomerSchema), async (req: R
       .where({ id })
       .first();
     res.json({ ok: true, data: shapeTenant(row as Record<string, unknown>) });
+  } catch (err) { next(err); }
+});
+
+// ───────────────────────── user administration (6-5) ────────────────────────
+//
+// Every support task used to need impersonation: reset-MFA, role change,
+// deactivate and invite were tenant-admin-only. These act on the TARGET
+// tenant under its own SET LOCAL context, require a stated reason, and
+// audit into the customer's trail as `platform_operator` — the same
+// contract as impersonation, without the session.
+
+router.post('/:id/users/invite', validate(adminTenantInviteSchema), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const id = Number(req.params.id);
+    const { email, displayName, role, reason } = req.body as { email: string; displayName: string; role: 'admin' | 'analyst' | 'viewer'; reason: string };
+    const tenant = await semanticDb('tenants').select('id', 'status').where({ id }).first();
+    if (!tenant) { res.status(404).json({ ok: false, error: 'Not found' }); return; }
+
+    const result = await tenantQuery(id, async (trx) => {
+      const seats = await checkSeatCap(trx, id);
+      if (!seats.ok) return { refused: { status: 409 as const, error: seats.message!, code: 'seat_cap' } };
+      const r = await inviteUser(trx, { tenantId: id, email, displayName, role, inviter: req.user!.email });
+      if (r.kind === 'refused') return { refused: { status: r.status, error: r.error } };
+      return { invited: r };
+    });
+    if ('refused' in result) {
+      res.status(result.refused.status).json({ ok: false, error: result.refused.error, code: (result.refused as { code?: string }).code });
+      return;
+    }
+    await recordAuditForTenant(id, req, {
+      action: 'user.invite', entityType: 'user', entityId: result.invited.user.id,
+      context: { invited_email: result.invited.user.email, role, reason, by_operator: true },
+    });
+    res.status(201).json({ ok: true, data: { user: result.invited.user, emailed: result.invited.emailed } });
+  } catch (err) { next(err); }
+});
+
+router.patch('/:id/users/:userId', validate(adminTenantUserPatchSchema), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const id = Number(req.params.id);
+    const userId = Number(req.params.userId);
+    const { role, isActive, reason } = req.body as { role?: 'admin' | 'analyst' | 'viewer'; isActive?: boolean; reason: string };
+    if (role === undefined && isActive === undefined) {
+      res.status(400).json({ ok: false, error: 'Nothing to change' });
+      return;
+    }
+
+    const outcome = await tenantQuery(id, async (trx) => {
+      const user = await trx('users').select('id', 'email', 'role', 'is_active').where({ id: userId, tenant_id: id }).first();
+      if (!user) return { status: 404 as const, error: 'No such user in this workspace' };
+
+      // Never leave a workspace without an active admin — the customer
+      // would be locked out of their own settings (assessment's
+      // last-admin note, applied here where the operator acts).
+      const losesAdmin = user.role === 'admin' && user.is_active
+        && ((role !== undefined && role !== 'admin') || isActive === false);
+      if (losesAdmin) {
+        const others = await trx('users').where({ tenant_id: id, role: 'admin', is_active: true }).whereNot({ id: userId }).count<{ n: string }>('* as n').first();
+        if (Number(others?.n ?? 0) === 0) {
+          return { status: 400 as const, error: 'That is the workspace\'s only active admin — make someone else admin first.' };
+        }
+      }
+      if (isActive === true) {
+        const seats = await checkSeatCap(trx, id);
+        if (!user.is_active && !seats.ok) return { status: 409 as const, error: seats.message! };
+      }
+
+      const updates: Record<string, unknown> = { updated_at: trx.fn.now() };
+      if (role !== undefined) updates.role = role;
+      if (isActive !== undefined) updates.is_active = isActive;
+      await trx('users').where({ id: userId, tenant_id: id }).update(updates);
+      const after = await trx('users').select('id', 'email', 'display_name', 'role', 'is_active').where({ id: userId, tenant_id: id }).first();
+      return { status: 200 as const, before: user, after };
+    });
+    if (outcome.status !== 200) {
+      res.status(outcome.status).json({ ok: false, error: outcome.error });
+      return;
+    }
+
+    // A demoted or deactivated user must feel it now, not at token expiry.
+    const roleChanged = role !== undefined && outcome.before.role !== role;
+    if (roleChanged || isActive === false) {
+      try { await revokeAllForUser(userId, id, isActive === false ? 'user_deactivated' : 'role_change'); }
+      catch (err) { log.warn({ err, tenantId: id, userId }, 'revokeAllForUser failed after operator change'); }
+    }
+    await recordAuditForTenant(id, req, {
+      action: isActive === false ? 'user.deactivate' : isActive === true && !outcome.before.is_active ? 'user.reactivate' : 'user.update',
+      entityType: 'user', entityId: userId,
+      context: { reason, by_operator: true, before: { role: outcome.before.role, is_active: outcome.before.is_active }, after: { role: outcome.after?.role, is_active: outcome.after?.is_active } },
+    });
+    res.json({ ok: true, data: outcome.after });
+  } catch (err) { next(err); }
+});
+
+router.post('/:id/users/:userId/reset-mfa', validate(adminTenantUserResetMfaSchema), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const id = Number(req.params.id);
+    const userId = Number(req.params.userId);
+    const { reason } = req.body as { reason: string };
+    const user = await tenantQuery(id, (trx) =>
+      trx('users').select('id', 'email', 'mfa_enabled_at').where({ id: userId, tenant_id: id }).first());
+    if (!user) { res.status(404).json({ ok: false, error: 'No such user in this workspace' }); return; }
+    if (!user.mfa_enabled_at) { res.status(400).json({ ok: false, error: '2FA is not enabled for this user' }); return; }
+
+    await disableMfa(userId);
+    try { await revokeAllForUser(userId, id, 'mfa_reset_by_admin'); }
+    catch (err) { log.warn({ err, tenantId: id, userId }, 'revokeAllForUser failed after operator MFA reset'); }
+    await recordAuditForTenant(id, req, {
+      action: 'mfa.disable', entityType: 'user', entityId: userId,
+      context: { reason, by_operator: true, target_email: user.email },
+    });
+    res.json({ ok: true });
   } catch (err) { next(err); }
 });
 

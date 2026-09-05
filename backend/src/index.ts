@@ -74,6 +74,8 @@ import aiUsageRouter         from './routes/aiUsage';
 import aiRoutingRouter       from './routes/aiRouting';
 import { featuresRouter, featureFlagsRouter } from './routes/featureFlags';
 import adminTenantsRouter    from './routes/adminTenants';
+import adminOpsRouter        from './routes/adminOps';
+import announcementsRouter   from './routes/announcements';
 import { startWorkers, stopWorkers } from './jobs/workers';
 import { closeQueues } from './jobs/queues';
 import { closeRedis } from './jobs/redis';
@@ -324,6 +326,8 @@ app.use('/api/admin/feature-flags', featureFlagsRouter);
 // Operator console (P1-5): tenant list/health, suspend/resume, budget,
 // audited 15-minute impersonation. Same operator gate, same 404 refusal.
 app.use('/api/admin/tenants',       adminTenantsRouter);
+app.use('/api/admin/ops',           adminOpsRouter);
+app.use('/api/announcements',       announcementsRouter);
 
 // Admin-only: re-run schema profiling for an existing connection
 app.post('/api/connections/:id/profile', requireAuth, requireRole('admin'), async (req, res, next) => {

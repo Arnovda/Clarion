@@ -67,6 +67,11 @@ export interface JobSpec {
    * Forwarded as `WORKER_FULL_RESYNC=1`.
    */
   fullResync?: boolean;
+  /**
+   * Correlation id (6-1): the request this sync descends from. Forwarded as
+   * `WORKER_REQUEST_ID` so the child's log events carry it back.
+   */
+  requestId?: string;
 }
 
 export interface JobHandle {
@@ -131,6 +136,7 @@ export class LocalProcessJobLauncher implements JobLauncher {
         // Worker parses and feeds into SyncOptions.cursors.
         WORKER_CURSORS: spec.cursors ? JSON.stringify(spec.cursors) : '',
         WORKER_FULL_RESYNC: spec.fullResync ? '1' : '',
+        WORKER_REQUEST_ID: spec.requestId ?? '',
       },
       stdio: ['ignore', 'pipe', 'pipe'],
       // Detach=false so killing the parent kills the child — important

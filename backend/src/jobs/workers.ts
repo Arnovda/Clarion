@@ -337,7 +337,27 @@ function makeWorker<T = unknown>(
     log.info({ queue: name }, 'Queue not assigned to this process — worker not started');
     return null;
   }
-  const w = new Worker<T>(name, processor, opts);
+  // CORRELATION (6-1): every processor runs inside the job's scope — the
+  // requestId stamped at enqueue time, plus the job id and queue — so every
+  // log line it emits (the pino mixin) and every nested tenant scope it
+  // opens carries them. The processors' own withTenantAiContext(tenantId)
+  // calls INHERIT these fields (see aiBudget.withTenantAiContext).
+  if (typeof processor !== 'function') {
+    // A sandboxed processor (file path / URL) runs out of process; the scope
+    // cannot be entered from here. None of ours is.
+    const plain = new Worker<T>(name, processor, opts);
+    workers.push(plain as Worker);
+    return plain;
+  }
+  const scoped: typeof processor = (job, token) => {
+    const data = (job?.data ?? {}) as { tenantId?: unknown; requestId?: unknown };
+    const tenantId = typeof data.tenantId === 'number' ? data.tenantId : 0;
+    return withTenantAiContext(
+      { tenantId, requestId: typeof data.requestId === 'string' ? data.requestId : undefined, jobId: String(job?.id ?? ''), queue: name },
+      () => Promise.resolve(processor(job, token)),
+    );
+  };
+  const w = new Worker<T>(name, scoped, opts);
   workers.push(w as Worker);
   return w;
 }

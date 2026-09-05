@@ -91,6 +91,8 @@ const envSchema = z.object({
    * The orchestrator has already reset the affected `entity_sync_cursors`.
    */
   WORKER_FULL_RESYNC: z.string().optional().transform((s) => s === '1'),
+  /** Correlation id of the request this sync descends from (6-1); rides on every log event. */
+  WORKER_REQUEST_ID: z.string().optional().transform((s) => (s && s.trim() ? s.trim() : undefined)),
   WORKER_CURSORS: z
     .string()
     .optional()

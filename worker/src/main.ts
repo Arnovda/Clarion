@@ -106,11 +106,16 @@ async function main(): Promise<void> {
   process.on('SIGINT', onSigterm);
 
   // ─── Logger that streams to stdout as `log` IPC events ─────────────────
+  // Every log event carries the correlation id of the request this sync
+  // descends from (6-1), so the orchestrator's re-emitted lines and the
+  // API's own lines share one id.
+  const corr = env.WORKER_REQUEST_ID ? { requestId: env.WORKER_REQUEST_ID } : {};
+  const withCorr = (fields?: Record<string, unknown>) => (env.WORKER_REQUEST_ID ? { ...corr, ...(fields ?? {}) } : fields);
   const log: Logger = {
-    debug: (msg, fields) => emit({ type: 'log', ts: new Date().toISOString(), level: 'debug', msg, fields }, heartbeat),
-    info:  (msg, fields) => emit({ type: 'log', ts: new Date().toISOString(), level: 'info',  msg, fields }, heartbeat),
-    warn:  (msg, fields) => emit({ type: 'log', ts: new Date().toISOString(), level: 'warn',  msg, fields }, heartbeat),
-    error: (msg, fields) => emit({ type: 'log', ts: new Date().toISOString(), level: 'error', msg, fields }, heartbeat),
+    debug: (msg, fields) => emit({ type: 'log', ts: new Date().toISOString(), level: 'debug', msg, fields: withCorr(fields) }, heartbeat),
+    info:  (msg, fields) => emit({ type: 'log', ts: new Date().toISOString(), level: 'info',  msg, fields: withCorr(fields) }, heartbeat),
+    warn:  (msg, fields) => emit({ type: 'log', ts: new Date().toISOString(), level: 'warn',  msg, fields: withCorr(fields) }, heartbeat),
+    error: (msg, fields) => emit({ type: 'log', ts: new Date().toISOString(), level: 'error', msg, fields: withCorr(fields) }, heartbeat),
   };
 
   // ─── Warehouse writer ──────────────────────────────────────────────────

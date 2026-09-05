@@ -1,6 +1,15 @@
 24h
 
-# How far back to look in production logs.
+# How far back to look in production logs. An OPTIONAL second value line
+# `tenant <id>` narrows every signature to lines carrying that tenantId —
+# the log filter that did not exist anywhere until 2026-09-05 (assessment
+# 6-2): "find this customer's errors" was a container-wide read. A
+# `request <id>` line does the same for one correlation id (6-1): the id an
+# error shows on /admin/ops finds the request, its job and the sync worker's
+# lines in one query.
+#
+#   tenant 42
+#   request 8ec98557-14e2-4ee3-9c6b-4a7f56a08c69
 
 #
 #   <number>h  or  <number>d   — e.g. 24h, 7d. Log Analytics keeps 30 days.

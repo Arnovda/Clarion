@@ -14,11 +14,16 @@
  */
 
 import pino from 'pino';
+import { getCorrelation } from './requestScope';
 
 const isDev = process.env.NODE_ENV !== 'production';
 
 export const logger = pino({
   level: process.env.LOG_LEVEL ?? (isDev ? 'debug' : 'info'),
+  // CORRELATION (assessment 6-1): every line emitted inside a request or a
+  // job scope carries requestId / jobId / queue, whichever the scope holds.
+  // Bound per line, not per child logger, so no call site has to remember.
+  mixin: () => getCorrelation(),
   ...(isDev
     ? {
         transport: {

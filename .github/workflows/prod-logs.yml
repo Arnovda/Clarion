@@ -45,6 +45,16 @@ jobs:
           fi
           echo "window=$W" >> "$GITHUB_OUTPUT"
           echo "Looking back: $W"
+          # Optional narrowing lines (6-1 / 6-2): `tenant <id>` or `request <id>`.
+          T=$(grep -vE '^[[:space:]]*(#|$)' .ops/prod-logs | awk '$1=="tenant"{print $2; exit}')
+          R=$(grep -vE '^[[:space:]]*(#|$)' .ops/prod-logs | awk '$1=="request"{print $2; exit}')
+          if [ -n "$T" ] && ! echo "$T" | grep -qE '^[0-9]+$'; then echo "::error::invalid tenant '$T'"; exit 1; fi
+          if [ -n "$R" ] && ! echo "$R" | grep -qE '^[A-Za-z0-9-]{4,80}$'; then echo "::error::invalid request id '$R'"; exit 1; fi
+          echo "tenant=$T" >> "$GITHUB_OUTPUT"
+          echo "request=$R" >> "$GITHUB_OUTPUT"
+          [ -n "$T" ] && echo "Narrowed to tenantId $T"
+          [ -n "$R" ] && echo "Narrowed to requestId $R"
+          true
 
       - name: Log in to Azure
         uses: azure/login@v2
@@ -56,6 +66,8 @@ jobs:
           APP: ${{ secrets.BACKEND_APP_NAME }}
           RG: ${{ secrets.AZURE_RESOURCE_GROUP }}
           WINDOW: ${{ steps.window.outputs.window }}
+          TENANT: ${{ steps.window.outputs.tenant }}
+          REQUEST: ${{ steps.window.outputs.request }}
         run: |
           # Deliberately not -e: a denied or empty query is a result to report,
           # not a broken build.
@@ -69,6 +81,11 @@ jobs:
           say() { printf '%s\n' "$1"; printf '%s\n' "$1" >> "$GITHUB_STEP_SUMMARY"; }
 
           say "## Production logs — last \`$WINDOW\`"
+          # The narrowing predicate (6-1 / 6-2): pino writes tenantId / requestId as
+          # JSON fields, so a substring match on the serialized pair is exact.
+          NARROW=""
+          if [ -n "$TENANT" ]; then NARROW="$NARROW | where Log_s contains '\"tenantId\":$TENANT'"; say "Narrowed to **tenantId $TENANT**"; fi
+          if [ -n "$REQUEST" ]; then NARROW="$NARROW | where Log_s contains '$REQUEST'"; say "Narrowed to **requestId $REQUEST**"; fi
           say ""
 
           az extension add --name log-analytics --only-show-errors >/dev/null 2>&1 || true
@@ -91,7 +108,7 @@ jobs:
           # ── Volume first ────────────────────────────────────────────────────
           # A report with no findings is meaningless if nothing was running.
           # Print the denominator before the numerators.
-          VOL_Q="ContainerAppConsoleLogs_CL | where TimeGenerated > ago($WINDOW) | where ContainerAppName_s in ('$APP', '$WORKER') | summarize lines = count() by app = ContainerAppName_s | order by lines desc"
+          VOL_Q="ContainerAppConsoleLogs_CL | where TimeGenerated > ago($WINDOW) | where ContainerAppName_s in ('$APP', '$WORKER') $NARROW | summarize lines = count() by app = ContainerAppName_s | order by lines desc"
 
           if ! az monitor log-analytics query --workspace "$WS" \
                  --analytics-query "$VOL_Q" -o json > /tmp/vol.json 2>/tmp/qerr; then
@@ -122,7 +139,7 @@ jobs:
           # One round trip, bucketed server-side. `contains` rather than `has`
           # because several of these phrases carry punctuation that token-based
           # matching would split.
-          SIG_Q="ContainerAppConsoleLogs_CL | where TimeGenerated > ago($WINDOW) | where ContainerAppName_s in ('$APP', '$WORKER') | extend sig = case(Log_s contains '42501' or Log_s contains 'insufficient_privilege' or Log_s contains 'permission denied for', 'grant-missing', Log_s contains 'violates row-level security', 'rls-write-denied', Log_s contains 'ownership check refused', 'ownership-refused', Log_s contains 'Child-process query runner ACTIVE', 'runner-active', Log_s contains 'compiled runner script was not found', 'runner-degraded', Log_s contains 'request failed', 'server-error', '') | where sig != '' | summarize n = count(), firstSeen = min(TimeGenerated), lastSeen = max(TimeGenerated), example = take_any(Log_s) by sig | order by n desc"
+          SIG_Q="ContainerAppConsoleLogs_CL | where TimeGenerated > ago($WINDOW) | where ContainerAppName_s in ('$APP', '$WORKER') $NARROW | extend sig = case(Log_s contains '42501' or Log_s contains 'insufficient_privilege' or Log_s contains 'permission denied for', 'grant-missing', Log_s contains 'violates row-level security', 'rls-write-denied', Log_s contains 'ownership check refused', 'ownership-refused', Log_s contains 'Child-process query runner ACTIVE', 'runner-active', Log_s contains 'compiled runner script was not found', 'runner-degraded', Log_s contains 'request failed', 'server-error', '') | where sig != '' | summarize n = count(), firstSeen = min(TimeGenerated), lastSeen = max(TimeGenerated), example = take_any(Log_s) by sig | order by n desc"
 
           say "### Signatures"
           say ""

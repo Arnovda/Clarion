@@ -21,22 +21,22 @@
  *    never break the call that already succeeded.
  */
 
-import { AsyncLocalStorage } from 'async_hooks';
+import { requestScope, type RequestScope } from '../utils/requestScope';
 import type { Request, Response, NextFunction } from 'express';
 import { semanticDb } from '../db/knex';
 import { logger } from '../utils/logger';
 
 const log = logger.child({ module: 'ai-budget' });
 
-interface TenantAiContext {
-  tenantId: number;
-  /** User attribution — optional so background jobs (cron-driven brief,
-   *  query starters) can run without a user. The cost dashboard groups
-   *  null user_id rows under "system / cron". */
-  userId?: number | null;
-}
+/**
+ * The scope's shape lives in utils/requestScope.ts (it also carries the
+ * correlation id — assessment 6-1 — which the logger mixin reads, and that
+ * module must stay import-free). `TenantAiContext` is its historical name
+ * here; the two are one type.
+ */
+type TenantAiContext = RequestScope;
 
-const store = new AsyncLocalStorage<TenantAiContext>();
+const store = requestScope;
 
 /**
  * Run `fn` inside an async scope carrying the given tenant + (optional)
@@ -49,7 +49,14 @@ export function withTenantAiContext<T>(
   fn: () => Promise<T>,
 ): Promise<T> {
   const ctx: TenantAiContext = typeof arg === 'number' ? { tenantId: arg } : arg;
-  return store.run(ctx, fn);
+  // A nested scope that does not name the correlation fields INHERITS them
+  // (a worker enters the job's scope, then a processor re-enters with just
+  // the tenant — the requestId must survive that).
+  const parent = store.getStore();
+  const merged: TenantAiContext = parent
+    ? { ...ctx, requestId: ctx.requestId ?? parent.requestId, jobId: ctx.jobId ?? parent.jobId, queue: ctx.queue ?? parent.queue }
+    : ctx;
+  return store.run(merged, fn);
 }
 
 /** Current tenant id from the AsyncLocalStorage scope, if any. */

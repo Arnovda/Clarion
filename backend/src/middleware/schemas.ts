@@ -1046,6 +1046,81 @@ export const adminUsageCsvSchema = z.object({
   }).passthrough(),
 });
 
+// ---------------------------------------------------------------------------
+// Operator console — operations (wave B item 3)
+// ---------------------------------------------------------------------------
+
+export const adminOpsErrorsSchema = z.object({
+  query: z.object({
+    tenantId: z.coerce.number().int().positive().optional(),
+    limit: z.coerce.number().int().min(1).max(200).optional(),
+  }).passthrough(),
+});
+
+export const adminOpsQueueJobSchema = z.object({
+  params: z.object({
+    queue: z.string().regex(/^[a-z-]+$/),
+    id: z.string().min(1).max(200),
+  }).passthrough(),
+});
+
+const announcementLevel = z.enum(['info', 'warning', 'critical']);
+
+export const adminAnnouncementCreateSchema = z.object({
+  body: z.object({
+    message: z.string().trim().min(3).max(500),
+    level: announcementLevel.optional(),
+    endsAt: z.string().datetime({ offset: true }).nullable().optional(),
+  }).strict(),
+});
+
+export const adminAnnouncementParamsSchema = z.object({
+  params: z.object({ id: z.coerce.number().int().positive() }).passthrough(),
+});
+
+export const adminAnnouncementPatchSchema = z.object({
+  params: z.object({ id: z.coerce.number().int().positive() }).passthrough(),
+  body: z.object({
+    message: z.string().trim().min(3).max(500).optional(),
+    level: announcementLevel.optional(),
+    endsAt: z.string().datetime({ offset: true }).nullable().optional(),
+    /** End it now. */
+    end: z.boolean().optional(),
+  }).strict(),
+});
+
+/** Operator user administration on a customer's workspace (6-5). */
+const adminTenantUserParams = z.object({
+  id: z.coerce.number().int().positive(),
+  userId: z.coerce.number().int().positive(),
+}).passthrough();
+
+export const adminTenantUserParamsSchema = z.object({ params: adminTenantUserParams });
+
+export const adminTenantUserPatchSchema = z.object({
+  params: adminTenantUserParams,
+  body: z.object({
+    role: z.enum(['admin', 'analyst', 'viewer']).optional(),
+    isActive: z.boolean().optional(),
+    reason: z.string().trim().min(3).max(500),
+  }).strict(),
+});
+
+export const adminTenantUserResetMfaSchema = z.object({
+  params: adminTenantUserParams,
+  body: z.object({ reason: z.string().trim().min(3).max(500) }).strict(),
+});
+
+export const adminTenantInviteSchema = z.object({
+  params: adminTenantParams,
+  body: z.object({
+    email: z.string().trim().email().max(200),
+    displayName: z.string().trim().min(1).max(120),
+    role: z.enum(['admin', 'analyst', 'viewer']),
+    reason: z.string().trim().min(3).max(500),
+  }).strict(),
+});
+
 export const adminTenantImpersonateSchema = z.object({
   params: adminTenantParams,
   body: z.object({

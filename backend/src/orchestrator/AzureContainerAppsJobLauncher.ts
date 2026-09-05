@@ -188,6 +188,9 @@ export class AzureContainerAppsJobLauncher implements JobLauncher {
         if (spec.fullResync) {
           envOverrides.push({ name: 'WORKER_FULL_RESYNC', value: '1' });
         }
+        if (spec.requestId) {
+          envOverrides.push({ name: 'WORKER_REQUEST_ID', value: spec.requestId });
+        }
 
         // ─── Start the Job execution ──────────────────────────────────
         // The override must include image + resources — Container Apps

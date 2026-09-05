@@ -27,6 +27,7 @@
  */
 
 import path from 'path';
+import { getCorrelation } from '../utils/requestScope';
 import { encryptCredentials, decryptCredentials } from '../utils/crypto';
 import { logger as rootLogger } from '../utils/logger';
 import {
@@ -270,6 +271,9 @@ export async function triggerSync(args: {
         status: 'queued',
         mode: full ? 'full' : 'incremental',
         triggered_by_user_id: triggeredByUserId ?? null,
+        // CORRELATION (6-1): the HTTP request (or the job) this run descends
+        // from — what the operator console shows beside a failed run.
+        request_id: getCorrelation().requestId ?? null,
       })
       .returning('id'));
     syncRunId =
@@ -342,6 +346,7 @@ async function runSyncInBackground(args: {
 }): Promise<void> {
   const { syncRunId, connectionId, tenantId } = args;
   const full = args.full === true;
+  const requestId = getCorrelation().requestId;
   const childLog = log.child({ syncRunId, connectionId, tenantId, mode: full ? 'full' : 'incremental' });
 
   // Local accumulators — kept in memory to avoid one DB round trip per
@@ -431,6 +436,7 @@ async function runSyncInBackground(args: {
       warehousePath: localWarehousePath,
       cursors: priorCursors,
       fullResync: full,
+      requestId,
     };
 
     childLog.info({ entities }, 'launching sync worker');

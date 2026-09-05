@@ -249,6 +249,51 @@ function TenantConsole() {
     });
   }
 
+  // Operator user administration (6-5): every act asks for a reason, which
+  // lands in the CUSTOMER's audit trail beside the operator's email.
+  function askReason(what: string): string | null {
+    const reason = window.prompt(`${what}\n\nThis is recorded in the customer's audit trail. Reason:`);
+    if (reason == null) return null;
+    if (reason.trim().length < 3) { setActionError('A reason is required (at least a few words).'); return null; }
+    return reason.trim();
+  }
+
+  function patchUser(t: TenantRow, u: TenantDetail['users'][number], patch: { role?: string; isActive?: boolean }) {
+    const what = patch.role !== undefined
+      ? `Make ${u.email} ${patch.role} in ${t.name}?`
+      : patch.isActive ? `Reactivate ${u.email}?` : `Deactivate ${u.email}? They are signed out everywhere within seconds.`;
+    const reason = askReason(what);
+    if (!reason) return;
+    void act(`user-${u.id}`, async () => {
+      await api.patch(`/admin/tenants/${t.id}/users/${u.id}`, { ...patch, reason });
+      const res = await api.get(`/admin/tenants/${t.id}`);
+      setDetail(res.data?.data ?? null);
+    });
+  }
+
+  function resetMfa(t: TenantRow, u: TenantDetail['users'][number]) {
+    const reason = askReason(`Clear 2FA for ${u.email}? They will be signed out everywhere and can sign in with their password until they re-enrol.`);
+    if (!reason) return;
+    void act(`mfa-${u.id}`, async () => { await api.post(`/admin/tenants/${t.id}/users/${u.id}/reset-mfa`, { reason }); });
+  }
+
+  function inviteFor(t: TenantRow) {
+    const email = window.prompt(`Invite a user to ${t.name}.\n\nEmail address:`);
+    if (!email) return;
+    const displayName = window.prompt('Their name:');
+    if (!displayName) return;
+    const role = (window.prompt('Role — admin, analyst or viewer:', 'viewer') ?? '').trim().toLowerCase();
+    if (!['admin', 'analyst', 'viewer'].includes(role)) { setActionError('Role must be admin, analyst or viewer.'); return; }
+    const reason = askReason(`Send ${email} an invitation to ${t.name} as ${role}?`);
+    if (!reason) return;
+    void act(`invite-${t.id}`, async () => {
+      const res = await api.post(`/admin/tenants/${t.id}/users/invite`, { email: email.trim(), displayName: displayName.trim(), role, reason });
+      if (res.data?.data?.emailed === false) setActionError('The user was created but the invitation email did not go out — ask them to use "Forgot password".');
+      const d = await api.get(`/admin/tenants/${t.id}`);
+      setDetail(d.data?.data ?? null);
+    });
+  }
+
   function downloadUsage() {
     const base = (process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001/api').replace(/\/$/, '');
     downloadFile(`${base}/admin/tenants/usage.csv?month=${usageMonth}`, `clarion-usage-${usageMonth}.csv`);
@@ -382,6 +427,9 @@ function TenantConsole() {
                 onResume={() => resume(t)}
                 onSaveBudget={() => saveBudget(t)}
                 onImpersonate={(u) => impersonate(t, u)}
+                onUserPatch={(u, patch) => patchUser(t, u, patch)}
+                onUserResetMfa={(u) => resetMfa(t, u)}
+                onInvite={() => inviteFor(t)}
               />
             ))}
           </tbody>
@@ -444,6 +492,9 @@ function TenantRows(props: {
   onResume: () => void;
   onSaveBudget: () => void;
   onImpersonate: (u: TenantDetail['users'][number]) => void;
+  onUserPatch: (u: TenantDetail['users'][number], patch: { role?: string; isActive?: boolean }) => void;
+  onUserResetMfa: (u: TenantDetail['users'][number]) => void;
+  onInvite: () => void;
 }) {
   const { tenant: t, isOpen, isSelf, detail, detailLoading, busy } = props;
   const suspended = t.status !== 'active';
@@ -544,19 +595,53 @@ function TenantRows(props: {
                           {u.display_name ?? u.email}
                           <span className="text-muted-2 ml-1.5">{u.email} · {u.role}</span>
                         </span>
-                        {u.is_active && !suspended && (
-                          <button
-                            onClick={() => props.onImpersonate(u)}
-                            disabled={busy === `impersonate-${u.id}`}
-                            className="inline-flex items-center gap-1 rounded-md border border-line px-2 py-0.5 text-[11px] text-ink-2 hover:bg-soft disabled:opacity-50 shrink-0"
-                            title="Sign in as this user for 15 minutes — recorded in their audit trail"
+                        <span className="flex items-center gap-1 shrink-0">
+                          <select
+                            value={u.role}
+                            onChange={(e) => props.onUserPatch(u, { role: e.target.value })}
+                            disabled={busy === `user-${u.id}`}
+                            className="rounded-md border border-line bg-raised px-1.5 py-0.5 text-[11px] text-ink-2"
+                            title="Change this user's role (asks for a reason; recorded in their audit trail)"
+                            aria-label={`Role of ${u.email}`}
                           >
-                            <UserCheck className="w-3 h-3" /> Support session
+                            <option value="admin">admin</option><option value="analyst">analyst</option><option value="viewer">viewer</option>
+                          </select>
+                          <button
+                            onClick={() => props.onUserPatch(u, { isActive: !u.is_active })}
+                            disabled={busy === `user-${u.id}`}
+                            className="rounded-md border border-line px-2 py-0.5 text-[11px] text-ink-2 hover:bg-soft disabled:opacity-50"
+                          >
+                            {u.is_active ? 'Deactivate' : 'Reactivate'}
                           </button>
-                        )}
+                          <button
+                            onClick={() => props.onUserResetMfa(u)}
+                            disabled={busy === `mfa-${u.id}`}
+                            className="rounded-md border border-line px-2 py-0.5 text-[11px] text-ink-2 hover:bg-soft disabled:opacity-50"
+                            title="Clear this user's 2FA so they can sign in with their password and re-enrol"
+                          >
+                            Reset 2FA
+                          </button>
+                          {u.is_active && !suspended && (
+                            <button
+                              onClick={() => props.onImpersonate(u)}
+                              disabled={busy === `impersonate-${u.id}`}
+                              className="inline-flex items-center gap-1 rounded-md border border-line px-2 py-0.5 text-[11px] text-ink-2 hover:bg-soft disabled:opacity-50"
+                              title="Sign in as this user for 15 minutes — recorded in their audit trail"
+                            >
+                              <UserCheck className="w-3 h-3" /> Support session
+                            </button>
+                          )}
+                        </span>
                       </li>
                     ))}
                   </ul>
+                  <button
+                    onClick={props.onInvite}
+                    disabled={busy === `invite-${t.id}` || suspended}
+                    className="mt-2 rounded-md border border-line px-2.5 py-1 text-[11.5px] text-ink hover:bg-soft disabled:opacity-50"
+                  >
+                    + Invite a user for them
+                  </button>
 
                   <div className="font-mono text-[10px] tracking-[0.1em] uppercase text-muted-2 mt-5 mb-2">AI budget</div>
                   <div className="flex items-center gap-2">

@@ -10,6 +10,7 @@ import { removeSessionItem, storageKeys } from '@/lib/storage';
 import { cn } from '@/lib/cn';
 import NotificationBell from '../NotificationBell';
 import CommandPalette from './CommandPalette';
+import AnnouncementBanner from './AnnouncementBanner';
 
 interface TopBarProps {
   /** Legacy prop — ignored under Observatory chrome (page title lives in the page body header). */
@@ -84,6 +85,10 @@ export default function TopBar({ showSearch = true }: TopBarProps) {
   return (
     <>
       <CommandPalette />
+      {/* INCIDENT BANNER (assessment 6-4): operator-written announcements,
+          every screen, both chromes — TopBar is the one component both
+          mount, which is why it lives here. */}
+      <AnnouncementBanner />
       {/* SUPPORT-SESSION BANNER (assessment 2-2): an operator working inside a
           customer's workspace under a 15-minute impersonation token must be
           told so on every screen — for the operator (this is not your data)
