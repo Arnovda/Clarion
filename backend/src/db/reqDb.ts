@@ -24,5 +24,8 @@ import type { Request } from 'express';
 import { semanticDb } from './knex';
 
 export function reqDb(req: Request): Knex | Knex.Transaction {
+  // After a response starts streaming, `req.dbTrx` is the per-query scoped
+  // handle from db/scopedRequestDb.ts rather than the request transaction
+  // (assessment 11-1) — same call shape, one short transaction per query.
   return req.dbTrx ?? semanticDb;
 }

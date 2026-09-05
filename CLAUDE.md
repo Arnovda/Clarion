@@ -31,9 +31,53 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-09-05 (WAVE B IN PROGRESS — owner: *"Start wave B"*; items 1–6 landed. Below it, WAVE A REMEDIATION COMPLETE — owner: *"You
+**Last updated:** 2026-09-05 (WAVE B REMEDIATION COMPLETE — owner: *"Start wave B"*; all seven items landed as seven pushes. Below it, WAVE A REMEDIATION COMPLETE — owner: *"You
 can push to main and begin fixing the waves"*; the assessment v2 was
 fast-forwarded to main and each item landed as its own push, seven pushes)
+
+**Wave B, item 7 — 11-1 CLOSED: a streaming response no longer pins a
+Postgres connection. WAVE B IS COMPLETE.**
+- **The mechanism is in `requireAuth`, so every SSE route got it without
+  being touched.** `res.flushHeaders` is patched per request: the moment a
+  response starts streaming (only streaming flushes before `end`), the
+  request transaction is COMMITTED and released (`req.releaseDbTrx`,
+  idempotent, also callable by a route that knows it is about to wait),
+  and `req.dbTrx` is swapped for NEW `db/scopedRequestDb.ts` — a Knex
+  handle with the same call shape (`db('t').where(…)`, `.first()`,
+  `db.raw`, `db.transaction`, `db.fn`) whose EVERY query runs in its own
+  short `tenantQuery` transaction with the tenant's `SET LOCAL`. The
+  thirty-odd `reqDb(req)` sites in `/query/think`, `/query/repair`, the
+  dashboards streams, the build/design streams, connections and semantic
+  streams keep working unchanged; each now borrows a connection only for
+  its own query instead of holding one `idle in transaction` for a
+  90-second answer or a 10-minute build.
+- **How the handle works**: Knex builders are lazy; `then` is on the
+  PROTOTYPE, so an instance override intercepts `await`/`.catch()`/
+  `.finally()`; the override runs `tenantQuery(tenantId, trx =>
+  nativeThen.call(qb.transacting(trx)))`. **The first version called
+  `await qb` inside the scope, which re-entered the override forever and
+  drained the pool** (KnexTimeoutError on the test's first run) — the
+  prototype's `then` is what executes, and the file says so.
+  `req.dbTrx` is typed `Knex | Knex.Transaction` now.
+- Tests: NEW `tests/sse-release.test.ts` (3): the handle sets the tenant
+  on builder/first/raw/transaction and `.catch()` routes through; a mini
+  express app around the REAL requireAuth — before `flushHeaders` the
+  handle is a transaction, after it is the scoped handle for the right
+  tenant, a later query still runs as the tenant, and `pg_stat_activity`
+  shows **zero** `idle in transaction` sessions while the stream is open;
+  an ordinary JSON response keeps its transaction to the end.
+- **WAVE B IS COMPLETE** (P0-9 engineering half, P0-8, 6-1/6-2/6-4/6-5/
+  6-6, 5-1/5-2/5-3/5-5, 7-1/7-3/7-5, 2-4/4-4, 11-1). **Still the owner's
+  from it**: the Terraform state backend + import + apply and the DR
+  restore rehearsal (P0-9), the App Insights availability test (5-1 — the
+  alerts run nags until it exists), the `terraform apply` that lands Redis
+  `--maxmemory` (5-5), and the `sms`/`webhook` lines in `.ops/alerts` if
+  paging is wanted. **Read on the next CI/deploy runs**: the first
+  `.ops/db-pool` application, the alerts run (sev-1 group, mute flags,
+  webtests listing), and `Loaded N enabled connection-sync schedule(s)`
+  on the new backend revision. **Next: wave C** ("lawful and sellable" —
+  P0-7 acceptance + export after counsel; 4-1/4-2/4-3; 9-1/9-3/9-5; 8-3
+  the eval harness), on the owner's word.
 
 **Wave B, item 6 — 2-4/4-4: every auth event is in the customer's audit
 trail, audit writes that fail are loud, the trail has a retention rule and
@@ -8270,12 +8314,14 @@ clarion/                              ← on disk: databridge/
 │       │
 │       ├── db/
 │       │   ├── knex.ts               ← PostgreSQL semantic DB (with RLS role switching)
+│       │   ├── scopedRequestDb.ts    ← per-query tenant-scoped handle for streaming responses (11-1)
 │       │   ├── neo4j.ts              ← Neo4j driver singleton + constraints + shutdown
 │       │   ├── semanticGraph.ts      ← ALL Cypher queries (only file with Cypher)
 │       │   ├── migrateSemanticToNeo4j.ts  ← one-shot migration script
 │       │   └── migrations/           ← 30 Knex migrations (see list below)
 │       │
 │       ├── jobs/
+│       │   ├── freshnessMonitor.ts   ← 'source stale' hourly sweep (wave B 7-1)
 │       │   ├── redis.ts              ← IORedis singleton (optional)
 │       │   ├── queues.ts             ← BullMQ queue definitions (4 queues: profiling, ingestion, transformation, email-report)
 │       │   ├── workers.ts            ← schema-profiling, ingestion, transformation, email-report workers
@@ -8305,12 +8351,18 @@ clarion/                              ← on disk: databridge/
 │       │   │   └── …                ← catalog, core, design, tables, refine, kpis, build, refineChat, cells
 │       │   ├── jobs.ts               ← check background job status
 │       │   ├── schedules.ts          ← CRUD transformation schedules (cron); manual triggers
-│       │   ├── users.ts              ← admin-only user management; invites; role updates
+│       │   ├── adminTenants.ts       ← operator console: customers, caps, usage CSV, user-admin
+│       │   ├── adminOps.ts           ← operator console: errors feed, queues, announcements
+│       │   ├── announcements.ts      ← GET /announcements (the shell banner's feed)
+│       │   ├── users.ts              ← admin-only user management; invites; role updates; audit export
 │       │   ├── conversations.ts      ← chat history persistence; export results
 │       │   ├── notifications.ts      ← user notifications (job complete, quality alerts, invites)
 │       │   └── emailSchedules.ts     ← CRUD dashboard email schedules; send-now trigger
 │       │
 │       ├── services/
+│       │   ├── tenantLimits.ts             ← seats / sources caps + cron cadence floor (P0-8)
+│       │   ├── announcements.ts            ← operator announcements (6-4)
+│       │   ├── invites.ts                  ← inviteUser(), shared by tenant admin and operator doors
 │       │   ├── notificationService.ts      ← notify(), notifyTenant()
 │       │   ├── productContext.ts           ← build star schema semantic context for NL→SQL; detects rollup tables
 │       │   ├── transformationRunner.ts     ← DuckDB transformation materialization (Parquet) + monthly rollup generation
@@ -8326,7 +8378,8 @@ clarion/                              ← on disk: databridge/
 │       │   └── SchemaProfiler.ts     ← full profiling workflow: introspect → AI draft → store
 │       │
 │       ├── utils/
-│       │   ├── logger.ts             ← Pino structured logging
+│       │   ├── requestScope.ts       ← the one AsyncLocalStorage; correlation id (6-1)
+│       │   ├── logger.ts             ← Pino structured logging (mixin writes requestId/jobId)
 │       │   ├── crypto.ts             ← AES-256-GCM credential encryption/decryption
 │       │   ├── cache.ts              ← in-memory cache utility
 │       │   ├── monitoring.ts         ← Azure App Insights telemetry
@@ -8419,7 +8472,9 @@ clarion/                              ← on disk: databridge/
     │   │       └── EmailSchedulePanel.tsx    ← dashboard email report schedules (CRUD + send-now; slotted into settings dropdown)
     │   ├── health/page.tsx           ← data-quality dashboard (split-pane: sidebar + overview/detail pills)
     │   ├── gaps/page.tsx             ← admin: definition gaps + query log tabs (RequireRole)
-    │   ├── users/page.tsx            ← admin: team management, invites, roles (RequireRole)
+    │   ├── users/page.tsx            ← admin: team management, invites, roles, audit export (RequireRole)
+    │   ├── admin/tenants/page.tsx    ← operator: customers, caps, usage CSV, user-admin
+    │   ├── admin/ops/page.tsx        ← operator: errors · queues · announcements
     │   ├── policies/page.tsx        ← admin: data policies (RequireRole)
     │   ├── notebooks/                ← interactive Python notebooks (Pyodide)
     │   │   ├── page.tsx              ← list + create notebook
@@ -8488,7 +8543,7 @@ clarion/                              ← on disk: databridge/
             └── useDebounce.ts       ← custom debounce hook
 ```
 
-### Database Migrations (30 files)
+### Database Migrations (93 files on disk)
 
 ```
 20260328000001  create_connections
@@ -8523,6 +8578,10 @@ clarion/                              ← on disk: databridge/
 20260407000030  add_profiling_status
 20260421000037  create_email_schedules
 20260421000038  add_ai_context_to_quality_alerts
+…               (39–90: see the migrations directory — this list stopped being maintained after 38)
+20260905000091  sync_run_truthfulness            (P0-6: source_sync_runs.mode + failed_entities)
+20260905000092  customer_record_and_caps         (P0-8: tenants.plan/seats/max_connections/…)
+20260905000093  ops_correlation_and_announcements (6-1 source_sync_runs.request_id; 6-4 announcements)
 ```
 
 ---

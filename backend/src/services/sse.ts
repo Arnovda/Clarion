@@ -48,6 +48,12 @@ export interface SseOptions {
   headers?: Record<string, string>;
 }
 
+/**
+ * NOTE (11-1): `res.flushHeaders()` below is also the moment requireAuth
+ * commits and releases the request transaction — after this call every
+ * `reqDb(req)` query in the route runs in its own short tenant-scoped
+ * transaction instead of pinning a pool connection for the stream's life.
+ */
 export function startSSE(res: Response, opts?: SseOptions): SseStream {
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');

@@ -4,6 +4,7 @@ import bcrypt from 'bcryptjs';
 import type { Knex } from 'knex';
 import { JwtPayload, UserRole } from '../shared/types';
 import { semanticDb } from '../db/knex';
+import { scopedRequestDb } from '../db/scopedRequestDb';
 import { config, requireJwtSecret } from '../config';
 import { withTenantAiContext } from '../services/aiBudget';
 import { checkAccountStatus } from '../services/accountStatus';
@@ -32,7 +33,15 @@ declare global {
        * security audit, May 2026). New / sensitive routes SHOULD use
        * this; existing routes are migrated incrementally.
        */
-      dbTrx?: Knex.Transaction;
+      dbTrx?: Knex | Knex.Transaction;
+      /**
+       * Commit and release the request transaction NOW and swap `dbTrx` for a
+       * per-query tenant-scoped handle (db/scopedRequestDb.ts). requireAuth
+       * calls it itself when the response starts streaming (headers flushed);
+       * a route may call it earlier if it knows it is about to wait a long
+       * time. Idempotent.
+       */
+      releaseDbTrx?: () => void;
     }
   }
 }
@@ -200,6 +209,26 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
           return;
         }
         req.dbTrx = trx;
+        // ── STREAMS RELEASE THE CONNECTION (assessment 11-1) ──────────
+        // An SSE response used to pin this transaction — and its pool
+        // connection, `idle in transaction` — for the whole life of the
+        // stream. Releasing commits the request transaction and swaps
+        // `req.dbTrx` for a per-query tenant-scoped handle, so every
+        // `reqDb(req)` call after this point still runs under the tenant's
+        // SET LOCAL, one short transaction at a time. Idempotent; a normal
+        // response never reaches it (only streaming flushes headers before
+        // `end`).
+        req.releaseDbTrx = () => {
+          if (resolvedDone) return;
+          resolvedDone = true;
+          req.dbTrx = scopedRequestDb(Number(payload.tenantId));
+          releaseTrx?.();
+        };
+        const origFlushHeaders = res.flushHeaders.bind(res);
+        res.flushHeaders = () => {
+          origFlushHeaders();
+          req.releaseDbTrx?.();
+        };
         resolveReady();
         // Block this callback until released — throwing causes Knex to
         // rollback, returning causes commit.
