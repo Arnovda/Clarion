@@ -124,6 +124,9 @@ jobs:
           ENV_ARGS+=("ROLE=worker")
           ENV_ARGS+=("WORKER_QUEUES=transformation,scheduled-transformation,warehouse-maintenance,security-maintenance")
           ENV_ARGS+=("RUN_SCHEDULERS=false")
+          # Pool ceiling (5-3) — the value .ops/db-pool carries for the worker.
+          POOL_W=$(grep -vE '^[[:space:]]*(#|$)' .ops/db-pool 2>/dev/null | awk '$1=="worker"{print $2; exit}')
+          ENV_ARGS+=("KNEX_POOL_MAX=${POOL_W:-8}")
           say "Prepared ${#ENV_ARGS[@]} environment variables"
 
           # ── Create (or update) the worker app ─────────────────────────────

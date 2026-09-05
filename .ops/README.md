@@ -255,9 +255,31 @@ same reason a query that could not run is reported as *unknown*, never as clean.
 
 ---
 
+## `db-pool` — Postgres connections per process
+
+Two lines: `backend <n>` and `worker <n>`. Editing it runs `db-pool.yml`,
+which sets `KNEX_POOL_MAX` on the backend (new revision at 0% traffic,
+provisioned, then shifted) and on the jobs-worker (restart). No-op when the
+values already match — not a promote vehicle.
+
+The arithmetic (assessment 5-3): `B_Standard_B1ms` allows ~35 connections;
+the old 10-per-process default × 3 backend replicas + the worker + a
+migration was ≈ 40 and the 30 s acquire timeout turned the overflow into
+30-second hangs. `6 × 3 + 8 + 1 = 27` leaves room for a migration and a
+psql session; raise the SKU before raising these. `infra/variables.tf`
+(`backend_pool_max`, `jobs_worker_pool_max`) carries the same defaults.
+
 ## `alerts` — who gets told when production is broken
 
-Contains an **email address**, or `off`.
+Contains an **email address**, or `off` — plus, optionally, `sms <country
+code> <number>` and `webhook <https url>` lines (5-2). With either present a
+second action group `clarion-alerts-sev1` (email + sms + webhook) is created
+and the **severity-1** rules route to it: production down pages a phone; a
+failed sync stays an email. `clarion-failed-syncs` and `clarion-brute-force`
+mute their actions for four hours after firing (one dead source is one
+email, not one every fifteen minutes). Every run also reports whether an App
+Insights availability test exists (5-1) — it does not create one; the line
+repeats until someone does.
 
 Editing it runs `alerts.yml`, which creates (or updates) an Azure Monitor
 action group routed to that address plus the alert rules listed in the file's

@@ -128,3 +128,32 @@ describe('bruteLimitHandler (P1-6)', () => {
     expect(sentBody).toBe(message);
   });
 });
+
+describe('onError: memory (5-5) — the brute limiters keep a wall up while Redis blinks', () => {
+  it('counts in-process for the window when Redis errors, and refunds on decrement', async () => {
+    const broken = {
+      incr: async () => { throw new Error('ECONNRESET'); },
+      pexpire: async () => 1,
+      pttl: async () => 1000,
+      decr: async () => { throw new Error('ECONNRESET'); },
+      del: async () => 1,
+    } as unknown as NonNullable<Parameters<typeof redisRateLimitStore>[1]>;
+    const store = redisRateLimitStore('brute-test', broken, { onError: 'memory' })!;
+    store.init!({ windowMs: 60_000 } as Options);
+    const a = await store.increment('acct:x');
+    const b = await store.increment('acct:x');
+    const c = await store.increment('acct:x');
+    expect([a.totalHits, b.totalHits, c.totalHits]).toEqual([1, 2, 3]);
+    expect(c.resetTime!.getTime()).toBeGreaterThan(Date.now());
+    // Another key is its own window.
+    expect((await store.increment('acct:y')).totalHits).toBe(1);
+    // skipSuccessfulRequests refunds here too.
+    await store.decrement!('acct:x');
+    expect((await store.increment('acct:x')).totalHits).toBe(3);
+    // The default posture is unchanged: open.
+    const open = redisRateLimitStore('global-test', broken)!;
+    open.init!({ windowMs: 60_000 } as Options);
+    expect((await open.increment('k')).totalHits).toBe(1);
+    expect((await open.increment('k')).totalHits).toBe(1);
+  });
+});

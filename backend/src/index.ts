@@ -202,7 +202,7 @@ const bruteForceLimiter = rateLimit({
   legacyHeaders:   false,
   message: { ok: false, error: 'Too many attempts. Please wait 15 minutes and try again.' },
   skip:      skipRateLimit,
-  store:     redisRateLimitStore('brute-ip'),
+  store:     redisRateLimitStore('brute-ip', undefined, { onError: 'memory' }),
   handler:   bruteLimitHandler('brute-ip'),
   // Only count failed attempts so a legit user who logs in successfully
   // doesn't consume a "slot" needed for a retry on a typo.
@@ -221,7 +221,7 @@ const accountBruteLimiter = rateLimit({
   legacyHeaders:   false,
   message: { ok: false, error: 'Too many attempts for this account. Please wait 15 minutes and try again.' },
   skip:      skipRateLimit,
-  store:     redisRateLimitStore('brute-acct'),
+  store:     redisRateLimitStore('brute-acct', undefined, { onError: 'memory' }),
   keyGenerator: accountKey,
   handler:   bruteLimitHandler('brute-acct'),
   skipSuccessfulRequests: true,

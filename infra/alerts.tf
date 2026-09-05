@@ -19,6 +19,24 @@ variable "alert_email" {
   default     = "arnovda@telenet.be"
 }
 
+variable "alert_sms_country_code" {
+  type        = string
+  default     = "32"
+  description = "Country code for the sev-1 SMS receiver (5-2). Only used when alert_sms_number is set."
+}
+
+variable "alert_sms_number" {
+  type        = string
+  default     = ""
+  description = "Phone number (digits only) paged on severity-1 alerts. Empty = no SMS; mirrors the `sms` line of .ops/alerts."
+}
+
+variable "alert_webhook_url" {
+  type        = string
+  default     = ""
+  description = "https URL called on severity-1 alerts (an on-call service, a chat webhook). Empty = none; mirrors the `webhook` line of .ops/alerts."
+}
+
 resource "azurerm_monitor_action_group" "alerts" {
   name                = "clarion-alerts"
   resource_group_name = azurerm_resource_group.main.name
@@ -27,6 +45,38 @@ resource "azurerm_monitor_action_group" "alerts" {
   email_receiver {
     name          = "owner"
     email_address = var.alert_email
+  }
+}
+
+# Sev-1 group (5-2): email + optional SMS + optional webhook. alerts.yml
+# creates it as `clarion-alerts-sev1` only when .ops/alerts carries an
+# `sms` or `webhook` line; this mirror exists for a future import.
+resource "azurerm_monitor_action_group" "alerts_sev1" {
+  count               = (var.alert_sms_number != "" || var.alert_webhook_url != "") ? 1 : 0
+  name                = "clarion-alerts-sev1"
+  resource_group_name = azurerm_resource_group.main.name
+  short_name          = "clarion1"
+
+  email_receiver {
+    name          = "owner"
+    email_address = var.alert_email
+  }
+
+  dynamic "sms_receiver" {
+    for_each = var.alert_sms_number != "" ? [1] : []
+    content {
+      name         = "owner-sms"
+      country_code = var.alert_sms_country_code
+      phone_number = var.alert_sms_number
+    }
+  }
+
+  dynamic "webhook_receiver" {
+    for_each = var.alert_webhook_url != "" ? [1] : []
+    content {
+      name        = "owner-hook"
+      service_uri = var.alert_webhook_url
+    }
   }
 }
 
@@ -185,6 +235,8 @@ resource "azurerm_monitor_scheduled_query_rules_alert_v2" "failed_syncs" {
   severity            = 2
   evaluation_frequency = "PT15M"
   window_duration      = "PT15M"
+  # Flood control (5-2): one dead source is one email, not one every 15 min.
+  mute_actions_after_alert_duration = "PT4H"
 
   criteria {
     query                   = <<-KQL

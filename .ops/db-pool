@@ -1,0 +1,23 @@
+backend 6
+worker 8
+
+# Postgres connection-pool ceilings per process (assessment 5-3).
+#
+#   backend <n>   KNEX_POOL_MAX on the backend Container App (× up to 3
+#                 replicas, each with its own pool)
+#   worker <n>    KNEX_POOL_MAX on the jobs-worker Container App
+#
+# The arithmetic this bounds: B_Standard_B1ms allows ~35 connections. The
+# old default of 10 per process × 3 backend replicas + the worker + a
+# migration run ≈ 40 — over budget, and the 30 s acquire timeout turned
+# that into 30-second hangs. 6 × 3 + 8 + 1 = 27 leaves headroom for a
+# migration and a psql session. Raise the SKU before raising these.
+#
+# Editing this file on main runs .github/workflows/db-pool.yml, which sets
+# KNEX_POOL_MAX on both apps (a new backend revision at 0% traffic, then
+# health-checked and shifted; the worker simply restarts). No-op when the
+# values already match — NOT a promote vehicle. infra/variables.tf carries
+# the same defaults (backend_pool_max / jobs_worker_pool_max) so a later
+# terraform apply agrees.
+#
+# Created 2026-09-05 (wave B item 4): first application.

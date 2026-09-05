@@ -8,6 +8,30 @@ arnovda@telenet.be
 # alert rules below. `off` deletes all of them. Changing the address is an
 # edit + push; no redeploy is involved.
 #
+# OPTIONAL extra lines (assessment 5-2 — one inbox, no paging, sev-1 and
+# sev-2 on the same channel):
+#
+#   sms <country code> <number>     e.g.   sms 32 470123456
+#   webhook <https url>             e.g.   webhook https://hooks.example/...
+#
+# When either is present a SECOND action group `clarion-alerts-sev1` is
+# created carrying email + sms + webhook, and the SEVERITY-1 rules
+# (clarion-backend-5xx, clarion-server-errors) route to it — production
+# down pages a phone; a failed sync stays an email. Remove the lines to go
+# back to email-only.
+#
+# Flood control (5-2): `clarion-failed-syncs` and `clarion-brute-force` now
+# MUTE their actions for 4 hours after firing — one dead source or one
+# scripted login burst produces one email, not one every 15 minutes into
+# the inbox the outage mail lands in. The rule keeps evaluating; only the
+# notification is muted.
+#
+# Every run also REPORTS whether an App Insights availability (web) test
+# exists in the resource group (5-1). It does not create one — see the
+# note at the bottom — but a run that finds none says so in its summary,
+# every time, so "documented as create-it-in-the-portal" cannot quietly
+# stay undone.
+#
 # Rules the workflow maintains:
 #   clarion-backend-5xx        ≥10 5xx responses on the backend in 15 min
 #   clarion-backend-restarts   container restarts on the backend app

@@ -56,6 +56,22 @@ jobs:
             echo "::error::.ops/alerts must contain an email address or 'off' (got '$VALUE')"
             exit 1
           fi
+          # Optional sev-1 receivers (5-2): `sms <cc> <number>` and `webhook <url>`.
+          SMS_CC=$(grep -vE '^[[:space:]]*(#|$)' .ops/alerts | awk '$1=="sms"{print $2; exit}')
+          SMS_NUM=$(grep -vE '^[[:space:]]*(#|$)' .ops/alerts | awk '$1=="sms"{print $3; exit}')
+          HOOK=$(grep -vE '^[[:space:]]*(#|$)' .ops/alerts | awk '$1=="webhook"{print $2; exit}')
+          if [ -n "$SMS_CC$SMS_NUM" ] && ! { echo "$SMS_CC" | grep -qE '^[0-9]{1,3}$' && echo "$SMS_NUM" | grep -qE '^[0-9]{6,15}$'; }; then
+            echo "::error::sms line must be 'sms <country code> <number>' with digits only (got '$SMS_CC' '$SMS_NUM')"; exit 1
+          fi
+          if [ -n "$HOOK" ] && ! echo "$HOOK" | grep -qE '^https://[^[:space:]]+$'; then
+            echo "::error::webhook line must be an https:// URL"; exit 1
+          fi
+          echo "sms_cc=$SMS_CC" >> "$GITHUB_OUTPUT"
+          echo "sms_num=$SMS_NUM" >> "$GITHUB_OUTPUT"
+          echo "webhook=$HOOK" >> "$GITHUB_OUTPUT"
+          [ -n "$SMS_NUM" ] && echo "Sev-1 SMS receiver: +$SMS_CC …$(echo "$SMS_NUM" | tail -c 4)"
+          [ -n "$HOOK" ] && echo "Sev-1 webhook receiver configured"
+          true
 
       - name: Log in to Azure
         uses: azure/login@v2
@@ -68,11 +84,15 @@ jobs:
           APP: ${{ secrets.BACKEND_APP_NAME }}
           MODE: ${{ steps.route.outputs.mode }}
           EMAIL: ${{ steps.route.outputs.email }}
+          SMS_CC: ${{ steps.route.outputs.sms_cc }}
+          SMS_NUM: ${{ steps.route.outputs.sms_num }}
+          WEBHOOK: ${{ steps.route.outputs.webhook }}
         run: |
           set -uo pipefail
           say() { printf '%s\n' "$1"; printf '%s\n' "$1" >> "$GITHUB_STEP_SUMMARY"; }
 
           AG_NAME="clarion-alerts"
+          AG1_NAME="clarion-alerts-sev1"
           WORKER="${APP%-backend}-jobs-worker"
           METRIC_RULES="clarion-backend-5xx clarion-backend-restarts clarion-worker-restarts clarion-pg-cpu clarion-pg-storage"
           QUERY_RULES="clarion-server-errors clarion-failed-syncs clarion-brute-force clarion-queue-depth clarion-sql-guard"
@@ -83,6 +103,7 @@ jobs:
             az extension add --name scheduled-query --only-show-errors >/dev/null 2>&1 || true
             for R in $QUERY_RULES; do az monitor scheduled-query delete -g "$RG" -n "$R" --yes >/dev/null 2>&1 || true; done
             az monitor action-group delete -g "$RG" -n "$AG_NAME" >/dev/null 2>&1 || true
+            az monitor action-group delete -g "$RG" -n "$AG1_NAME" >/dev/null 2>&1 || true
             say "Every alert rule and the action group are deleted. Nothing pages anyone now."
             exit 0
           fi
@@ -104,6 +125,38 @@ jobs:
             exit 1
           fi
           AG_ID=$(az monitor action-group show -g "$RG" -n "$AG_NAME" --query id -o tsv)
+
+          # ── Sev-1 action group (5-2): email + sms + webhook ─────────────
+          # Only when a receiver beyond email is configured; otherwise sev-1
+          # rules route to the plain group and nothing pages. Deleted when the
+          # lines are removed, so the control file is the whole truth.
+          AG1_ID="$AG_ID"
+          if [ -n "$SMS_NUM" ] || [ -n "$WEBHOOK" ]; then
+            AG1_ARGS=(--action email owner "$EMAIL")
+            [ -n "$SMS_NUM" ] && AG1_ARGS+=(--action sms owner-sms "$SMS_CC" "$SMS_NUM")
+            [ -n "$WEBHOOK" ] && AG1_ARGS+=(--action webhook owner-hook "$WEBHOOK")
+            if az monitor action-group create -g "$RG" -n "$AG1_NAME" --short-name clarion1 "${AG1_ARGS[@]}" >/dev/null; then
+              AG1_ID=$(az monitor action-group show -g "$RG" -n "$AG1_NAME" --query id -o tsv)
+              note_ok "sev-1 action group $AG1_NAME → email${SMS_NUM:+ + sms}${WEBHOOK:+ + webhook}"
+            else
+              note_fail "$AG1_NAME (sev-1 rules fall back to $AG_NAME)"
+            fi
+          else
+            az monitor action-group delete -g "$RG" -n "$AG1_NAME" >/dev/null 2>&1 || true
+            say "  · no sms/webhook line — severity-1 alerts go to email only (add \`sms\` / \`webhook\` lines to .ops/alerts to page)"
+          fi
+
+          # ── Availability test present? (5-1) ────────────────────────────
+          # Reported, not created (see .ops/alerts for why). A run that finds
+          # none says so every time.
+          WEBTESTS=$(az resource list -g "$RG" --resource-type microsoft.insights/webtests --query "[].name" -o tsv 2>/dev/null | tr '\n' ' ')
+          if [ -n "$WEBTESTS" ]; then
+            note_ok "availability test present: $WEBTESTS"
+          else
+            say "  ✗ NO availability (web) test exists — a total outage while idle raises no alarm."
+            say "    Portal → Application Insights → Availability → Add standard test (URL = backend /api/ping),"
+            say "    alert → action group \`$AG_NAME\`. ~3 minutes. This line repeats until it is done."
+          fi
 
           # ── Resource discovery ──────────────────────────────────────────
           APP_ID=$(az containerapp show -n "$APP" -g "$RG" --query id -o tsv 2>/dev/null || echo "")
@@ -130,7 +183,7 @@ jobs:
           # ── Metric alerts ───────────────────────────────────────────────
           if [ -n "$REQ_METRIC" ] && [ "$REQ_HAS_STATUS" -gt 0 ]; then
             az monitor metrics alert create -g "$RG" -n clarion-backend-5xx \
-              --scopes "$APP_ID" --action "$AG_ID" --severity 1 \
+              --scopes "$APP_ID" --action "$AG1_ID" --severity 1 \
               --evaluation-frequency 5m --window-size 15m \
               --condition "total $REQ_METRIC >= 10 where statusCodeCategory includes 5xx" \
               --description "Backend served 10+ HTTP 5xx responses in 15 minutes" >/dev/null \
@@ -141,7 +194,7 @@ jobs:
 
           if [ -n "$RESTART_METRIC" ]; then
             az monitor metrics alert create -g "$RG" -n clarion-backend-restarts \
-              --scopes "$APP_ID" --action "$AG_ID" --severity 1 \
+              --scopes "$APP_ID" --action "$AG1_ID" --severity 1 \
               --evaluation-frequency 5m --window-size 15m \
               --condition "total $RESTART_METRIC >= 3" \
               --description "Backend container restarted 3+ times in 15 minutes" >/dev/null \
@@ -168,7 +221,7 @@ jobs:
               --description "Postgres CPU at 90%+ for 15 minutes" >/dev/null \
               && note_ok clarion-pg-cpu || note_fail clarion-pg-cpu
             az monitor metrics alert create -g "$RG" -n clarion-pg-storage \
-              --scopes "$PG_ID" --action "$AG_ID" --severity 1 \
+              --scopes "$PG_ID" --action "$AG1_ID" --severity 1 \
               --evaluation-frequency 15m --window-size 30m \
               --condition "avg storage_percent >= 85" \
               --description "Postgres storage at 85%+ — act before writes start failing" >/dev/null \
@@ -188,20 +241,26 @@ jobs:
           # scheduled-query extension may refuse an existing name, and this
           # control must stay idempotent — re-pushing .ops/alerts IS the way
           # to change a rule.
+          # Severity 1 routes to the sev-1 group (pages when configured); an
+          # optional 7th argument mutes actions for that ISO-8601 duration
+          # after the rule fires (5-2 flood control).
           upsert_query_rule() {
-            local NAME="$1" SEV="$2" COND="$3" PLACEHOLDER="$4" KQL="$5" DESC="$6"
+            local NAME="$1" SEV="$2" COND="$3" PLACEHOLDER="$4" KQL="$5" DESC="$6" MUTE="${7:-}"
+            local AG="$AG_ID"; [ "$SEV" = "1" ] && AG="$AG1_ID"
+            local EXTRA=()
+            [ -n "$MUTE" ] && EXTRA+=(--mute-actions-duration "$MUTE")
             az monitor scheduled-query create -g "$RG" -n "$NAME" \
-              --scopes "$WS_ID" --action-groups "$AG_ID" --severity "$SEV" \
+              --scopes "$WS_ID" --action-groups "$AG" --severity "$SEV" \
               --evaluation-frequency 15m --window-size 15m \
               --condition "$COND" \
               --condition-query "$PLACEHOLDER=$KQL" \
-              --description "$DESC" >/dev/null 2>/tmp/sq-err \
+              --description "$DESC" "${EXTRA[@]}" >/dev/null 2>/tmp/sq-err \
             || az monitor scheduled-query update -g "$RG" -n "$NAME" \
-              --action-groups "$AG_ID" --severity "$SEV" \
+              --action-groups "$AG" --severity "$SEV" \
               --evaluation-frequency 15m --window-size 15m \
               --condition "$COND" \
               --condition-query "$PLACEHOLDER=$KQL" \
-              --description "$DESC" >/dev/null 2>>/tmp/sq-err \
+              --description "$DESC" "${EXTRA[@]}" >/dev/null 2>>/tmp/sq-err \
             || { cat /tmp/sq-err; return 1; }
           }
           if [ -n "$WS_ID" ]; then
@@ -211,7 +270,7 @@ jobs:
               && note_ok clarion-server-errors || note_fail clarion-server-errors
             upsert_query_rule clarion-failed-syncs 2 "count 'Failures' >= 1" Failures \
               "ContainerAppConsoleLogs_CL | where Log_s contains 'sync run failed'" \
-              "A source sync run was persisted as failed" \
+              "A source sync run was persisted as failed (actions muted 4h after firing)" PT4H \
               && note_ok clarion-failed-syncs || note_fail clarion-failed-syncs
             # P1-6 pass — two more load-bearing strings, each documented at
             # its emit site: 'brute force limit hit' is what BOTH brute
@@ -224,7 +283,7 @@ jobs:
             # 3+ minutes of sustained backlog, not a spike one sweep saw.
             upsert_query_rule clarion-brute-force 2 "count 'Hits' >= 10" Hits \
               "ContainerAppConsoleLogs_CL | where ContainerAppName_s == '$APP' | where Log_s contains 'brute force limit hit'" \
-              "A brute-force burst is being rate-limited (10+ refused attempts in 15 minutes)" \
+              "A brute-force burst is being rate-limited (10+ refused attempts in 15 minutes; actions muted 4h after firing)" PT4H \
               && note_ok clarion-brute-force || note_fail clarion-brute-force
             upsert_query_rule clarion-queue-depth 2 "count 'Sweeps' >= 3" Sweeps \
               "ContainerAppConsoleLogs_CL | where Log_s contains 'queue depth high'" \

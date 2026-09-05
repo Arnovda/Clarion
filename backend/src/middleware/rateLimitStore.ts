@@ -40,14 +40,49 @@ const log = logger.child({ component: 'rateLimit' });
  */
 /** `redis` is injectable for tests (the healthCheck pattern); production
  * callers use the shared connection. */
+/**
+ * What a limiter does when Redis ERRORS mid-request (it is configured, but a
+ * call fails):
+ *
+ *  - 'open'   — allow the request (the default). A Redis blip must not 429
+ *               the product for the ordinary limiters.
+ *  - 'memory' — count in THIS process for the rest of the window (5-5). For
+ *               the brute-force limiters "open" meant the one protection
+ *               that matters most was OFF during exactly the outage an
+ *               attacker would pick; "closed" would refuse every login while
+ *               Redis blinks. A per-process window is the middle: ~3× weaker
+ *               at three replicas, still a wall, and no one locked out for
+ *               a blip. The fallback counters expire with the window.
+ */
+export type OnStoreError = 'open' | 'memory';
+
 export function redisRateLimitStore(
   prefix: string,
   redis: ReturnType<typeof getRedisConnection> = getRedisConnection(),
+  opts: { onError?: OnStoreError } = {},
 ): Store | undefined {
   if (!redis) return undefined;
 
   let windowMs = 60_000;
   const keyOf = (key: string) => `rl:${prefix}:${key}`;
+  const onError: OnStoreError = opts.onError ?? 'open';
+  // The in-process fallback (only ever touched when onError === 'memory').
+  const local = new Map<string, { hits: number; resetAt: number }>();
+  const localHit = (key: string): IncrementResponse => {
+    const now = Date.now();
+    const cur = local.get(key);
+    if (!cur || cur.resetAt <= now) {
+      const fresh = { hits: 1, resetAt: now + windowMs };
+      local.set(key, fresh);
+      if (local.size > 10_000) {
+        // Bounded: sweep expired entries rather than grow without limit.
+        for (const [k, v] of local) if (v.resetAt <= now) local.delete(k);
+      }
+      return { totalHits: 1, resetTime: new Date(fresh.resetAt) };
+    }
+    cur.hits += 1;
+    return { totalHits: cur.hits, resetTime: new Date(cur.resetAt) };
+  };
 
   return {
     init(options: Options): void {
@@ -69,6 +104,10 @@ export function redisRateLimitStore(
         }
         return { totalHits, resetTime: new Date(Date.now() + ttl) };
       } catch (err) {
+        if (onError === 'memory') {
+          log.warn({ err, prefix }, 'rate-limit store error — counting in-process for this window');
+          return localHit(key);
+        }
         log.warn({ err, prefix }, 'rate-limit store error — failing open for this request');
         return { totalHits: 1, resetTime: new Date(Date.now() + windowMs) };
       }
@@ -76,7 +115,10 @@ export function redisRateLimitStore(
     // skipSuccessfulRequests refunds the hit on success — the brute-force
     // limiter depends on this, so it must reach Redis too.
     async decrement(key: string): Promise<void> {
-      try { await redis.decr(keyOf(key)); } catch { /* refund is best-effort */ }
+      try { await redis.decr(keyOf(key)); } catch {
+        const cur = local.get(key);
+        if (cur && cur.hits > 0) cur.hits -= 1; // refund the in-process count too
+      }
     },
     async resetKey(key: string): Promise<void> {
       try { await redis.del(keyOf(key)); } catch { /* best-effort */ }

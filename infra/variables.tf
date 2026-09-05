@@ -195,6 +195,24 @@ variable "jobs_worker_max_replicas" {
   description = "Maximum jobs-worker replicas. The old blockers are GONE (P1-1, 2026-09-01): RUN_SCHEDULERS=false already confines schedules, crash recovery and the reapers to the API process, and the reapers are liveness-based now (services/reapers.ts keys on a heartbeat going quiet, not on age), so parallel long-running work is safe and BullMQ handles multi-replica workers natively. The default stays 1 for a different reason: the worker has NO scale rule, and on Container Apps max_replicas without a rule is inert — raising this alone changes nothing. To actually scale out: either raise min replicas too (an always-on cost decision) or add a KEDA Redis queue-depth rule. Parallelism today comes from per-queue concurrency (2 on the AI queues, with per-tenant fairness)."
 }
 
+variable "backend_pool_max" {
+  type        = number
+  default     = 6
+  description = "KNEX_POOL_MAX on the backend: Postgres connections per backend replica (5-3). B_Standard_B1ms allows ~35 connections; 6 × 3 replicas + the worker's 8 + a migration ≈ 27. Mirrors .ops/db-pool, which is what actually applies it to the running app — keep the two in agreement."
+}
+
+variable "jobs_worker_pool_max" {
+  type        = number
+  default     = 8
+  description = "KNEX_POOL_MAX on the jobs-worker (5-3). Mirrors .ops/db-pool."
+}
+
+variable "redis_maxmemory" {
+  type        = string
+  default     = "384mb"
+  description = "Redis maxmemory (5-5). The container has 0.5Gi; with `noeviction` (mandatory for BullMQ) a cap means a full Redis REFUSES writes loudly (a queue add fails) instead of the kernel OOM-killing the whole process and taking every queue with it. Job retention is count-capped in code as well (jobs/queues.ts) so this ceiling is rarely reached."
+}
+
 variable "duckdb_memory_limit" {
   type        = string
   default     = "70%"

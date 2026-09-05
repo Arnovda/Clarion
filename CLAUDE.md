@@ -31,9 +31,62 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-09-05 (WAVE B IN PROGRESS — owner: *"Start wave B"*; items 1–3 landed. Below it, WAVE A REMEDIATION COMPLETE — owner: *"You
+**Last updated:** 2026-09-05 (WAVE B IN PROGRESS — owner: *"Start wave B"*; items 1–4 landed. Below it, WAVE A REMEDIATION COMPLETE — owner: *"You
 can push to main and begin fixing the waves"*; the assessment v2 was
 fast-forwarded to main and each item landed as its own push, seven pushes)
+
+**Wave B, item 4 — 5-1/5-2/5-3/5-5: alerting can page, one dead source is
+one email, the pool arithmetic fits the server, and Redis cannot be
+OOM-killed into silence.**
+- **5-2 `.ops/alerts` gained optional `sms <cc> <number>` and `webhook
+  <url>` lines.** When either is present alerts.yml creates a SECOND action
+  group `clarion-alerts-sev1` (email + sms + webhook) and every
+  severity-1 rule (backend-5xx, backend-restarts, server-errors) routes to
+  it; without them sev-1 stays email and the run SAYS so. Flood control:
+  `clarion-failed-syncs` and `clarion-brute-force` carry
+  `--mute-actions-duration PT4H` (the rule keeps evaluating; the
+  notification is muted) — the threshold stays ≥1 because a single dead
+  source IS the signal; a threshold of 3 would never fire for a customer
+  with one source syncing every 15 min. `infra/alerts.tf` mirrors both
+  (sev-1 group behind `alert_sms_number` / `alert_webhook_url`,
+  `mute_actions_after_alert_duration`).
+- **5-1 stays the owner's portal act, but it can no longer stay quietly
+  undone**: every alerts run lists `microsoft.insights/webtests` in the
+  resource group and prints "✗ NO availability test exists" with the
+  three-minute recipe until one does. Creating it from az was refused
+  again for the reason recorded in `.ops/alerts` (an untestable ARM blob
+  inside a control whose contract is "any rule that fails to create
+  fails the run").
+- **5-3 NEW GitOps control `.ops/db-pool`** (`backend 6`, `worker 8`) +
+  `db-pool.yml` (cloned from the lockdown control: no-op when applied,
+  NOT a promote vehicle; backend = new revision → Provisioned → 100%,
+  worker = restart). Sets `KNEX_POOL_MAX` per role: 6 × 3 replicas + 8 +
+  a migration ≈ 27 of B1ms's ~35 (was 10 per process ≈ 40). The first
+  edit ships in this push, so its run IS the first application — read
+  it. `provision-jobs-worker.yml` reads the worker value from the same
+  file at creation; `infra/variables.tf` carries `backend_pool_max` /
+  `jobs_worker_pool_max` so an apply agrees. Code default for
+  `KNEX_POOL_ACQUIRE_TIMEOUT_MS` is 10 s (was 30): a saturated pool
+  answers with a clear 500, not a half-minute hang.
+- **5-5 Redis `--maxmemory 384mb`** on both command variants in
+  `infra/main.tf` (`redis_maxmemory`): with the mandatory `noeviction` a
+  full Redis now REFUSES writes (a loud failed enqueue) instead of the
+  kernel OOM-killing the process and every queue with it. Terraform-only —
+  **it lands on the owner's next apply**, there is no live control for a
+  container command. The code half shipped in item 3 (count-capped job
+  retention). **Brute limiters keep a wall up while Redis blinks**:
+  `redisRateLimitStore(prefix, redis, { onError: 'memory' })` counts
+  in-process for the rest of the window on a Redis ERROR (≈3× weaker at
+  three replicas, still a wall, nobody locked out for a blip); the
+  ordinary limiters keep failing open. Test added (in-process count,
+  refund, other key, default still open).
+- Validation: alerts.yml / db-pool.yml / provision-jobs-worker.yml parse;
+  the three edited .tf files parse under python-hcl2 (still not
+  `terraform validate` — no binary here); backend tsc clean; ratchets
+  green; rate-limit-store suite 9/9; full backend suite green. NOT
+  exercised against Azure: the sev-1 group creation, the mute flag on
+  `az monitor scheduled-query`, the webtests listing — read the alerts
+  run that this push triggers (`.ops/alerts` was edited).
 
 **Wave B, item 3 — 6-1/6-2/6-4/6-5/6-6 CLOSED: the operator can find a
 customer's error, cancel their stuck job, tell every customer about an

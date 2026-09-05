@@ -42,9 +42,10 @@ const needsSsl = connectionUrl.includes('azure.com') || connectionUrl.includes('
 
 // Connection-pool sizing. Each backend replica AND each worker holds its own
 // pool, so the sum across replicas must stay under Postgres max_connections
-// (~50 on the B1ms tier). `KNEX_POOL_MAX` lets ops tune the per-process
-// ceiling per environment; `acquireTimeoutMillis` makes a saturated pool
-// FAIL FAST (a clear 500) instead of hanging the request indefinitely.
+// (~35 on the B1ms tier). `KNEX_POOL_MAX` is set PER ROLE in production by
+// .ops/db-pool (backend 6 × 3 replicas + worker 8 + a migration ≈ 27);
+// the code default of 10 is for a single local process. `acquireTimeoutMillis`
+// makes a saturated pool FAIL FAST (a clear 500) instead of hanging.
 const poolMax = Number(process.env.KNEX_POOL_MAX ?? 10);
 const poolMin = Number(process.env.KNEX_POOL_MIN ?? 2);
 
@@ -56,7 +57,9 @@ export const semanticDb: Knex = knex({
   pool: {
     min: Number.isFinite(poolMin) && poolMin >= 0 ? poolMin : 2,
     max: Number.isFinite(poolMax) && poolMax > 0 ? poolMax : 10,
-    acquireTimeoutMillis: Number(process.env.KNEX_POOL_ACQUIRE_TIMEOUT_MS ?? 30000),
+    // 10 s, not 30 (5-3): a saturated pool must answer with a clear 500
+    // quickly, not turn every request into a half-minute hang.
+    acquireTimeoutMillis: Number(process.env.KNEX_POOL_ACQUIRE_TIMEOUT_MS ?? 10000),
   },
 });
 

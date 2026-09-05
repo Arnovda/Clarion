@@ -438,7 +438,11 @@ resource "azurerm_container_app" "redis" {
       # hash or a lock key and jobs silently vanish or stall. Redis defaults to
       # noeviction when no maxmemory is set, but we set it explicitly so the
       # guarantee survives someone later capping memory.
-      command = var.redis_persistence_enabled ? ["sh", "-c", "exec redis-server --dir /data --save '' --appendonly yes --appendfsync everysec --maxmemory-policy noeviction"] : ["sh", "-c", "exec redis-server --save '' --appendonly no --maxmemory-policy noeviction"]
+      # `--maxmemory` (5-5): without it the only limit is the container's,
+      # and the kernel's answer to a full Redis is an OOM kill of the whole
+      # process — every queue gone at once. With a cap and noeviction a full
+      # Redis refuses writes, which BullMQ surfaces as a failed enqueue.
+      command = var.redis_persistence_enabled ? ["sh", "-c", "exec redis-server --dir /data --save '' --appendonly yes --appendfsync everysec --maxmemory ${var.redis_maxmemory} --maxmemory-policy noeviction"] : ["sh", "-c", "exec redis-server --save '' --appendonly no --maxmemory ${var.redis_maxmemory} --maxmemory-policy noeviction"]
 
       dynamic "volume_mounts" {
         for_each = var.redis_persistence_enabled ? [1] : []
@@ -711,6 +715,11 @@ resource "azurerm_container_app" "backend" {
       env {
         name  = "ROLE"
         value = var.backend_role
+      }
+      # Pool ceiling per replica (5-3). Applied live by .ops/db-pool.
+      env {
+        name  = "KNEX_POOL_MAX"
+        value = tostring(var.backend_pool_max)
       }
       env {
         name  = "PORT"
@@ -1036,6 +1045,10 @@ resource "azurerm_container_app" "jobs_worker" {
       env {
         name  = "ROLE"
         value = "worker"
+      }
+      env {
+        name  = "KNEX_POOL_MAX"
+        value = tostring(var.jobs_worker_pool_max)
       }
       env {
         name  = "PORT"
