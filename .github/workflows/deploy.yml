@@ -321,11 +321,75 @@ jobs:
       - name: Install backend dependencies
         working-directory: backend
         run: npm ci
+
+      # ── Recovery point BEFORE anything changes (P0-9) ──────────────────────
+      #
+      # Until 2026-09-05 migrations ran against production with no record of
+      # what the database looked like the moment before. Two things fix that:
+      #
+      #  1. The PITR MARKER — the UTC instant just before `migrate:latest`
+      #     and the list of migrations about to run, in the job summary. The
+      #     flexible server keeps 14 days of point-in-time restore; this line
+      #     is the timestamp a restore is aimed at (runbook §2b). It MUST be
+      #     recorded, so this step fails the job if it cannot be.
+      #  2. A SCHEMA-ONLY dump (no rows: customer data and encrypted
+      #     credentials must not land in a GitHub artifact) as a 30-day
+      #     artifact — the pre-migration DDL to diff against, and the fastest
+      #     way to see what a `down` must undo. Best-effort: a pg_dump client/
+      #     server mismatch must not block a deploy, but it is said loudly.
+      #
+      # The rollback path itself is `migrate:rollback` (the "Rollback
+      # production" workflow's migrations option), proven by test.yml's
+      # migration-rollback job on every push: the last batch is exactly what
+      # this step is about to apply.
+      - name: Record the recovery point
+        working-directory: backend
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          set -euo pipefail
+          MARK=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          echo "$MARK" > /tmp/pitr-marker
+          STATUS=$(npm run -s migrate:status 2>&1 || true)
+          {
+            echo "### 🛟 Recovery point"
+            echo ""
+            echo "- **PITR marker (UTC, before migrate:latest):** \`$MARK\`"
+            echo "- Restore target if this deploy's migrations must be undone: any instant before that marker (runbook §2b). Prefer **Rollback production → migrations: last batch** — it undoes exactly the batch below."
+            echo ""
+            echo "<details><summary>migrate:status before</summary>"
+            echo ""
+            echo '```'
+            echo "$STATUS"
+            echo '```'
+            echo "</details>"
+          } >> "$GITHUB_STEP_SUMMARY"
+          mkdir -p /tmp/schema
+          if pg_dump --schema-only --no-owner --no-privileges "$DATABASE_URL" > /tmp/schema/schema-before-${{ github.sha }}.sql 2>/tmp/schema/pg_dump.err; then
+            echo "schema-only dump: $(wc -l < /tmp/schema/schema-before-${{ github.sha }}.sql) lines"
+          else
+            echo "::warning::schema-only pg_dump failed (marker still recorded): $(head -c 400 /tmp/schema/pg_dump.err)"
+            echo "- ⚠ schema-only dump FAILED — the PITR marker above still stands" >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Keep the pre-migration schema for 30 days
+        uses: actions/upload-artifact@v4
+        with:
+          name: schema-before-${{ github.sha }}
+          path: /tmp/schema/
+          if-no-files-found: warn
+          retention-days: 30
+
       - name: Run Knex migrations
         working-directory: backend
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
-        run: npm run migrate:latest
+        run: |
+          set -euo pipefail
+          npm run migrate:latest 2>&1 | tee /tmp/migrate.out
+          {
+            echo ""
+            echo "**Applied:** $(grep -E 'Batch [0-9]+ run' /tmp/migrate.out || echo 'nothing (already up to date)')"
+          } >> "$GITHUB_STEP_SUMMARY"
 
   # ── Deploy changed services as 0%-traffic revisions ───────────────────────
   deploy:

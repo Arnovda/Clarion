@@ -11,6 +11,98 @@ on:
     branches: [main]
 
 jobs:
+  # ── Every migration must roll back (P0-9) ─────────────────────────────────
+  #
+  # deploy.yml runs `migrate:latest` against production before any revision
+  # exists. The only rollback path that does not cost a point-in-time restore
+  # is `migrate:rollback`, and a `down` that nobody has ever executed is a
+  # rollback path in name only — forty migrations in the tree call dropColumn
+  # in their `down`, and until 2026-09-05 none had been run end to end. This
+  # job proves the chain on a fresh database: up, ALL the way down, up again.
+  # A migration whose `down` breaks turns this red before it can reach
+  # production, and the gate in deploy.yml requires this workflow.
+  #
+  # After the rollback only knex's own bookkeeping tables may remain: a `down`
+  # that forgets a table, an enum type or a function leaves debris that the
+  # next `up` trips over, so the check is on the whole schema, not the exit
+  # code.
+  migration-rollback:
+    name: Migrations roll back
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: databridge
+          POSTGRES_PASSWORD: databridge
+          POSTGRES_DB: databridge_rollback
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      DATABASE_URL: postgresql://databridge:databridge@localhost:5432/databridge_rollback
+      PGPASSWORD: databridge
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+
+      - name: Install backend dependencies
+        working-directory: backend
+        run: npm ci
+
+      - name: Create RLS app role
+        run: |
+          psql -h localhost -U databridge -d databridge_rollback -v ON_ERROR_STOP=1 -c \
+            "DO \$\$ BEGIN IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname='databridge_app') THEN CREATE ROLE databridge_app WITH LOGIN PASSWORD 'databridge' NOBYPASSRLS; END IF; END \$\$;"
+
+      - name: Migrate up
+        working-directory: backend
+        run: npx knex --knexfile knexfile.ts migrate:latest
+
+      - name: Roll back every migration
+        working-directory: backend
+        run: npx knex --knexfile knexfile.ts migrate:rollback --all
+
+      - name: Nothing but knex bookkeeping may remain
+        run: |
+          set -euo pipefail
+          Q() { psql -h localhost -U databridge -d databridge_rollback -tA -c "$1"; }
+          tables=$(Q "SELECT string_agg(tablename, ', ' ORDER BY tablename) FROM pg_tables WHERE schemaname='public' AND tablename NOT IN ('knex_migrations','knex_migrations_lock')")
+          views=$(Q "SELECT string_agg(viewname, ', ') FROM pg_views WHERE schemaname='public'")
+          types=$(Q "SELECT string_agg(t.typname, ', ') FROM pg_type t JOIN pg_namespace n ON n.oid=t.typnamespace WHERE n.nspname='public' AND t.typtype='e'")
+          funcs=$(Q "SELECT string_agg(p.proname, ', ') FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='public'")
+          seqs=$(Q "SELECT string_agg(sequencename, ', ') FROM pg_sequences WHERE schemaname='public' AND sequencename NOT LIKE 'knex_migrations%'")
+          fail=0
+          for kind in tables views types funcs seqs; do
+            val="${!kind}"
+            if [ -n "$val" ]; then echo "::error::left behind after rollback ($kind): $val"; fail=1; fi
+          done
+          [ "$fail" -eq 0 ] || exit 1
+          echo "clean: only knex_migrations + knex_migrations_lock remain"
+
+      - name: Migrate up again
+        working-directory: backend
+        run: npx knex --knexfile knexfile.ts migrate:latest
+
+      - name: Report
+        run: |
+          n=$(psql -h localhost -U databridge -d databridge_rollback -tA -c "SELECT count(*) FROM knex_migrations")
+          echo "### ↕ Migrations roll back" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "$n migrations: up → all the way down (schema empty) → up again." >> "$GITHUB_STEP_SUMMARY"
+
   api-tests:
     name: API Integration Tests
     runs-on: ubuntu-latest

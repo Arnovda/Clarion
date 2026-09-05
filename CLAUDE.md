@@ -31,9 +31,39 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-09-05 (WAVE A REMEDIATION COMPLETE — owner: *"You
+**Last updated:** 2026-09-05 (WAVE B IN PROGRESS — owner: *"Start wave B"*; item 1 landed. Below it, WAVE A REMEDIATION COMPLETE — owner: *"You
 can push to main and begin fixing the waves"*; the assessment v2 was
 fast-forwarded to main and each item landed as its own push, seven pushes)
+
+**Wave B, item 1 — P0-9's engineering half: every migration is PROVEN to
+roll back, and a deploy records its recovery point before it migrates.**
+- **The whole chain rolls back.** Measured first on a fresh database: 92
+  migrations up → `migrate:rollback --all` → schema empty (no tables beyond
+  knex's two, no views, enum types, functions or sequences) → up again.
+  Nobody had ever run the 40 `dropColumn` downs end to end; they all hold.
+- **NEW test.yml job `migration-rollback`** ("Migrations roll back"): the
+  same up → all-down → schema-check → up on every push and PR. The check is
+  on the SCHEMA, not the exit code — a `down` that forgets a type or a
+  function leaves debris the next `up` trips on. Since deploy.yml's gate
+  requires the Tests workflow, a broken `down` now blocks the deploy.
+- **deploy.yml `migrate-sql` records the recovery point BEFORE
+  `migrate:latest`**: the UTC PITR marker + the pending list in the job
+  summary (must succeed), a schema-only `pg_dump` as a 30-day artifact
+  (best-effort, loud on failure; NO rows — customer data and encrypted
+  credentials must not land in a GitHub artifact), and afterwards the
+  applied batch line.
+- **rollback.yml gained a `migrations` input**: after the traffic shift,
+  `migrate:rollback` undoes the last knex batch = exactly what the last
+  deploy applied. Runs AFTER traffic moves on purpose (the previous
+  revision is the code for the previous schema). Runbook §2b
+  (`docs/runbooks/disaster-recovery.md`) documents both paths: in-place
+  rollback vs PITR to the marker, and "ship the fix as a NEW migration".
+- **Still the owner's**: the Terraform state backend + import + apply and
+  the §6 restore rehearsal (P0-9's other half) — nothing here can do them.
+- Validation: three workflow YAMLs parse; the leftover-check script was
+  dry-run verbatim against the local rollback database (all five sets
+  empty); `migrate:status` output shape confirmed. The CI job's first run
+  is the push that carries it — read it.
 
 **Wave A, epilogue — PRODUCTION WAS TWO BACKEND BUILDS BEHIND MAIN WITH A
 GREEN DEPLOY RUN; new GitOps control `.ops/redeploy` closes the trap.**

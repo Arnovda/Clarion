@@ -20,6 +20,13 @@ on:
           - 'backend + frontend'
           - 'backend only'
           - 'frontend only'
+      migrations:
+        description: 'Also roll back the database migrations the last deploy applied (its last knex batch). Only after traffic is back on the previous revision — the old code must be what runs against the old schema.'
+        type: choice
+        default: 'no'
+        options:
+          - 'no'
+          - 'yes — roll back the last migration batch'
 
 jobs:
   rollback:
@@ -68,3 +75,45 @@ jobs:
           esac
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "Run **Promote to production** to return to the newest version." >> "$GITHUB_STEP_SUMMARY"
+
+  # ── Migrations (P0-9) ─────────────────────────────────────────────────────
+  #
+  # `migrate:rollback` undoes the LAST knex batch — exactly what the last
+  # deploy's migrate-sql job applied (each deploy is one batch). Every `down`
+  # in the tree is exercised on every push by test.yml's migration-rollback
+  # job (up → all down → up on a fresh database), so this is a rehearsed path,
+  # not a hope. It runs AFTER the traffic shift on purpose: the previous
+  # revision is the code written for the previous schema. A `down` that drops
+  # a column deletes what that column held since the deploy — the migrate-sql
+  # job summary carries the PITR marker for the case that matters.
+  rollback-migrations:
+    needs: rollback
+    if: ${{ startsWith(github.event.inputs.migrations, 'yes') }}
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+      - name: Install backend dependencies
+        working-directory: backend
+        run: npm ci
+      - name: Roll back the last migration batch
+        working-directory: backend
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          set -euo pipefail
+          echo "Before:"; npm run -s migrate:status || true
+          npm run migrate:rollback 2>&1 | tee /tmp/rollback.out
+          echo "After:"; npm run -s migrate:status || true
+          {
+            echo "### ⏪ Migrations rolled back"
+            echo ""
+            echo "$(grep -E 'Batch [0-9]+ rolled back|Already at the base migration' /tmp/rollback.out || cat /tmp/rollback.out)"
+            echo ""
+            echo "The next push to main re-applies them (migrate-sql runs when a migration file changed); a fixed migration should be a NEW file, never an edit of the one rolled back."
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -66,6 +66,34 @@ existing one, which is what makes rehearsing it safe.
 
 ---
 
+## 2b. Undoing a bad migration (in place, no restore)
+
+Since 2026-09-05 every deploy that carries a migration records a **recovery
+point before it runs** (deploy.yml `migrate-sql`): the job summary shows the
+UTC instant just before `migrate:latest` (the PITR marker), the list of
+migrations that were pending, and what was applied; a schema-only `pg_dump`
+(no rows) is kept as a 30-day artifact for diffing. And every push runs
+`test.yml` → **Migrations roll back**: all migrations up, all the way down
+on a fresh database, the schema checked empty, up again — so each `down`
+in the tree is exercised before it can reach production.
+
+Two paths, cheapest first:
+
+1. **`migrate:rollback`** — Actions → *Rollback production* → target apps →
+   `migrations: yes`. Traffic goes back to the previous revision first, then
+   the last knex batch (exactly what the last deploy applied) is rolled
+   back. Use this when the migration itself is wrong or the new code needs
+   to come out and the schema with it. A `down` that drops a column deletes
+   what that column held since the deploy — if that data matters, path 2.
+2. **Point-in-time restore to the marker** (§2 above) — when rows were
+   damaged, not just the schema. Aim the restore at any instant before the
+   PITR marker in that deploy's migrate-sql summary.
+
+Ship the fix as a **new** migration file; never edit a migration that has
+already run somewhere, because knex identifies migrations by name.
+
+---
+
 ## 3. Restore: Neo4j
 
 Two independent paths — use whichever is faster for the failure at hand.
