@@ -19,7 +19,9 @@ arnovda@telenet.be
 #                              signature) ≥5 in 15 min
 #   clarion-failed-syncs       any 'sync run failed' line (the load-bearing
 #                              string SyncOrchestrator logs when a sync run is
-#                              persisted as failed)
+#                              persisted as failed — and, since P0-6, as
+#                              PARTIAL: the worker finished but one or more
+#                              entities did not; the line carries partial:true)
 #   clarion-brute-force        ≥10 'brute force limit hit' lines in 15 min —
 #                              the brute limiters (per-IP and per-account,
 #                              P1-2) log this exact string every time they

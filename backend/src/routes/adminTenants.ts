@@ -96,10 +96,12 @@ async function tenantHealth(tenantId: number): Promise<TenantHealth> {
         users: trx('users').where({ tenant_id: tenantId }).count('*'),
         active_users: trx('users').where({ tenant_id: tenantId, is_active: true }).count('*'),
         connections: trx('connections').where({ tenant_id: tenantId }).count('*'),
+        // 'failed' OR 'partial' (P0-6). This used to be `<> 'success'` —
+        // a value the orchestrator never writes (it writes 'succeeded'), so
+        // every healthy source counted as failing on the operator console.
         failed_connections: trx('connections')
           .where({ tenant_id: tenantId })
-          .whereNotNull('last_sync_status')
-          .whereNot('last_sync_status', 'success')
+          .whereIn('last_sync_status', ['failed', 'partial'])
           .count('*'),
         last_sync_at: trx('connections').where({ tenant_id: tenantId }).max('last_synced_at'),
         ai_tokens: trx('ai_usage').where({ tenant_id: tenantId, period_start: period }).sum('total_tokens'),

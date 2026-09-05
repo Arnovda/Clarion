@@ -522,7 +522,7 @@ async function waitForSyncRun(
       .where({ id: syncRunId, tenant_id: tenantId })
       .first());
     if (!row) throw new Error(`Sync run ${syncRunId} not found`);
-    if (row.status === 'succeeded' || row.status === 'failed' || row.status === 'cancelled') {
+    if (row.status === 'succeeded' || row.status === 'partial' || row.status === 'failed' || row.status === 'cancelled') {
       return { status: row.status, error_message: row.error_message };
     }
     if (Date.now() - start > TIMEOUT_MS) throw new Error('Source sync timed out after 30 min');
@@ -587,6 +587,10 @@ export async function runPipelineWorkflow(
             return { sourceId, status: 'succeeded' as const };
           }
           if (final.status === 'cancelled') throw new CancelledError();
+          // 'partial' lands here too (P0-6): some entities failed, so the
+          // products downstream would build on a table that still holds
+          // the previous sync's rows. Reported as a failed source; the
+          // pipeline's fail-and-continue rule decides what else runs.
           emit({ type: 'error_detail', tableName: conn.name, error: final.error_message ?? 'Sync failed' });
           return { sourceId, status: 'failed' as const, error: final.error_message ?? 'Sync failed' };
         } catch (err) {
@@ -791,7 +795,7 @@ async function waitForSourceSync(
       lastStatus = row.status;
       opts.emit({ type: 'log', text: `  Source sync: ${row.status}` });
     }
-    if (row.status === 'succeeded' || row.status === 'failed' || row.status === 'cancelled') {
+    if (row.status === 'succeeded' || row.status === 'partial' || row.status === 'failed' || row.status === 'cancelled') {
       return { status: row.status, warnings: row.warnings, error_message: row.error_message };
     }
     if (Date.now() - start > TIMEOUT_MS) {
@@ -836,8 +840,8 @@ export async function runProductRefreshWorkflow(
         // Container Apps Job is queued, not when it completes. Polling
         // until terminal status is the only correct path.
         const final = await waitForSourceSync(syncRunId, Number(tenantId), opts);
-        if (final.status === 'failed') {
-          throw new Error(`Source sync failed: ${final.error_message ?? 'unknown'}`);
+        if (final.status === 'failed' || final.status === 'partial') {
+          throw new Error(`Source sync ${final.status}: ${final.error_message ?? 'unknown'}`);
         }
         if (final.status === 'cancelled') {
           throw new CancelledError();

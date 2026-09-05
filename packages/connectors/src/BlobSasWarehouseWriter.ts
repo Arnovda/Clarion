@@ -114,12 +114,24 @@ export class BlobSasWarehouseWriter implements WarehouseWriter {
       // bounds the trust surface (only @azure/storage-blob talks to
       // Azure; DuckDB only sees local files).
       let useMerge = false;
-      if (opts?.mergeKey) {
+      if (opts?.mergeKey && !opts?.replace) {
         if (await blobExists(blockBlob)) {
           await blockBlob.downloadToFile(existingParquet);
           downloadedExisting = true;
           useMerge = true;
         }
+      }
+
+      if (rowsWritten === 0 && !useMerge && !opts?.replace && await blobExists(blockBlob)) {
+        // Empty batch, overwrite path, table exists: keep it (P0-6 — same
+        // rule as the local writer; a full re-sync sets `replace`).
+        const props = await blockBlob.getProperties();
+        return {
+          rowsWritten: 0,
+          bytesWritten: Number(props.contentLength ?? 0),
+          warehousePath: blobPath,
+          preservedExisting: true,
+        };
       }
 
       if (rowsWritten === 0 && !useMerge) {

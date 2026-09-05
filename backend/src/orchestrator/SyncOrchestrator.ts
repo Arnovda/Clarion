@@ -212,9 +212,19 @@ export async function triggerSync(args: {
   connectionId: number;
   tenantId: number;
   triggeredByUserId?: number;
+  /**
+   * FULL RE-SYNC (P0-6): reset the cursors of the entities in scope and
+   * have the worker REPLACE their tables instead of merging into them. The
+   * only way to purge rows deleted at the source or to rebuild a table a
+   * bad delta corrupted — before this the answer was "delete and recreate
+   * the connection".
+   */
+  full?: boolean;
+  /** Restrict the run to a subset of the connection's selected entities. */
+  entities?: string[];
 }): Promise<TriggerSyncResult> {
   const { connectionId, tenantId, triggeredByUserId } = args;
-
+  const full = args.full === true;
 
   const conn = await tenantQuery(tenantId, (db) => db('connections')
     .where({ id: connectionId, tenant_id: tenantId })
@@ -225,6 +235,15 @@ export async function triggerSync(args: {
   }
   if (!Array.isArray(conn.selected_entities) || conn.selected_entities.length === 0) {
     throw new Error('Connection has no selected entities — nothing to sync');
+  }
+  const selected: string[] = conn.selected_entities;
+  let entities: string[] | undefined;
+  if (args.entities && args.entities.length > 0) {
+    const unknown = args.entities.filter((e) => !selected.includes(e));
+    if (unknown.length > 0) {
+      throw new Error(`unknown entity for this connection: ${unknown.join(', ')}`);
+    }
+    entities = Array.from(new Set(args.entities));
   }
 
   const inFlight = await tenantQuery(tenantId, (db) => db('source_sync_runs')
@@ -249,6 +268,7 @@ export async function triggerSync(args: {
         tenant_id: tenantId,
         connection_id: connectionId,
         status: 'queued',
+        mode: full ? 'full' : 'incremental',
         triggered_by_user_id: triggeredByUserId ?? null,
       })
       .returning('id'));
@@ -271,10 +291,24 @@ export async function triggerSync(args: {
     throw e;
   }
 
-  log.info({ connectionId, syncRunId, tenantId }, 'sync queued');
+  // A full re-sync forgets the watermarks of the entities in scope BEFORE
+  // the worker starts, so a crash mid-run cannot leave a stale cursor that
+  // the next incremental run would resume from. Done here, after the
+  // in-flight row exists (the partial unique index makes two full re-syncs
+  // of one connection impossible to interleave).
+  if (full) {
+    const deleted = await tenantQuery(tenantId, (db) => {
+      const q = db('entity_sync_cursors').where({ tenant_id: tenantId, connection_id: connectionId });
+      if (entities) q.whereIn('entity_name', entities);
+      return q.del();
+    });
+    log.info({ connectionId, syncRunId, tenantId, cursorsReset: deleted, entities }, 'full re-sync: cursors reset');
+  }
+
+  log.info({ connectionId, syncRunId, tenantId, mode: full ? 'full' : 'incremental', entities }, 'sync queued');
 
   setImmediate(() => {
-    void runSyncInBackground({ syncRunId, connectionId, tenantId }).catch((e) => {
+    void runSyncInBackground({ syncRunId, connectionId, tenantId, full, entities }).catch((e) => {
       log.error({ err: e, syncRunId }, 'unexpected error in runSyncInBackground');
     });
   });
@@ -282,24 +316,45 @@ export async function triggerSync(args: {
   return { syncRunId, started: true };
 }
 
+/**
+ * The one-line `error_message` a partial run carries (P0-6). Pure and
+ * exported for the test. Names the entities and their errors, bounded so a
+ * 60-entity source cannot produce a 60 KB message.
+ */
+export function summariseFailedEntities(
+  failed: Record<string, string>,
+  totalEntities: number,
+): string {
+  const names = Object.keys(failed);
+  const head = `${names.length} of ${totalEntities} entities failed`;
+  const parts = names.slice(0, 5).map((n) => `${n} (${redact(failed[n]).slice(0, 200)})`);
+  const rest = names.length > 5 ? `; and ${names.length - 5} more` : '';
+  return `${head}: ${parts.join('; ')}${rest}`;
+}
+
 // ─── Background execution ────────────────────────────────────────────────
 async function runSyncInBackground(args: {
   syncRunId: number;
   connectionId: number;
   tenantId: number;
+  full?: boolean;
+  entities?: string[];
 }): Promise<void> {
   const { syncRunId, connectionId, tenantId } = args;
-  const childLog = log.child({ syncRunId, connectionId, tenantId });
+  const full = args.full === true;
+  const childLog = log.child({ syncRunId, connectionId, tenantId, mode: full ? 'full' : 'incremental' });
 
   // Local accumulators — kept in memory to avoid one DB round trip per
   // worker event. Flushed on terminal events + every progress tick.
   const rowCounts: Record<string, number> = {};
   const warnings: string[] = [];
+  // Entity → error for entities the connector gave up on while the worker
+  // itself exited cleanly. Non-empty ⇒ `partial`, never `succeeded` (P0-6).
+  const failedEntities: Record<string, string> = {};
   let errorMessage: string | null = null;
   let logExcerpt = '';
 
   try {
-
     // Mark running. Loaded fresh after to make sure connector_config_encrypted
     // wasn't cleared between queue + start (defence in depth).
     await tenantQuery(tenantId, (db) => db('source_sync_runs')
@@ -317,7 +372,14 @@ async function runSyncInBackground(args: {
     if (!conn.connector_config_encrypted) throw new Error('connector_config_encrypted is missing');
 
     const config: ConnectorConfig = JSON.parse(decryptCredentials(conn.connector_config_encrypted));
-    const entities: string[] = Array.isArray(conn.selected_entities) ? conn.selected_entities : [];
+    const selectedEntities: string[] = Array.isArray(conn.selected_entities) ? conn.selected_entities : [];
+    // A subset run (full re-sync of one entity) is validated against the
+    // selection in triggerSync; re-filter here so a selection edited between
+    // queue and start cannot smuggle an unselected entity into the worker.
+    const entities: string[] = args.entities
+      ? selectedEntities.filter((e) => args.entities!.includes(e))
+      : selectedEntities;
+    if (entities.length === 0) throw new Error('No entities in scope for this run');
 
     // ── Load prior cursors for incremental sync ─────────────────────────
     // Per-entity rows from `entity_sync_cursors` for this connection.
@@ -325,7 +387,11 @@ async function runSyncInBackground(args: {
     // Failures here downgrade the sync to full (logged) — the entity_sync_cursors
     // table being missing or unreadable must not block ingestion.
     let priorCursors: Record<string, { type: 'timestamp' | 'integer' | 'string'; value: string }> = {};
-    try {
+    // A full re-sync starts from nothing: triggerSync already deleted the
+    // rows for the entities in scope, and the worker is told to ignore any
+    // cursor regardless (`fullResync`), so this read is skipped outright.
+    if (full) childLog.info('full re-sync: ignoring prior cursors');
+    else try {
       const rows = await tenantQuery(tenantId, (db) => db('entity_sync_cursors')
         .where({ tenant_id: tenantId, connection_id: connectionId })
         .select('entity_name', 'cursor_type', 'cursor_value'));
@@ -364,6 +430,7 @@ async function runSyncInBackground(args: {
       syncRunId: String(syncRunId),
       warehousePath: localWarehousePath,
       cursors: priorCursors,
+      fullResync: full,
     };
 
     childLog.info({ entities }, 'launching sync worker');
@@ -385,6 +452,7 @@ async function runSyncInBackground(args: {
         event,
         rowCounts,
         warnings,
+        failedEntities,
         cursorsOut,
         onLogLine: (line) => { logExcerpt = (logExcerpt + line + '\n').slice(-10_000); },
         onCredentialRotated: (newConfig) => {
@@ -464,17 +532,36 @@ async function runSyncInBackground(args: {
     // backstop for "worker died silently" — covered by the launcher's
     // synthetic error event.
     if (exitCode === EXIT_OK) {
-      childLog.info({ rowCounts, newCursorCount: Object.keys(cursorsOut).length }, 'sync succeeded');
+      // A clean worker exit with one or more FAILED entities is a PARTIAL
+      // run, not a success (P0-6): the tables of the failed entities still
+      // hold the previous sync's rows, and a green badge over them is the
+      // lie this whole finding is about. Cursors below are still persisted
+      // for the entities that DID complete — the connector only emits those.
+      const failedNames = Object.keys(failedEntities);
+      const isPartial = failedNames.length > 0;
+      const finalStatus = isPartial ? 'partial' : 'succeeded';
+      const partialMessage = isPartial ? summariseFailedEntities(failedEntities, entities.length) : null;
+      if (isPartial) {
+        // The words 'sync run failed' are LOAD-BEARING (see the failed
+        // branch below): the .ops/alerts rule and .ops/prod-logs match this
+        // exact string. A partial run pages the operator the same way a
+        // failed one does — silence is the defect being closed here.
+        childLog.error({ syncRunId, connectionId, tenantId, partial: true, failedEntities: failedNames }, 'sync run failed');
+      } else {
+        childLog.info({ rowCounts, newCursorCount: Object.keys(cursorsOut).length }, 'sync succeeded');
+      }
       // Defence in depth — every UPDATE includes tenant_id alongside the PK
       // so a misconfigured app.current_tenant can't accidentally cross
       // tenant boundaries even if RLS isn't enabled in the deployment.
       await tenantQuery(tenantId, (db) => db('source_sync_runs')
         .where({ id: syncRunId, tenant_id: tenantId })
         .update({
-          status: 'succeeded',
+          status: finalStatus,
           completed_at: db.fn.now(),
           row_counts: JSON.stringify(rowCounts),
           warnings: JSON.stringify(safeWarnings),
+          failed_entities: isPartial ? JSON.stringify(failedEntities) : null,
+          error_message: partialMessage,
           log_excerpt: safeLogExcerpt,
         }));
 
@@ -549,7 +636,7 @@ async function runSyncInBackground(args: {
       await tenantQuery(tenantId, (db) => db('connections')
         .where({ id: connectionId, tenant_id: tenantId })
         .update({
-          last_sync_status: 'succeeded',
+          last_sync_status: finalStatus,
           last_synced_at: db.fn.now(),
           // Persist the path DuckDB will read from — `az://...` in Azure,
           // local FS path in dev. NOT the localWarehousePath above (that's
@@ -577,11 +664,19 @@ async function runSyncInBackground(args: {
       // pipeline or downstream queue failure must NOT mark the source
       // sync as failed (it's already succeeded). Errors are logged
       // inside the helper.
-      void import('../jobs/pipelineScheduler').then(({ firePipelineTriggersOnSourceSync }) =>
-        firePipelineTriggersOnSourceSync({ connectionId, tenantId }),
-      ).catch((e) => {
-        childLog.error({ err: e }, 'on-source-sync pipeline triggers failed (sync still counted as succeeded)');
-      });
+      // A PARTIAL run does not fire downstream pipelines: a fact built now
+      // would read a table that still holds the previous sync's rows, which
+      // is exactly the inflated-fact-with-no-signal case. The operator sees
+      // the partial run and re-runs the pipeline once the source is fixed.
+      if (isPartial) {
+        childLog.warn({ failedEntities: failedNames }, 'partial sync — downstream pipeline triggers NOT fired');
+      } else {
+        void import('../jobs/pipelineScheduler').then(({ firePipelineTriggersOnSourceSync }) =>
+          firePipelineTriggersOnSourceSync({ connectionId, tenantId }),
+        ).catch((e) => {
+          childLog.error({ err: e }, 'on-source-sync pipeline triggers failed (sync still counted as succeeded)');
+        });
+      }
     } else if (exitCode === EXIT_CANCELLED) {
       await tenantQuery(tenantId, (db) => db('source_sync_runs')
         .where({ id: syncRunId, tenant_id: tenantId })
@@ -643,12 +738,13 @@ function handleWorkerEvent(args: {
   event: WorkerEvent;
   rowCounts: Record<string, number>;
   warnings: string[];
+  failedEntities: Record<string, string>;
   cursorsOut: Record<string, { type: 'timestamp' | 'integer' | 'string'; value: string }>;
   onLogLine: (line: string) => void;
   onCredentialRotated: (newConfig: Record<string, unknown>) => void;
   onError: (msg: string) => void;
 }): void {
-  const { event, rowCounts, warnings, cursorsOut, onLogLine, onCredentialRotated, onError } = args;
+  const { event, rowCounts, warnings, failedEntities, cursorsOut, onLogLine, onCredentialRotated, onError } = args;
   switch (event.type) {
     case 'started':
       onLogLine(`[started]`);
@@ -675,6 +771,7 @@ function handleWorkerEvent(args: {
       Object.assign(rowCounts, event.rowCounts);
       warnings.push(...event.warnings);
       if (event.cursors) Object.assign(cursorsOut, event.cursors);
+      if (event.failedEntities) Object.assign(failedEntities, event.failedEntities);
       return;
     case 'error':
       onError(event.message);

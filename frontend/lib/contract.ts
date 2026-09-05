@@ -231,7 +231,7 @@ export interface ConnectionDto {
   // Source-connector fields (set when created via the add-source wizard)
   connector_type?: string | null;     // e.g. 'exactonline', 'odoo'; null = direct DB attach
   selected_entities?: string[] | null;
-  last_sync_status?: string | null;   // 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled'
+  last_sync_status?: string | null;   // 'queued' | 'running' | 'succeeded' | 'partial' | 'failed' | 'cancelled'
 }
 
 // ─── Data product DTO ─────────────────────────────────────────────────────────

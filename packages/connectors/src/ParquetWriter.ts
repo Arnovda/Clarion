@@ -98,7 +98,22 @@ export class LocalFileWarehouseWriter implements WarehouseWriter {
     // key is absent from the delta are KEPT (no delete detection — that
     // is an explicit non-goal of incremental sync v1).
     const existingPath = await fileExists(outFile) ? outFile : null;
-    const useMerge = !!opts?.mergeKey && existingPath !== null;
+    const useMerge = !!opts?.mergeKey && existingPath !== null && !opts?.replace;
+
+    if (rowsWritten === 0 && !useMerge && existingPath !== null && !opts?.replace) {
+      // An EMPTY batch on the overwrite path over an EXISTING table: keep
+      // what is there (P0-6). A transient empty response must not wipe a
+      // table the customer's dashboards read; a genuinely emptied source
+      // table is cleared by a full re-sync, which sets `replace`.
+      await fs.unlink(stagingPath).catch(() => undefined);
+      const stat = await fs.stat(outFile);
+      return {
+        rowsWritten: 0,
+        bytesWritten: stat.size,
+        warehousePath: path.relative(this.warehouseRoot, outFile),
+        preservedExisting: true,
+      };
+    }
 
     if (rowsWritten === 0 && !useMerge) {
       // Empty entity, no existing file to preserve. When the connector

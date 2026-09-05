@@ -345,23 +345,32 @@ export class ExactOnlineConnector extends BaseSourceConnector implements SourceC
     // granularity prevents partial progress from advancing the cursor.
     const rowCounts: Record<string, number> = {};
     const cursors: Record<string, { type: 'timestamp'; value: string }> = {};
+    const failedEntities: Record<string, string> = {};
+    // A full re-sync ignores every prior cursor and replaces every table.
+    const fullResync = opts.fullResync === true;
 
     for (const entity of resolved) {
       ctx.cancellationToken.throwIfCancelled();
       ctx.progress({
         message: `Syncing ${entity.displayName ?? entity.name}…`,
       });
-      const priorCursor = opts.cursors?.[entity.name];
+      const priorCursor = fullResync ? undefined : opts.cursors?.[entity.name];
       ctx.log.info(`syncing ${entity.name}`, {
         apiPath: entity.apiPath,
-        mode: entity.incrementalCursor ? (priorCursor ? 'incremental' : 'initial-full') : 'always-full',
+        mode: fullResync ? 'full-resync' : entity.incrementalCursor ? (priorCursor ? 'incremental' : 'initial-full') : 'always-full',
         priorCursor: priorCursor?.value,
       });
 
       try {
-        const { rowsWritten, maxCursorSeen } = await this.syncOneEntity(http, config, entity, ctx, priorCursor, metadata, warnings);
+        const { rowsWritten, maxCursorSeen, preservedExisting } =
+          await this.syncOneEntity(http, config, entity, ctx, priorCursor, metadata, warnings, fullResync);
         rowCounts[entity.name] = rowsWritten;
-        if (rowsWritten === 0) {
+        if (preservedExisting) {
+          warnings.push(
+            `Entity '${entity.name}' returned no rows; the previous table was kept. ` +
+            `Run a full re-sync if the source really is empty now.`,
+          );
+        } else if (rowsWritten === 0) {
           warnings.push(`Entity '${entity.name}' returned no rows.`);
         }
         // Only emit a new cursor when the entity is incremental-capable AND
@@ -381,13 +390,14 @@ export class ExactOnlineConnector extends BaseSourceConnector implements SourceC
         const msg = err instanceof Error ? err.message : String(err);
         ctx.log.warn(`entity '${entity.name}' failed — continuing with remaining entities`, { error: msg });
         warnings.push(`Entity '${entity.name}' failed: ${msg}`);
+        failedEntities[entity.name] = msg;
         rowCounts[entity.name] = 0;
         // Don't write a cursor for failed entities — the next sync
         // re-pulls from the same point.
       }
     }
 
-    return { rowCounts, warnings, cursors };
+    return { rowCounts, warnings, cursors, failedEntities };
   }
 
   /** Sync a single entity. Streams pages → cleans → writes Parquet. */
@@ -399,7 +409,8 @@ export class ExactOnlineConnector extends BaseSourceConnector implements SourceC
     priorCursor: { type: string; value: string } | undefined,
     metadata: ODataMetadata | null,
     warnings: string[],
-  ): Promise<{ rowsWritten: number; maxCursorSeen?: string }> {
+    fullResync = false,
+  ): Promise<{ rowsWritten: number; maxCursorSeen?: string; preservedExisting?: boolean }> {
     // For entities EO refuses to list without $select, discover the
     // schema first via $top=1 and use the observed field set as
     // $select on the actual listing. This is the only approach that
@@ -420,14 +431,15 @@ export class ExactOnlineConnector extends BaseSourceConnector implements SourceC
         const result = await ctx.warehouseWriter.writeTable(
           entity.name,
           emptyAsyncIterable(),
-          emptySchema ? { emptySchema } : undefined,
+          { ...(emptySchema ? { emptySchema } : {}), ...(fullResync ? { replace: true } : {}) },
         );
         ctx.log.info(`${entity.name} empty-parquet written`, {
           columns: emptySchema?.length ?? 1,
           source: emptySchema ? emptySource : 'placeholder',
           bytes: result.bytesWritten,
+          preservedExisting: result.preservedExisting === true,
         });
-        return { rowsWritten: 0 };
+        return { rowsWritten: 0, preservedExisting: result.preservedExisting };
       }
     }
 
@@ -506,6 +518,9 @@ export class ExactOnlineConnector extends BaseSourceConnector implements SourceC
     const writeOpts = {
       ...(entity.incrementalCursor && entity.businessKey ? { mergeKey: entity.businessKey } : {}),
       ...(typedColumns?.length ? { columns: typedColumns } : {}),
+      // Full re-sync: replace the table outright (removes rows deleted at
+      // the source; the merge path never can).
+      ...(fullResync ? { replace: true } : {}),
     };
 
     const result = await ctx.warehouseWriter.writeTable(
@@ -517,10 +532,11 @@ export class ExactOnlineConnector extends BaseSourceConnector implements SourceC
       pages: pagesFetched,
       rows: rowsFetched,
       bytes: result.bytesWritten,
-      mode: writeOpts?.mergeKey ? `merge:${writeOpts.mergeKey}` : 'overwrite',
+      mode: fullResync ? 'replace' : writeOpts?.mergeKey ? `merge:${writeOpts.mergeKey}` : 'overwrite',
       newCursor: maxCursorSeen,
+      preservedExisting: result.preservedExisting === true,
     });
-    return { rowsWritten: result.rowsWritten, maxCursorSeen };
+    return { rowsWritten: result.rowsWritten, maxCursorSeen, preservedExisting: result.preservedExisting };
   }
 
   /**

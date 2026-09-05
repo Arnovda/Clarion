@@ -600,6 +600,16 @@ export interface SyncOptions {
   entities: string[];
 
   /**
+   * FULL RE-SYNC (P0-6, 2026-09-05). When true the connector MUST ignore
+   * `cursors` (pull every row of every entity) and MUST pass
+   * `WriteTableOptions.replace` so the writer overwrites the table instead
+   * of merging into it. This is the one path that removes rows deleted at
+   * the source and repairs a table a bad delta corrupted. The orchestrator
+   * resets `entity_sync_cursors` for the affected entities before launch.
+   */
+  fullResync?: boolean;
+
+  /**
    * Per-entity cursor state from the previous successful sync. Keyed by
    * `EntityDescriptor.name`. Loaded by the orchestrator from
    * `entity_sync_cursors` before the sync starts. Missing keys mean
@@ -663,6 +673,17 @@ export interface SyncResult {
   warnings: string[];
 
   /**
+   * Entities whose sync FAILED (entity name → error message), P0-6. A
+   * connector keeps going after one entity fails — right, one bad endpoint
+   * must not lose the other nineteen — but until this field existed the
+   * failure was a line in `warnings`, the worker exited 0 and the run was
+   * persisted as `succeeded`: a green badge over a table holding last
+   * week's rows. The orchestrator persists any run with a non-empty map as
+   * `partial`, which the UI shows and the failed-sync alert fires on.
+   */
+  failedEntities?: Record<string, string>;
+
+  /**
    * Per-entity NEW cursor state, captured from the just-completed sync.
    * Keyed by `EntityDescriptor.name`. Only entities that actually
    * succeeded AND were incrementally synced should appear here.
@@ -705,6 +726,17 @@ export interface WriteTableOptions {
    * overwrite.
    */
   mergeKey?: string;
+
+  /**
+   * Overwrite the table even when a `mergeKey` is given and even when the
+   * batch is EMPTY. Set by connectors on a full re-sync (P0-6): the merge
+   * path keeps rows absent from the delta by design, so it can never remove
+   * a row deleted at the source — only a replace can. Without this flag an
+   * empty batch on the overwrite path PRESERVES the existing table (see
+   * `TableWriteResult.preservedExisting`); with it, an empty batch is the
+   * truth and the table becomes empty.
+   */
+  replace?: boolean;
 
   /**
    * Schema for an entity the writer will end up materialising as an EMPTY
@@ -788,6 +820,16 @@ export interface TableWriteResult {
   rowsWritten: number;
   bytesWritten: number;
   warehousePath: string; // relative to warehouse root, e.g. 'conn_42/Accounts/data.parquet'
+  /**
+   * True when the source returned ZERO rows for a table that already exists
+   * and the write was an overwrite (no `mergeKey`), so the writer KEPT the
+   * previous file instead of replacing it with an empty one (P0-6). A
+   * transient empty response — a throttled endpoint, a `$top=1` discovery
+   * that came back blank — used to wipe the table and the run still said
+   * `succeeded`. Connectors surface this as a warning; a full re-sync
+   * (`replace: true`) is how a genuinely emptied table is cleared.
+   */
+  preservedExisting?: boolean;
 }
 
 // ─── Logging ──────────────────────────────────────────────────────────────

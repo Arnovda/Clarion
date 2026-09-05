@@ -148,7 +148,7 @@ async function main(): Promise<void> {
   try {
     const result = await connector.sync(
       connectorConfig,
-      { entities: env.WORKER_ENTITIES, cursors: env.WORKER_CURSORS },
+      { entities: env.WORKER_ENTITIES, cursors: env.WORKER_CURSORS, fullResync: env.WORKER_FULL_RESYNC },
       ctx,
     );
     emit({
@@ -157,6 +157,8 @@ async function main(): Promise<void> {
       rowCounts: result.rowCounts,
       warnings: result.warnings ?? [],
       cursors: result.cursors,
+      // Non-empty ⇒ the orchestrator persists the run as `partial` (P0-6).
+      failedEntities: result.failedEntities,
     }, heartbeat);
     process.exit(EXIT_OK);
   } catch (e) {

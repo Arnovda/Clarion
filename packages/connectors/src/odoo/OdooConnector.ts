@@ -163,21 +163,29 @@ export class OdooConnector extends BaseSourceConnector implements SourceConnecto
 
     const rowCounts: Record<string, number> = {};
     const cursors: Record<string, { type: 'timestamp'; value: string }> = {};
+    const failedEntities: Record<string, string> = {};
+    const fullResync = opts.fullResync === true;
 
     for (const entity of resolved) {
       ctx.cancellationToken.throwIfCancelled();
-      const priorCursor = opts.cursors?.[entity.name];
+      const priorCursor = fullResync ? undefined : opts.cursors?.[entity.name];
       ctx.progress({ message: `Syncing ${entity.displayName ?? entity.name}…` });
       ctx.log.info(`syncing ${entity.name}`, {
         model: entity.model,
-        mode: priorCursor ? 'incremental' : 'initial-full',
+        mode: fullResync ? 'full-resync' : priorCursor ? 'incremental' : 'initial-full',
         priorCursor: priorCursor?.value,
       });
 
       try {
-        const { rowsWritten, maxCursorSeen } = await this.syncOneEntity(transport, entity, ctx, priorCursor?.value);
+        const { rowsWritten, maxCursorSeen, preservedExisting } =
+          await this.syncOneEntity(transport, entity, ctx, priorCursor?.value, fullResync);
         rowCounts[entity.name] = rowsWritten;
-        if (rowsWritten === 0) warnings.push(`Entity '${entity.name}' returned no rows.`);
+        if (preservedExisting) {
+          warnings.push(
+            `Entity '${entity.name}' returned no rows; the previous table was kept. ` +
+            `Run a full re-sync if the source really is empty now.`,
+          );
+        } else if (rowsWritten === 0) warnings.push(`Entity '${entity.name}' returned no rows.`);
         // Advance the cursor only when we saw a strictly-greater write_date.
         // (We FILTER with >= for boundary-safety, but only ADVANCE on >, so
         // the orchestrator's monotonicity guard is satisfied and we never
@@ -190,11 +198,12 @@ export class OdooConnector extends BaseSourceConnector implements SourceConnecto
         const msg = err instanceof Error ? err.message : String(err);
         ctx.log.warn(`entity '${entity.name}' failed — continuing`, { error: msg });
         warnings.push(`Entity '${entity.name}' failed: ${msg}`);
+        failedEntities[entity.name] = msg;
         rowCounts[entity.name] = 0;
       }
     }
 
-    return { rowCounts, warnings, cursors };
+    return { rowCounts, warnings, cursors, failedEntities };
   }
 
   /** Sync one entity: fields_get → paged search_read → flatten → write. */
@@ -203,7 +212,8 @@ export class OdooConnector extends BaseSourceConnector implements SourceConnecto
     entity: OdooEntity,
     ctx: SyncContext,
     priorCursorValue: string | undefined,
-  ): Promise<{ rowsWritten: number; maxCursorSeen?: string }> {
+    fullResync = false,
+  ): Promise<{ rowsWritten: number; maxCursorSeen?: string; preservedExisting?: boolean }> {
     const meta = await transport.fieldsGet(entity.model);
     const fields = ingestibleFields(meta);
     const booleanFields = new Set(
@@ -251,6 +261,7 @@ export class OdooConnector extends BaseSourceConnector implements SourceConnecto
     const result = await ctx.warehouseWriter.writeTable(entity.name, rows(), {
       mergeKey: entity.businessKey, // 'id'
       columns,
+      ...(fullResync ? { replace: true } : {}),
     });
     ctx.log.info(`${entity.name} sync complete`, {
       pages: pagesFetched,
@@ -258,7 +269,7 @@ export class OdooConnector extends BaseSourceConnector implements SourceConnecto
       bytes: result.bytesWritten,
       newCursor: maxCursorSeen,
     });
-    return { rowsWritten: result.rowsWritten, maxCursorSeen };
+    return { rowsWritten: result.rowsWritten, maxCursorSeen, preservedExisting: result.preservedExisting };
   }
 
   // ─── getKnownRelationships ───────────────────────────────────────────────

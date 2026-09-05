@@ -85,6 +85,12 @@ const envSchema = z.object({
    * no prior cursors are known (initial sync). Connector decides which
    * entities to apply the cursor to.
    */
+  /**
+   * Optional. '1' = FULL RE-SYNC (P0-6): the connector ignores every prior
+   * cursor and the writer REPLACES each table instead of merging into it.
+   * The orchestrator has already reset the affected `entity_sync_cursors`.
+   */
+  WORKER_FULL_RESYNC: z.string().optional().transform((s) => s === '1'),
   WORKER_CURSORS: z
     .string()
     .optional()

@@ -115,6 +115,18 @@ export const connectionIdParam = z.object({
   }),
 });
 
+// POST /connections/:id/sync — body optional; `full` resets cursors and
+// replaces tables, `entities` restricts the run to a subset of the selection.
+export const triggerSyncSchema = z.object({
+  params: z.object({
+    id: z.string().regex(/^\d+$/, 'Connection ID must be a number'),
+  }),
+  body: z.object({
+    full: z.boolean().optional(),
+    entities: z.array(z.string().min(1).max(128)).max(200).optional(),
+  }).passthrough().optional(),
+});
+
 // ---------------------------------------------------------------------------
 // Semantic
 // ---------------------------------------------------------------------------

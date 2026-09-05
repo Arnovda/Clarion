@@ -62,6 +62,11 @@ export interface JobSpec {
    * use them. Missing keys → entity does a full pull (initial sync).
    */
   cursors?: Record<string, { type: 'timestamp' | 'integer' | 'string'; value: string }>;
+  /**
+   * Full re-sync (P0-6): the worker ignores cursors and REPLACES each table.
+   * Forwarded as `WORKER_FULL_RESYNC=1`.
+   */
+  fullResync?: boolean;
 }
 
 export interface JobHandle {
@@ -125,6 +130,7 @@ export class LocalProcessJobLauncher implements JobLauncher {
         // Prior cursors as JSON. Absent / empty object on first sync.
         // Worker parses and feeds into SyncOptions.cursors.
         WORKER_CURSORS: spec.cursors ? JSON.stringify(spec.cursors) : '',
+        WORKER_FULL_RESYNC: spec.fullResync ? '1' : '',
       },
       stdio: ['ignore', 'pipe', 'pipe'],
       // Detach=false so killing the parent kills the child — important

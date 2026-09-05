@@ -238,3 +238,61 @@ describe('LocalFileWarehouseWriter', () => {
     ).rejects.toThrow(/unsafe mergeKey/i);
   });
 });
+
+// ─── P0-6: the sync tells the truth ──────────────────────────────────────
+// A transient empty response used to WIPE a table on the overwrite path (no
+// mergeKey) and the run still said succeeded; and no write path could ever
+// remove a row deleted at the source. These pin the two writer rules.
+describe('LocalFileWarehouseWriter — empty batches and full replace (P0-6)', () => {
+  async function countRows(root: string, table: string): Promise<number> {
+    const db = await Database.create(':memory:');
+    try {
+      const p = path.join(root, table, 'data.parquet').replace(/'/g, "''");
+      const out = await db.all(`SELECT COUNT(*) AS n FROM read_parquet('${p}')`);
+      return Number(out[0].n);
+    } finally {
+      await db.close();
+    }
+  }
+
+  it('an EMPTY batch on the overwrite path keeps the existing table and says so', async () => {
+    const root = await makeTmpRoot();
+    const writer = new LocalFileWarehouseWriter(root);
+    await writer.writeTable('Accounts', fromArray([{ ID: 1 }, { ID: 2 }, { ID: 3 }]));
+
+    const result = await writer.writeTable('Accounts', fromArray([]));
+
+    expect(result.rowsWritten).toBe(0);
+    expect(result.preservedExisting).toBe(true);
+    expect(await countRows(root, 'Accounts')).toBe(3);
+  });
+
+  it('an empty batch with `replace` really does empty the table (a full re-sync of an emptied source)', async () => {
+    const root = await makeTmpRoot();
+    const writer = new LocalFileWarehouseWriter(root);
+    await writer.writeTable('Accounts', fromArray([{ ID: 1 }, { ID: 2 }]));
+
+    const result = await writer.writeTable('Accounts', fromArray([]), { replace: true, columns: [{ name: 'ID', sqlType: 'BIGINT' }] });
+
+    expect(result.preservedExisting).toBeUndefined();
+    expect(await countRows(root, 'Accounts')).toBe(0);
+  });
+
+  it('`replace` with a mergeKey overwrites instead of merging: rows absent from the batch are GONE', async () => {
+    const root = await makeTmpRoot();
+    const writer = new LocalFileWarehouseWriter(root);
+    await writer.writeTable('Items', fromArray([{ ID: 1, Name: 'Alpha' }, { ID: 2, Name: 'Bravo' }, { ID: 3, Name: 'Charlie' }]));
+
+    // Row 2 was deleted at the source; a merge would keep it forever.
+    await writer.writeTable('Items', fromArray([{ ID: 1, Name: 'Alpha' }, { ID: 3, Name: 'Charlie' }]), { mergeKey: 'ID', replace: true });
+
+    const db = await Database.create(':memory:');
+    try {
+      const p = path.join(root, 'Items', 'data.parquet').replace(/'/g, "''");
+      const rows = await db.all(`SELECT ID FROM read_parquet('${p}') ORDER BY ID`) as Array<{ ID: bigint }>;
+      expect(rows.map((r) => Number(r.ID))).toEqual([1, 3]);
+    } finally {
+      await db.close();
+    }
+  });
+});

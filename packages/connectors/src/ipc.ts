@@ -40,6 +40,8 @@ export type WorkerEvent =
        * incrementally synced OR returned zero rows OR failed during sync.
        */
       cursors?: Record<string, { type: 'timestamp' | 'integer' | 'string'; value: string }>;
+      /** Entities that failed (name → error). Non-empty ⇒ the run is `partial`, never `succeeded`. */
+      failedEntities?: Record<string, string>;
     }
   | { type: 'error'; ts: string; message: string; stack?: string }
   | { type: 'cancelled'; ts: string };

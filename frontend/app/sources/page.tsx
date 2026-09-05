@@ -32,6 +32,29 @@ interface SyncRunRow {
   row_counts: Record<string, number> | string | null;
   warnings: string[] | string | null;
   error_message: string | null;
+  /** 'incremental' | 'full' — a full re-sync reset the cursors and replaced the tables (P0-6). */
+  mode?: string;
+  /** entity → error for a `partial` run: the worker finished, these entities did not. */
+  failed_entities?: Record<string, string> | string | null;
+}
+
+const TERMINAL_SYNC = new Set(['succeeded', 'partial', 'failed', 'cancelled']);
+
+/** The status pill vocabulary for a sync run — one place, both the live block and the history. */
+function syncGlyph(status: string): { glyph: string; color: string } {
+  switch (status) {
+    case 'succeeded': return { glyph: '✓', color: 'text-ok' };
+    case 'partial':   return { glyph: '△', color: 'text-amber-700' };
+    case 'failed':    return { glyph: '✗', color: 'text-rose-700' };
+    case 'cancelled': return { glyph: '–', color: 'text-muted' };
+    default:          return { glyph: '•', color: 'text-ai' };
+  }
+}
+
+function parseFailedEntities(v: SyncRunRow['failed_entities']): Record<string, string> {
+  if (!v) return {};
+  if (typeof v === 'string') { try { return JSON.parse(v) as Record<string, string>; } catch { return {}; } }
+  return v;
 }
 
 interface Connection {
@@ -583,8 +606,10 @@ function ConnectionCard({
           if (latest.row_counts) {
             setSyncRowCounts(typeof latest.row_counts === 'string' ? JSON.parse(latest.row_counts) : latest.row_counts);
           }
-          if (latest.status === 'failed') setSyncError(latest.error_message ?? 'Sync failed');
-          if (latest.status === 'succeeded') setProfilingPolling(true);
+          if (latest.status === 'failed' || latest.status === 'partial') setSyncError(latest.error_message ?? 'Sync failed');
+          // Profiling runs after a succeeded AND a partial sync (rows landed
+          // for the entities that completed).
+          if (latest.status === 'succeeded' || latest.status === 'partial') setProfilingPolling(true);
         }
       } catch {
         // ignore — user can refresh
@@ -606,13 +631,13 @@ function ConnectionCard({
         if (row.row_counts) {
           setSyncRowCounts(typeof row.row_counts === 'string' ? JSON.parse(row.row_counts) : row.row_counts);
         }
-        if (row.status === 'succeeded' || row.status === 'failed' || row.status === 'cancelled') {
+        if (TERMINAL_SYNC.has(row.status)) {
           setSyncing(false);
-          if (row.status === 'failed') setSyncError(row.error_message ?? 'Sync failed');
+          if (row.status === 'failed' || row.status === 'partial') setSyncError(row.error_message ?? 'Sync failed');
           // Sync done → start polling profiling state. Only chase profiling
-          // when the sync actually succeeded — failed/cancelled syncs don't
-          // trigger profiling on the backend.
-          if (row.status === 'succeeded') setProfilingPolling(true);
+          // when rows landed — failed/cancelled syncs don't trigger
+          // profiling on the backend; a partial one does.
+          if (row.status === 'succeeded' || row.status === 'partial') setProfilingPolling(true);
         }
       } catch {
         // ignore; next tick will retry
@@ -656,13 +681,24 @@ function ConnectionCard({
     return () => { stopped = true; clearInterval(interval); };
   }, [profilingPolling, conn.id]);
 
-  async function handleSyncNow() {
+  async function handleSyncNow(full = false) {
+    if (full) {
+      // A full re-sync is the one sync that can DELETE rows: it forgets
+      // the cursors and replaces every table with what the source holds
+      // right now. Rows deleted at the source disappear from Clarion —
+      // which is the point — so it is confirmed, never one click.
+      const ok = window.confirm(
+        'Full re-sync: pull every selected table again from the source and REPLACE the copies in Clarion.\n\n' +
+        'Rows deleted at the source disappear here too, and the sync watermarks are reset — this can take much longer than a normal sync.\n\nContinue?',
+      );
+      if (!ok) return;
+    }
     setSyncError(null);
     setSyncRowCounts(null);
     setSyncing(true);
     setSyncStatus('queued');
     try {
-      const res = await api.post(`/connections/${conn.id}/sync`);
+      const res = await api.post(`/connections/${conn.id}/sync`, full ? { full: true } : {});
       const data = res.data?.data;
       if (data?.syncRunId) setSyncRunId(data.syncRunId);
     } catch (err) {
@@ -907,8 +943,15 @@ function ConnectionCard({
             {!syncing && syncStatus === 'succeeded' && profilingState.status !== 'running' && profilingState.status !== 'error' && (
               <p className="text-ok font-mono">✓ Sync complete</p>
             )}
+            {!syncing && syncStatus === 'partial' && (
+              <p className="text-amber-700 font-mono">
+                △ Sync completed with errors — the tables of the failed entities still hold the previous rows
+              </p>
+            )}
             {syncError && (
-              <p className="text-rose-700 font-mono break-words">✗ {syncError}</p>
+              <p className={`${syncStatus === 'partial' ? 'text-amber-700' : 'text-rose-700'} font-mono break-words`}>
+                {syncStatus === 'partial' ? '' : '✗ '}{syncError}
+              </p>
             )}
             {syncRowCounts && Object.keys(syncRowCounts).length > 0 && (
               <RowCountsList counts={syncRowCounts} />
@@ -971,17 +1014,18 @@ function ConnectionCard({
                   const dur = r.started_at && r.completed_at
                     ? Math.round((new Date(r.completed_at).getTime() - new Date(r.started_at).getTime()) / 1000)
                     : null;
-                  const statusColor =
-                    r.status === 'succeeded' ? 'text-ok'
-                    : r.status === 'failed' ? 'text-rose-700'
-                    : r.status === 'cancelled' ? 'text-muted'
-                    : 'text-ai';
+                  const { glyph, color: statusColor } = syncGlyph(r.status);
+                  const failed = parseFailedEntities(r.failed_entities);
+                  const failedNames = Object.keys(failed);
                   return (
                     <li key={r.id} className="border-t border-line pt-1.5 first:border-t-0 first:pt-0">
                       <div className="flex items-baseline gap-2">
                         <span className={`font-mono ${statusColor}`}>
-                          {r.status === 'succeeded' ? '✓' : r.status === 'failed' ? '✗' : r.status === 'cancelled' ? '–' : '•'} {r.status}
+                          {glyph} {r.status}
                         </span>
+                        {r.mode === 'full' && (
+                          <span className="text-[10px] font-mono uppercase tracking-[0.06em] text-muted-2 border border-line rounded px-1">full re-sync</span>
+                        )}
                         <span className="text-muted">
                           {new Date(r.queued_at).toLocaleString('en-GB', { dateStyle: 'medium', timeStyle: 'short' })}
                         </span>
@@ -993,7 +1037,14 @@ function ConnectionCard({
                         )}
                       </div>
                       {r.error_message && (
-                        <p className="text-rose-700 font-mono mt-0.5 break-words text-[11px]">{r.error_message}</p>
+                        <p className={`${r.status === 'partial' ? 'text-amber-700' : 'text-rose-700'} font-mono mt-0.5 break-words text-[11px]`}>{r.error_message}</p>
+                      )}
+                      {failedNames.length > 0 && (
+                        <ul className="mt-0.5 text-[11px] font-mono text-amber-800 space-y-0.5">
+                          {failedNames.map((n) => (
+                            <li key={n} className="break-words">✗ {n}: {failed[n]}</li>
+                          ))}
+                        </ul>
                       )}
                     </li>
                   );
@@ -1094,7 +1145,7 @@ function ConnectionCard({
             direct-DB connections jump straight to viewing definitions. */}
         {isSourceConnector ? (
           <button
-            onClick={handleSyncNow}
+            onClick={() => handleSyncNow(false)}
             disabled={syncing}
             className="px-3 py-1.5 text-[12px] font-medium bg-ocean text-white rounded-md hover:bg-ocean-hover disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
           >
@@ -1130,6 +1181,19 @@ function ConnectionCard({
             className="px-3 py-1.5 text-[12px] bg-raised border border-line text-ink-2 rounded-md hover:bg-softer hover:border-line-strong transition-colors"
           >
             {historyOpen ? 'Hide history' : 'Sync history'}
+          </button>
+        )}
+        {/* Full re-sync (P0-6): resets the cursors and REPLACES every table,
+            so rows deleted at the source finally disappear here and a table a
+            bad delta corrupted is rebuilt. Confirmed in handleSyncNow. */}
+        {isSourceConnector && conn.last_synced_at && (
+          <button
+            onClick={() => handleSyncNow(true)}
+            disabled={syncing}
+            title="Pull every table again and replace the copies in Clarion (removes rows deleted at the source)"
+            className="px-3 py-1.5 text-[12px] bg-raised border border-line text-ink-2 rounded-md hover:bg-softer hover:border-line-strong disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+          >
+            Full re-sync
           </button>
         )}
         {isSourceConnector && (

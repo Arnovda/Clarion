@@ -29,7 +29,7 @@ import { enrichColumnDescriptions } from '../ai/AIService';
 import * as graph from '../db/semanticGraph';
 import { encryptCredentials, decryptCredentials } from '../utils/crypto';
 import { validate } from '../middleware/validate';
-import { testConnectionSchema, createConnectionSchema, updateConnectionSchema, connectionIdParam } from '../middleware/schemas';
+import { testConnectionSchema, createConnectionSchema, updateConnectionSchema, connectionIdParam, triggerSyncSchema } from '../middleware/schemas';
 import { logger } from '../utils/logger';
 
 const log = logger.child({ mod: 'connections' });
@@ -298,11 +298,15 @@ router.get('/', requireAuth, requireRole('admin'), async (req: Request, res: Res
 // Trigger a sync, list sync history, poll a single sync run, request cancellation.
 // All gated by tenant-scoped RLS via the existing middleware stack.
 
-// POST /api/connections/:id/sync — trigger a sync of the selected entities
+// POST /api/connections/:id/sync — trigger a sync of the selected entities.
+// Body (optional): `{ full?: boolean, entities?: string[] }` — a FULL re-sync
+// resets the cursors and REPLACES the tables of the entities in scope (P0-6);
+// it is the only way to purge rows deleted at the source.
 router.post(
   '/:id/sync',
   requireAuth,
   requireRole('admin'),
+  validate(triggerSyncSchema),
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       const id = Number(req.params.id);
@@ -310,10 +314,13 @@ router.post(
         res.status(400).json({ ok: false, error: 'Invalid connection id' });
         return;
       }
+      const body = (req.body ?? {}) as { full?: boolean; entities?: string[] };
       const result = await triggerSync({
         connectionId: id,
         tenantId: req.user!.tenantId,
         triggeredByUserId: req.user!.sub,
+        full: body.full === true,
+        entities: body.entities,
       });
       res.status(202).json({ ok: true, data: result });
     } catch (err) {
@@ -322,7 +329,8 @@ router.post(
       if (
         msg.includes('not found') ||
         msg.includes('not a source-connector') ||
-        msg.includes('no selected entities')
+        msg.includes('no selected entities') ||
+        msg.includes('unknown entity')
       ) {
         res.status(400).json({ ok: false, error: msg });
         return;

@@ -251,6 +251,70 @@ everywhere the worker runs; a tenth ratchet holds it.**
   root (lint.yml parses); full backend vitest **63 files / 632 passed /
   4 skipped**.
 
+**Wave A, item 5 — P0-6 CLOSED: the sync tells the truth — a partially
+failed run is `partial`, an empty response cannot wipe a table, and a FULL
+RE-SYNC exists.**
+- **`partial` is a status now.** Both connectors (`ExactOnlineConnector`,
+  `OdooConnector`) return `failedEntities` (entity → error) beside the
+  warnings they already kept; the worker's `result` event carries it;
+  `SyncOrchestrator` persists a clean-exit run with any failed entity as
+  **`partial`** with `error_message` = `summariseFailedEntities()` ("2 of 5
+  entities failed: X (…); Y (…)", bounded) and the new
+  `source_sync_runs.failed_entities` jsonb (migration 91, which also adds
+  `mode`). `connections.last_sync_status` says `partial` too. **A partial
+  run logs the load-bearing `'sync run failed'` line** (with
+  `partial: true`) so `clarion-failed-syncs` and `.ops/prod-logs` fire —
+  silence was the defect. Cursors are still persisted for the entities
+  that completed (the connector only emits those); profiling still runs
+  (rows landed); **downstream pipeline triggers are NOT fired on a partial
+  run** — a fact built on a table holding last week's rows is exactly the
+  inflated-with-no-signal case, so the pipeline waits for a human.
+- **An empty batch no longer wipes a table.** Both writers
+  (`ParquetWriter`, `BlobSasWarehouseWriter`): zero rows on the OVERWRITE
+  path over an existing file keeps the file and returns
+  `preservedExisting: true`; connectors turn that into a warning naming
+  the full re-sync. The merge path was already safe (an empty delta
+  changes nothing); only overwrite could destroy.
+- **FULL RE-SYNC** — `triggerSync({ full, entities })` /
+  `POST /connections/:id/sync { full?, entities? }` (Zod
+  `triggerSyncSchema`; an entity outside the selection is 400): deletes
+  the `entity_sync_cursors` rows in scope BEFORE launch (a mid-run crash
+  can never resume from a stale watermark), records `mode='full'` on the
+  run, and passes `fullResync` to the worker (`WORKER_FULL_RESYNC=1`, both
+  launchers), where the connector ignores every cursor and writes with
+  `replace: true` — the writer OVERWRITES even when a `mergeKey` is set,
+  so **rows deleted at the source finally disappear from Clarion**. This
+  is deletion propagation as an on-demand act; the periodic key-list
+  reconciliation the assessment sketched is NOT built (it needs a
+  per-connector `listKeys`, and the full re-sync is the correct repair
+  today). Source card: a confirmed "Full re-sync" button beside Sync
+  history (the confirm names the cost: rows deleted at the source vanish,
+  watermarks reset, it can run long), a `△ Sync completed with errors`
+  amber block for partial runs, per-entity errors and a `full re-sync`
+  tag in the history rows. `waitForSyncRun`/`waitForSourceSync` treat
+  `partial` as terminal and as a failed source.
+- **Drive-by, a real console bug**: `/admin/tenants` counted failing
+  syncs as `last_sync_status <> 'success'` — a value the orchestrator
+  never writes (it writes `succeeded`), so every healthy source counted
+  as failing. Now `IN ('failed','partial')`.
+- **Tests**: connectors `ParquetWriter.test.ts` +3 (empty overwrite
+  preserves and says so; `replace` + empty really empties; `replace` +
+  mergeKey drops the row absent from the batch — the deletion case);
+  backend `tests/sync-truthfulness.test.ts` (6): the summary's shape and
+  bound, unknown entity → 400 with nothing queued, malformed body → 400,
+  full re-sync resets every cursor + `mode=full`, single-entity full
+  re-sync resets only that cursor, ordinary sync leaves cursors alone +
+  `mode=incremental`.
+- Validation: connectors `tsc` clean + dist rebuilt, worker `tsc` clean
+  (worker deps installed `--ignore-scripts`), backend `npm run check`
+  clean, frontend `tsc` clean (the page's four lint findings are the
+  documented pre-existing ones), `next build` green, full connectors
+  suite green, full backend vitest green, ten ratchets green. **NOT
+  exercised against a live source** — the first production partial run
+  and the first full re-sync should be watched: a `'sync run failed'`
+  line with `partial: true`, and a full re-sync's history row showing the
+  `full re-sync` tag with row counts equal to the source's totals.
+
 **Prior last updated:** 2026-09-05 (MARKET READINESS ASSESSMENT, SECOND PASS — doc
 only, no code changed; twelve-domain re-audit of main at 9ab13a2 after waves
 1+2, with one guard bypass REPRODUCED)
