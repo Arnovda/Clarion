@@ -5,7 +5,7 @@ import { tenantQuery } from './tenantQuery';
 // context; on the bare pool under the production role the `notifications`
 // insert fails its RLS WITH CHECK, and the `users` read returns nothing.
 
-export type NotificationType = 'job_complete' | 'quality_alert' | 'new_gap' | 'invite_accepted' | 'approval' | 'morning_brief';
+export type NotificationType = 'job_complete' | 'quality_alert' | 'new_gap' | 'invite_accepted' | 'approval' | 'morning_brief' | 'sync_failed' | 'source_stale';
 
 interface CreateNotification {
   tenantId: number;

@@ -130,6 +130,56 @@ function fakeQueue(active: Array<{ id: string; data: { tenantId?: number } }>) {
   return { name: 'fake', getActive: async () => active } as never;
 }
 
+describe('reapStaleWork — the holes (7-5): transformation runs, product tables, pipeline runs', () => {
+  it('reaps only past the 4-hour ceiling — a 3-hour build survives, a 5-hour one is closed', async () => {
+    const [p] = await semanticDb('data_products').insert({ tenant_id: tenantId, name: 'ReapProduct', status: 'active' }).returning('id');
+    const productId = typeof p === 'object' ? (p as { id: number }).id : (p as number);
+    const [ss] = await semanticDb('star_schemas').insert({ tenant_id: tenantId, data_product_id: productId, name: 'ss' }).returning('id');
+    const schemaId = typeof ss === 'object' ? (ss as { id: number }).id : (ss as number);
+    const insTable = async (last_run_at: string) => {
+      const [r] = await semanticDb('product_tables').insert({
+        tenant_id: tenantId, star_schema_id: schemaId, table_name: `t_${Math.random().toString(36).slice(2, 7)}`,
+        table_role: 'fact', transformation_status: 'running', last_run_at,
+      }).returning('id');
+      return typeof r === 'object' ? (r as { id: number }).id : (r as number);
+    };
+    const insRun = async (started_at: string) => {
+      const [r] = await semanticDb('transformation_runs').insert({ tenant_id: tenantId, product_id: productId, status: 'running', started_at, triggered_by: 'test' }).returning('id');
+      return typeof r === 'object' ? (r as { id: number }).id : (r as number);
+    };
+    const [pl] = await semanticDb('pipelines').insert({ tenant_id: tenantId, name: 'pl', kind: 'custom', scope: '{}', triggers: '[]', enabled: true }).returning('id');
+    const pipelineId = typeof pl === 'object' ? (pl as { id: number }).id : (pl as number);
+    const insPipe = async (queued_at: string, status = 'running') => {
+      const [r] = await semanticDb('pipeline_runs').insert({ tenant_id: tenantId, pipeline_id: pipelineId, status, queued_at, started_at: status === 'running' ? queued_at : null }).returning('id');
+      return typeof r === 'object' ? (r as { id: number }).id : (r as number);
+    };
+
+    const youngTable = await insTable(hoursAgo(3));
+    const oldTable = await insTable(hoursAgo(5));
+    const youngRun = await insRun(hoursAgo(3));
+    const oldRun = await insRun(hoursAgo(5));
+    const youngPipe = await insPipe(hoursAgo(1));
+    const oldPipe = await insPipe(hoursAgo(6), 'queued');
+
+    const counts = await reapStaleWork(semanticDb);
+    expect(counts.transformationRuns).toBeGreaterThanOrEqual(1);
+    expect(counts.productTables).toBeGreaterThanOrEqual(1);
+    expect(counts.pipelineRuns).toBeGreaterThanOrEqual(1);
+
+    const t = async (id: number) => semanticDb('product_tables').where({ id }).first();
+    expect((await t(youngTable)).transformation_status).toBe('running');
+    expect((await t(oldTable)).transformation_status).toBe('error');
+    expect((await t(oldTable)).last_run_error).toMatch(/more than 4 hours/);
+    const r = async (id: number) => semanticDb('transformation_runs').where({ id }).first();
+    expect((await r(youngRun)).status).toBe('running');
+    expect((await r(oldRun)).status).toBe('failed');
+    expect((await r(oldRun)).finished_at).not.toBeNull();
+    const pr = async (id: number) => semanticDb('pipeline_runs').where({ id }).first();
+    expect((await pr(youngPipe)).status).toBe('running');
+    expect((await pr(oldPipe)).status).toBe('failed');
+  });
+});
+
 describe('deferWhenTenantBusy', () => {
   const mkJob = (id: string, tenantId: number): { job: FakeJob; delayedTo: number[] } => {
     const delayedTo: number[] = [];

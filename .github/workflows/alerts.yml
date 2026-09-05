@@ -95,7 +95,7 @@ jobs:
           AG1_NAME="clarion-alerts-sev1"
           WORKER="${APP%-backend}-jobs-worker"
           METRIC_RULES="clarion-backend-5xx clarion-backend-restarts clarion-worker-restarts clarion-pg-cpu clarion-pg-storage"
-          QUERY_RULES="clarion-server-errors clarion-failed-syncs clarion-brute-force clarion-queue-depth clarion-sql-guard"
+          QUERY_RULES="clarion-server-errors clarion-failed-syncs clarion-brute-force clarion-queue-depth clarion-sql-guard clarion-stale-source"
 
           if [ "$MODE" = "off" ]; then
             say "## Production alerts — OFF"
@@ -292,12 +292,20 @@ jobs:
             # 2026-09-05 (assessment v2, P0-1): 'sql guard refused' is what
             # utils/sqlGuard.ts logs on EVERY refusal, with tenant and user.
             # One line is a model slip; three in 15 minutes is someone probing.
+            # 2026-09-05 (7-1): 'source stale' is what jobs/freshnessMonitor.ts
+            # logs every hourly sweep while a scheduled source has delivered
+            # nothing inside the window its own cron implies. Muted 12h so
+            # one silent source is one mail a day, not one an hour.
+            upsert_query_rule clarion-stale-source 2 "count 'Stale' >= 1" Stale \
+              "ContainerAppConsoleLogs_CL | where Log_s contains 'source stale'" \
+              "A scheduled source has not delivered data within its own schedule's window (actions muted 12h)" PT12H \
+              && note_ok clarion-stale-source || note_fail clarion-stale-source
             upsert_query_rule clarion-sql-guard 2 "count 'Refusals' >= 3" Refusals \
               "ContainerAppConsoleLogs_CL | where ContainerAppName_s == '$APP' | where Log_s contains 'sql guard refused'" \
               "The SQL guard refused 3+ queries in 15 minutes — a tenant may be probing for a bypass" \
               && note_ok clarion-sql-guard || note_fail clarion-sql-guard
           else
-            note_fail "clarion-server-errors/clarion-failed-syncs/clarion-brute-force/clarion-queue-depth/clarion-sql-guard (no Log Analytics workspace found in $RG)"
+            note_fail "clarion-server-errors/clarion-failed-syncs/clarion-brute-force/clarion-queue-depth/clarion-sql-guard/clarion-stale-source (no Log Analytics workspace found in $RG)"
           fi
 
           say ""

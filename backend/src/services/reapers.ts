@@ -46,6 +46,9 @@ export interface ReapCounts {
   ingestion: number;
   profiling: number;
   syncRuns: number;
+  transformationRuns: number;
+  productTables: number;
+  pipelineRuns: number;
 }
 
 export async function reapStaleWork(db: Knex): Promise<ReapCounts> {
@@ -108,9 +111,45 @@ export async function reapStaleWork(db: Knex): Promise<ReapCounts> {
       .update({ last_sync_status: 'failed' });
   }
 
+  // Reaper holes (assessment 7-5): transformation runs, product tables
+  // pinned 'running' and pipeline runs were cleaned only at process
+  // startup — a worker that died mid-transformation left them 'running'
+  // until the next deploy. None of them carries a heartbeat, so they reap
+  // at the absolute ceiling only: a healthy 3-hour build survives, a
+  // dead one is closed within a sweep of turning 4 hours old.
+  const transformationRuns = await db('transformation_runs')
+    .where('status', 'running')
+    .whereRaw(`COALESCE(started_at, NOW()) < NOW() - INTERVAL '${ceiling}'`)
+    .update({
+      status: 'failed',
+      error_message: `Transformation run appears dead (running for more than ${WORK_CEILING_HOURS} hours)`,
+      finished_at: new Date().toISOString(),
+    });
+
+  const productTables = await db('product_tables')
+    .where('transformation_status', 'running')
+    .whereRaw(`COALESCE(last_run_at, updated_at, created_at) < NOW() - INTERVAL '${ceiling}'`)
+    .update({
+      transformation_status: 'error',
+      last_run_error: `Run appears dead (running for more than ${WORK_CEILING_HOURS} hours)`,
+      last_run_at: new Date().toISOString(),
+    });
+
+  const pipelineRuns = await db('pipeline_runs')
+    .whereIn('status', ['queued', 'running'])
+    .whereRaw(`COALESCE(started_at, queued_at, created_at) < NOW() - INTERVAL '${ceiling}'`)
+    .update({
+      status: 'failed',
+      error_message: `Pipeline run appears dead (in flight for more than ${WORK_CEILING_HOURS} hours)`,
+      completed_at: new Date().toISOString(),
+    });
+
   if (ingestion > 0) log.info({ count: ingestion }, '[cleanup] reaped stale legacy ingestion(s)');
+  if (transformationRuns > 0) log.info({ count: transformationRuns }, '[cleanup] reaped dead transformation run(s)');
+  if (productTables > 0) log.info({ count: productTables }, '[cleanup] reset product table(s) stuck running');
+  if (pipelineRuns > 0) log.info({ count: pipelineRuns }, '[cleanup] reaped dead pipeline run(s)');
   if (profiling > 0) log.info({ count: profiling }, '[cleanup] reaped dead profiling run(s)');
   if (syncRuns > 0) log.info({ count: syncRuns }, '[cleanup] reaped dead sync run(s)');
 
-  return { ingestion, profiling, syncRuns };
+  return { ingestion, profiling, syncRuns, transformationRuns, productTables, pipelineRuns };
 }

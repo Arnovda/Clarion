@@ -85,6 +85,7 @@ import { loadEmailSchedules } from './jobs/emailScheduler';
 import { loadPipelineSchedules } from './jobs/pipelineScheduler';
 import { startScheduleReconciler } from './jobs/scheduleReconciler';
 import { startQueueDepthMonitor, stopQueueDepthMonitor } from './jobs/queueDepthMonitor';
+import { startFreshnessMonitor, stopFreshnessMonitor } from './jobs/freshnessMonitor';
 import { subscribeToInvalidations, closeCacheBus } from './jobs/cacheBus';
 import { drainPool } from './connectors/ConnectorPool';
 import { drainAll as drainDuckDBPool } from './connectors/DuckDBPool';
@@ -455,6 +456,9 @@ if (!process.env.VITEST) {
     // depth is global Redis state, so every replica emitting would
     // double-count. Rides the same RUN_SCHEDULERS ownership as the reapers.
     startQueueDepthMonitor();
+    // 'This source has not synced in N hours' (7-1) — the sync that never
+    // ran. Same ownership as the reapers.
+    startFreshnessMonitor();
 
     // On startup, reset any profiling stuck in 'running' (from a previous crash/restart)
     (async () => {
@@ -596,6 +600,7 @@ if (!process.env.VITEST) {
     await drainDuckDBPool();
     drainRunners();
     stopQueueDepthMonitor();
+    stopFreshnessMonitor();
     await stopWorkers();
     await closeScheduler();
     await closeQueues();

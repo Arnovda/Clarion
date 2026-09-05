@@ -31,9 +31,47 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-09-05 (WAVE B IN PROGRESS — owner: *"Start wave B"*; items 1–4 landed. Below it, WAVE A REMEDIATION COMPLETE — owner: *"You
+**Last updated:** 2026-09-05 (WAVE B IN PROGRESS — owner: *"Start wave B"*; items 1–5 landed. Below it, WAVE A REMEDIATION COMPLETE — owner: *"You
 can push to main and begin fixing the waves"*; the assessment v2 was
 fast-forwarded to main and each item landed as its own push, seven pushes)
+
+**Wave B, item 5 — 7-1/7-3/7-5: a dead source is announced, the sync that
+never ran is caught by the calendar, the rollup lives on the Delta path, and
+every in-flight table has a reaper.**
+- **7-1 failure notifications**: `SyncOrchestrator.notifySyncFailure` —
+  every tenant admin gets a `sync_failed` notification (source name +
+  bounded reason, link `/sources`) on a partial run, a failed worker exit
+  and an orchestrator-side failure. Best-effort by contract.
+- **7-1 freshness rule — NEW `jobs/freshnessMonitor.ts`**: hourly sweep
+  (scheduler-owning process, started beside the queue-depth monitor) over
+  every enabled sync schedule; a source is STALE when nothing landed
+  (`connections.last_synced_at`) within 2 × the schedule's LONGEST gap +
+  30 min, never under `FRESHNESS_MIN_STALE_MINUTES` (120). Longest gap on
+  purpose — `cronGapStats` in tenantLimits: `0 9 * * 1-5` goes 72 h over a
+  weekend and Monday must not be a false alarm. A never-synced source is
+  clocked from its schedule's creation. Logs the LOAD-BEARING `'source
+  stale'` line (new alert rule `clarion-stale-source`, muted 12 h, in
+  alerts.yml + `.ops/alerts`) and notifies admins once per 24 h per source.
+  Env: `FRESHNESS_CHECK_MS`, `FRESHNESS_MIN_STALE_MINUTES`.
+- **7-3 rollup on Delta**: `generateMonthlyRollup` reads its source
+  through `createScanView` (parquet file OR Delta directory) instead of
+  `read_parquet`, skips `_`-prefixed technical columns (`_row_hash`), and
+  the Delta branch calls the new `refreshFactRollup` helper before its
+  `continue` — so `rollup_path` is refreshed on every Delta refresh and
+  CLEARED when generation fails or no longer qualifies (a frozen aggregate
+  is never advertised to the model again).
+- **7-5 reapers**: `reapStaleWork` now also closes `transformation_runs`
+  running past the 4 h ceiling, `product_tables` pinned `running` past it
+  (`COALESCE(last_run_at, updated_at, created_at)`), and `pipeline_runs`
+  queued/running past it — ceiling-only because none carries a heartbeat.
+  `ReapCounts` gained the three.
+- Tests: `reapers.test.ts` +1 (3 h survives / 5 h closed for all three
+  tables); NEW `tests/freshness.test.ts` (4): longest-gap arithmetic and
+  the Monday case; the sweep flags a 10-hour-silent and a never-synced
+  source, leaves a fresh one, writes exactly one `source_stale`
+  notification per source and not a second on the next sweep; a failed
+  sync trigger produces `Broken source: sync failed` for the admin.
+  core-loop still green (its fact rollup now goes through the scan view).
 
 **Wave B, item 4 — 5-1/5-2/5-3/5-5: alerting can page, one dead source is
 one email, the pool arithmetic fits the server, and Redis cannot be

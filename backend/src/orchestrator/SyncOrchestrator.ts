@@ -570,6 +570,9 @@ async function runSyncInBackground(args: {
           error_message: partialMessage,
           log_excerpt: safeLogExcerpt,
         }));
+      if (isPartial) {
+        await notifySyncFailure({ tenantId, connectionId, syncRunId, partial: true, reason: partialMessage });
+      }
 
       // ── Persist per-entity cursors ──────────────────────────────────
       // Upsert one row per entity that emitted a new cursor. Defensive:
@@ -715,6 +718,10 @@ async function runSyncInBackground(args: {
       await tenantQuery(tenantId, (db) => db('connections')
         .where({ id: connectionId, tenant_id: tenantId })
         .update({ last_sync_status: 'failed' }));
+      await notifySyncFailure({
+        tenantId, connectionId, syncRunId, partial: false,
+        reason: redact(errorMessage ?? `Worker exited with code ${exitCode}`).slice(0, 500),
+      });
     }
   } catch (e) {
     cancellationHandles.delete(syncRunId);
@@ -733,9 +740,38 @@ async function runSyncInBackground(args: {
       await tenantQuery(tenantId, (db) => db('connections')
         .where({ id: connectionId, tenant_id: tenantId })
         .update({ last_sync_status: 'failed' }));
+      await notifySyncFailure({ tenantId, connectionId, syncRunId, partial: false, reason: redact(message).slice(0, 500) });
     } catch (persistErr) {
       childLog.error({ err: persistErr }, 'failed to persist orchestrator-side failure');
     }
+  }
+}
+
+
+/**
+ * A dead source is ANNOUNCED (assessment 7-1). Until 2026-09-05 the failure
+ * branches only logged: a rotated-away refresh token bricked every future
+ * sync and the customer learned it from a stale dashboard. Every tenant
+ * admin gets one notification per failed or partial run, naming the source
+ * and the reason. Best-effort by contract — a notification must never
+ * change a run's outcome.
+ */
+async function notifySyncFailure(args: {
+  tenantId: number; connectionId: number; syncRunId: number; partial: boolean; reason: string | null;
+}): Promise<void> {
+  const { tenantId, connectionId, syncRunId, partial, reason } = args;
+  try {
+    const conn = await tenantQuery(tenantId, (db) => db('connections')
+      .select('name').where({ id: connectionId, tenant_id: tenantId }).first());
+    const name = String(conn?.name ?? `connection ${connectionId}`);
+    await notifyAdmins(tenantId, 'sync_failed',
+      partial ? `${name}: sync completed with errors` : `${name}: sync failed`,
+      {
+        message: (reason ?? 'The sync did not complete. Open the source for details.').slice(0, 500),
+        entityType: 'connection', entityId: connectionId, link: '/sources',
+      });
+  } catch (err) {
+    log.warn({ err, tenantId, connectionId, syncRunId }, 'could not notify admins of the sync failure');
   }
 }
 

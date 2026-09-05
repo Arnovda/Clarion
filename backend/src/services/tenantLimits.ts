@@ -135,6 +135,17 @@ export function minScheduleIntervalMinutes(): number {
  * expression does not parse (the caller's own cron validation reports that).
  */
 export function minCronGapMinutes(expression: string, timezone = 'UTC', horizon = 60): number | null {
+  return cronGapStats(expression, timezone, horizon)?.min ?? null;
+}
+
+/**
+ * The smallest AND largest gap between consecutive firings over the next
+ * `horizon` runs. `min` is the cadence floor's input; `max` is what the
+ * freshness rule needs (`0 9 * * 1-5` fires every 24 h on weekdays but
+ * 72 h over a weekend — "stale" must be measured against the LONGEST gap
+ * the schedule itself contains, or every Monday morning is a false alarm).
+ */
+export function cronGapStats(expression: string, timezone = 'UTC', horizon = 60): { min: number; max: number } | null {
   let it;
   try {
     it = CronExpressionParser.parse(expression, { tz: timezone });
@@ -143,6 +154,7 @@ export function minCronGapMinutes(expression: string, timezone = 'UTC', horizon 
   }
   let prev: number | null = null;
   let min = Number.POSITIVE_INFINITY;
+  let max = 0;
   for (let i = 0; i < horizon; i++) {
     let next: Date;
     try {
@@ -151,11 +163,14 @@ export function minCronGapMinutes(expression: string, timezone = 'UTC', horizon 
       break; // the expression has no further occurrence
     }
     const ts = next.getTime();
-    if (prev != null) min = Math.min(min, (ts - prev) / 60_000);
+    if (prev != null) {
+      const gap = (ts - prev) / 60_000;
+      min = Math.min(min, gap);
+      max = Math.max(max, gap);
+    }
     prev = ts;
-    if (min < 1) break; // already as fast as cron goes
   }
-  return Number.isFinite(min) ? min : null;
+  return Number.isFinite(min) ? { min, max } : null;
 }
 
 /**

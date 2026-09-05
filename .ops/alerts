@@ -57,6 +57,14 @@ arnovda@telenet.be
 #                              QUEUE_DEPTH_WARN (default 25), so 3+ lines
 #                              means several minutes of sustained backlog,
 #                              not a blip
+#   clarion-stale-source       ≥1 'source stale' line in 15 min — the
+#                              freshness monitor (jobs/freshnessMonitor.ts,
+#                              7-1) sweeps hourly and logs the string for
+#                              every scheduled source that has delivered no
+#                              data within twice its own schedule's longest
+#                              gap (+30 min, never under 2 h). The sync that
+#                              never RAN — nothing in the run history says
+#                              so, only the calendar. Muted 12 h.
 #   clarion-sql-guard          ≥3 'sql guard refused' lines in 15 min — the
 #                              read-query guard (utils/sqlGuard.ts) logs this
 #                              string on every refusal, with tenant + user.

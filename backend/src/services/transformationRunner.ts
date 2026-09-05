@@ -230,18 +230,21 @@ async function generateMonthlyRollup(
   db: Database,
   tableId: number,
   tableName: string,
-  parquetPath: string,
+  sourceUri: string,
   productDir: string,
   useAzure: boolean,
   tenantId?: number,
 ): Promise<{ rollupName: string; rowCount: number; rollupPath: string } | null> {
   const safeAlias = tableName.replace(/[^a-zA-Z0-9_]/g, '_');
-  const descView = `__rd_${safeAlias}`;
-  const escaped = parquetPath.replace(/'/g, "''");
-
-  await db.exec(`CREATE OR REPLACE VIEW "${descView}" AS SELECT * FROM read_parquet('${escaped}');`);
-  const cols = await db.all(`DESCRIBE "${descView}"`) as Array<{ column_name: string; column_type: string }>;
-  await db.exec(`DROP VIEW IF EXISTS "${descView}";`);
+  // The source is read through the shared scan view (assessment 7-3): it
+  // understands BOTH a plain parquet file and a Delta directory, so the
+  // rollup exists on the Delta path too — before this, `read_parquet` on a
+  // Delta directory meant the Delta branch skipped rollups entirely, and
+  // productContext kept telling the model to prefer a rollup that was
+  // frozen at the last parquet-era refresh.
+  const srcView = `__rd_${safeAlias}`;
+  await createScanView(db, srcView, sourceUri);
+  const cols = await db.all(`DESCRIBE "${srcView}"`) as Array<{ column_name: string; column_type: string }>;
 
   const DATE_TYPES = ['DATE', 'TIMESTAMP', 'TIMESTAMP WITH TIME ZONE', 'TIMESTAMPTZ'];
   const NUMERIC_TYPES = ['BIGINT', 'INTEGER', 'DOUBLE', 'FLOAT', 'DECIMAL', 'HUGEINT', 'UBIGINT', 'UINTEGER', 'INT4', 'INT8', 'INT2', 'TINYINT', 'SMALLINT', 'REAL', 'NUMERIC'];
@@ -249,7 +252,7 @@ async function generateMonthlyRollup(
   const dateCol = cols.find((c) =>
     DATE_TYPES.some((t) => c.column_type.toUpperCase().split('(')[0].trim() === t),
   );
-  if (!dateCol) return null;
+  if (!dateCol) { await db.exec(`DROP VIEW IF EXISTS "${srcView}";`); return null; }
 
   // Exclude surrogate/natural key columns (PKs) from GROUP BY to ensure real aggregation.
   const pkRows = await (tenantId
@@ -265,7 +268,10 @@ async function generateMonthlyRollup(
   ) as Array<{ column_name: string }>;
   const pkSet = new Set(pkRows.map((r) => r.column_name));
 
-  const measures = cols.filter(
+  // `_row_hash` (the Delta path's technical column) is neither a dimension
+  // nor a measure.
+  const business = cols.filter((c) => !c.column_name.startsWith('_'));
+  const measures = business.filter(
     (c) =>
       c.column_name !== dateCol.column_name &&
       !pkSet.has(c.column_name) &&
@@ -273,10 +279,10 @@ async function generateMonthlyRollup(
       !c.column_name.toLowerCase().endsWith('_key') &&
       NUMERIC_TYPES.some((t) => c.column_type.toUpperCase().startsWith(t)),
   );
-  if (measures.length === 0) return null;
+  if (measures.length === 0) { await db.exec(`DROP VIEW IF EXISTS "${srcView}";`); return null; }
 
   // Dims: everything that is not the date col, not a PK, and not a measure
-  const dims = cols.filter(
+  const dims = business.filter(
     (c) =>
       c.column_name !== dateCol.column_name &&
       !pkSet.has(c.column_name) &&
@@ -304,13 +310,47 @@ async function generateMonthlyRollup(
     ...dims.map((c) => `"${c.column_name}"`),
   ].join(', ');
 
-  const rollupSelectSql = `SELECT ${selects.join(', ')} FROM read_parquet('${escaped}') GROUP BY ${groupBy} ORDER BY month`;
-  await writeParquet(db, rollupPath, rollupSelectSql);
+  const rollupSelectSql = `SELECT ${selects.join(', ')} FROM "${srcView}" GROUP BY ${groupBy} ORDER BY month`;
+  try {
+    await writeParquet(db, rollupPath, rollupSelectSql);
+  } finally {
+    await db.exec(`DROP VIEW IF EXISTS "${srcView}";`);
+  }
 
   const cnt = await db.all(`SELECT COUNT(*) AS n FROM read_parquet('${escapedRollup}');`);
   const rowCount = Number((cnt[0] as { n: unknown }).n ?? 0);
 
   return { rollupName, rowCount, rollupPath };
+}
+
+/**
+ * Refresh (or clear) a fact table's monthly rollup — best-effort, non-fatal.
+ * The location is RECORDED, not just logged: productContext reads it back
+ * to tell the model a pre-aggregation exists. Cleared when this refresh
+ * produced none, so a table that stops qualifying (date column dropped,
+ * measures removed) — or whose rollup generation failed — does not keep
+ * advertising a stale one (7-3).
+ */
+async function refreshFactRollup(
+  db: Database,
+  table: { id: number; table_name: string; table_role?: string | null },
+  sourceUri: string,
+  productDir: string,
+  useAzure: boolean,
+  tenantId?: number,
+): Promise<void> {
+  if (table.table_role !== 'fact') return;
+  try {
+    const rollup = await generateMonthlyRollup(db, table.id, table.table_name, sourceUri, productDir, useAzure, tenantId);
+    await publishRollup(tenantId, table.id, rollup && { uri: rollup.rollupPath, rowCount: rollup.rowCount });
+    if (rollup) {
+      log.info(`Rollup: ${rollup.rollupName} (${rollup.rowCount} rows) at ${rollup.rollupPath}`);
+    }
+  } catch (rollupErr) {
+    log.warn({ err: rollupErr }, `Rollup generation skipped for ${table.table_name}`);
+    // A failed regeneration must not leave last refresh's rollup advertised.
+    try { await publishRollup(tenantId, table.id, null); } catch { /* best-effort */ }
+  }
 }
 
 /**
@@ -764,12 +804,9 @@ export async function runProductTransformation(
 
           results.push({ table_name: table.table_name, status: 'success', row_count: rowCount });
 
-          // Monthly rollup is intentionally skipped on the Delta path —
-          // generateMonthlyRollup() reads via DuckDB read_parquet() which
-          // doesn't understand Delta directory layouts. Rollups are
-          // best-effort (dashboards fall back to raw fact scans), so we
-          // leave them off until the rollup helper is generalised to read
-          // through the shared createScanView. Tracked in the SCD2 backlog.
+          // The rollup is refreshed on the Delta path too (7-3): the helper
+          // reads the freshly written Delta directory through the scan view.
+          await refreshFactRollup(db, table, tableOutputPath, productDir, useAzure, tenantId);
           continue;  // Skip the legacy parquet branch entirely
         }
 
@@ -835,22 +872,7 @@ export async function runProductTransformation(
 
         results.push({ table_name: table.table_name, status: 'success', row_count: rowCount });
 
-        // Generate monthly rollup for fact tables — best-effort, non-fatal.
-        // The location is RECORDED, not just logged: productContext reads it
-        // back to tell the model a pre-aggregation exists. Cleared when this
-        // refresh produced none, so a table that stops qualifying (date column
-        // dropped, measures removed) does not keep advertising a stale rollup.
-        if (table.table_role === 'fact') {
-          try {
-            const rollup = await generateMonthlyRollup(db, table.id, table.table_name, parquetPath, productDir, useAzure, tenantId);
-            await publishRollup(tenantId, table.id, rollup && { uri: rollup.rollupPath, rowCount: rollup.rowCount });
-            if (rollup) {
-              log.info(`Rollup: ${rollup.rollupName} (${rollup.rowCount} rows) at ${rollup.rollupPath}`);
-            }
-          } catch (rollupErr) {
-            log.warn({ err: rollupErr }, `Rollup generation skipped for ${table.table_name}`);
-          }
-        }
+        await refreshFactRollup(db, table, parquetPath, productDir, useAzure, tenantId);
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
         await markProductTableFailed(tenantId, table.id, msg);
