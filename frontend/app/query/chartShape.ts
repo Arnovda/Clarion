@@ -110,6 +110,35 @@ function pickValueColumn(rows: Record<string, unknown>[], numericCols: string[])
   });
 }
 
+/**
+ * A missing (period, series) cell has no single meaning: for a running total
+ * it means "unchanged", for a monthly flow it means "nothing that month", for
+ * a genuinely unmeasured period it means "unknown". The SQL author knows
+ * which; the renderer does not — so it fills only the case the DATA proves.
+ *
+ * A series whose known points never decrease, in period order, is a running
+ * total: the value in a missing period is the last value seen, so the line
+ * stays flat instead of breaking. Leading periods (before the first point)
+ * are left empty — the series simply had not started. Anything that ever
+ * decreases keeps its gaps: drawing a value there would invent one.
+ *
+ * Exported for tests. Mutates `data` in place.
+ */
+export function fillRunningTotals(data: Record<string, unknown>[], groups: string[]): void {
+  for (const g of groups) {
+    const known = data.map((r) => r[g]).filter((v) => v !== undefined && v !== null) as number[];
+    if (known.length < 3) continue;
+    let monotone = true;
+    for (let i = 1; i < known.length; i++) if (Number(known[i]) < Number(known[i - 1])) { monotone = false; break; }
+    if (!monotone) continue;
+    let last: number | undefined;
+    for (const r of data) {
+      if (r[g] === undefined || r[g] === null) { if (last !== undefined) r[g] = last; }
+      else last = Number(r[g]);
+    }
+  }
+}
+
 export function resolveChartShape(rows: Record<string, unknown>[], hint?: VisualizationHint): ChartShape {
   if (!rows || rows.length === 0) {
     return { columns: [], numericCols: [], groups: [], data: [], type: 'table', xIsPeriod: false };
@@ -177,7 +206,10 @@ export function resolveChartShape(rows: Record<string, unknown>[], hint?: Visual
       map.set(x, acc);
     }
     data = Array.from(map.values());
-    if (xIsPeriod) data.sort((a, b) => String(a[xKey!]).localeCompare(String(b[xKey!])));
+    if (xIsPeriod) {
+      data.sort((a, b) => String(a[xKey!]).localeCompare(String(b[xKey!])));
+      fillRunningTotals(data, groups);
+    }
   }
 
   // Type: the hint wins when the data can honour it; otherwise the heuristic.

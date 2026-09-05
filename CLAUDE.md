@@ -31,7 +31,66 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-09-02 (SAME DAY, THIRD FINDING — A "PER SUPPLIER OVER
+**Last updated:** 2026-09-05 (FOURTH FINDING, PR #118 — plus a same-PR audit-gate drive-by — A RUNNING TOTAL NO
+LONGER BREAKS WHERE A SUPPLIER HAD A QUIET YEAR; the SQL emits rows only for
+active months, and the renderer now fills the one case the data proves)
+
+**Owner's fourth screenshot, minutes after #117 went live: the multi-line
+chart is right, but Terrie sprl's cumulative line BREAKS between 2021-11 and
+2022-10.** *"Now I have a gap in my lines, can we fix that?"* Not a rendering
+glitch — an honest picture of the rows: the SQL emits a (month, supplier) row
+only where that supplier had a purchase, so the wide pivot has no cell for
+those months. For a running total that is the wrong reading: the total did
+not vanish, it stayed flat.
+- **A missing cell has no single meaning**, and the renderer must not guess
+  it: for a running total it means "unchanged", for a monthly flow it means
+  "nothing that month", for an unmeasured period it means "unknown". The
+  SQL author knows which; the chart does not. So the fix is two-sided again:
+- **THE PROMPT OWNS THE TRUTH** — `VISUALIZATION_HINT_RULES` now requires a
+  `line` with `groupBy` to be a DENSE GRID: one row for every (period,
+  category) pair, built from a period spine (dim_date / generated months)
+  CROSS JOINed with the categories and LEFT JOINed to the facts; a running
+  total carries forward, a count/sum shows 0. "A gap in the rows becomes a
+  broken line on screen" is said outright.
+- **THE RENDERER FILLS ONLY WHAT THE DATA PROVES** — new exported
+  `fillRunningTotals(data, groups)` in `chartShape.ts`, run after the
+  period-sorted pivot: a series whose known points NEVER DECREASE (≥3
+  points) is a running total, so each missing period takes the last value
+  seen — flat, never a slope. Leading periods before the first point stay
+  empty (the series had not started); trailing periods carry forward. Any
+  series that ever decreases KEEPS its gaps: a flow measure's missing month
+  must stay visible, and `connectNulls` stays off for the same reason.
+  Known limitation, stated: a monthly flow that happens to rise every
+  month for its whole span would be filled too — with a dense grid from
+  the prompt that case does not arise.
+- Validation: frontend vitest **4 files / 24 passed** (3 new: the production
+  gap — 12 missing months filled flat at the last value, both neighbours
+  untouched; a decreasing series keeps its gap; carry-forward past the last
+  point but never before the first); **the fill verified red** (call
+  removed → gap test fails); `tsc` clean, `chartShape.ts` lint-clean,
+  `next build` green (`/query` 41.6 kB); backend `npm run check` clean,
+  prompt tests 13/13, nine ratchets green.
+- **NOT done, deliberately**: marking filled points visually (Recharts
+  cannot style one segment; a dotted "carried forward" run wants a custom
+  shape — revisit if the flat run misleads anyone); backfilling leading
+  zeros for a running total (a line that starts when the supplier starts
+  reads better than one pinned to zero for years).
+- **DRIVE-BY ON THE SAME PR (2026-09-05): THE CONNECTORS AUDIT GATE WENT
+  RED UNDER EVERY BRANCH.** The first CI run on PR #118 failed "Connector
+  Framework Tests" on `scripts/audit-gate.mjs` — four new GHSAs against
+  `fast-uri` (vulnerable `>=3.0.0 <3.1.6`) while `packages/connectors`
+  pinned the override at `^3.1.5`, one patch below the fix. Nothing in the
+  PR touched the package; main's last green run (09-02) simply predates the
+  advisories. `fast-uri` is reached through `ajv`, which validates
+  connector config AT RUNTIME, so it is runtime-exposed and was FIXED, not
+  allowlisted (the ALLOW list is for build-chain/dev-only only): override
+  `^3.1.6` (resolves 3.1.7), lockfile regenerated with npm, a `//overrides`
+  note added mirroring the backend's. Gate exit 0 locally, connectors
+  `tsc` clean, 20 files / 231 tests green. Lesson: a red check on a PR
+  that touched none of that code is still that PR's to clear when a fix
+  exists — waiting on "someone else's" fix is waiting.
+
+**Prior last updated:** 2026-09-02 (SAME DAY, THIRD FINDING — A "PER SUPPLIER OVER
 TIME" ANSWER IS ONE LINE PER SUPPLIER NOW; the chart drew the long-format rows
 in row order, and the product-layer prompt never asked for a chart shape at all)
 

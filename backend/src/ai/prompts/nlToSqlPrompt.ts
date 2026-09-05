@@ -20,7 +20,12 @@ first in the SELECT.
 
 Always set "xKey" and "yKey" (the numeric measure) when type ≠ "table".
 Set "groupBy" WHENEVER the SELECT has two non-numeric columns and one measure — for
-line and bar as well as stacked_bar. Keep the series column to ≤8 distinct values
+line and bar as well as stacked_bar.
+A "line" with "groupBy" must be a DENSE GRID: one row for EVERY (period, category)
+pair, no gaps — a category with no activity in a period still gets a row. Build it
+from a period spine (dim_date / a generated month series) CROSS JOINed with the
+categories, then LEFT JOIN the facts. A running total carries the previous value
+forward; a count or sum shows 0. A gap in the rows becomes a broken line on screen. Keep the series column to ≤8 distinct values
 (add a LIMIT or a top-N filter if the category is wide); above that, use "table".
 If the user explicitly requests a chart type ("in a bar chart", "as a line"), honour it.`;
 
