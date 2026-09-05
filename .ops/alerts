@@ -86,3 +86,7 @@ arnovda@telenet.be
 #                    minutes. The deploy gate + 5xx/restart alerts cover the
 #                    broken-under-traffic case meanwhile; the web test adds
 #                    the down-while-idle and ingress/DNS cases.
+#
+# Re-applied 2026-09-05 22:40 UTC: runs #5 and #6 failed creating the three muted
+# rules (Azure requires auto-mitigation off when actions are muted); alerts.yml
+# now passes --auto-mitigate false with every mute. This edit re-runs it.

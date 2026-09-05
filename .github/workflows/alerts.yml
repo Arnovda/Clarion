@@ -248,7 +248,13 @@ jobs:
             local NAME="$1" SEV="$2" COND="$3" PLACEHOLDER="$4" KQL="$5" DESC="$6" MUTE="${7:-}"
             local AG="$AG_ID"; [ "$SEV" = "1" ] && AG="$AG1_ID"
             local EXTRA=()
-            [ -n "$MUTE" ] && EXTRA+=(--mute-actions-duration "$MUTE")
+            # Azure refuses a mute on an auto-mitigating rule ("Auto mitigation
+            # must be disabled when action suppression is set" — run #5/#6 of
+            # this workflow went red on exactly that), so a muted rule is also
+            # --auto-mitigate false: it fires once per window and stays fired
+            # until the condition clears, which is what a flood-muted rule
+            # wants anyway.
+            [ -n "$MUTE" ] && EXTRA+=(--mute-actions-duration "$MUTE" --auto-mitigate false)
             az monitor scheduled-query create -g "$RG" -n "$NAME" \
               --scopes "$WS_ID" --action-groups "$AG" --severity "$SEV" \
               --evaluation-frequency 15m --window-size 15m \

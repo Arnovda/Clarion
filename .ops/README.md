@@ -269,6 +269,13 @@ migration was ≈ 40 and the 30 s acquire timeout turned the overflow into
 psql session; raise the SKU before raising these. `infra/variables.tf`
 (`backend_pool_max`, `jobs_worker_pool_max`) carries the same defaults.
 
+The workflow has its **own** concurrency group and first waits (≤30 min)
+for any Build & Deploy run to finish. Run #1 shared deploy.yml's group and
+was cancelled within a second: a group holds one pending run, and the
+deploy triggered by the same push took the slot. Two workflows fired by one
+push must never share a group — the wait step is what keeps the two
+`az containerapp update`s from interleaving instead.
+
 ## `alerts` — who gets told when production is broken
 
 Contains an **email address**, or `off` — plus, optionally, `sms <country

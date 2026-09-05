@@ -20,4 +20,6 @@ worker 8
 # the same defaults (backend_pool_max / jobs_worker_pool_max) so a later
 # terraform apply agrees.
 #
-# Created 2026-09-05 (wave B item 4): first application.
+# Created 2026-09-05 (wave B item 4). Run #1 was cancelled by the deploy of
+# the same push (concurrency-group race, fixed in db-pool.yml); re-applied
+# 2026-09-05 22:40 UTC — this is the first real application.

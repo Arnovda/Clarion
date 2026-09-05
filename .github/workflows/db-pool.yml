@@ -17,9 +17,19 @@ on:
       - '.ops/db-pool'
   workflow_dispatch:
 
+# Its OWN concurrency group, on purpose. Run #1 shared deploy.yml's group
+# and was CANCELLED one second in: a group holds ONE pending run, and the
+# deploy triggered by the same push took the slot. Two workflows fired by
+# one push must never share a group. The collision the shared group was
+# meant to avoid (two `az containerapp update`s on one app) is handled
+# below by waiting for Build & Deploy to be idle before touching the app.
 concurrency:
-  group: deploy-refs/heads/main
+  group: db-pool
   cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: read
 
 jobs:
   apply:
@@ -40,6 +50,30 @@ jobs:
           echo "backend=$B" >> "$GITHUB_OUTPUT"
           echo "worker=$W" >> "$GITHUB_OUTPUT"
           echo "Desired KNEX_POOL_MAX: backend=$B worker=$W"
+
+      - name: Wait for Build & Deploy to be idle
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          # deploy.yml's promote and this control both run `az containerapp
+          # update` and both shift traffic; interleaving them can leave the
+          # LIVE revision without the value this control just applied while
+          # the template (what we read back) carries it. So: wait, up to
+          # 30 minutes, until no deploy run is queued or in progress.
+          for i in $(seq 1 90); do
+            BUSY=0
+            for st in in_progress queued pending waiting requested; do
+              N=$(gh run list --workflow deploy.yml --status "$st" --json databaseId --jq 'length' 2>/dev/null || echo 0)
+              BUSY=$((BUSY + N))
+            done
+            if [ "$BUSY" = "0" ]; then
+              echo "No Build & Deploy run in flight."; exit 0
+            fi
+            echo "Build & Deploy in flight — waiting ($i/90)…"; sleep 20
+          done
+          echo "::error::Build & Deploy still running after 30 minutes; re-push .ops/db-pool later"; exit 1
 
       - name: Log in to Azure
         uses: azure/login@v2

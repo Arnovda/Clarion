@@ -236,7 +236,9 @@ resource "azurerm_monitor_scheduled_query_rules_alert_v2" "failed_syncs" {
   evaluation_frequency = "PT15M"
   window_duration      = "PT15M"
   # Flood control (5-2): one dead source is one email, not one every 15 min.
+  # Azure requires auto-mitigation OFF on a rule that mutes its actions.
   mute_actions_after_alert_duration = "PT4H"
+  auto_mitigation_enabled           = false
 
   criteria {
     query                   = <<-KQL

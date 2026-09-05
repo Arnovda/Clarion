@@ -148,6 +148,26 @@ every in-flight table has a reaper.**
 **Wave B, item 4 — 5-1/5-2/5-3/5-5: alerting can page, one dead source is
 one email, the pool arithmetic fits the server, and Redis cannot be
 OOM-killed into silence.**
+- **BOTH CONTROLS WENT RED ON THEIR FIRST RUN — read this before touching
+  either (fixed 2026-09-05, same day).** (a) alerts.yml runs #5 and #6
+  failed on the three MUTED rules: Azure refuses `--mute-actions-duration`
+  on a rule that auto-mitigates ("Auto mitigation must be disabled when
+  action suppression is set"), on create AND update — so `clarion-failed-
+  syncs` and `clarion-brute-force` were left at their PREVIOUS definition
+  and `clarion-stale-source` did not exist at all, while the summary named
+  all three. `upsert_query_rule` now adds `--auto-mitigate false` beside
+  every mute; `infra/alerts.tf` mirrors it (`auto_mitigation_enabled =
+  false`). (b) db-pool.yml run #1 was CANCELLED one second in: it shared
+  deploy.yml's concurrency group, a group holds ONE pending run, and the
+  deploy triggered by the same push took the slot. **Two workflows fired
+  by one push must never share a concurrency group.** db-pool.yml has its
+  own group now and instead WAITS (≤30 min, `gh run list` on deploy.yml)
+  for Build & Deploy to be idle before its `az containerapp update` — the
+  interleaving the shared group was meant to prevent. Both `.ops` files
+  carry a dated re-apply comment; **read the two re-runs' summaries**: the
+  alerts run must list all ten rules ✓, the db-pool run must show
+  `backend: <unset> → 6` and `worker: <unset> → 8`. Until they do, neither
+  5-2's mute nor 5-3's ceilings are live.
 - **5-2 `.ops/alerts` gained optional `sms <cc> <number>` and `webhook
   <url>` lines.** When either is present alerts.yml creates a SECOND action
   group `clarion-alerts-sev1` (email + sms + webhook) and every
