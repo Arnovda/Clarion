@@ -1,0 +1,15 @@
+off
+
+# DuckDB session lockdown (DUCKDB_SESSION_LOCKDOWN) — `on` or `off`.
+#
+# `on` makes every Azure-mode DuckDB session refuse the container's own
+# filesystem (`SET disabled_filesystems='LocalFileSystem'`), so user/AI SQL
+# cannot read /proc/self/environ or any local file even if the sqlGuard is
+# bypassed again — it was on 2026-09-05 (market-readiness assessment v2,
+# P0-1). The guard is fixed; this is the second line behind it.
+#
+# Starts `off` so that adding this file is a no-op (the workflow does nothing
+# when the value is already applied). FLIP IT: set `on`, push, then do the
+# one live check the workflow summary asks for (a big dashboard + one large
+# Ask AI question on the largest tenant; watch for spill errors). Rollback is
+# `off` + push.

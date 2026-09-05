@@ -1,0 +1,184 @@
+# DuckDB session lockdown — GitOps control for ONE production setting.
+#
+#   .ops/duckdb-lockdown   contains   `on`   or   `off`
+#
+# Editing that file on main applies DUCKDB_SESSION_LOCKDOWN to the backend
+# Container App and shifts traffic to the resulting revision.
+#
+# WHAT it does (services/warehouse/duckdb.ts applySessionLockdown): on every
+# Azure-mode DuckDB session, after the extensions and the storage secret are in
+# place, `SET disabled_filesystems='LocalFileSystem'` — so user- and
+# model-authored SQL cannot read the container's own filesystem
+# (`/proc/self/environ`, `/etc/passwd`, another process's temp files) even if
+# the sqlGuard is ever bypassed again (it was, 2026-09-05: a double-quoted
+# function name walked past the denylist). The guard is the first line; this
+# is the second, and a second line that is switched off is not a line.
+#
+# WHY it is a switch and not the default: DuckDB's `temp_directory` spill also
+# goes through LocalFileSystem, so a large scan that would have spilled may fail
+# instead of slowing down; and a DuckDB upgrade may change what the setting
+# covers. Both want ONE live look after the flip — a dashboard on a big tenant
+# and the `DuckDB session lockdown: LocalFileSystem disabled` log line — before
+# it is trusted, per this repo's own lesson that DuckDB changes which pass
+# headless can still fail in production. The child runner (`.ops/duckdb-runner`)
+# already withholds every platform secret except the storage string from the
+# query process, so the flip closes the residual local-file reads.
+#
+# Same shape as .github/workflows/duckdb-runner-mode.yml: paths-scoped to one
+# file, no-op when already applied (NOT a promote vehicle), rollback is the
+# same one-line edit. `infra/main.tf` does not set DUCKDB_SESSION_LOCKDOWN; if
+# this control is left on `on`, add it there too or a later apply reverts it.
+
+name: DuckDB session lockdown
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.ops/duckdb-lockdown'
+  workflow_dispatch:
+
+concurrency:
+  group: duckdb-lockdown-mode
+  cancel-in-progress: false
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read desired lockdown mode
+        id: mode
+        run: |
+          set -euo pipefail
+          # First non-empty, non-comment line is the value. Comment lines let an
+          # operator record WHY a mode was (re-)applied and give a re-apply a
+          # meaningful diff.
+          MODE=$(grep -vE '^[[:space:]]*(#|$)' .ops/duckdb-lockdown | head -1 | tr -d '[:space:]')
+          case "$MODE" in
+            on|off) ;;
+            *) echo "::error::invalid value '$MODE' (expected 'on' or 'off')"; exit 1 ;;
+          esac
+          # The code reads the variable as `'1'` = on, anything else = off.
+          case "$MODE" in on) VALUE=1 ;; off) VALUE=0 ;; esac
+          echo "mode=$MODE" >> "$GITHUB_OUTPUT"
+          echo "value=$VALUE" >> "$GITHUB_OUTPUT"
+          echo "Desired DuckDB session lockdown: $MODE (DUCKDB_SESSION_LOCKDOWN=$VALUE)"
+
+      - name: Log in to Azure
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Apply lockdown mode and shift traffic
+        env:
+          APP: ${{ secrets.BACKEND_APP_NAME }}
+          RG: ${{ secrets.AZURE_RESOURCE_GROUP }}
+          MODE: ${{ steps.mode.outputs.mode }}
+          VALUE: ${{ steps.mode.outputs.value }}
+        run: |
+          set -euo pipefail
+
+          ENV_QUERY="properties.template.containers[0].env[?name=='DUCKDB_SESSION_LOCKDOWN'].value | [0]"
+
+          CURRENT=$(az containerapp show --name "$APP" --resource-group "$RG" \
+            --query "$ENV_QUERY" -o tsv 2>/dev/null || true)
+          echo "Current lockdown value: ${CURRENT:-<unset>} → target: $VALUE ($MODE)"
+
+          # Already applied → do NOTHING. Deliberately different from the
+          # container-mode control, which re-applies in order to double as a
+          # promote vehicle. Here a needless re-apply would create a revision from
+          # the app's CURRENT TEMPLATE image and shift 100% traffic to it — which
+          # would silently promote an untested build and bypass deploy.yml's
+          # 0%-traffic test-first model. That matters most for the very first run:
+          # adding this file to the repo triggers the workflow, and the value is
+          # `off`, which is what production already does.
+          if [ "$VALUE" = "$CURRENT" ]; then
+            echo "Already set to '$MODE' — nothing to do."
+            {
+              echo "### DuckDB session lockdown — no change"
+              echo ""
+              echo "Already \`$MODE\`. No revision created, no traffic shifted."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          # `off` with the variable unset is the same behaviour (any value other
+          # than '1' leaves the session unlocked), so that is not worth a revision.
+          if [ "$MODE" = "off" ] && { [ -z "$CURRENT" ] || [ "$CURRENT" = "None" ]; }; then
+            echo "DUCKDB_SESSION_LOCKDOWN is unset, which already means off — nothing to do."
+            {
+              echo "### DuckDB session lockdown — no change"
+              echo ""
+              echo "Target \`off\` and the variable is unset, which is the same behaviour."
+              echo "No revision created, no traffic shifted."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          # 0%-traffic revisions require multiple-revision mode (idempotent).
+          az containerapp revision set-mode \
+            --name "$APP" --resource-group "$RG" --mode multiple || true
+
+          # `0` is written as a literal value rather than removing the variable:
+          # any value other than '1' leaves the session unlocked in code, and an
+          # explicit '0' is visible in the portal and lets the read-back below
+          # assert what was applied instead of asserting an absence.
+          NEW_REV=$(az containerapp update \
+            --name "$APP" --resource-group "$RG" \
+            --set-env-vars DUCKDB_SESSION_LOCKDOWN="$VALUE" \
+            --query properties.latestRevisionName -o tsv)
+          echo "New revision: $NEW_REV"
+
+          # Wait for THAT revision (not just "latest ready") to be provisioned, so
+          # traffic never shifts to a half-built revision. The revision reaching
+          # Provisioned is also the boot smoke test: the API came up healthy with
+          # this setting before any user traffic reached it.
+          for _ in $(seq 1 30); do
+            STATE=$(az containerapp revision show --name "$APP" --resource-group "$RG" \
+              --revision "$NEW_REV" --query properties.provisioningState -o tsv 2>/dev/null || echo "")
+            echo "  provisioningState=$STATE"
+            case "$STATE" in
+              Provisioned) break ;;
+              Failed|Degraded) echo "::error::revision $NEW_REV failed to provision ($STATE)"; exit 1 ;;
+            esac
+            sleep 10
+          done
+          if [ "$STATE" != "Provisioned" ]; then
+            echo "::error::revision $NEW_REV not provisioned in time (last state: ${STATE:-unknown})"
+            exit 1
+          fi
+
+          az containerapp ingress traffic set --name "$APP" --resource-group "$RG" \
+            --revision-weight "$NEW_REV=100"
+
+          APPLIED=$(az containerapp show --name "$APP" --resource-group "$RG" \
+            --query "$ENV_QUERY" -o tsv)
+          echo "Applied lockdown value: $APPLIED"
+
+          {
+            echo "### DuckDB session lockdown → \`$APPLIED\`"
+            echo ""
+            echo "- App: \`$APP\` (backend only — the read path; the worker does not run user SQL)"
+            echo "- Live revision: \`$NEW_REV\` (100% traffic)"
+            echo "- Previous value: \`${CURRENT:-<unset>}\`"
+            echo ""
+            if [ "$APPLIED" = "1" ]; then
+              echo "Every Azure-mode DuckDB session now runs with LocalFileSystem disabled, so"
+              echo "user/AI SQL cannot read the container's own files even past the sqlGuard."
+              echo ""
+              echo "**Validate, once, before trusting it:** open a dashboard on the largest"
+              echo "tenant and run one big Ask AI question; look for the log line"
+              echo "\`DuckDB session lockdown: LocalFileSystem disabled\` on the first query,"
+              echo "and for any new \`temp_directory\`/spill errors in the following hour."
+              echo ""
+              echo "Rollback: set \`.ops/duckdb-lockdown\` to \`off\` and push."
+            else
+              echo "Sessions are unlocked: the sqlGuard is the only thing between user SQL and"
+              echo "the container filesystem."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          # Fail loudly if Azure didn't actually take the value.
+          test "$APPLIED" = "$VALUE"

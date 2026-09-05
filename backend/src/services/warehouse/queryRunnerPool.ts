@@ -111,12 +111,42 @@ export function dividedThreads(threads: string, divisor: number): string {
  * divided across the runner slots. Everything else is inherited on purpose —
  * the child needs the Azure secret and the rest of the DuckDB tuning vars.
  */
+/**
+ * What the child runner is ALLOWED to see. Everything else in the parent's
+ * environment — JWT_SECRET, CREDENTIALS_ENCRYPTION_KEY, ANTHROPIC_API_KEY,
+ * DATABASE_URL, REDIS_URL, Neo4j and SMTP credentials — is withheld. The
+ * runner executes user- and model-authored SQL; the sqlGuard is the first
+ * line, but a guard bypass (2026-09-05, P0-1: a double-quoted function name)
+ * turned `read_text('/proc/self/environ')` into a dump of every platform
+ * secret, because the child simply inherited `process.env`. A process that
+ * runs untrusted SQL must hold only the credential that SQL needs — the
+ * warehouse storage string — and the DuckDB tuning it runs under.
+ *
+ * Exact names and prefixes, not a denylist: a new secret added to the API
+ * must not reach the runner by default.
+ */
+const RUNNER_ENV_EXACT = new Set([
+  'PATH', 'HOME', 'TMPDIR', 'TMP', 'TEMP', 'LANG', 'LC_ALL', 'TZ',
+  'NODE_ENV', 'NODE_OPTIONS', 'NODE_EXTRA_CA_CERTS', 'LOG_LEVEL',
+  'AZURE_STORAGE_CONNECTION_STRING',
+  'AZURE_CONTAINER_APPS_JOB_NAME',
+  'STORAGE_FORMAT',
+]);
+const RUNNER_ENV_PREFIXES = ['DUCKDB_', 'WAREHOUSE_', 'AZURE_WAREHOUSE_'];
+
+export function runnerEnvAllowed(name: string): boolean {
+  if (RUNNER_ENV_EXACT.has(name)) return true;
+  return RUNNER_ENV_PREFIXES.some((p) => name.startsWith(p));
+}
+
 export function runnerEnv(parent: NodeJS.ProcessEnv, divisor: number): NodeJS.ProcessEnv {
-  return {
-    ...parent,
-    DUCKDB_MEMORY_LIMIT: dividedMemoryLimit(parent.DUCKDB_MEMORY_LIMIT ?? '70%', divisor),
-    DUCKDB_THREADS: dividedThreads(parent.DUCKDB_THREADS ?? '2', divisor),
-  };
+  const env: NodeJS.ProcessEnv = {};
+  for (const [k, v] of Object.entries(parent)) {
+    if (v !== undefined && runnerEnvAllowed(k)) env[k] = v;
+  }
+  env.DUCKDB_MEMORY_LIMIT = dividedMemoryLimit(parent.DUCKDB_MEMORY_LIMIT ?? '70%', divisor);
+  env.DUCKDB_THREADS = dividedThreads(parent.DUCKDB_THREADS ?? '2', divisor);
+  return env;
 }
 
 export class QueryTimeoutError extends Error {
@@ -215,8 +245,9 @@ function spawnRunner(key: string, spec: RunnerSpec): Runner {
   if (!script) throw new Error('Query runner script unavailable');
 
   const child = fork(script, [], {
-    // Inherit env (the child needs the Azure secret + DuckDB tuning vars), but
-    // with memory/threads divided across the runner slots — see runnerEnv().
+    // An ALLOWLISTED env (the child needs the Azure secret + DuckDB tuning
+    // vars and nothing else — see runnerEnv()), with memory/threads divided
+    // across the runner slots.
     env: runnerEnv(process.env, BUDGET_DIVISOR),
     // Keep stdio piped so a native crash message lands in our logs rather than
     // the container's raw stdout.

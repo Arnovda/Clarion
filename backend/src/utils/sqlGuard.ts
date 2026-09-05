@@ -14,14 +14,45 @@
  * notebook surface (which deliberately runs arbitrary SQL, including DDL) or
  * to the transformation writer (which must write).
  *
- * Pure string function, no DB dependency — unit-tested without a native build.
+ * Pure string checks (no DuckDB dependency) — unit-tested without a native
+ * build. The only side effect is the refusal log line, see `refuse()`.
  */
+
+import { logger } from './logger';
+import { getAiUserContext } from '../services/aiBudget';
 
 export class UnsafeSqlError extends Error {
   constructor(reason: string) {
     super(`Refused to run non-read-only SQL: ${reason}`);
     this.name = 'UnsafeSqlError';
   }
+}
+
+/**
+ * Every refusal is a security event and is LOGGED, with the tenant and user
+ * from the request scope when there is one, under the load-bearing string
+ * `'sql guard refused'` — `.ops/alerts` rule `clarion-sql-guard` counts that
+ * string. A tenant probing the guard used to leave no trace at all (2026-09-05
+ * assessment, D12). The excerpt has its string literals removed first so no
+ * data value lands in a log line; identifiers and function names stay, which
+ * is exactly what an investigator needs to see.
+ */
+function refuse(reason: string, sql: string): UnsafeSqlError {
+  try {
+    const ctx = getAiUserContext();
+    logger.warn(
+      {
+        reason,
+        tenantId: ctx?.tenantId ?? null,
+        userId: ctx?.userId ?? null,
+        sqlExcerpt: typeof sql === 'string' ? stripStrings(sql).replace(/\s+/g, ' ').slice(0, 200) : null,
+      },
+      'sql guard refused',
+    );
+  } catch {
+    // Logging must never turn a refusal into a different failure.
+  }
+  return new UnsafeSqlError(reason);
 }
 
 // Whole-word tokens that must never appear in a read-only query. Catches
@@ -58,10 +89,34 @@ const EXTERNAL_FNS = [
   'read_arrow', 'scan_arrow',
   'postgres_scan', 'postgres_query', 'mysql_scan', 'mysql_query', 'sqlite_scan',
   'glob',
+  // Indirection: `query('<sql>')` / `query_table(...)` execute a STRING as SQL,
+  // so a denylisted call hidden inside that string literal would never be seen
+  // by a scan that strips literals. Refuse the indirection itself.
+  'query', 'query_table',
+  // Introspection that would print the session's storage credential.
+  'duckdb_secrets', 'which_secret',
+  // Extension readers that also take a path/URI.
+  'st_read', 'read_xlsx', 'read_osm', 'read_gdal',
 ];
 // Match `fn(` allowing whitespace, on literal-stripped SQL (so a string that
 // merely contains the word is ignored, but an actual call is caught).
 const EXTERNAL_FN_RE = new RegExp(`\\b(${EXTERNAL_FNS.join('|')})\\s*\\(`, 'i');
+
+// THE QUOTED FORM. DuckDB resolves a double-quoted identifier in call position
+// as the function of that name — `"read_text"('/proc/self/environ')` is the
+// same call as `read_text(...)`. `stripLiterals()` erases double-quoted
+// identifiers (correctly, for the keyword scan: a column named "update" is
+// not an UPDATE), which made the quoted call invisible to EXTERNAL_FN_RE.
+// Reproduced 2026-09-05 (market-readiness assessment v2, P0-1). This scan runs
+// on SQL with comments and STRING literals removed but identifiers kept, and
+// accepts an optional quote on either side of the name. The leading class
+// refuses a match in the middle of a longer identifier (`"my_read_text"(`),
+// and refuses the quote itself as the preceding character so `""read_text"(`
+// cannot straddle two tokens.
+const EXTERNAL_FN_QUOTED_RE = new RegExp(
+  `(?:^|[^A-Za-z0-9_"])"?(${EXTERNAL_FNS.join('|')})"?\\s*\\(`,
+  'i',
+);
 
 // Object-storage URI schemes that must never appear as a literal in a read
 // query — these virtually never occur as legitimate column data, so flagging
@@ -84,6 +139,19 @@ function stripLiterals(sql: string): string {
   s = s.replace(/\$([A-Za-z_]*)\$[\s\S]*?\$\1\$/g, ' '); // dollar-quoted
   s = s.replace(/'(?:[^']|'')*'/g, ' ');    // single-quoted strings ('' escape)
   s = s.replace(/"(?:[^"]|"")*"/g, ' ');    // double-quoted identifiers
+  return s;
+}
+
+/**
+ * Strip comments and STRING literals only — double-quoted identifiers stay,
+ * because the quoted-call scan needs to see them.
+ */
+function stripStrings(sql: string): string {
+  let s = sql;
+  s = s.replace(/--[^\n]*/g, ' ');
+  s = s.replace(/\/\*[\s\S]*?\*\//g, ' ');
+  s = s.replace(/\$([A-Za-z_]*)\$[\s\S]*?\$\1\$/g, ' ');
+  s = s.replace(/'(?:[^']|'')*'/g, ' ');
   return s;
 }
 
@@ -116,7 +184,7 @@ const FROM_LITERAL_RE = /\b(from|join)\s+@STRLIT@/i;
  */
 export function assertSelectOnly(sql: string): string {
   if (typeof sql !== 'string' || !sql.trim()) {
-    throw new UnsafeSqlError('empty query');
+    throw refuse('empty query', sql);
   }
 
   const stripped = stripLiterals(sql).trim();
@@ -125,19 +193,19 @@ export function assertSelectOnly(sql: string): string {
   // (a second statement) is not.
   const withoutTrailing = stripped.replace(/;\s*$/, '');
   if (withoutTrailing.includes(';')) {
-    throw new UnsafeSqlError('multiple statements');
+    throw refuse('multiple statements', sql);
   }
 
   // Must be a read query.
   if (!/^\s*(select|with)\b/i.test(withoutTrailing)) {
-    throw new UnsafeSqlError('not a SELECT/WITH query');
+    throw refuse('not a SELECT/WITH query', sql);
   }
 
   // Defence in depth: no data-modifying / side-channel keywords anywhere
   // (catches data-modifying CTEs inside a WITH).
   const m = FORBIDDEN_RE.exec(withoutTrailing);
   if (m) {
-    throw new UnsafeSqlError(`forbidden keyword "${m[1].toUpperCase()}"`);
+    throw refuse(`forbidden keyword "${m[1].toUpperCase()}"`, sql);
   }
 
   return sql.trim().replace(/;\s*$/, '').trim();
@@ -167,20 +235,26 @@ export function assertNoExternalAccess(sql: string): void {
   // Object-storage URI literals: scan the raw SQL (the path lives inside a quote).
   const uri = URI_SCHEME_RE.exec(sql);
   if (uri) {
-    throw new UnsafeSqlError(`external path/URI literal "${uri[1].toLowerCase()}://"`);
+    throw refuse(`external path/URI literal "${uri[1].toLowerCase()}://"`, sql);
   }
   // Bare replacement scan: a string literal in FROM/JOIN position reads a file
   // by path (catches local paths + any scheme, e.g. `FROM '/warehouse/tenant_x/…'`).
   const marked = markLiterals(sql);
   if (FROM_LITERAL_RE.test(marked)) {
-    throw new UnsafeSqlError('path literal in FROM/JOIN position (replacement scan)');
+    throw refuse('path literal in FROM/JOIN position (replacement scan)', sql);
   }
   // Table/scalar functions that read arbitrary paths: scan literal-stripped SQL
   // so a string merely containing the word is ignored but a real call is caught.
   const stripped = stripLiterals(sql);
   const fn = EXTERNAL_FN_RE.exec(stripped);
   if (fn) {
-    throw new UnsafeSqlError(`external-access function "${fn[1].toLowerCase()}()"`);
+    throw refuse(`external-access function "${fn[1].toLowerCase()}()"`, sql);
+  }
+  // …and the same functions called by QUOTED name, which the scan above cannot
+  // see because stripLiterals() removes double-quoted identifiers.
+  const quoted = EXTERNAL_FN_QUOTED_RE.exec(stripStrings(sql));
+  if (quoted) {
+    throw refuse(`external-access function "${quoted[1].toLowerCase()}()" (quoted)`, sql);
   }
 }
 

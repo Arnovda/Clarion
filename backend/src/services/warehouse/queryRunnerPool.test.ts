@@ -161,7 +161,7 @@ describe('budget divisor', () => {
 });
 
 describe('runnerEnv', () => {
-  it('divides the DuckDB budget and inherits everything else', async () => {
+  it('divides the DuckDB budget and passes only what the runner needs', async () => {
     const { runnerEnv } = await import('./queryRunnerPool');
     const env = runnerEnv(
       {
@@ -169,6 +169,9 @@ describe('runnerEnv', () => {
         DUCKDB_THREADS: '4',
         AZURE_STORAGE_CONNECTION_STRING: 'secret',
         DUCKDB_MAX_RESULT_ROWS: '100000',
+        WAREHOUSE_CONTAINER_MODE: 'per-tenant',
+        PATH: '/usr/bin',
+        NODE_ENV: 'production',
       },
       4,
     );
@@ -179,6 +182,39 @@ describe('runnerEnv', () => {
     // result-row cap as the in-process path.
     expect(env.AZURE_STORAGE_CONNECTION_STRING).toBe('secret');
     expect(env.DUCKDB_MAX_RESULT_ROWS).toBe('100000');
+    expect(env.WAREHOUSE_CONTAINER_MODE).toBe('per-tenant');
+    expect(env.PATH).toBe('/usr/bin');
+    expect(env.NODE_ENV).toBe('production');
+  });
+
+  it('withholds every platform secret the SQL does not need (P0-1)', async () => {
+    // The runner executes untrusted SQL. A guard bypass reading
+    // /proc/self/environ must find the storage string and nothing else.
+    const { runnerEnv } = await import('./queryRunnerPool');
+    const env = runnerEnv(
+      {
+        JWT_SECRET: 'jwt',
+        CREDENTIALS_ENCRYPTION_KEY: 'key',
+        ANTHROPIC_API_KEY: 'sk-ant',
+        DATABASE_URL: 'postgresql://x',
+        REDIS_URL: 'redis://x',
+        NEO4J_PASSWORD: 'neo',
+        SMTP_PASS: 'smtp',
+        ACS_CONNECTION_STRING: 'acs',
+        APPLICATIONINSIGHTS_CONNECTION_STRING: 'ai',
+        AZURE_STORAGE_CONNECTION_STRING: 'secret',
+        SOME_FUTURE_SECRET: 'x',
+      },
+      4,
+    );
+    for (const k of [
+      'JWT_SECRET', 'CREDENTIALS_ENCRYPTION_KEY', 'ANTHROPIC_API_KEY', 'DATABASE_URL',
+      'REDIS_URL', 'NEO4J_PASSWORD', 'SMTP_PASS', 'ACS_CONNECTION_STRING',
+      'APPLICATIONINSIGHTS_CONNECTION_STRING', 'SOME_FUTURE_SECRET',
+    ]) {
+      expect(env[k]).toBeUndefined();
+    }
+    expect(env.AZURE_STORAGE_CONNECTION_STRING).toBe('secret');
   });
 
   it('applies the same defaults as applyResourceGuardrails when unset', async () => {

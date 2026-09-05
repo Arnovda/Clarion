@@ -97,6 +97,19 @@ AI-designed ones. Rollback is setting the file back to `templates`.
 Like `duckdb-runner`, this control **does nothing when the value is already
 applied** — it is not a promote vehicle.
 
+## `duckdb-lockdown`
+
+Contains exactly one word: `on` or `off`. Drives `DUCKDB_SESSION_LOCKDOWN` on
+the backend (the read path). `on` makes every Azure-mode DuckDB session refuse
+the container's own filesystem, so user/AI SQL cannot read
+`/proc/self/environ` or any local file even if the read-query guard is ever
+bypassed again — it was on 2026-09-05 (assessment v2, P0-1); the guard is
+fixed, this is the second line behind it. Starts `off` so adding the file was a
+no-op; flip it and do the one live check the workflow summary asks for (a big
+dashboard and one large Ask AI question on the largest tenant, then watch for
+spill errors). Like `duckdb-runner`, it does nothing when the value is already
+applied — not a promote vehicle.
+
 ## `promote`
 
 The GitOps mouth of the **Promote to production** workflow — the traffic shift

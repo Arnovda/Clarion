@@ -165,3 +165,62 @@ describe('assertSafeReadQuery / isSafeReadQuery', () => {
     expect(isSafeReadQuery('DROP TABLE t')).toBe(false);
   });
 });
+
+// ---------------------------------------------------------------------------
+// P0-1 of the 2026-09-05 market-readiness assessment: the external-function
+// scan ran on literal-stripped SQL, and stripLiterals() also erases
+// double-quoted IDENTIFIERS — so `"read_text"(...)`, which DuckDB resolves to
+// the same function, walked straight past it. Reproduced against this module
+// before the fix: the unquoted form was refused, the quoted form was ALLOWED.
+// ---------------------------------------------------------------------------
+describe('assertNoExternalAccess — quoted function names (P0-1)', () => {
+  it('refuses a double-quoted external function exactly like the bare one', () => {
+    for (const q of [
+      `SELECT * FROM "read_text"('/proc/self/environ')`,
+      `SELECT * FROM "READ_TEXT"('/proc/self/environ')`,
+      `SELECT * FROM "read_parquet"('https://evil.example/x.parquet')`,
+      `SELECT * FROM main."read_csv"('/etc/passwd')`,
+      `SELECT * FROM "read_blob" ('/etc/shadow')`,
+      `SELECT * FROM "glob"('/**')`,
+      `SELECT * FROM "delta_scan"('/warehouse/tenant_9/x')`,
+    ]) {
+      expect(() => assertNoExternalAccess(q)).toThrow(UnsafeSqlError);
+      expect(isSafeReadQuery(q)).toBe(false);
+    }
+  });
+
+  it('refuses the indirection functions that execute a string as SQL', () => {
+    // A denylisted call hidden INSIDE the string literal is invisible to every
+    // literal-stripping scan, so the indirection itself is refused.
+    for (const q of [
+      `SELECT * FROM query('SELECT * FROM read_text(''/proc/self/environ'')')`,
+      `SELECT * FROM "query"('SELECT 1')`,
+      `SELECT * FROM query_table('orders')`,
+    ]) {
+      expect(isSafeReadQuery(q)).toBe(false);
+    }
+  });
+
+  it('refuses secret introspection', () => {
+    expect(isSafeReadQuery(`SELECT * FROM duckdb_secrets(redact := false)`)).toBe(false);
+    expect(isSafeReadQuery(`SELECT * FROM "duckdb_secrets"()`)).toBe(false);
+  });
+
+  it('still allows a column or table whose name merely CONTAINS a denylisted word', () => {
+    for (const q of [
+      `SELECT "my_read_text" FROM t`,
+      `SELECT * FROM "read_text_log"`,
+      `SELECT count(*) AS query_count FROM t`,
+      `SELECT * FROM t WHERE note = 'read_text(x)'`,
+      `SELECT "query" FROM t`,
+      `SELECT glob_pattern FROM t`,
+    ]) {
+      expect(isSafeReadQuery(q)).toBe(true);
+    }
+  });
+
+  it('refuses a comment-split or whitespace-split quoted call', () => {
+    expect(isSafeReadQuery(`SELECT * FROM "read_text"/* x */('/proc/self/environ')`)).toBe(false);
+    expect(isSafeReadQuery(`SELECT * FROM "read_text"\n\t('/proc/self/environ')`)).toBe(false);
+  });
+});

@@ -31,6 +31,13 @@ arnovda@telenet.be
 #                              QUEUE_DEPTH_WARN (default 25), so 3+ lines
 #                              means several minutes of sustained backlog,
 #                              not a blip
+#   clarion-sql-guard          ≥3 'sql guard refused' lines in 15 min — the
+#                              read-query guard (utils/sqlGuard.ts) logs this
+#                              string on every refusal, with tenant + user.
+#                              Added 2026-09-05 after a bypass was found and
+#                              fixed (assessment v2, P0-1): a tenant probing
+#                              the guard must leave a trace. 3+ in 15 min is
+#                              probing, one is a model slip.
 #
 # Deliberately NOT here (and why):
 #   uptime probing   a continuous availability test wants an App Insights

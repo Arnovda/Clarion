@@ -75,7 +75,7 @@ jobs:
           AG_NAME="clarion-alerts"
           WORKER="${APP%-backend}-jobs-worker"
           METRIC_RULES="clarion-backend-5xx clarion-backend-restarts clarion-worker-restarts clarion-pg-cpu clarion-pg-storage"
-          QUERY_RULES="clarion-server-errors clarion-failed-syncs clarion-brute-force clarion-queue-depth"
+          QUERY_RULES="clarion-server-errors clarion-failed-syncs clarion-brute-force clarion-queue-depth clarion-sql-guard"
 
           if [ "$MODE" = "off" ]; then
             say "## Production alerts — OFF"
@@ -230,8 +230,15 @@ jobs:
               "ContainerAppConsoleLogs_CL | where Log_s contains 'queue depth high'" \
               "A job queue has had a deep waiting backlog for several minutes — consumers dead or drowning" \
               && note_ok clarion-queue-depth || note_fail clarion-queue-depth
+            # 2026-09-05 (assessment v2, P0-1): 'sql guard refused' is what
+            # utils/sqlGuard.ts logs on EVERY refusal, with tenant and user.
+            # One line is a model slip; three in 15 minutes is someone probing.
+            upsert_query_rule clarion-sql-guard 2 "count 'Refusals' >= 3" Refusals \
+              "ContainerAppConsoleLogs_CL | where ContainerAppName_s == '$APP' | where Log_s contains 'sql guard refused'" \
+              "The SQL guard refused 3+ queries in 15 minutes — a tenant may be probing for a bypass" \
+              && note_ok clarion-sql-guard || note_fail clarion-sql-guard
           else
-            note_fail "clarion-server-errors/clarion-failed-syncs/clarion-brute-force/clarion-queue-depth (no Log Analytics workspace found in $RG)"
+            note_fail "clarion-server-errors/clarion-failed-syncs/clarion-brute-force/clarion-queue-depth/clarion-sql-guard (no Log Analytics workspace found in $RG)"
           fi
 
           say ""

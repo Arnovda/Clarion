@@ -31,7 +31,51 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-09-05 (MARKET READINESS ASSESSMENT, SECOND PASS — doc
+**Last updated:** 2026-09-05 (WAVE A REMEDIATION IN PROGRESS — owner: *"You
+can push to main and begin fixing the waves"*; the assessment v2 was
+fast-forwarded to main and each P0 lands as its own push)
+
+**Wave A, item 0 — P0-1 CLOSED: the SQL guard sees quoted function names.**
+- `utils/sqlGuard.ts`: new `EXTERNAL_FN_QUOTED_RE` scans SQL with comments
+  and STRING literals removed but identifiers KEPT (`stripStrings`), and
+  accepts an optional double quote on either side of a denylisted name — so
+  `"read_text"(…)`, `main."read_csv"(…)`, `"READ_TEXT"(…)` are refused
+  exactly like the bare call. Denylist grew: `query`/`query_table` (they
+  execute a STRING as SQL, so a call hidden inside the literal is invisible
+  to every literal-stripping scan — refuse the indirection), `duckdb_secrets`
+  /`which_secret` (would print the storage credential), `st_read`,
+  `read_xlsx`, `read_osm`, `read_gdal`. A column merely CONTAINING a
+  denylisted word (`"my_read_text"`, `query_count`) is still allowed —
+  pinned by test.
+- **Every refusal is now logged** (`refuse()`): WARN `'sql guard refused'`
+  with reason, tenantId/userId from the request's AsyncLocalStorage scope,
+  and a 200-char excerpt with string literals removed (no data value in a
+  log line). New alert rule `clarion-sql-guard` (≥3 lines / 15 min) in
+  `.ops/alerts` + `alerts.yml` — the `.ops/alerts` edit is what makes the
+  workflow create the rule on merge; read that run's summary.
+- **The child query runner no longer inherits the parent env**
+  (`queryRunnerPool.runnerEnv`): an exact-name + prefix ALLOWLIST (PATH,
+  HOME, NODE_*, LOG_LEVEL, `DUCKDB_*`, `WAREHOUSE_*`, `AZURE_WAREHOUSE_*`,
+  `AZURE_STORAGE_CONNECTION_STRING`, `AZURE_CONTAINER_APPS_JOB_NAME`,
+  `STORAGE_FORMAT`). JWT_SECRET, CREDENTIALS_ENCRYPTION_KEY,
+  ANTHROPIC_API_KEY, DATABASE_URL, REDIS_URL, Neo4j/SMTP/ACS/App Insights
+  strings are withheld — a process that runs untrusted SQL holds only the
+  credential that SQL needs. Pinned by test.
+- **NEW GitOps control `.ops/duckdb-lockdown`** (`on`|`off`) +
+  `duckdb-lockdown-mode.yml` (cloned from the runner control: no-op when
+  already applied, NOT a promote vehicle): drives `DUCKDB_SESSION_LOCKDOWN`
+  (1/0) on the backend. **Starts `off`** so adding it is a no-op; the owner
+  flips it and does the ONE live check the summary asks for (a big dashboard
+  + one large Ask AI question on the largest tenant; watch for spill
+  errors) — per the standing DuckDB-changes-need-a-live-look lesson.
+- Validation: sqlGuard suite 25 (5 new incl. the reproduced bypass cases),
+  runner-pool suite 22 (+1), full backend vitest **59 files / 608 passed / 4
+  skipped**, `npm run check` clean, all nine ratchets green from the repo
+  root, both new/edited workflow YAMLs parse. NOT run against a live DuckDB
+  (no native `"read_text"(` execution here); the guard-level reproduction is
+  the evidence.
+
+**Prior last updated:** 2026-09-05 (MARKET READINESS ASSESSMENT, SECOND PASS — doc
 only, no code changed; twelve-domain re-audit of main at 9ab13a2 after waves
 1+2, with one guard bypass REPRODUCED)
 
