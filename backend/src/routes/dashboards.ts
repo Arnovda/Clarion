@@ -19,6 +19,18 @@ import { preserveSpecCarryover, diffSpecChanges } from '../services/dashboardSpe
 import { applyEditOps, pendingSqlEdits, realRefusals, isDeterministicOp, type DashboardEditOp } from '../services/dashboardEditOps';
 import { startSSE } from '../services/sse';
 import { assertSafeReadQuery, isSafeReadQuery, assertNoExternalAccess } from '../utils/sqlGuard';
+import { actorOf, prepareUserRead, type ReadActor } from '../services/readPolicy';
+
+/**
+ * Data policies (row filters + column masks) applied to a resolved SQL for
+ * the acting user, re-guarded on the way (P0-4, 2026-09-05 — until then
+ * only Ask AI applied them, so a column masked there was unmasked on the
+ * dashboard the same answer was pinned to). Every executeQuery on this
+ * surface goes through here.
+ */
+async function policied(actor: ReadActor, sql: string): Promise<string> {
+  return (await prepareUserRead(sql, actor)).sql;
+}
 import { logger } from '../utils/logger';
 
 const log = logger.child({ mod: 'dashboards' });
@@ -136,6 +148,7 @@ async function executeSpecForValidation(
   connectionId: number,
   tenantId?: number,
   dataLayer?: 'product' | 'source',
+  actor?: ReadActor,
 ): Promise<WidgetExecutionResult[]> {
   // Wrap all RLS-dependent queries in a single transaction
   const useSource = dataLayer === 'source';
@@ -167,7 +180,9 @@ async function executeSpecForValidation(
         }
         const resolvedSql = fixDuckDbDialect(applyDefaultFilters(widget.sql));
         try {
-          const result = await connector.executeQuery(resolvedSql);
+          // The sample rows feed the repair prompt: the model must not see
+          // rows the requesting user may not.
+          const result = await connector.executeQuery(actor ? await policied(actor, resolvedSql) : resolvedSql);
           const rows = result.rows as Record<string, unknown>[];
           return {
             id: widget.id,
@@ -212,6 +227,7 @@ async function validateAndRepairSpec(
   dataLayer: 'product' | 'source' | undefined,
   semanticCtx: { semanticContext: string; relationshipContext: string },
   onlyWidgetIds?: Set<string>,
+  actor?: ReadActor,
 ): Promise<DashboardSpec> {
   try {
     const widgetsToCheck = onlyWidgetIds
@@ -224,6 +240,7 @@ async function validateAndRepairSpec(
       connectionId,
       tenantId,
       dataLayer,
+      actor,
     );
 
     // Deterministic column-contract check — a widget whose SQL doesn't
@@ -327,7 +344,7 @@ router.post('/generate', requireAuth, validate(generateDashboardSchema), async (
       productCtx?.kpiFormulas ?? '',
     );
 
-    spec = await validateAndRepairSpec(spec, connectionId, req.user!.tenantId, dataLayer, semanticCtx);
+    spec = await validateAndRepairSpec(spec, connectionId, req.user!.tenantId, dataLayer, semanticCtx, undefined, actorOf(req));
 
     // Stamp the generation context onto the spec so a saved dashboard restores
     // the SAME context on open (refinements would otherwise fall back to every
@@ -424,7 +441,7 @@ router.post('/refine-spec', requireAuth, validate(refineSpecSchema), async (req:
         })
         .map((w) => w.id),
     );
-    spec = await validateAndRepairSpec(spec, connectionId, req.user!.tenantId, effectiveLayer, semanticCtx, changedIds);
+    spec = await validateAndRepairSpec(spec, connectionId, req.user!.tenantId, effectiveLayer, semanticCtx, changedIds, actorOf(req));
     // The repair call can also drop carryover fields — re-apply after it too.
     spec = preserveSpecCarryover(currentSpec, spec);
     // Stamp the context this refine actually ran against.
@@ -583,7 +600,7 @@ router.post('/refine-spec-stream', requireAuth, validate(refineSpecSchema), asyn
         }).map((w) => w.id),
       );
       sse.emit({ type: 'phase', text: 'Checking the changed cards against your data…' });
-      spec = await validateAndRepairSpec(spec, connectionId, tenantId, effectiveLayer, semanticCtx, changedIds);
+      spec = await validateAndRepairSpec(spec, connectionId, tenantId, effectiveLayer, semanticCtx, changedIds, actorOf(req));
       finish(spec, [], []);
     };
 
@@ -796,8 +813,7 @@ router.post('/refine-spec-stream', requireAuth, validate(refineSpecSchema), asyn
         const idSet = new Set(changedIds);
         const results = await executeSpecForValidation(
           { ...spec, widgets: spec.widgets.filter((w) => idSet.has(w.id)) },
-          connectionId, tenantId, effectiveLayer,
-        );
+          connectionId, tenantId, effectiveLayer, actorOf(req));
         for (const r of results) {
           if (!r.error && r.rowCount > 0) {
             const issue = validateWidgetColumns(r.type, r.sampleRows);
@@ -826,8 +842,7 @@ router.post('/refine-spec-stream', requireAuth, validate(refineSpecSchema), asyn
             assertSafeReadQuery(out.sql);
             const recheck = await executeSpecForValidation(
               { ...spec, widgets: [{ ...current, sql: out.sql }] },
-              connectionId, tenantId, effectiveLayer,
-            );
+              connectionId, tenantId, effectiveLayer, actorOf(req));
             const ok = recheck[0] && !recheck[0].error &&
               !(recheck[0].rowCount > 0 && validateWidgetColumns(recheck[0].type, recheck[0].sampleRows));
             if (ok) {
@@ -912,7 +927,7 @@ router.post('/fix-widget', requireAuth, validate(fixWidgetSchema), async (req: R
       : await buildSemanticContext(connectionId, req.user!.tenantId);
 
     const repaired = await validateAndRepairSpec(
-      spec, connectionId, req.user!.tenantId, dataLayer, semanticCtx, new Set([widgetId]),
+      spec, connectionId, req.user!.tenantId, dataLayer, semanticCtx, new Set([widgetId]), actorOf(req),
     );
     const fixedWidget = repaired.widgets.find((w) => w.id === widgetId) ?? widget;
     const fixed = JSON.stringify(fixedWidget) !== JSON.stringify(widget);
@@ -999,7 +1014,7 @@ router.post('/execute', requireAuth, async (req: Request, res: Response, next: N
     await connector.connect();
 
     try {
-      const result = await connector.executeQuery(resolvedSql);
+      const result = await connector.executeQuery(await policied(actorOf(req), resolvedSql));
       res.json({ ok: true, data: { rows: result.rows } });
     } catch (err: unknown) {
       const raw = err instanceof Error ? err.message : String(err);
@@ -1102,7 +1117,7 @@ router.post('/batch-execute', requireAuth, validate(batchExecuteSchema), async (
           cacheMisses += 1;
           const widgetStart = Date.now();
           try {
-            const result = await connector.executeQuery(resolvedSql);
+            const result = await connector.executeQuery(await policied(actorOf(req), resolvedSql));
             const rows = result.rows as Record<string, unknown>[];
             if (tenantId) putWidgetCache(tenantId, resolvedSql, rows);
             results[id] = { rows };
@@ -1266,7 +1281,7 @@ router.post('/batch-execute-stream', requireAuth, validate(batchExecuteSchema), 
       await Promise.all(
         remaining.map(async ({ id, resolvedSql }) => {
           try {
-            const result = await connector.executeQuery(resolvedSql);
+            const result = await connector.executeQuery(await policied(actorOf(req), resolvedSql));
             if (aborted) return;
             const rows = result.rows as Record<string, unknown>[];
             if (tenantId) putWidgetCache(tenantId, resolvedSql, rows);
@@ -1506,7 +1521,7 @@ router.post('/drill-rows', requireAuth, async (req: Request, res: Response, next
     await connector.connect();
 
     try {
-      const result = await connector.executeQuery(resolvedSql);
+      const result = await connector.executeQuery(await policied(actorOf(req), resolvedSql));
       const rows = result.rows as Record<string, unknown>[];
       const columns = rows.length > 0 ? Object.keys(rows[0]) : [];
       res.json({
@@ -1650,7 +1665,9 @@ router.post('/cube', requireAuth, async (req: Request, res: Response, next: Next
         // Quote the table identifier to avoid keyword collisions.
         const safeTable = `"${tableName.replace(/"/g, '""')}"`;
         try {
-          await connector.executeQuery(`COPY (SELECT * FROM ${safeTable}) TO '${tmpPath.replace(/'/g, "''")}' (FORMAT PARQUET)`);
+          // A whole-table export gets the same row filters and masks as any read.
+          const policiedSelect = await policied(actorOf(req), `SELECT * FROM ${safeTable}`);
+          await connector.executeQuery(`COPY (${policiedSelect}) TO '${tmpPath.replace(/'/g, "''")}' (FORMAT PARQUET)`);
         } catch (err) {
           // If the table doesn't exist in the warehouse, skip it
           // gracefully — the widget's SQL will fail in WASM and the
@@ -1739,7 +1756,7 @@ router.post('/filter-options', requireAuth, async (req: Request, res: Response, 
 
     try {
       const result = await connector.executeQuery(
-        `SELECT DISTINCT "${column}" FROM "${table}" WHERE "${column}" IS NOT NULL ORDER BY "${column}" LIMIT 100`,
+        await policied(actorOf(req), `SELECT DISTINCT "${column}" FROM "${table}" WHERE "${column}" IS NOT NULL ORDER BY "${column}" LIMIT 100`),
       );
       const options = result.rows.map((r) => String((r as Record<string, unknown>)[column]));
       putFilterOptionsCache(filterTenantId, connectionId, table, column, options);
@@ -2373,6 +2390,7 @@ async function executeWidgetSql(
   widgetIndex: number,
   query: Record<string, unknown>,
   tenantId?: number,
+  actor?: ReadActor,
 ): Promise<{ rows: Record<string, unknown>[]; widget: { title: string; id: string }; connectionId: number }> {
   const row = await db('dashboards').where({ id: dashboardId }).first();
   if (!row) throw Object.assign(new Error('Dashboard not found'), { status: 404 });
@@ -2402,7 +2420,7 @@ async function executeWidgetSql(
   await connector.connect();
 
   try {
-    const result = await connector.executeQuery(resolvedSql);
+    const result = await connector.executeQuery(actor ? await policied(actor, resolvedSql) : resolvedSql);
     return { rows: result.rows as Record<string, unknown>[], widget, connectionId: row.connection_id };
   } finally {
     connector.disconnect();
@@ -2421,6 +2439,7 @@ router.get('/:id/widget/:widgetIndex/export/csv', requireAuth, async (req: Reque
       Number(req.params.widgetIndex),
       req.query as Record<string, unknown>,
       req.user!.tenantId,
+      actorOf(req),
     );
 
     if (!rows.length) {
@@ -2456,6 +2475,7 @@ router.get('/:id/widget/:widgetIndex/export/xlsx', requireAuth, async (req: Requ
       Number(req.params.widgetIndex),
       req.query as Record<string, unknown>,
       req.user!.tenantId,
+      actorOf(req),
     );
 
     if (!rows.length) {
@@ -2520,7 +2540,7 @@ router.get('/:id/export/xlsx', requireAuth, async (req: Request, res: Response, 
         const widget = spec.widgets[i];
         const resolvedSql = resolveFiltersFromQuery(widget.sql, req.query as Record<string, unknown>);
         try {
-          const result = await connector.executeQuery(resolvedSql);
+          const result = await connector.executeQuery(await policied(actorOf(req), resolvedSql));
           const rows = result.rows as Record<string, unknown>[];
           if (rows.length > 0) {
             const columns = Object.keys(rows[0]);
@@ -2628,7 +2648,7 @@ router.post('/investigate', requireAuth, async (req: Request, res: Response, nex
               // Security guard on the AI-planned diagnostic SQL (see sqlGuard).
               assertSafeReadQuery(sql);
               const resolved = resolveWidgetFilters(sql, filterValues ?? {});
-              const result = await connector.executeQuery(resolved);
+              const result = await connector.executeQuery(await policied(actorOf(req), resolved));
               const rows = (result.rows as Record<string, unknown>[]).slice(0, 20);
               diagnosticResults.push({ label, rows });
               emit({ type: 'result', label, rows });

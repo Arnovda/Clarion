@@ -2537,7 +2537,9 @@ router.post('/forecast', requireAuth, validate(forecastQuerySchema), async (req:
 
     // 3. Execute the historical SQL to get time-series data.
     //    Policies apply here like every other execution path.
-    const fcPolicy = await applyDataPolicies(fcResult.historicalSql, req.user!.sub, req.user!.role, req.user!.tenantId);
+    // Guard first (this was the one generation path with policies but no
+    // sqlGuard — assessment v2, 1-1), then the user's policies.
+    const fcPolicy = await applyDataPolicies(assertSafeReadQuery(fcResult.historicalSql), req.user!.sub, req.user!.role, req.user!.tenantId);
     let histRows: Record<string, unknown>[];
 
     if (productCtx && productWarehouse) {

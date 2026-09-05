@@ -8,7 +8,7 @@
  * For column_mask policies: replaces column references with masked values.
  */
 
-import { semanticDb } from '../db/knex';
+import { tenantQuery } from './tenantQuery';
 
 // Dangerous SQL keywords that must never appear in filter expressions
 const FORBIDDEN_PATTERNS = /\b(DROP|DELETE|INSERT|UPDATE|ALTER|CREATE|TRUNCATE|EXEC|EXECUTE|GRANT|REVOKE|UNION)\b/i;
@@ -72,12 +72,27 @@ async function loadPoliciesForUser(
   userRole: string,
   tenantId: number,
 ): Promise<DataPolicy[]> {
-  return semanticDb('data_policies')
-    .where({ tenant_id: tenantId, is_active: true })
-    .andWhere(function () {
-      this.where({ user_id: userId }).orWhere({ role: userRole });
-    })
-    .orderBy('table_name');
+  // Under tenant context (P0-4, 2026-09-05): this read ran on the root pool
+  // and, from a worker or a request whose fallback SET had not reached this
+  // connection, saw ZERO policies under the production role — which is
+  // fail-OPEN for a security control. The explicit tenant_id filter stays.
+  return tenantQuery(tenantId, (trx) =>
+    trx('data_policies')
+      .where({ tenant_id: tenantId, is_active: true })
+      .andWhere(function () {
+        this.where({ user_id: userId }).orWhere({ role: userRole });
+      })
+      .orderBy('table_name'),
+  );
+}
+
+/** Every active policy of the tenant, whoever it targets (unattended reads). */
+async function loadAllPoliciesForTenant(tenantId: number): Promise<DataPolicy[]> {
+  return tenantQuery(tenantId, (trx) =>
+    trx('data_policies')
+      .where({ tenant_id: tenantId, is_active: true })
+      .orderBy('table_name'),
+  );
 }
 
 /**
@@ -125,6 +140,28 @@ export async function applyDataPolicies(
   }
 
   const policies = await loadPoliciesForUser(userId, userRole, tenantId);
+  return applyPolicyRows(sql, policies);
+}
+
+/**
+ * Apply EVERY active policy of the tenant, regardless of the user or role
+ * it targets. For reads with no acting user — a scheduled report email, the
+ * brief's KPI snapshot — content leaves the platform unattended, so it gets
+ * the most restrictive view any policy in the tenant describes. Masking
+ * more than one recipient needed is conservative; showing a masked column
+ * because the schedule's creator happened to be an admin is the failure
+ * this prevents.
+ */
+export async function applyAllTenantPolicies(
+  sql: string,
+  tenantId: number,
+): Promise<PolicyApplicationResult> {
+  const policies = await loadAllPoliciesForTenant(tenantId);
+  return applyPolicyRows(sql, policies);
+}
+
+/** The pure rewrite, shared by the per-user and the whole-tenant entry points. */
+export function applyPolicyRows(sql: string, policies: DataPolicy[]): PolicyApplicationResult {
   if (policies.length === 0) {
     return { sql, policiesApplied: 0, policyNames: [] };
   }
@@ -157,13 +194,14 @@ export async function applyDataPolicies(
     // Use word-boundary matching to avoid partial replacements
     const colName = mask.column_name!;
     const tableName = mask.table_name;
+    const token = `\u0000MASK_${colName}\u0000`;
 
-    // Replace qualified references: table.column -> '***'
+    // Replace qualified references: table.column -> mask
     const qualifiedPattern = new RegExp(
       `\\b${escapeRegex(tableName)}\\.${escapeRegex(colName)}\\b`,
       'gi',
     );
-    modifiedSql = modifiedSql.replace(qualifiedPattern, `'***' /* ${colName} masked */`);
+    modifiedSql = modifiedSql.replace(qualifiedPattern, token);
 
     // Replace unqualified references in SELECT (only if the table is referenced)
     // Be conservative: only replace if it looks like a column reference
@@ -171,7 +209,20 @@ export async function applyDataPolicies(
       `(?<=SELECT\\s[\\s\\S]*?)\\b${escapeRegex(colName)}\\b(?=[\\s,])`,
       'gi',
     );
-    modifiedSql = modifiedSql.replace(unqualifiedPattern, `'***' /* ${colName} masked */`);
+    modifiedSql = modifiedSql.replace(unqualifiedPattern, token);
+
+    // THE COLUMN KEEPS ITS NAME in the select list (P0-4, 2026-09-05): a bare
+    // `'***'` produced a result column literally named `'***'`, so a widget
+    // bound to `iban` rendered nothing and a masked answer lost its header.
+    // In the select list (before the first FROM) the mask is aliased back to
+    // the column; everywhere else — WHERE, ORDER BY — a bare literal is what
+    // an expression position accepts.
+    const fromAt = modifiedSql.search(/\bfrom\b/i);
+    const head = fromAt === -1 ? modifiedSql : modifiedSql.slice(0, fromAt);
+    const tail = fromAt === -1 ? '' : modifiedSql.slice(fromAt);
+    modifiedSql =
+      head.split(token).join(`'***' AS ${colName} /* masked */`) +
+      tail.split(token).join(`'***' /* ${colName} masked */`);
   }
 
   // Apply row filters by wrapping SQL in a CTE

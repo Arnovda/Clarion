@@ -143,6 +143,54 @@ role, and the daily brief no longer crashes.**
   backend `npm run check` clean; frontend `tsc --noEmit` clean and the page
   lint-clean (its one warning is pre-existing on an untouched line).
 
+**Wave A, item 3 — P0-4 CLOSED: data policies (row filters + column masks)
+apply on EVERY read path, not just Ask AI and the add-in.**
+- **NEW `services/readPolicy.ts`** — the one way to prepare user- or
+  model-authored SQL for a read: `prepareUserRead(sql, actor)` = guard →
+  the acting user's policies; `prepareUnattendedRead(sql, tenantId)` =
+  guard → EVERY active policy in the tenant (a scheduled report or brief
+  snapshot has no user to scope by, so unattended content leaving the
+  platform gets the MOST restrictive view — a masked column shown to a
+  recipient because the schedule's creator was an admin is the failure this
+  avoids). Order is fixed inside the helper: guard on the raw SQL, then
+  policies; callers never see the intermediate.
+- **`policyEngine.ts`**: `loadPoliciesForUser` and the new
+  `loadAllPoliciesForTenant` read `data_policies` through `tenantQuery`
+  (they were on the root pool — under the app role that read returns
+  nothing, i.e. policies silently OFF; the same P0-2 shape one layer down).
+  `applyAllTenantPolicies` + `applyPolicyRows` exported. **The mask now
+  ALIASES the column** (`'***' AS iban /* masked */`): the old rewrite
+  produced a result column literally named `'***'`, which broke every
+  consumer keyed on the column name (the test's `r.iban === '***'` was
+  false before this).
+- **Wired**: `routes/dashboards.ts` — every `executeQuery` site (execute,
+  batch-execute + stream, drill detail, filter-options DISTINCT, the cube
+  COPY, csv/xlsx exports via `executeWidgetSql`, and the generate/refine/
+  fix-widget validation pass via `executeSpecForValidation` — the pre-edit
+  spec is now checked against what the USER would see); `routes/notebooks.ts`
+  (both run sites); `routes/reports.ts` (KPI formula SQL); `routes/query.ts`
+  forecast (guard added before policies); `services/investigateService.ts`
+  (the agent loop carries the actor — `userRole` joins
+  `StartInvestigationInput`, passed by `routes/investigations.ts`);
+  `services/reportEmailService.ts` (both scheduled sites, unattended);
+  `services/morningBriefService.ts` (unattended, before `wrapForSnapshot`).
+  Six unguarded SQL execution paths from the assessment (forecast, reports,
+  scheduled emails, briefs, investigations, notebook generate-run) are
+  guarded on the way.
+- **NEW `tests/data-policies-everywhere.test.ts`**: a real SQLite source
+  (`SQLITE_SOURCE_DIR` pinned before the app loads) with two policies for
+  `viewer` (row filter `region='North'`, mask `iban`): the helpers refuse a
+  quoted-function bypass before any policy runs, rewrite the viewer's SQL
+  and leave the admin's untouched, unattended gets both, another tenant
+  gets none; and `POST /dashboards/execute` returns the viewer two North
+  rows with `iban === '***'` and the unmasked IBAN nowhere on the wire,
+  while the admin gets all three unmasked.
+- Validation: full backend vitest **62 files / 624 passed / 4 skipped**
+  (run from `backend/` on Node 20 — a first run from the repo root with a
+  downloaded vitest reported 37 failed files, all `Unable to acquire a
+  connection` + e2e specs: wrong config, not a regression), `npm run check`
+  clean, nine ratchets green from the repo root.
+
 **Prior last updated:** 2026-09-05 (MARKET READINESS ASSESSMENT, SECOND PASS — doc
 only, no code changed; twelve-domain re-audit of main at 9ab13a2 after waves
 1+2, with one guard bypass REPRODUCED)

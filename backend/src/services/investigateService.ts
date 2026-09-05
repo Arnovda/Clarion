@@ -28,7 +28,7 @@ import { semanticDb } from '../db/knex';
 import { tenantQuery } from './tenantQuery';
 import { logger } from '../utils/logger';
 import { createProductConnector } from '../connectors/ConnectorFactory';
-import { assertSafeReadQuery } from '../utils/sqlGuard';
+import { prepareUserRead } from './readPolicy';
 import {
   type InvestigateAgentContext,
 } from '../ai/prompts/investigateAgentPrompt';
@@ -110,6 +110,8 @@ export async function getInvestigation(
 export interface StartInvestigationInput {
   tenantId: number;
   userId: number;
+  /** The asking user's role — data policies are per user AND per role. */
+  userRole: string;
   dataProductId: number;
   question: string;
   focus?: string | null;
@@ -138,7 +140,7 @@ export async function startInvestigation(
   });
 
   try {
-    return await runAgentLoop(input.tenantId, invId, onEvent);
+    return await runAgentLoop(input.tenantId, invId, { userId: input.userId, userRole: input.userRole }, onEvent);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     logger.error({ err, invId }, 'investigateService: agent loop crashed');
@@ -162,6 +164,7 @@ export async function startInvestigation(
 async function runAgentLoop(
   tenantId: number,
   invId: number,
+  actor: { userId: number; userRole: string },
   onEvent: (e: InvestigateEvent) => void,
 ): Promise<Investigation> {
   // Build context once — the schema doesn't change mid-investigation.
@@ -210,9 +213,13 @@ async function runAgentLoop(
       let errorMsg: string | null = null;
 
       try {
-        // Security guard on the agent-authored SQL (see sqlGuard).
-        assertSafeReadQuery(decision.query_sql);
-        const safeSql = withRowLimit(decision.query_sql);
+        // Security guard + the asking user's data policies on the
+        // agent-authored SQL (P0-4): the agent reads on the user's behalf and
+        // may not see more than the user would in Ask AI.
+        const prepared = await prepareUserRead(decision.query_sql, {
+          userId: actor.userId, role: actor.userRole, tenantId,
+        });
+        const safeSql = withRowLimit(prepared.sql);
         const result = await connector.executeQuery(safeSql);
         rowCount = result.rows.length;
         preview = result.rows.slice(0, 5) as Array<Record<string, unknown>>;

@@ -12,6 +12,7 @@
 import { tenantQuery } from './tenantQuery';
 import { createConnector, createProductConnector } from '../connectors/ConnectorFactory';
 import { sendEmail } from './emailService';
+import { prepareUnattendedRead } from './readPolicy';
 import { generateReportNarrative, formatAnswer } from '../ai/AIService';
 import { getProductWarehousePath } from './productContext';
 import { logger } from '../utils/logger';
@@ -236,7 +237,11 @@ export async function sendScheduledReport(scheduleId: number, tenantId: number):
         }
         const resolvedSql = resolveFilters(w.sql, defaultFilters);
         try {
-          const rows = (await connector.executeQuery(resolvedSql) as unknown) as Record<string, unknown>[];
+          // No acting user: guard, then EVERY active policy of the tenant
+          // (P0-4) — a report that leaves the platform unattended gets the
+          // most restrictive view. Stored widget SQL was never re-guarded here.
+          const prepared = await prepareUnattendedRead(resolvedSql, tenantId);
+          const rows = (await connector.executeQuery(prepared.sql) as unknown) as Record<string, unknown>[];
           widgetResults.push({ title: w.title, rows });
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
@@ -338,7 +343,9 @@ async function sendScheduledQuestion(schedule: {
     }
     await connector.connect();
     try {
-      const result = await connector.executeQuery(sq.sql as string);
+      // Guarded at save time AND here, then every tenant policy (P0-4).
+      const prepared = await prepareUnattendedRead(sq.sql as string, tenantId);
+      const result = await connector.executeQuery(prepared.sql);
       rows = result.rows;
     } finally {
       connector.disconnect();

@@ -80,6 +80,7 @@ router.post('/', requireAuth, async (req: Request, res: Response, next: NextFunc
       await startInvestigation({
         tenantId,
         userId,
+        userRole: req.user!.role,
         dataProductId,
         question: body.question.trim(),
         focus: body.focus ?? null,

@@ -1,4 +1,5 @@
 import { Router, Request, Response, NextFunction } from 'express';
+import { actorOf, prepareUserRead } from '../services/readPolicy';
 import { requireAuth, requireRole } from '../middleware/auth';
 import { validate } from '../middleware/validate';
 import { generateReportSchema } from '../middleware/schemas';
@@ -41,7 +42,10 @@ router.post('/generate', requireAuth, validate(generateReportSchema), async (req
     const kpiResults: KpiResult[] = await Promise.all(
       kpis.map(async (kpi) => {
         try {
-          const result = await sqliteConnector.executeQuery(kpi.formula_sql as string);
+          // Guard + the acting user's policies (P0-4): KPI formulas came
+          // from the graph and ran unguarded and unpoliced.
+          const prepared = await prepareUserRead(kpi.formula_sql as string, actorOf(req));
+          const result = await sqliteConnector.executeQuery(prepared.sql);
           const value = result.rows[0] ? Object.values(result.rows[0])[0] : null;
           return {
             kpi_name: kpi.name as string,

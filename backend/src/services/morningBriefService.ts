@@ -17,6 +17,7 @@
 
 import { semanticDb } from '../db/knex';
 import { tenantQuery, listActiveTenantIds } from './tenantQuery';
+import { prepareUnattendedRead } from './readPolicy';
 import { logger } from '../utils/logger';
 import { notify } from './notificationService';
 import { createProductConnector } from '../connectors/ConnectorFactory';
@@ -198,7 +199,11 @@ async function snapshotPulseValues(tenantId: number): Promise<number> {
     for (const row of rows) {
       try {
         const sql = String(row.formula_sql);
-        const wrapped = wrapForSnapshot(sql, row);
+        // The snapshot is shared by every user of the tenant, so it gets
+        // the most restrictive view any policy describes (P0-4); the KPI
+        // SQL was never guarded here either.
+        const guarded = (await prepareUnattendedRead(sql, tenantId)).sql;
+        const wrapped = wrapForSnapshot(guarded, row);
         const result = await connector.executeQuery(wrapped);
         const value = extractScalar(result);
 
