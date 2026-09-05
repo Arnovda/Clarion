@@ -31,7 +31,84 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-09-05 (FOURTH FINDING, PR #118 — plus a same-PR audit-gate drive-by — A RUNNING TOTAL NO
+**Last updated:** 2026-09-05 (MARKET READINESS ASSESSMENT, SECOND PASS — doc
+only, no code changed; twelve-domain re-audit of main at 9ab13a2 after waves
+1+2, with one guard bypass REPRODUCED)
+
+**Owner, four days after the first assessment: *"We recently did some updates
+so Clarion is ready for market. Can you please do the same, but now on the
+updated code? First figure out the domains that are important, then
+investigate thoroughly."* NEW DOC: `docs/backlog/market-readiness-assessment-v2.md`.
+Artifact: "Clarion Launch Preflight II".** Twelve parallel code investigations
+(isolation, identity, commercial, legal, reliability, observability, data
+platform, AI governance, product/UX, quality engineering, performance,
+application security), every claim file:line, the top claims re-verified by
+hand, one investigator claim REJECTED on that check (the DuckDB runner IS
+applied — via `.ops/duckdb-runner`, outside Terraform). Verdict: **still
+no-go, for different reasons** — 9 P0 / 74 P1 / ≈50 P2. Every wave-1/2 control
+was re-read in code and none regressed.
+- **P0-1 — REPRODUCED: `utils/sqlGuard.ts` is bypassed by double-quoting the
+  function name.** `stripLiterals()` erases double-quoted IDENTIFIERS before
+  the external-function scan, so `SELECT * FROM "read_text"('/proc/self/environ')`
+  is ALLOWED while the unquoted form is refused (run against the real module
+  with tsx this session). Reachable from notebooks, dashboards, /query and the
+  add-in; `DUCKDB_SESSION_LOCKDOWN` is off; the child runner inherits the
+  parent env → account-wide storage string, JWT_SECRET, encryption key, API
+  key. Half-day fix (scan raw SQL for quoted forms; lockdown on; log + alert
+  refusals). **Do this before anything else.**
+- **P0-2 — every boot-time schedule loader reads an RLS-forced table on the
+  ROOT POOL with no tenant context** (`jobs/scheduler.ts:105`,
+  `emailScheduler.ts:66`, `connectionSyncScheduler.ts:95`,
+  `pipelineScheduler.ts:110`; `sendScheduledReport` likewise at
+  `reportEmailService.ts:139`). Under `databridge_app` (production since
+  2026-08-06) the predicate is `tenant_id = NULL` → ZERO rows → zero
+  repeatables. Morning briefs work because they enumerate `tenants` (no RLS)
+  then `tenantQuery` per tenant — that is the fix. Not caught because vitest
+  runs as superuser and `rls-isolation` never calls a loader. ONE production
+  check settles it: the boot line `Loaded N enabled connection-sync
+  schedule(s)` vs enabled rows.
+- **P0-3 invites never delivered** (`routes/users.ts:106-123` — URL only
+  logged in dev / returned outside prod; no `sendEmail`; user never verified).
+  **P0-4 data policies only on /query + addin** — absent from dashboards,
+  notebooks, saved questions, reports, scheduled emails, investigations
+  (`applyDataPolicies` grep). **P0-5 session-level `SET app.current_tenant`
+  still in worker-reachable services** (SyncOrchestrator `set_config(…,false)`,
+  pipelineService, busMatrixOrchestrator, deltaWriter, auditService,
+  pipelineScheduler — 11 sites; `workers.ts:9-26` forbids exactly this).
+  **P0-6 the sync does not tell the truth**: a failed entity still writes
+  `succeeded`; an empty response overwrites a table with zero rows; no full
+  re-sync/cursor reset exists; deletions never propagate. **P0-7 legal not
+  in force**, no acceptance, no export (DPA promises one). **P0-8 no customer
+  record** (legal name/VAT/plan/seats) and every non-AI cost driver uncapped
+  incl. sync cron with no minimum interval. **P0-9 DR exists on paper**: state
+  backend commented out, vault never applied, no restore rehearsed,
+  migrations run against prod with no backup.
+- P1 highlights: `PATCH /users/profile` STILL shadowed on main (PR #114's fix
+  never landed); an impersonation session can mint a 180-day API token
+  (`impersonatedBy` is written and read nowhere); same email in two tenants
+  breaks login; no auth events audited; six unguarded SQL execution paths
+  (forecast, reports, scheduled emails, briefs); `requireAuth` pins a Postgres
+  transaction across every SSE stream; no scale rules; Redis `noeviction`
+  with no `maxmemory`; email-report worker lacks `withTenantAiContext`; cost
+  log records the pre-override model; StoryModal writes AI HTML into an
+  about:blank window; report recipients unvalidated (spam vector); no
+  correlation id API→job; no support channel, no incident banner; 17 of 38
+  routers untested; the core loop has zero e2e coverage.
+- Remediation: wave A "the platform tells the truth" (~2 wk: P0-1..P0-6 +
+  the core-loop test + an app-role CI job), wave B "operate without a DB
+  session" (~2 wk: P0-8, P0-9, correlation id, errors/queue/announcements on
+  the console, uptime test, pool sizing), wave C "lawful and sellable"
+  (lawyer → acceptance → export; eval harness). The stopped wave 3 stays
+  stopped.
+- Validation: doc only. The guard bypass was reproduced with `npx tsx`
+  against `backend/src/utils/sqlGuard.ts`; the graph predicate lint and the
+  nine ratchets were run by the investigators and are green on main. Not run:
+  the backend suite (no node_modules in this sandbox). NOT established from
+  the repo, one check each (doc §8): whether schedules have fired since the
+  role flip; per-tenant container writes; the `runner-active` log line; the
+  portal uptime test; live Postgres backup settings.
+
+**Prior last updated:** 2026-09-05 (FOURTH FINDING, PR #118 — plus a same-PR audit-gate drive-by — A RUNNING TOTAL NO
 LONGER BREAKS WHERE A SUPPLIER HAD A QUIET YEAR; the SQL emits rows only for
 active months, and the renderer now fills the one case the data proves)
 
