@@ -13,16 +13,25 @@ import { test, expect, type APIRequestContext } from '@playwright/test';
  * not seeing it.
  */
 
+import { buildXlsxFixture } from '../packages/connectors/src/spreadsheet/__fixtures__/xlsxFixture';
+
 const BACKEND = process.env.RLS_BACKEND_URL ?? 'http://localhost:3001/api';
 const ts = Date.now();
 
-const SOURCE_DB = {
-  host:     process.env.RLS_SOURCE_PGHOST ?? 'localhost',
-  port:     Number(process.env.RLS_SOURCE_PGPORT ?? 5432),
-  database: process.env.RLS_SOURCE_PGDATABASE ?? 'databridge_test',
-  user:     process.env.RLS_SOURCE_PGUSER ?? 'databridge',
-  password: process.env.RLS_SOURCE_PGPASSWORD ?? 'databridge',
-};
+// Sync schedules exist only for SOURCE-CONNECTOR connections (the Postgres
+// connection rls.spec uses is a direct-DB one and is refused with 400). The
+// Excel connector needs no network and no credentials: a real two-row
+// workbook, built by the connectors package's own fixture builder, is the
+// whole config.
+function excelSource() {
+  const bytes = buildXlsxFixture([{ name: 'Budget', rows: [['Month', 'Amount'], ['2026-01', 100], ['2026-02', 120]] }]);
+  return {
+    name: `Sched source ${ts}`,
+    connectorType: 'excel',
+    config: { filename: 'budget.xlsx', fileContent: Buffer.from(bytes).toString('base64') },
+    selectedEntities: ['Budget'],
+  };
+}
 
 async function register(req: APIRequestContext, label: string): Promise<string> {
   const res = await req.post(`${BACKEND}/auth/register`, {
@@ -47,8 +56,8 @@ test.describe('Schedules under databridge_app', () => {
   test.beforeAll(async ({ request }) => {
     tokenA = await register(request, 'a');
     tokenB = await register(request, 'b');
-    const created = await request.post(`${BACKEND}/connections`, {
-      data: { name: `Sched source ${ts}`, type: 'postgres', config: SOURCE_DB },
+    const created = await request.post(`${BACKEND}/connections/source`, {
+      data: excelSource(),
       ...authed(tokenA),
     });
     expect(created.status(), `connection setup failed: ${await created.text()}`).toBe(201);
