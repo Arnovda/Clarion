@@ -29,22 +29,18 @@
     "vitest": "^2.1.1"
   },
   "//overrides": [
-    "Transitive advisories on the connector runtime, each cleared inside the",
-    "dependency's current major.",
-    "  fast-xml-builder <=1.1.6  HIGH  quote-bypass in attribute values",
-    "                                  (@azure/storage-blob -> fast-xml-parser)",
-    "  fast-uri         <=3.1.4  HIGH  ReDoS (ajv, used to compile the",
-    "                                  connector config JSON Schemas)",
-    "",
-    "NOT overridden: vitest (<=3.2.5, dev-only) — the fix is vitest@4, a two-",
-    "major bump of the test runner. The backend already runs vitest 4, so",
-    "aligning this package is worth doing as its own change where the full",
-    "suite (including the DuckDB-native tests, which need a working native",
-    "build) can actually be run against it."
+    "Transitive advisories we cannot reach by bumping a direct dependency.",
+    "Each entry is the lowest version that clears the advisory (keep the pin",
+    "in step with what backend/package.json carries where both hold the same",
+    "package).",
+    "  fast-uri  3.0.0-3.1.5  HIGH  four GHSAs (ajv -> fast-uri); ajv validates",
+    "                               connector config at runtime, so this is",
+    "                               runtime-exposed and must be fixed, never",
+    "                               allowlisted in scripts/audit-gate.mjs."
   ],
   "overrides": {
     "fast-xml-builder": "^1.2.0",
-    "fast-uri": "^3.1.5",
+    "fast-uri": "^3.1.6",
     "nanoid": "^3.3.17"
   }
 }
