@@ -10,6 +10,7 @@
  * each product the existing transformationRunner respects dag_order (dims first).
  */
 
+import { scheduleIntervalError } from '../services/tenantLimits';
 import { Router, Request, Response, NextFunction } from 'express';
 import { requireAuth, requireRole } from '../middleware/auth';
 import { validate } from '../middleware/validate';
@@ -448,6 +449,17 @@ router.get('/list', requireAuth, async (req: Request, res: Response, next: NextF
 
 // ---------------------------------------------------------------------------
 // POST /api/pipelines/saved — create a custom pipeline
+/** The first cron trigger that would fire faster than the floor, as a refusal sentence. */
+function cronTriggersCadenceError(triggers: unknown[] | null | undefined): string | null {
+  for (const t of triggers ?? []) {
+    const trig = t as { kind?: unknown; cron?: unknown; timezone?: unknown };
+    if (trig?.kind !== 'cron' || typeof trig.cron !== 'string') continue;
+    const err = scheduleIntervalError(trig.cron, typeof trig.timezone === 'string' ? trig.timezone : 'UTC');
+    if (err) return err;
+  }
+  return null;
+}
+
 // Body: { name, description?, scope, triggers?: [], enabled? }
 // ---------------------------------------------------------------------------
 router.post('/saved', requireAuth, requireRole('admin', 'analyst'), validate(createPipelineSchema), async (req: Request, res: Response, next: NextFunction) => {
@@ -459,6 +471,10 @@ router.post('/saved', requireAuth, requireRole('admin', 'analyst'), validate(cre
       name: string; description?: string;
       scope: unknown; triggers?: unknown[]; enabled?: boolean;
     };
+    // Cadence floor on cron triggers (P0-8).
+    const cadenceRefusal = cronTriggersCadenceError(triggers);
+    if (cadenceRefusal) { res.status(400).json({ ok: false, error: cadenceRefusal, code: 'schedule_interval' }); return; }
+
 
     const [row] = await db('pipelines').insert({
       tenant_id: tenantId,
@@ -510,7 +526,11 @@ router.put('/saved/:id', requireAuth, requireRole('admin', 'analyst'), validate(
     if (body.name !== undefined) patch.name = body.name.trim();
     if (body.description !== undefined) patch.description = body.description;
     if (body.scope !== undefined) patch.scope = JSON.stringify(body.scope);
-    if (body.triggers !== undefined) patch.triggers = JSON.stringify(body.triggers);
+    if (body.triggers !== undefined) {
+      const cadenceRefusal = cronTriggersCadenceError(body.triggers);
+      if (cadenceRefusal) { res.status(400).json({ ok: false, error: cadenceRefusal, code: 'schedule_interval' }); return; }
+      patch.triggers = JSON.stringify(body.triggers);
+    }
     if (body.enabled !== undefined) patch.enabled = body.enabled;
 
     const updated = await db('pipelines')

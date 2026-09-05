@@ -22,12 +22,13 @@
  */
 
 import { useCallback, useEffect, useState } from 'react';
-import { Loader2, ChevronDown, ChevronRight, ShieldAlert, UserCheck } from 'lucide-react';
+import { Loader2, ChevronDown, ChevronRight, ShieldAlert, UserCheck, Download } from 'lucide-react';
 import api from '@/lib/api';
 import AppShell from '@/components/layout/AppShell';
 import { useIsOperator, useFeaturesFailed, useFeaturesLoaded } from '@/lib/features';
 import { clearToken, setToken } from '@/lib/auth';
 import { formatRelative } from '@/lib/dates';
+import { downloadFile } from '@/app/dashboards/utils/download';
 import { cn } from '@/lib/cn';
 
 interface TenantRow {
@@ -37,6 +38,15 @@ interface TenantRow {
   status: string;
   monthlyTokenBudget: number | null;
   createdAt: string;
+  // The customer record (P0-8). NULL caps = unlimited.
+  plan: string | null;
+  seats: number | null;
+  maxConnections: number | null;
+  trialEndsAt: string | null;
+  billingContact: string | null;
+  legalName: string | null;
+  vatNumber: string | null;
+  address: string | null;
   users?: number;
   activeUsers?: number;
   connections?: number;
@@ -61,6 +71,36 @@ interface TenantDetail {
 }
 
 const num = (n: number | undefined) => (n ?? 0).toLocaleString('en-GB');
+
+/** The editable half of the customer record, as the form holds it (strings). */
+interface CustomerDraft {
+  plan: string; seats: string; maxConnections: string; trialEndsAt: string;
+  billingContact: string; legalName: string; vatNumber: string; address: string;
+}
+
+function draftFrom(t: TenantRow | undefined): CustomerDraft {
+  return {
+    plan: t?.plan ?? '',
+    seats: t?.seats == null ? '' : String(t.seats),
+    maxConnections: t?.maxConnections == null ? '' : String(t.maxConnections),
+    trialEndsAt: t?.trialEndsAt ? t.trialEndsAt.slice(0, 10) : '',
+    billingContact: t?.billingContact ?? '',
+    legalName: t?.legalName ?? '',
+    vatNumber: t?.vatNumber ?? '',
+    address: t?.address ?? '',
+  };
+}
+
+function currentMonth(): string {
+  const d = new Date();
+  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`;
+}
+
+/** Days until (positive) or since (negative) a trial end; null when none is set. */
+function trialDays(t: TenantRow): number | null {
+  if (!t.trialEndsAt) return null;
+  return Math.round((new Date(t.trialEndsAt).getTime() - Date.now()) / 86_400_000);
+}
 
 /**
  * The p95 the server reports is the UPPER BOUND of a coarse histogram bucket
@@ -102,6 +142,8 @@ function TenantConsole() {
   const [detailLoading, setDetailLoading] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const [budgetDraft, setBudgetDraft] = useState<string>('');
+  const [customerDraft, setCustomerDraft] = useState<CustomerDraft>(draftFrom(undefined));
+  const [usageMonth, setUsageMonth] = useState<string>(currentMonth());
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -134,6 +176,7 @@ function TenantConsole() {
     setActionError(null);
     const t = tenants.find((x) => x.id === id);
     setBudgetDraft(t?.monthlyTokenBudget == null ? '' : String(t.monthlyTokenBudget));
+    setCustomerDraft(draftFrom(t));
     try {
       const res = await api.get(`/admin/tenants/${id}`);
       setDetail(res.data?.data ?? null);
@@ -179,6 +222,36 @@ function TenantConsole() {
     void act(`budget-${t.id}`, async () => {
       await api.patch(`/admin/tenants/${t.id}/budget`, { monthlyTokenBudget: value });
     });
+  }
+
+  function saveCustomer(t: TenantRow) {
+    const d = customerDraft;
+    const intOrNull = (raw: string) => (raw.trim() === '' ? null : Number(raw));
+    const seats = intOrNull(d.seats);
+    const maxConnections = intOrNull(d.maxConnections);
+    for (const v of [seats, maxConnections]) {
+      if (v !== null && (!Number.isInteger(v) || v < 0)) {
+        setActionError('Seats and sources must be whole numbers, or empty for unlimited.');
+        return;
+      }
+    }
+    void act(`customer-${t.id}`, async () => {
+      await api.patch(`/admin/tenants/${t.id}/customer`, {
+        plan: d.plan.trim() || null,
+        seats,
+        maxConnections,
+        trialEndsAt: d.trialEndsAt ? new Date(`${d.trialEndsAt}T00:00:00Z`).toISOString() : null,
+        billingContact: d.billingContact.trim() || null,
+        legalName: d.legalName.trim() || null,
+        vatNumber: d.vatNumber.trim() || null,
+        address: d.address.trim() || null,
+      });
+    });
+  }
+
+  function downloadUsage() {
+    const base = (process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001/api').replace(/\/$/, '');
+    downloadFile(`${base}/admin/tenants/usage.csv?month=${usageMonth}`, `clarion-usage-${usageMonth}.csv`);
   }
 
   function impersonate(t: TenantRow, user: TenantDetail['users'][number]) {
@@ -255,6 +328,25 @@ function TenantConsole() {
         <div className="mb-5 rounded-md border border-err bg-err-soft px-4 py-3 text-[13.5px] text-err">{actionError}</div>
       )}
 
+      <div className="mb-4 flex flex-wrap items-center gap-2 text-[12.5px]">
+        <span className="font-mono text-[10px] tracking-[0.1em] uppercase text-muted-2">Month-end export</span>
+        <input
+          type="month"
+          value={usageMonth}
+          onChange={(e) => setUsageMonth(e.target.value || currentMonth())}
+          className="rounded-md border border-line bg-raised px-2 py-1 text-[12.5px] text-ink"
+          aria-label="Usage month"
+        />
+        <button
+          onClick={downloadUsage}
+          className="inline-flex items-center gap-1.5 rounded-md border border-line px-2.5 py-1 text-[12px] text-ink hover:bg-soft"
+          title="One row per workspace: the customer record beside that month's users, sources, syncs and AI usage (cost in USD)"
+        >
+          <Download className="w-3.5 h-3.5" /> Usage CSV
+        </button>
+        <span className="text-muted-2">the invoice input: customer record + users, sources, syncs, AI tokens and USD cost per workspace</span>
+      </div>
+
       <div className="rounded-lg border border-line bg-raised overflow-x-auto">
         <table className="w-full text-[13px]">
           <thead>
@@ -282,6 +374,9 @@ function TenantConsole() {
                 busy={busy}
                 budgetDraft={budgetDraft}
                 onBudgetDraft={setBudgetDraft}
+                customerDraft={customerDraft}
+                onCustomerDraft={setCustomerDraft}
+                onSaveCustomer={() => saveCustomer(t)}
                 onOpen={() => void openDetail(t.id)}
                 onSuspend={() => suspend(t)}
                 onResume={() => resume(t)}
@@ -296,6 +391,42 @@ function TenantConsole() {
   );
 }
 
+/**
+ * What manual invoicing needs and what the caps read (P0-8): legal name,
+ * VAT number, address and billing contact for the invoice; plan, seats and
+ * sources for the limits; trial end for the operator's own follow-up
+ * (nothing auto-suspends on it — Suspend is the operator's act).
+ */
+function CustomerEditor(props: { draft: CustomerDraft; onChange: (d: CustomerDraft) => void; onSave: () => void; saving: boolean }) {
+  const { draft, onChange } = props;
+  const set = (k: keyof CustomerDraft) => (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) =>
+    onChange({ ...draft, [k]: e.target.value });
+  const field = 'w-full rounded-md border border-line bg-raised px-2.5 py-1.5 text-[12.5px] text-ink';
+  const label = 'block text-[11px] text-muted-2 mb-1';
+  return (
+    <div className="grid grid-cols-2 gap-x-3 gap-y-2.5 max-w-[520px]">
+      <label className="block"><span className={label}>Plan</span><input value={draft.plan} onChange={set('plan')} placeholder="trial / starter / team" className={field} /></label>
+      <label className="block"><span className={label}>Trial ends</span><input type="date" value={draft.trialEndsAt} onChange={set('trialEndsAt')} className={field} /></label>
+      <label className="block"><span className={label}>Seats (active users)</span><input value={draft.seats} onChange={set('seats')} inputMode="numeric" placeholder="unlimited" className={field} /></label>
+      <label className="block"><span className={label}>Sources</span><input value={draft.maxConnections} onChange={set('maxConnections')} inputMode="numeric" placeholder="unlimited" className={field} /></label>
+      <label className="block col-span-2"><span className={label}>Legal name</span><input value={draft.legalName} onChange={set('legalName')} className={field} /></label>
+      <label className="block"><span className={label}>VAT / BTW number</span><input value={draft.vatNumber} onChange={set('vatNumber')} placeholder="BE0123456789" className={field} /></label>
+      <label className="block"><span className={label}>Billing contact</span><input value={draft.billingContact} onChange={set('billingContact')} placeholder="invoices@customer.be" className={field} /></label>
+      <label className="block col-span-2"><span className={label}>Address</span><textarea value={draft.address} onChange={set('address')} rows={2} className={field} /></label>
+      <div className="col-span-2 flex items-center gap-2">
+        <button
+          onClick={props.onSave}
+          disabled={props.saving}
+          className="rounded-md border border-line px-2.5 py-1.5 text-[12px] text-ink hover:bg-soft disabled:opacity-50"
+        >
+          Save customer record
+        </button>
+        <span className="text-[11.5px] text-muted-2">caps refuse new users / sources over the limit · empty cap = unlimited</span>
+      </div>
+    </div>
+  );
+}
+
 function TenantRows(props: {
   tenant: TenantRow;
   isOpen: boolean;
@@ -305,6 +436,9 @@ function TenantRows(props: {
   busy: string | null;
   budgetDraft: string;
   onBudgetDraft: (v: string) => void;
+  customerDraft: CustomerDraft;
+  onCustomerDraft: (d: CustomerDraft) => void;
+  onSaveCustomer: () => void;
   onOpen: () => void;
   onSuspend: () => void;
   onResume: () => void;
@@ -325,14 +459,28 @@ function TenantRows(props: {
             {t.name}
             {isSelf && <span className="font-mono text-[9.5px] tracking-[0.08em] uppercase text-muted-2 ml-1">you</span>}
           </span>
-          <div className="text-[11px] text-muted-2 ml-5">{t.slug} · since {formatRelative(t.createdAt)}</div>
+          <div className="text-[11px] text-muted-2 ml-5">
+            {t.slug} · since {formatRelative(t.createdAt)}
+            {t.plan && <span className="ml-1.5 font-mono text-[9.5px] tracking-[0.08em] uppercase">{t.plan}</span>}
+            {(() => {
+              const d = trialDays(t);
+              if (d == null) return null;
+              return (
+                <span className={cn('ml-1.5', d < 0 ? 'text-err' : d <= 7 ? 'text-warn' : 'text-muted-2')}>
+                  {d < 0 ? `trial ended ${-d}d ago` : d === 0 ? 'trial ends today' : `trial ends in ${d}d`}
+                </span>
+              );
+            })()}
+          </div>
         </td>
         <td className="px-3 py-3"><StatusPill status={t.status} /></td>
         <td className="px-3 py-3 text-right tabular-nums">
           {t.healthError ? '—' : <>{num(t.activeUsers)}<span className="text-muted-2"> / {num(t.users)}</span></>}
+          {t.seats != null && <span className="text-muted-2 ml-1.5" title="seats">of {num(t.seats)}</span>}
         </td>
         <td className="px-3 py-3 text-right tabular-nums">
           {t.healthError ? '—' : num(t.connections)}
+          {t.maxConnections != null && <span className="text-muted-2 ml-1.5" title="sources cap">of {num(t.maxConnections)}</span>}
           {!t.healthError && (t.failedConnections ?? 0) > 0 && (
             <span className="text-err ml-1.5" title="sources whose last sync failed">({t.failedConnections} failing)</span>
           )}
@@ -428,6 +576,14 @@ function TenantRows(props: {
                     </button>
                     <span className="text-[11.5px] text-muted-2">tokens per month · empty = unlimited</span>
                   </div>
+
+                  <div className="font-mono text-[10px] tracking-[0.1em] uppercase text-muted-2 mt-5 mb-2">Customer record</div>
+                  <CustomerEditor
+                    draft={props.customerDraft}
+                    onChange={props.onCustomerDraft}
+                    onSave={props.onSaveCustomer}
+                    saving={busy === `customer-${t.id}`}
+                  />
                 </div>
 
                 <div>

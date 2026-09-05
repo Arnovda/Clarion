@@ -13,6 +13,7 @@ import { Router, Request, Response, NextFunction } from 'express';
 import { requireAuth, requireRole } from '../middleware/auth';
 import { reqDb } from '../db/reqDb';
 import { tenantQuery } from '../services/tenantQuery';
+import { scheduleIntervalError } from '../services/tenantLimits';
 import { registerSchedule, removeSchedule } from '../jobs/scheduler';
 import { getTransformationQueue, TransformationJobData } from '../jobs/queues';
 import { trackEvent } from '../utils/monitoring';
@@ -53,6 +54,12 @@ router.put('/product/:productId', requireAuth, requireRole('admin'), async (req:
     const parts = cron_expression.trim().split(/\s+/);
     if (parts.length < 5 || parts.length > 6) {
       res.status(400).json({ ok: false, error: 'Invalid cron expression. Expected 5 parts: minute hour day month weekday' });
+      return;
+    }
+    // Cadence floor (P0-8).
+    const cadence = scheduleIntervalError(cron_expression, timezone ?? 'UTC');
+    if (cadence) {
+      res.status(400).json({ ok: false, error: cadence, code: 'schedule_interval' });
       return;
     }
 

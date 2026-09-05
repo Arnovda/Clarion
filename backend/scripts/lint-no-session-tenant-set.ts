@@ -40,6 +40,7 @@ const RATCHET_ROOTS = ['services', 'orchestrator', 'jobs', 'semantic', 'quality'
 const ROOT_POOL_OK: Record<string, string> = {
   'services/tenantQuery.ts': 'the helper itself; reads `tenants`, which has no RLS',
   'services/autoApproveService.ts': 'reads `tenants` (no RLS) to enumerate; every tenant-owned write is under tenantQuery',
+  'services/tenantLimits.ts': 'reads `tenants` (no RLS) for the seat/source caps; the counts take the caller\'s tenant-scoped handle',
   'services/aiBudget.ts': 'reads `tenants` (no RLS) + ai_usage with an explicit tenant filter — convert with the AI-cost pass',
   'services/refreshTokenService.ts': 'unauthenticated path: `refresh_tokens` carries the auth_lookup carve-out',
   'services/mfaService.ts': 'unauthenticated MFA path: `users` carries the auth_lookup carve-out; writes are SET LOCAL transactions',

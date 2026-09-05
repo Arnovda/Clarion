@@ -20,6 +20,7 @@ import { sendEmail } from '../services/emailService';
 import { validate } from '../middleware/validate';
 import { inviteUserSchema, eraseUserSchema } from '../middleware/schemas';
 import { recordAudit } from '../services/auditService';
+import { checkSeatCap } from '../services/tenantLimits';
 import { eraseUser } from '../services/accountDeletion';
 import { revokeAllForUser } from '../services/refreshTokenService';
 import { disableMfa } from '../services/mfaService';
@@ -78,6 +79,14 @@ router.post('/invite', requireRole('admin'), validate(inviteUserSchema), async (
     }
     if (!['admin', 'analyst', 'viewer'].includes(role)) {
       res.status(400).json({ ok: false, error: 'Role must be admin, analyst, or viewer' });
+      return;
+    }
+
+    // Seats (P0-8): refused BEFORE anything is created, with a sentence the
+    // admin can act on. Counts ACTIVE users — deactivating frees a seat.
+    const seatCheck = await checkSeatCap(db, req.user!.tenantId);
+    if (!seatCheck.ok) {
+      res.status(409).json({ ok: false, error: seatCheck.message, code: 'seat_cap', used: seatCheck.used, limit: seatCheck.limit });
       return;
     }
 

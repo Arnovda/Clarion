@@ -9,6 +9,7 @@ import {
 } from '@databridge/connectors';
 import { requireAuth, requireRole } from '../middleware/auth';
 import { recordAudit } from '../services/auditService';
+import { checkConnectionCap } from '../services/tenantLimits';
 import { profilingProgressPct } from '../services/profilingProgress';
 // Static now that the orchestrator no longer reaches back into this route
 // module (profilingProgressPct moved to services/) — the cycle is gone.
@@ -64,6 +65,14 @@ router.post('/', requireAuth, requireRole('admin'), validate(createConnectionSch
 
     if (!SUPPORTED_TYPES.includes(type as any)) {
       res.status(400).json({ ok: false, error: `Unsupported connection type: ${type}. Supported: ${SUPPORTED_TYPES.join(', ')}` });
+      return;
+    }
+
+    // Sources cap (P0-8) — before the connection test, so a refused add
+    // costs nothing.
+    const cap = await checkConnectionCap(db, req.user!.tenantId);
+    if (!cap.ok) {
+      res.status(409).json({ ok: false, error: cap.message, code: 'connection_cap', used: cap.used, limit: cap.limit });
       return;
     }
 
@@ -150,6 +159,14 @@ router.post(
           selectedEntities: string[];
           domains?: string[];
         };
+
+      // Sources cap (P0-8) — first, before any config or OAuth state is
+      // touched, so a refused add leaves nothing behind.
+      const cap = await checkConnectionCap(db, req.user!.tenantId);
+      if (!cap.ok) {
+        res.status(409).json({ ok: false, error: cap.message, code: 'connection_cap', used: cap.used, limit: cap.limit });
+        return;
+      }
 
       // Resolve the connector — 404 if the type isn't registered.
       let connector;

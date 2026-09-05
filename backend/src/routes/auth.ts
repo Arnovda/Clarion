@@ -1,3 +1,4 @@
+import { defaultSeats, defaultMaxConnections } from '../services/tenantLimits';
 import { Router, Request, Response, NextFunction } from 'express';
 import crypto from 'crypto';
 import { semanticDb } from '../db/knex';
@@ -109,6 +110,11 @@ router.post('/register', validate(registerSchema), async (req: Request, res: Res
             slug,
             status: 'active',
             monthly_token_budget: tokenBudget,
+            // P0-8: the unauthenticated door also stamps the non-AI caps
+            // (NULL = unlimited stays the operator-managed meaning).
+            seats: defaultSeats(),
+            max_connections: defaultMaxConnections(),
+            plan: 'trial',
           })
           .returning('id');
         tenantId = typeof tenantRow === 'object' ? (tenantRow as { id: number }).id : (tenantRow as number);

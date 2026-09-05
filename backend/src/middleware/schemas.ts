@@ -1019,6 +1019,33 @@ export const adminTenantBudgetSchema = z.object({
   }),
 });
 
+/**
+ * The customer record (P0-8). Every field nullable: NULL on a cap means
+ * unlimited (the budget's meaning), NULL on a text field means "not
+ * recorded yet". Caps are bounded above so a typo cannot grant a million
+ * seats.
+ */
+export const adminTenantCustomerSchema = z.object({
+  params: adminTenantParams,
+  body: z.object({
+    plan: z.string().trim().max(60).nullable().optional(),
+    seats: z.number().int().min(0).max(100_000).nullable().optional(),
+    maxConnections: z.number().int().min(0).max(10_000).nullable().optional(),
+    trialEndsAt: z.string().datetime({ offset: true }).nullable().optional(),
+    billingContact: z.string().trim().max(200).nullable().optional(),
+    legalName: z.string().trim().max(200).nullable().optional(),
+    vatNumber: z.string().trim().max(40).nullable().optional(),
+    address: z.string().trim().max(1000).nullable().optional(),
+  }).strict(),
+});
+
+/** ?month=YYYY-MM for the usage export; defaults to the current month. */
+export const adminUsageCsvSchema = z.object({
+  query: z.object({
+    month: z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/, 'month must be YYYY-MM').optional(),
+  }).passthrough(),
+});
+
 export const adminTenantImpersonateSchema = z.object({
   params: adminTenantParams,
   body: z.object({

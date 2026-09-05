@@ -13,6 +13,7 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { requireAuth, requireRole } from '../middleware/auth';
 import { reqDb } from '../db/reqDb';
+import { scheduleIntervalError } from '../services/tenantLimits';
 import { registerEmailSchedule, unregisterEmailSchedule } from '../jobs/emailScheduler';
 import { logger as rootLogger } from '../utils/logger';
 
@@ -77,6 +78,12 @@ router.post('/', requireAuth, requireRole('admin', 'analyst'), async (req: Reque
       res.status(400).json({ ok: false, error: 'Exactly one of dashboard_id / saved_question_id, plus name and cron_expression, are required' });
       return;
     }
+    // Cadence floor (P0-8): a report email every minute is spam AND cost.
+    const cadence = scheduleIntervalError(String(cron_expression));
+    if (cadence) {
+      res.status(400).json({ ok: false, error: cadence, code: 'schedule_interval' });
+      return;
+    }
     if (!Array.isArray(recipients) || recipients.length === 0) {
       res.status(400).json({ ok: false, error: 'recipients must be a non-empty array of email addresses' });
       return;
@@ -124,6 +131,14 @@ router.put('/:id', requireAuth, requireRole('admin', 'analyst'), async (req: Req
 
     const existing = await db('email_schedules').where({ id: req.params.id }).first();
     if (!existing) { res.status(404).json({ ok: false, error: 'Schedule not found' }); return; }
+
+    if (cron_expression !== undefined) {
+      const cadence = scheduleIntervalError(String(cron_expression));
+      if (cadence) {
+        res.status(400).json({ ok: false, error: cadence, code: 'schedule_interval' });
+        return;
+      }
+    }
 
     const updates: Record<string, unknown> = { updated_at: new Date() };
     if (name !== undefined) updates.name = name;

@@ -20,6 +20,7 @@ import type { Knex } from 'knex';
 import { requireAuth, requireRole } from '../middleware/auth';
 import { validate } from '../middleware/validate';
 import { reqDb } from '../db/reqDb';
+import { scheduleIntervalError } from '../services/tenantLimits';
 import {
   registerConnectionSyncSchedule,
   removeConnectionSyncSchedule,
@@ -119,6 +120,13 @@ router.put(
       const cronCheck = validateCron(cronExpression, timezone);
       if (!cronCheck.valid) {
         res.status(400).json({ ok: false, error: `Invalid cron expression: ${cronCheck.error}` });
+        return;
+      }
+      // Cadence floor (P0-8): a sync every minute is a cost driver nobody
+      // bounded; judged on when the cron actually fires.
+      const cadence = scheduleIntervalError(cronExpression, timezone);
+      if (cadence) {
+        res.status(400).json({ ok: false, error: cadence, code: 'schedule_interval' });
         return;
       }
 

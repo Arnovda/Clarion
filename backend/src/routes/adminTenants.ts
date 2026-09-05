@@ -43,6 +43,8 @@ import {
   adminTenantParamsSchema,
   adminTenantBudgetSchema,
   adminTenantImpersonateSchema,
+  adminTenantCustomerSchema,
+  adminUsageCsvSchema,
 } from '../middleware/schemas';
 import { semanticDb } from '../db/knex';
 import { tenantQuery } from '../services/tenantQuery';
@@ -127,7 +129,7 @@ router.get('/', async (req: Request, res: Response, next: NextFunction) => {
     // Newest first; capped so a runaway tenant count cannot turn this into
     // hundreds of transactions. Revisit with pagination when the cap is felt.
     const tenants = await semanticDb('tenants')
-      .select('id', 'name', 'slug', 'status', 'monthly_token_budget', 'created_at')
+      .select('id', 'name', 'slug', 'status', 'monthly_token_budget', 'created_at', 'plan', 'seats', 'max_connections', 'trial_ends_at', 'billing_contact', 'legal_name', 'vat_number', 'address')
       .orderBy('created_at', 'desc')
       .limit(200);
 
@@ -165,15 +167,112 @@ router.get('/', async (req: Request, res: Response, next: NextFunction) => {
 });
 
 function shapeTenant(t: Record<string, unknown>) {
+  const numOrNull = (v: unknown) => (v == null ? null : Number(v));
+  const strOrNull = (v: unknown) => (v == null ? null : String(v));
   return {
     id: t.id as number,
     name: t.name as string,
     slug: t.slug as string,
     status: t.status as string,
-    monthlyTokenBudget: t.monthly_token_budget == null ? null : Number(t.monthly_token_budget),
+    monthlyTokenBudget: numOrNull(t.monthly_token_budget),
     createdAt: t.created_at as string,
+    // The customer record (P0-8). NULL caps = unlimited.
+    plan: strOrNull(t.plan),
+    seats: numOrNull(t.seats),
+    maxConnections: numOrNull(t.max_connections),
+    trialEndsAt: t.trial_ends_at == null ? null : new Date(t.trial_ends_at as string).toISOString(),
+    billingContact: strOrNull(t.billing_contact),
+    legalName: strOrNull(t.legal_name),
+    vatNumber: strOrNull(t.vat_number),
+    address: strOrNull(t.address),
   };
 }
+
+// ───────────────────────────── month-end usage export ───────────────────────
+//
+// Literal route, registered BEFORE `/:id` so "usage.csv" is never read as an
+// id. One row per tenant for the month: the customer record beside what was
+// consumed, so an invoice can be written from this file alone. Cost is in
+// USD as ai_call_log records it — the FX decision is the owner's; the rate
+// used goes on the invoice (assessment v2, P0-8).
+
+function csvCell(v: unknown): string {
+  if (v == null) return '';
+  const str = v instanceof Date ? v.toISOString() : String(v);
+  return /[",\r\n]/.test(str) ? `"${str.replace(/"/g, '""')}"` : str;
+}
+
+/** ['YYYY-MM-01', 'YYYY-MM-01' of the next month) for a YYYY-MM string. */
+function monthBounds(month: string): { start: string; end: string; label: string } {
+  const [y, m] = month.split('-').map(Number);
+  const start = new Date(Date.UTC(y, m - 1, 1));
+  const end = new Date(Date.UTC(y, m, 1));
+  return { start: start.toISOString().slice(0, 10), end: end.toISOString().slice(0, 10), label: month };
+}
+
+router.get('/usage.csv', validate(adminUsageCsvSchema), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const now = new Date();
+    const month = (req.query.month as string | undefined)
+      ?? `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, '0')}`;
+    const { start, end, label } = monthBounds(month);
+
+    const tenants = await semanticDb('tenants')
+      .select('id', 'name', 'slug', 'status', 'monthly_token_budget', 'created_at', 'plan', 'seats', 'max_connections', 'trial_ends_at', 'billing_contact', 'legal_name', 'vat_number', 'address')
+      .orderBy('id', 'asc')
+      .limit(1000);
+
+    const header = [
+      'month', 'tenant_id', 'workspace', 'slug', 'status', 'plan', 'legal_name', 'vat_number', 'billing_contact', 'address',
+      'trial_ends_at', 'seats', 'users_active', 'users_total', 'max_connections', 'connections',
+      'sync_runs', 'sync_runs_failed', 'ai_calls', 'ai_input_tokens', 'ai_output_tokens', 'ai_total_tokens', 'ai_cost_usd',
+      'monthly_token_budget',
+    ];
+    const lines = [header.join(',')];
+
+    for (const t of tenants) {
+      // Same discipline as tenantHealth: one SET LOCAL transaction per
+      // tenant, every subquery ALSO filtering tenant_id explicitly.
+      const u = await tenantQuery(Number(t.id), async (trx) => {
+        const row = (await trx
+          .select({
+            users_active: trx('users').where({ tenant_id: t.id, is_active: true }).count('*'),
+            users_total: trx('users').where({ tenant_id: t.id }).count('*'),
+            connections: trx('connections').where({ tenant_id: t.id }).count('*'),
+            sync_runs: trx('source_sync_runs').where({ tenant_id: t.id }).where('queued_at', '>=', start).where('queued_at', '<', end).count('*'),
+            sync_runs_failed: trx('source_sync_runs').where({ tenant_id: t.id }).whereIn('status', ['failed', 'partial']).where('queued_at', '>=', start).where('queued_at', '<', end).count('*'),
+            ai_calls: trx('ai_call_log').where({ tenant_id: t.id }).where('created_at', '>=', start).where('created_at', '<', end).count('*'),
+            ai_input_tokens: trx('ai_call_log').where({ tenant_id: t.id }).where('created_at', '>=', start).where('created_at', '<', end).sum('input_tokens'),
+            ai_output_tokens: trx('ai_call_log').where({ tenant_id: t.id }).where('created_at', '>=', start).where('created_at', '<', end).sum('output_tokens'),
+            ai_cost_usd: trx('ai_call_log').where({ tenant_id: t.id }).where('created_at', '>=', start).where('created_at', '<', end).sum('cost_usd'),
+          })
+          .first()) as Record<string, unknown>;
+        return row;
+      }).catch((err) => {
+        // One broken tenant must not blank the month's export; its row
+        // says so instead of carrying zeros that read as "nothing used".
+        log.warn({ err, tenantId: t.id }, 'usage export: tenant read failed');
+        return null;
+      });
+
+      const inTok = Number(u?.ai_input_tokens ?? 0);
+      const outTok = Number(u?.ai_output_tokens ?? 0);
+      lines.push([
+        label, t.id, t.name, t.slug, t.status, t.plan, t.legal_name, t.vat_number, t.billing_contact, t.address,
+        t.trial_ends_at ? new Date(t.trial_ends_at as string).toISOString() : '',
+        t.seats, u ? Number(u.users_active) : 'ERROR', u ? Number(u.users_total) : 'ERROR', t.max_connections, u ? Number(u.connections) : 'ERROR',
+        u ? Number(u.sync_runs) : 'ERROR', u ? Number(u.sync_runs_failed) : 'ERROR',
+        u ? Number(u.ai_calls) : 'ERROR', inTok, outTok, inTok + outTok, u ? Number(u.ai_cost_usd ?? 0).toFixed(6) : 'ERROR',
+        t.monthly_token_budget,
+      ].map(csvCell).join(','));
+    }
+
+    log.info({ month: label, tenants: tenants.length, operator: req.user!.email }, 'usage export produced');
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="clarion-usage-${label}.csv"`);
+    res.send(lines.join('\r\n') + '\r\n');
+  } catch (err) { next(err); }
+});
 
 // ───────────────────────────── one tenant in depth ──────────────────────────
 
@@ -181,7 +280,7 @@ router.get('/:id', validate(adminTenantParamsSchema), async (req: Request, res: 
   try {
     const id = Number(req.params.id);
     const tenant = await semanticDb('tenants')
-      .select('id', 'name', 'slug', 'status', 'monthly_token_budget', 'created_at')
+      .select('id', 'name', 'slug', 'status', 'monthly_token_budget', 'created_at', 'plan', 'seats', 'max_connections', 'trial_ends_at', 'billing_contact', 'legal_name', 'vat_number', 'address')
       .where({ id })
       .first();
     if (!tenant) {
@@ -300,6 +399,53 @@ router.patch('/:id/budget', validate(adminTenantBudgetSchema), async (req: Reque
     });
 
     res.json({ ok: true, data: { id, monthlyTokenBudget } });
+  } catch (err) { next(err); }
+});
+
+// ───────────────────────────── customer record ──────────────────────────────
+
+router.patch('/:id/customer', validate(adminTenantCustomerSchema), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const id = Number(req.params.id);
+    const b = req.body as {
+      plan?: string | null; seats?: number | null; maxConnections?: number | null; trialEndsAt?: string | null;
+      billingContact?: string | null; legalName?: string | null; vatNumber?: string | null; address?: string | null;
+    };
+    // Only the keys sent are changed; an absent key leaves the column alone
+    // (a partial edit from the console must not wipe the rest).
+    const updates: Record<string, unknown> = {};
+    if ('plan' in b) updates.plan = b.plan || null;
+    if ('seats' in b) updates.seats = b.seats;
+    if ('maxConnections' in b) updates.max_connections = b.maxConnections;
+    if ('trialEndsAt' in b) updates.trial_ends_at = b.trialEndsAt ? new Date(b.trialEndsAt) : null;
+    if ('billingContact' in b) updates.billing_contact = b.billingContact || null;
+    if ('legalName' in b) updates.legal_name = b.legalName || null;
+    if ('vatNumber' in b) updates.vat_number = b.vatNumber || null;
+    if ('address' in b) updates.address = b.address || null;
+    if (Object.keys(updates).length === 0) {
+      res.status(400).json({ ok: false, error: 'Nothing to change' });
+      return;
+    }
+    updates.updated_at = semanticDb.fn.now();
+
+    const updated = await semanticDb('tenants').where({ id }).update(updates);
+    if (updated === 0) {
+      res.status(404).json({ ok: false, error: 'Not found' });
+      return;
+    }
+
+    await recordAuditForTenant(id, req, {
+      action: 'tenant.customer_change',
+      entityType: 'tenant',
+      entityId: id,
+      context: { ...b },
+    });
+
+    const row = await semanticDb('tenants')
+      .select('id', 'name', 'slug', 'status', 'monthly_token_budget', 'created_at', 'plan', 'seats', 'max_connections', 'trial_ends_at', 'billing_contact', 'legal_name', 'vat_number', 'address')
+      .where({ id })
+      .first();
+    res.json({ ok: true, data: shapeTenant(row as Record<string, unknown>) });
   } catch (err) { next(err); }
 });
 

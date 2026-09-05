@@ -31,9 +31,56 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-09-05 (WAVE B IN PROGRESS — owner: *"Start wave B"*; item 1 landed. Below it, WAVE A REMEDIATION COMPLETE — owner: *"You
+**Last updated:** 2026-09-05 (WAVE B IN PROGRESS — owner: *"Start wave B"*; items 1–2 landed. Below it, WAVE A REMEDIATION COMPLETE — owner: *"You
 can push to main and begin fixing the waves"*; the assessment v2 was
 fast-forwarded to main and each item landed as its own push, seven pushes)
+
+**Wave B, item 2 — P0-8 CLOSED: a customer record on `tenants`, caps on
+what is not AI, a 15-minute floor on every schedule, and the month-end CSV.**
+- **Migration 92** adds `plan`, `seats`, `max_connections`, `trial_ends_at`,
+  `billing_contact`, `legal_name`, `vat_number`, `address` to `tenants`
+  (all nullable; NULL cap = unlimited, the budget's meaning, so existing
+  tenants are untouched). Self-registration stamps `seats` /
+  `max_connections` from `DEFAULT_SEATS` (5) / `DEFAULT_MAX_CONNECTIONS`
+  (3) — `unlimited` literal supported — and `plan='trial'`, exactly like the
+  token budget. `trial_ends_at` is INFORMATIONAL (the console shows "trial
+  ends in 7d" / "ended 3d ago"); nothing auto-suspends — a lockout is the
+  operator's act, not a cron job.
+- **NEW `services/tenantLimits.ts`**: `checkSeatCap` (ACTIVE users — a
+  deactivated user frees a seat), `checkConnectionCap`, and the cadence
+  floor: `minCronGapMinutes` MEASURES the smallest gap between consecutive
+  firings over the next 60 runs (so `0,1 * * * *` is judged by when it
+  fires, not by its text); `scheduleIntervalError` refuses below
+  `MIN_SCHEDULE_INTERVAL_MINUTES` (15; 0 disables). Every refusal is a
+  sentence a customer can act on, BEFORE the expensive step: the invite
+  (409 `seat_cap`), both connection-create doors (409 `connection_cap`,
+  before the connection test), sync schedule PUT, transformation schedule
+  PUT, email schedule POST/PUT, pipeline cron triggers on POST/PUT (400
+  `schedule_interval`).
+- **Operator console**: `PATCH /admin/tenants/:id/customer` (partial
+  edits — absent keys untouched — audited into the TARGET tenant as
+  `tenant.customer_change`) and **`GET /admin/tenants/usage.csv?month=`**
+  (literal route above `/:id`): one row per tenant with the customer record
+  beside that month's active/total users, connections, sync runs (+failed),
+  AI calls, input/output/total tokens and USD cost from `ai_call_log` — the
+  invoice input. Cost stays USD (the FX decision is the owner's; the rate
+  goes on the invoice). A tenant whose read fails gets `ERROR` cells, never
+  zeros. `/admin/tenants` shows plan + trial state under the name, "N of M"
+  seats/sources in the columns, a Customer record editor in the expanded
+  row, and a month picker + "Usage CSV" button.
+- Tests: `tests/customer-caps.test.ts` (8): stamped defaults; seat refusal
+  with the sentence + nothing inserted, then deactivate-frees-a-seat; both
+  create doors 409 at cap 0 (the direct-DB one with an unreachable host —
+  proof the cap answers before the connection test); cron gap measurement
+  incl. `0,1 * * * *` → 1 min; sync schedule `*/5` 400 + nothing stored,
+  `*/15` 200; email schedule `* * * * *` 400; customer PATCH round-trip,
+  partial edit, audit row with `platform_operator`, 400/404; CSV header,
+  the tenant's row, USD cost `0.012300`, 404 for a tenant admin, 400 on
+  month `2026-13`.
+- Ratchet: `tenantLimits.ts` joined `ROOT_POOL_OK` (reads `tenants`, no
+  RLS; the counts take the caller's scoped handle) — baseline stays 19.
+- New env vars in `.env.example`: `DEFAULT_SEATS`,
+  `DEFAULT_MAX_CONNECTIONS`, `MIN_SCHEDULE_INTERVAL_MINUTES`.
 
 **Wave B, item 1 — P0-9's engineering half: every migration is PROVEN to
 roll back, and a deploy records its recovery point before it migrates.**
