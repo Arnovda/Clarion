@@ -16,6 +16,7 @@ import crypto from 'crypto';
 import { reqDb } from '../db/reqDb';
 import { requireAuth, requireRole, hashPassword, verifyPassword } from '../middleware/auth';
 import { config } from '../config';
+import { sendEmail } from '../services/emailService';
 import { validate } from '../middleware/validate';
 import { inviteUserSchema, eraseUserSchema } from '../middleware/schemas';
 import { recordAudit } from '../services/auditService';
@@ -27,6 +28,11 @@ import { logger as rootLogger } from '../utils/logger';
 const log = rootLogger.child({ mod: 'users' });
 
 const router = Router();
+
+/** Minimal HTML escape for the few user-supplied strings that reach an email body. */
+function escapeHtml(v: string): string {
+  return v.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
 
 // All routes require authentication
 router.use(requireAuth);
@@ -103,11 +109,42 @@ router.post('/invite', requireRole('admin'), validate(inviteUserSchema), async (
       })
       .returning(['id', 'email', 'display_name', 'role', 'is_active', 'created_at']);
 
-    // Dev convenience: log the invite URL so a developer can grab it
-    // without SMTP. Production must have SMTP configured.
+    // THE INVITATION IS AN EMAIL. Until 2026-09-05 this handler built the
+    // link, logged it in development, returned it outside production — and
+    // never sent it: in production the admin saw "Sending…" and the colleague
+    // received nothing (assessment v2, P0-3). The link is a 7-day password
+    // reset; redeeming it also marks the address verified (routes/auth.ts),
+    // so an invitee is never caught by the email-verification gate.
     const inviteUrl = `${config.appUrl}/reset-password?token=${resetToken}&email=${encodeURIComponent(email.toLowerCase())}`;
     if (process.env.NODE_ENV === 'development') {
       log.info(`[invite-dev] Invite URL for ${email}: ${inviteUrl}`);
+    }
+    // `tenants` has no RLS; the name is what tells the recipient who this is from.
+    const tenant = await db('tenants').where({ id: req.user!.tenantId }).first('name');
+    const workspace = String(tenant?.name ?? 'Clarion');
+    const inviter = req.user!.email;
+    let emailed = false;
+    try {
+      await sendEmail({
+        to: email.toLowerCase(),
+        subject: `You're invited to ${workspace} on Clarion`,
+        text:
+          `Hi ${displayName.trim()},\n\n` +
+          `${inviter} invited you to the ${workspace} workspace on Clarion as ${role}.\n\n` +
+          `Set your password with the link below (valid for 7 days):\n${inviteUrl}\n\n` +
+          `If you weren't expecting this, you can ignore this email.\n\n— Clarion`,
+        html:
+          `<p>Hi ${escapeHtml(displayName.trim())},</p>` +
+          `<p><b>${escapeHtml(inviter)}</b> invited you to the <b>${escapeHtml(workspace)}</b> workspace on Clarion as <b>${role}</b>.</p>` +
+          `<p><a href="${inviteUrl}" style="background:#0d4a6f;color:#fff;padding:8px 14px;border-radius:4px;text-decoration:none;display:inline-block">Set your password</a></p>` +
+          `<p style="color:#666;font-size:12px">Or paste this link in your browser (valid for 7 days):<br>${inviteUrl}</p>` +
+          `<p style="color:#999;font-size:12px">If you weren't expecting this, you can ignore this email.</p>`,
+      });
+      emailed = true;
+    } catch (err) {
+      // The account exists either way; the admin is told the email did not
+      // go out (the UI says so) instead of a silent "Sending…" that ends.
+      log.error({ err, tenantId: req.user!.tenantId }, 'invite email send failed');
     }
 
     await recordAudit(req, {
@@ -120,6 +157,7 @@ router.post('/invite', requireRole('admin'), validate(inviteUserSchema), async (
     res.json({
       ok: true,
       data: user,
+      emailed,
       invite_url: process.env.NODE_ENV !== 'production' ? inviteUrl : undefined,
     });
   } catch (err) { next(err); }

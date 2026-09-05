@@ -44,7 +44,7 @@ function UsersPageInner() {
   const [inviteName, setInviteName] = useState('');
   const [inviteRole, setInviteRole] = useState<string>('analyst');
   const [inviting, setInviting] = useState(false);
-  const [inviteResult, setInviteResult] = useState<{ url?: string; error?: string } | null>(null);
+  const [inviteResult, setInviteResult] = useState<{ url?: string; error?: string; emailed?: boolean; email?: string } | null>(null);
   const [editingUser, setEditingUser] = useState<number | null>(null);
   const [editRole, setEditRole] = useState('');
 
@@ -65,7 +65,7 @@ function UsersPageInner() {
     setInviteResult(null);
     try {
       const res = await api.post('/users/invite', { email: inviteEmail, displayName: inviteName, role: inviteRole });
-      setInviteResult({ url: res.data.invite_url });
+      setInviteResult({ url: res.data.invite_url, emailed: res.data.emailed, email: inviteEmail });
       setInviteEmail(''); setInviteName(''); setInviteRole('analyst');
       loadUsers();
     } catch (err: unknown) {
@@ -317,10 +317,22 @@ function UsersPageInner() {
               </button>
             </form>
 
-            {inviteResult?.url && (
-              <div className="mt-5 p-4 bg-ok-soft border border-line rounded-md text-[12px] text-ink-2">
-                <p className="text-[10px] font-mono tracking-[0.08em] uppercase text-ok mb-1">Invite created</p>
-                <code className="block mt-2 text-[11px] font-mono bg-raised border border-line text-ink-3 p-2 rounded break-all">{inviteResult.url}</code>
+            {inviteResult && !inviteResult.error && (
+              <div className={`mt-5 p-4 border border-line rounded-md text-[12px] text-ink-2 ${inviteResult.emailed ? 'bg-ok-soft' : 'bg-warn-soft'}`}>
+                {inviteResult.emailed ? (
+                  <>
+                    <p className="text-[10px] font-mono tracking-[0.08em] uppercase text-ok mb-1">Invitation sent</p>
+                    <p>We emailed {inviteResult.email} a link to set their password. It stays valid for 7 days.</p>
+                  </>
+                ) : (
+                  <>
+                    <p className="text-[10px] font-mono tracking-[0.08em] uppercase text-warn mb-1">Invitation created, email not sent</p>
+                    <p>The account exists, but the invitation email could not be delivered. Ask them to use “Forgot password” with {inviteResult.email}, or try again later.</p>
+                  </>
+                )}
+                {inviteResult.url && (
+                  <code className="block mt-2 text-[11px] font-mono bg-raised border border-line text-ink-3 p-2 rounded break-all">{inviteResult.url}</code>
+                )}
               </div>
             )}
             {inviteResult?.error && (

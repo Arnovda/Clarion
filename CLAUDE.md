@@ -122,6 +122,27 @@ role, and the daily brief no longer crashes.**
   doc §8 still stands** — after this deploys the boot line
   `Loaded N enabled connection-sync schedule(s)` must show the real count.
 
+**Wave A, item 2 — P0-3 CLOSED: "Send invite" sends the invitation.**
+- `routes/users.ts` invite handler now calls `sendEmail` with a text + HTML
+  invitation naming the inviter and the workspace (`tenants.name`, no RLS),
+  carrying the 7-day `/reset-password` link — redeeming it also marks the
+  address verified (`routes/auth.ts:606`), so an invitee never meets the
+  email-verification gate. The dev-mode log line and the non-production
+  `invite_url` in the response are unchanged. A send failure is logged, the
+  user row still exists, and the response says `emailed: false`.
+- `app/users/page.tsx` says "Invitation sent — we emailed X a link, valid
+  7 days" on success, and on failure "Invitation created, email not sent —
+  ask them to use Forgot password" (amber), instead of a block that rendered
+  nothing in production.
+- **NEW `tests/invite-email.test.ts`** (mocks `emailService`): recipient,
+  subject, the reset link with the 64-hex token in html AND text, the
+  workspace name; send failure → 200 + `emailed:false` + the row exists;
+  `NODE_ENV=production` → no raw link in the response, email still sent.
+  Reproduced red first: `sendEmail` called 0 times.
+- Validation: full backend vitest **61 files / 617 passed / 4 skipped**;
+  backend `npm run check` clean; frontend `tsc --noEmit` clean and the page
+  lint-clean (its one warning is pre-existing on an untouched line).
+
 **Prior last updated:** 2026-09-05 (MARKET READINESS ASSESSMENT, SECOND PASS — doc
 only, no code changed; twelve-domain re-audit of main at 9ab13a2 after waves
 1+2, with one guard bypass REPRODUCED)
