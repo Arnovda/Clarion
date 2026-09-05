@@ -31,7 +31,7 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-09-02 (SAME DAY, FOURTH FINDING — A RUNNING TOTAL NO
+**Last updated:** 2026-09-05 (FOURTH FINDING, PR #118 — plus a same-PR audit-gate drive-by — A RUNNING TOTAL NO
 LONGER BREAKS WHERE A SUPPLIER HAD A QUIET YEAR; the SQL emits rows only for
 active months, and the renderer now fills the one case the data proves)
 
@@ -75,6 +75,20 @@ not vanish, it stayed flat.
   shape — revisit if the flat run misleads anyone); backfilling leading
   zeros for a running total (a line that starts when the supplier starts
   reads better than one pinned to zero for years).
+- **DRIVE-BY ON THE SAME PR (2026-09-05): THE CONNECTORS AUDIT GATE WENT
+  RED UNDER EVERY BRANCH.** The first CI run on PR #118 failed "Connector
+  Framework Tests" on `scripts/audit-gate.mjs` — four new GHSAs against
+  `fast-uri` (vulnerable `>=3.0.0 <3.1.6`) while `packages/connectors`
+  pinned the override at `^3.1.5`, one patch below the fix. Nothing in the
+  PR touched the package; main's last green run (09-02) simply predates the
+  advisories. `fast-uri` is reached through `ajv`, which validates
+  connector config AT RUNTIME, so it is runtime-exposed and was FIXED, not
+  allowlisted (the ALLOW list is for build-chain/dev-only only): override
+  `^3.1.6` (resolves 3.1.7), lockfile regenerated with npm, a `//overrides`
+  note added mirroring the backend's. Gate exit 0 locally, connectors
+  `tsc` clean, 20 files / 231 tests green. Lesson: a red check on a PR
+  that touched none of that code is still that PR's to clear when a fix
+  exists — waiting on "someone else's" fix is waiting.
 
 **Prior last updated:** 2026-09-02 (SAME DAY, THIRD FINDING — A "PER SUPPLIER OVER
 TIME" ANSWER IS ONE LINE PER SUPPLIER NOW; the chart drew the long-format rows
