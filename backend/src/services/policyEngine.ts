@@ -196,17 +196,25 @@ export function applyPolicyRows(sql: string, policies: DataPolicy[]): PolicyAppl
     const tableName = mask.table_name;
     const token = `\u0000MASK_${colName}\u0000`;
 
-    // Replace qualified references: table.column -> mask
+    // Replace qualified references: `<qualifier>.column` -> mask, where the
+    // qualifier is the table name OR ANY ALIAS (`a.vat_number`, `"a".vat_number`).
+    // The first version matched only the literal table name, so the alias
+    // form fell through to the unqualified replace below and came out as
+    // `a.'***'` — a parser error on every dashboard query that joins with
+    // aliases (caught by tests/core-loop.test.ts). Masking a same-named
+    // column of another table in the same query is the conservative direction.
+    void tableName;
     const qualifiedPattern = new RegExp(
-      `\\b${escapeRegex(tableName)}\\.${escapeRegex(colName)}\\b`,
+      `\\b(?:[A-Za-z_][A-Za-z0-9_]*|"[^"]+")\\.${escapeRegex(colName)}\\b`,
       'gi',
     );
     modifiedSql = modifiedSql.replace(qualifiedPattern, token);
 
     // Replace unqualified references in SELECT (only if the table is referenced)
-    // Be conservative: only replace if it looks like a column reference
+    // Be conservative: only replace if it looks like a column reference, and
+    // never the tail of a dotted reference the pattern above did not take.
     const unqualifiedPattern = new RegExp(
-      `(?<=SELECT\\s[\\s\\S]*?)\\b${escapeRegex(colName)}\\b(?=[\\s,])`,
+      `(?<=SELECT\\s[\\s\\S]*?)(?<![.\\w])${escapeRegex(colName)}\\b(?=[\\s,])`,
       'gi',
     );
     modifiedSql = modifiedSql.replace(unqualifiedPattern, token);

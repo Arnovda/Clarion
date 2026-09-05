@@ -94,6 +94,13 @@ describe('readPolicy helpers', () => {
     expect(out.sql).toContain("'***'");
   });
 
+  it('masks an ALIAS-qualified reference too, and keeps the column name (the core-loop catch)', async () => {
+    const out = await prepareUserRead('SELECT c.name, c.iban FROM customers c ORDER BY c.iban', { userId: viewerId, role: 'viewer', tenantId });
+    expect(out.sql).toContain("'***' AS iban");
+    expect(out.sql).not.toContain("c.'***'");
+    expect(out.sql).toMatch(/ORDER BY '\*\*\*'/);
+  });
+
   it('leaves the admin\'s SQL untouched', async () => {
     const out = await prepareUserRead(SQL, { userId: 1, role: 'admin', tenantId });
     expect(out.policy.policiesApplied).toBe(0);

@@ -31,9 +31,9 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-09-05 (WAVE A REMEDIATION IN PROGRESS — owner: *"You
+**Last updated:** 2026-09-05 (WAVE A REMEDIATION COMPLETE — owner: *"You
 can push to main and begin fixing the waves"*; the assessment v2 was
-fast-forwarded to main and each P0 lands as its own push)
+fast-forwarded to main and each item landed as its own push, seven pushes)
 
 **Wave A, item 0 — P0-1 CLOSED: the SQL guard sees quoted function names.**
 - `utils/sqlGuard.ts`: new `EXTERNAL_FN_QUOTED_RE` scans SQL with comments
@@ -356,6 +356,58 @@ support sessions cannot mint or destroy, and four one-liners.**
 - Validation: `npm run check` clean, full backend vitest **65 files / 648
   passed / 4 skipped** (run with P0-6 on the same tree), frontend `tsc`
   clean + TopBar lint-clean, ten ratchets green.
+
+**Wave A, item 7 — the CORE LOOP has a test, the ratchets gate the
+deploy, and a schedule round-trips under the production role. WAVE A IS
+COMPLETE.**
+- **NEW `tests/core-loop.test.ts` — the first backend test that opens
+  DuckDB.** Two source entities are written as Parquet exactly where the
+  sync worker's writer puts them (`<warehouse>/<Entity>/data.parquet`), a
+  product with a dimension and a fact is persisted the way the bus-matrix
+  builder does, `runProductTransformation` runs for real
+  (`STORAGE_FORMAT=parquet`: no Python sidecar in CI or here) and is
+  checked to materialise both tables in DAG order, publish `delta_path`
+  through the catalog and sync `product_columns` from what DuckDB
+  produced; then `POST /dashboards/execute` on the product layer answers a
+  fact-to-dimension join with the right totals, a viewer gets the same
+  numbers with the VAT column masked, and a quoted external read is still
+  refused. Nothing mocked but the AI.
+- **THE TEST FOUND A BUG ON ITS FIRST RUN — the P0-4 mask broke every
+  aliased join.** `policyEngine` masked `<table>.col` and bare `col`, so an
+  ALIAS-qualified reference (`a.vat_number`, the shape of every
+  dashboard query) fell through to the bare replace and came out as
+  `a.'***'` — a parser error, i.e. a viewer with any column mask could not
+  run any joined dashboard query. The qualified pattern now accepts any
+  qualifier (table name, alias, quoted alias) and the bare pattern refuses
+  the tail of a dotted reference. Pinned in both the core-loop test and
+  `data-policies-everywhere.test.ts` (`c.iban` → `'***' AS iban`, `ORDER
+  BY c.iban` → `ORDER BY '***'`). The P0-4 suite passed before because
+  its SQL had no aliases — exactly the coverage gap 10-1 named.
+- **10-3** `deploy.yml`'s `gate` now requires BOTH the Tests and the Lint
+  workflows to succeed for the commit (`require_workflow test.yml Tests`
+  / `require_workflow lint.yml Lint`, same no-run-is-a-failure rules) —
+  the ten ratchets used to run beside the deploy and never gate it.
+- **10-2** NEW `e2e/schedules.spec.ts`, added to the `rls-isolation` job
+  (backend as `databridge_app` against a migration-only database): a
+  tenant PUTs a sync schedule and reads it back (`connection_sync_schedules`
+  written and read under RLS through the real API), the other tenant gets
+  a 404, and a fresh connection's run history is an empty list. The
+  loaders themselves stay pinned as the app role in
+  `schedule-loaders-rls.test.ts` and `services-under-app-role.test.ts`.
+- Validation: core-loop 5/5, policies suites green, full backend vitest
+  green (66 files), `npm run check` clean, ten ratchets green, both edited
+  workflow YAMLs parse. The schedules spec is NOT run here (it needs the
+  rls-isolation job's backend-as-app-role) — its first run is the next CI
+  run on main; read that job.
+- **WAVE A IS COMPLETE** (P0-1..P0-6, 2-1, 2-2, 8-1, 8-2, 8-5, 11-7, 10-1,
+  10-2, 10-3). Still owed to the owner from it, one check each (doc §8):
+  the boot line `Loaded N enabled connection-sync schedule(s)` after
+  deploy, the first `partial` run and the first full re-sync in
+  production, the `clarion-sql-guard` rule in the next alerts run summary,
+  and flipping `.ops/duckdb-lockdown` with one live look. **Next: wave B
+  ("operate without a DB session": P0-8 customer record + caps, P0-9 DR
+  apply + rehearsal, correlation id API→job, errors/queue/announcements on
+  the console, the uptime test, pool sizing).**
 
 **Prior last updated:** 2026-09-05 (MARKET READINESS ASSESSMENT, SECOND PASS — doc
 only, no code changed; twelve-domain re-audit of main at 9ab13a2 after waves

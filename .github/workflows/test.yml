@@ -243,7 +243,7 @@ jobs:
           RLS_SOURCE_PGDATABASE: databridge_test
           RLS_SOURCE_PGUSER: databridge
           RLS_SOURCE_PGPASSWORD: databridge
-        run: npx playwright test e2e/rls.spec.ts e2e/auth-login.spec.ts
+        run: npx playwright test e2e/rls.spec.ts e2e/auth-login.spec.ts e2e/schedules.spec.ts
 
       - name: Backend log on failure
         if: failure()

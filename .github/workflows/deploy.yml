@@ -94,7 +94,12 @@ jobs:
       actions: read
       contents: read
     steps:
-      - name: Require the Tests workflow to succeed for this commit
+      # BOTH the Tests and the Lint workflows must succeed for this commit
+      # (assessment 10-3: the ratchets used to run beside the deploy and
+      # never gate it, so the `.catch()`-in-shared-transaction class of bug
+      # could deploy with lint red). Same rules for each: no run at all is a
+      # failure, not a pass.
+      - name: Require the Tests and Lint workflows to succeed for this commit
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
@@ -105,53 +110,59 @@ jobs:
           # NO RUN AT ALL is a failure, not a pass. "Tests did not run" and
           # "tests passed" must never be the same outcome — that conflation is
           # exactly how a red suite reaches production unnoticed.
-          deadline_no_run=$(( SECONDS + 300 ))
-          deadline_total=$(( SECONDS + 1800 ))
+          require_workflow() {
+            local WF="$1" LABEL="$2"
+            local deadline_no_run=$(( SECONDS + 300 ))
+            local deadline_total=$(( SECONDS + 1800 ))
 
-          while : ; do
-            RUN=$(gh api \
-              "repos/$REPO/actions/workflows/test.yml/runs?head_sha=$SHA&per_page=1" \
-              --jq '.workflow_runs[0] | "\(.status)|\(.conclusion // "")|\(.html_url)"' 2>/dev/null || echo "")
+            while : ; do
+              RUN=$(gh api \
+                "repos/$REPO/actions/workflows/$WF/runs?head_sha=$SHA&per_page=1" \
+                --jq '.workflow_runs[0] | "\(.status)|\(.conclusion // "")|\(.html_url)"' 2>/dev/null || echo "")
 
-            if [ -z "$RUN" ] || [ "$RUN" = "null||" ]; then
-              if [ "$SECONDS" -gt "$deadline_no_run" ]; then
-                echo "::error::No Tests run found for $SHA after 5 minutes. Refusing to deploy an untested commit."
-                exit 1
+              if [ -z "$RUN" ] || [ "$RUN" = "null||" ]; then
+                if [ "$SECONDS" -gt "$deadline_no_run" ]; then
+                  echo "::error::No $LABEL run found for $SHA after 5 minutes. Refusing to deploy an unchecked commit."
+                  return 1
+                fi
+                echo "waiting for the $LABEL workflow to appear..."
+                sleep 15
+                continue
               fi
-              echo "waiting for the Tests workflow to appear..."
+
+              STATUS="${RUN%%|*}"
+              REST="${RUN#*|}"
+              CONCLUSION="${REST%%|*}"
+              URL="${REST#*|}"
+
+              if [ "$STATUS" = "completed" ]; then
+                if [ "$CONCLUSION" = "success" ]; then
+                  echo "$LABEL passed: $URL"
+                  return 0
+                fi
+                echo "::error::$LABEL concluded '$CONCLUSION' for $SHA — not deploying. $URL"
+                {
+                  echo "### ❌ Not deployed — $LABEL did not pass"
+                  echo ""
+                  echo "Nothing reached production. Fix the failure and push again."
+                  echo ""
+                  echo "[See what failed]($URL)"
+                } >> "$GITHUB_STEP_SUMMARY"
+                return 1
+              fi
+
+              if [ "$SECONDS" -gt "$deadline_total" ]; then
+                echo "::error::$LABEL still '$STATUS' after 30 minutes. Refusing to deploy without a result. $URL"
+                return 1
+              fi
+              echo "$LABEL $STATUS — waiting..."
               sleep 15
-              continue
-            fi
+            done
+          }
 
-            STATUS="${RUN%%|*}"
-            REST="${RUN#*|}"
-            CONCLUSION="${REST%%|*}"
-            URL="${REST#*|}"
-
-            if [ "$STATUS" = "completed" ]; then
-              if [ "$CONCLUSION" = "success" ]; then
-                echo "Tests passed: $URL"
-                echo "### ✅ Tests passed — deploying" >> "$GITHUB_STEP_SUMMARY"
-                exit 0
-              fi
-              echo "::error::Tests concluded '$CONCLUSION' for $SHA — not deploying. $URL"
-              {
-                echo "### ❌ Not deployed — the tests did not pass"
-                echo ""
-                echo "Nothing reached production. Fix the failure and push again."
-                echo ""
-                echo "[See what failed]($URL)"
-              } >> "$GITHUB_STEP_SUMMARY"
-              exit 1
-            fi
-
-            if [ "$SECONDS" -gt "$deadline_total" ]; then
-              echo "::error::Tests still '$STATUS' after 30 minutes. Refusing to deploy without a result. $URL"
-              exit 1
-            fi
-            echo "tests $STATUS — waiting..."
-            sleep 15
-          done
+          require_workflow test.yml Tests
+          require_workflow lint.yml Lint
+          echo "### ✅ Tests and Lint passed — deploying" >> "$GITHUB_STEP_SUMMARY"
   # ── Detect which areas changed ────────────────────────────────────────────
   changes:
     runs-on: ubuntu-latest
