@@ -6,6 +6,7 @@ import RequireRole from '@/components/RequireRole';
 import api from '@/lib/api';
 import { getTokenPayload } from '@/lib/auth';
 import { useToast } from '@/components/ui/Toast';
+import { downloadFile } from '@/app/dashboards/utils/download';
 
 interface User {
   id: number;
@@ -428,7 +429,19 @@ function AuditLogPanel() {
             {f === '' ? 'All' : f}
           </button>
         ))}
-        <span className="ml-auto text-[11px] text-muted-2 font-mono tabular-nums">
+        <button
+          type="button"
+          onClick={() => {
+            const base = (process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001/api').replace(/\/$/, '');
+            const q = actionFilter ? `?action=${encodeURIComponent(actionFilter)}` : '';
+            downloadFile(`${base}/users/audit/export.csv${q}`, `clarion-audit-${new Date().toISOString().slice(0, 10)}.csv`);
+          }}
+          className="ml-auto px-2.5 py-1 rounded-md border border-line bg-raised text-[11.5px] text-ink hover:bg-soft"
+          title="Download the whole trail (newest 50 000 events) as CSV — the export is itself recorded"
+        >
+          Export CSV
+        </button>
+        <span className="text-[11px] text-muted-2 font-mono tabular-nums">
           {total} {total === 1 ? 'event' : 'events'}
         </span>
       </div>

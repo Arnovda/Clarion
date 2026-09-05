@@ -21,6 +21,7 @@ import type { Request } from 'express';
 import { semanticDb } from '../db/knex';
 import { tenantQuery } from './tenantQuery';
 import { logger } from '../utils/logger';
+import { trackMetric } from '../utils/monitoring';
 
 const log = logger.child({ component: 'audit' });
 
@@ -70,9 +71,58 @@ export async function recordAudit(req: Request, input: AuditInput): Promise<void
     const writer: Knex | Knex.Transaction = req.dbTrx ?? semanticDb;
     await writer('audit_events').insert(row);
   } catch (err) {
-    // Audit failures NEVER break the user's action. Log loud so it
-    // surfaces in monitoring; the underlying mutation already succeeded.
-    log.warn({ err, action: input.action }, 'failed to write audit event');
+    // Audit failures NEVER break the user's action — but they are not
+    // swallowed either (4-4): an error-level line with a fixed string and
+    // a metric, so a trail that silently stopped filling is visible.
+    auditWriteFailed(err, input.action);
+  }
+}
+
+/** LOAD-BEARING STRING 'audit write failed' — grep target for prod-logs; metric for App Insights. */
+function auditWriteFailed(err: unknown, action: string): void {
+  log.error({ err, action }, 'audit write failed');
+  trackMetric('audit_write_failed', 1, { action });
+}
+
+/**
+ * An AUTH event (assessment 2-4): login success/failure, logout, register,
+ * forgot/reset, verification. These happen where there is no `req.user`
+ * and no request transaction — the user is not (yet) signed in — so the
+ * row is written under an explicit SET LOCAL for the tenant the event
+ * belongs to. `email` is the address involved (the actor for a login, the
+ * target for a reset); `userId` when known. IP and user agent ride along:
+ * "who tried to sign in as me, from where" is what this trail answers.
+ */
+export async function recordAuthEvent(input: {
+  tenantId: number;
+  userId?: number | null;
+  email?: string | null;
+  action: string;
+  req: Request;
+  context?: Record<string, unknown> | null;
+}): Promise<void> {
+  try {
+    const ip = (input.req.headers['x-forwarded-for'] as string | undefined)?.split(',')[0].trim()
+      ?? input.req.socket?.remoteAddress
+      ?? null;
+    const userAgent = (input.req.headers['user-agent'] as string | undefined) ?? null;
+    await semanticDb.transaction(async (trx) => {
+      await trx.raw(`SET LOCAL app.current_tenant = '${Number(input.tenantId)}'`);
+      await trx('audit_events').insert({
+        tenant_id:     input.tenantId,
+        actor_user_id: input.userId ?? null,
+        actor_email:   input.email ?? null,
+        actor_role:    null,
+        action:        input.action,
+        entity_type:   'user',
+        entity_id:     input.userId != null ? String(input.userId) : null,
+        context:       input.context ? JSON.stringify(input.context) : null,
+        ip,
+        user_agent:    userAgent ? userAgent.slice(0, 500) : null,
+      });
+    });
+  } catch (err) {
+    auditWriteFailed(err, input.action);
   }
 }
 

@@ -512,6 +512,63 @@ router.post('/:id/reset-mfa', requireRole('admin'), async (req: Request, res: Re
 // users table for actor display_name. Auto-RLS filters per tenant.
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// GET /api/users/audit/export.csv — the tenant's audit trail as CSV (4-4)
+//
+// ?since=YYYY-MM-DD&until=YYYY-MM-DD&action=<prefix>  — capped at 50 000
+// rows, newest first. Admin only. RLS scopes it; the explicit tenant_id
+// filter is the house rule regardless. The export itself is audited.
+// ---------------------------------------------------------------------------
+router.get('/audit/export.csv', requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const db = reqDb(req);
+    const tenantId = req.user!.tenantId;
+    const parseDay = (v: unknown): Date | null => {
+      if (typeof v !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(v)) return null;
+      const d = new Date(`${v}T00:00:00Z`);
+      return Number.isNaN(d.getTime()) ? null : d;
+    };
+    const since = parseDay(req.query.since);
+    const until = parseDay(req.query.until);
+    const actionFilter = typeof req.query.action === 'string' ? req.query.action : null;
+    if ((req.query.since && !since) || (req.query.until && !until)) {
+      res.status(400).json({ ok: false, error: 'since / until must be YYYY-MM-DD' });
+      return;
+    }
+
+    const rows = await db('audit_events as ae')
+      .leftJoin('users as u', 'u.id', 'ae.actor_user_id')
+      .where('ae.tenant_id', tenantId)
+      .modify((qb) => {
+        if (since) qb.where('ae.created_at', '>=', since);
+        if (until) qb.where('ae.created_at', '<', new Date(until.getTime() + 86_400_000));
+        if (actionFilter) qb.where('ae.action', 'like', `${actionFilter}%`);
+      })
+      .orderBy('ae.created_at', 'desc')
+      .limit(50_000)
+      .select('ae.id', 'ae.created_at', 'ae.action', 'ae.actor_email', 'ae.actor_role', 'u.display_name as actor_display_name',
+        'ae.entity_type', 'ae.entity_id', 'ae.ip', 'ae.user_agent', 'ae.context');
+
+    const cell = (v: unknown): string => {
+      if (v == null) return '';
+      const str = v instanceof Date ? v.toISOString() : typeof v === 'object' ? JSON.stringify(v) : String(v);
+      return /[",\r\n]/.test(str) ? `"${str.replace(/"/g, '""')}"` : str;
+    };
+    const header = ['id', 'at', 'action', 'actor_email', 'actor_role', 'actor_name', 'entity_type', 'entity_id', 'ip', 'user_agent', 'context'];
+    const lines = [header.join(',')];
+    for (const r of rows) {
+      lines.push([r.id, r.created_at, r.action, r.actor_email, r.actor_role, r.actor_display_name, r.entity_type, r.entity_id, r.ip, r.user_agent, r.context].map(cell).join(','));
+    }
+
+    await recordAudit(req, { action: 'audit.export', entityType: 'audit_events', context: { rows: rows.length, since: req.query.since ?? null, until: req.query.until ?? null, action: actionFilter } });
+
+    const stamp = new Date().toISOString().slice(0, 10);
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="clarion-audit-${stamp}.csv"`);
+    res.send(lines.join('\r\n') + '\r\n');
+  } catch (err) { next(err); }
+});
+
 router.get('/audit', requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const db = reqDb(req);

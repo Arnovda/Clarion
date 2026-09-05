@@ -193,18 +193,18 @@ export async function validateRefreshToken(
  * filtered it out under empty current_tenant — logout never actually
  * revoked anything.
  */
-export async function revokeRefreshToken(raw: string, reason: string): Promise<void> {
-  if (!raw) return;
+export async function revokeRefreshToken(raw: string, reason: string): Promise<{ userId: number; tenantId: number } | null> {
+  if (!raw) return null;
   const tokenHash = hashToken(raw);
 
   const row = await unauthQuery((trx) =>
     trx('refresh_tokens')
-      .select('id', 'tenant_id', 'revoked_at')
+      .select('id', 'tenant_id', 'user_id', 'revoked_at')
       .where({ token_hash: tokenHash })
       .first(),
   );
   // Idempotent: unknown token or already-revoked → no-op.
-  if (!row || row.revoked_at) return;
+  if (!row || row.revoked_at) return null;
 
   await tenantScopedWrite(row.tenant_id, (trx) =>
     trx('refresh_tokens')
@@ -215,6 +215,7 @@ export async function revokeRefreshToken(raw: string, reason: string): Promise<v
         revoked_reason: reason,
       }),
   );
+  return { userId: Number(row.user_id), tenantId: Number(row.tenant_id) };
 }
 
 /**

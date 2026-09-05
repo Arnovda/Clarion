@@ -31,9 +31,37 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-09-05 (WAVE B IN PROGRESS — owner: *"Start wave B"*; items 1–5 landed. Below it, WAVE A REMEDIATION COMPLETE — owner: *"You
+**Last updated:** 2026-09-05 (WAVE B IN PROGRESS — owner: *"Start wave B"*; items 1–6 landed. Below it, WAVE A REMEDIATION COMPLETE — owner: *"You
 can push to main and begin fixing the waves"*; the assessment v2 was
 fast-forwarded to main and each item landed as its own push, seven pushes)
+
+**Wave B, item 6 — 2-4/4-4: every auth event is in the customer's audit
+trail, audit writes that fail are loud, the trail has a retention rule and
+an export.**
+- **2-4 NEW `auditService.recordAuthEvent`** — the unauthenticated-path
+  writer (explicit SET LOCAL for the tenant the event belongs to, actor =
+  the email involved, ip + user agent). Written by `routes/auth.ts` on:
+  `user.register`, `login.fail` (wrong password against a REAL account,
+  and a bad TOTP code), `login.refused` (`tenant_suspended`,
+  `email_unverified`), `login.mfa_challenge`, `login.success` (password
+  and TOTP paths), `session.logout` (`revokeRefreshToken` now returns
+  whose token it was), `session.logout_all`, `password.forgot_requested`,
+  `password.reset_completed`, `email.verified`. An unknown email on login
+  and a refused refresh token have no tenant to write to — those stay log
+  lines on purpose. Successful refreshes are NOT audited (one per user per
+  15 min is noise, not evidence).
+- **4-4** `recordAudit`/`recordAuthEvent` failures log at ERROR with the
+  fixed string `'audit write failed'` + metric `audit_write_failed` (was a
+  swallowed warn). `retention.ts` gained `audit_events` at
+  `RETENTION_AUDIT_EVENTS_DAYS` (730; 0 keeps forever). NEW
+  `GET /users/audit/export.csv?since=&until=&action=` (admin; ≤50 000
+  rows; the export itself is audited as `audit.export`) + an "Export CSV"
+  button on the users page's audit tab.
+- Tests: NEW `tests/auth-audit.test.ts` (2): register/fail(with the
+  forwarded ip and reason)/success/logout/forgot rows, unknown email writes
+  nothing; CSV header + login-only filter + `audit.export` row, 400 on a bad
+  date, viewer 403, retention default 730 and an 800-day-old row pruned
+  while a fresh one stays. auth.test + suspension.test still green.
 
 **Wave B, item 5 — 7-1/7-3/7-5: a dead source is announced, the sync that
 never ran is caught by the calendar, the rollup lives on the Delta path, and

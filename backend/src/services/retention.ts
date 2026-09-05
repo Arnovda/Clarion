@@ -37,6 +37,10 @@ const RULES: RetentionRule[] = [
   { table: 'ai_call_log',           column: 'created_at', envVar: 'RETENTION_AI_CALL_LOG_DAYS',  defaultDays: 365 },
   { table: 'query_log',             column: 'created_at', envVar: 'RETENTION_QUERY_LOG_DAYS',    defaultDays: 0 },
   { table: 'conversation_messages', column: 'created_at', envVar: 'RETENTION_CONVERSATION_DAYS', defaultDays: 0 },
+  // 4-4: the audit trail had no rule at all. Two years by default — long
+  // enough for any "who did what" question a customer or a DPA raises,
+  // bounded so the table does not grow forever. 0 keeps everything.
+  { table: 'audit_events',          column: 'created_at', envVar: 'RETENTION_AUDIT_EVENTS_DAYS', defaultDays: 730 },
 ];
 
 /** Resolve a rule's window in days (env override, else default). 0 = disabled. */

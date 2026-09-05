@@ -1,3 +1,4 @@
+import { recordAuthEvent } from '../services/auditService';
 import { defaultSeats, defaultMaxConnections } from '../services/tenantLimits';
 import { Router, Request, Response, NextFunction } from 'express';
 import crypto from 'crypto';
@@ -166,6 +167,7 @@ router.post('/register', validate(registerSchema), async (req: Request, res: Res
     });
 
     const userId: number = typeof userRow === 'object' ? (userRow as { id: number }).id : (userRow as number);
+    await recordAuthEvent({ tenantId, userId, email: normalizedEmail, action: 'user.register', req, context: { requiresVerification } });
 
     if (requiresVerification && verification) {
       // Send the confirmation link and stop here — no tokens until the
@@ -248,6 +250,9 @@ router.post('/login', validate(loginSchema), async (req: Request, res: Response,
     // Verify password
     const valid = await verifyPassword(password, user.password_hash);
     if (!valid) {
+      // 2-4: a wrong password against a REAL account is the event the
+      // account's own admins want to see ("who tried to sign in as me").
+      await recordAuthEvent({ tenantId: user.tenant_id, userId: user.id, email: normalizedEmail, action: 'login.fail', req, context: { reason: 'bad_password' } });
       res.status(401).json({ ok: false, error: 'Invalid email or password' });
       return;
     }
@@ -258,6 +263,7 @@ router.post('/login', validate(loginSchema), async (req: Request, res: Response,
       trx('tenants').where({ id: user.tenant_id }).first(),
     );
     if (!tenant || tenant.status !== 'active') {
+      await recordAuthEvent({ tenantId: user.tenant_id, userId: user.id, email: normalizedEmail, action: 'login.refused', req, context: { reason: 'tenant_suspended' } });
       res.status(403).json({ ok: false, error: 'Your organization has been suspended' });
       return;
     }
@@ -269,6 +275,7 @@ router.post('/login', validate(loginSchema), async (req: Request, res: Response,
     // of being walked through a second factor it then fails anyway. The
     // machine-readable `code` is what the frontend keys the resend UI on.
     if (emailVerificationRequired() && !user.email_verified_at) {
+      await recordAuthEvent({ tenantId: user.tenant_id, userId: user.id, email: normalizedEmail, action: 'login.refused', req, context: { reason: 'email_unverified' } });
       res.status(403).json({
         ok: false,
         error: 'Please confirm your email address first — check your inbox for the verification link.',
@@ -316,6 +323,7 @@ router.post('/login', validate(loginSchema), async (req: Request, res: Response,
         }
       }
 
+      await recordAuthEvent({ tenantId: user.tenant_id, userId: user.id, email: normalizedEmail, action: 'login.mfa_challenge', req, context: { totp: !!user.mfa_enabled_at, webauthn: hasWebauthn } });
       res.json({ ok: true, data: payload });
       return;
     }
@@ -339,6 +347,8 @@ router.post('/login', validate(loginSchema), async (req: Request, res: Response,
       displayName: user.display_name,
       role:        user.role,
     }, req);
+
+    await recordAuthEvent({ tenantId: user.tenant_id, userId: user.id, email: user.email, action: 'login.success', req });
 
     res.json({
       ok: true,
@@ -424,6 +434,8 @@ router.post('/refresh', async (req: Request, res: Response, next: NextFunction) 
     if (!payload) {
       // Single error message for every failure mode to avoid leaking
       // which step failed (unknown vs revoked vs expired vs deactivated).
+      // No tenant is known here, so this is a log line, not an audit row.
+      log.info({ ip: req.ip }, 'refresh token refused');
       res.status(401).json({ ok: false, error: 'Invalid or expired refresh token' });
       return;
     }
@@ -452,7 +464,8 @@ router.post('/logout', async (req: Request, res: Response, next: NextFunction) =
   try {
     const { refreshToken } = (req.body ?? {}) as { refreshToken?: string };
     if (refreshToken) {
-      await revokeRefreshToken(refreshToken, 'logout');
+      const who = await revokeRefreshToken(refreshToken, 'logout');
+      if (who) await recordAuthEvent({ tenantId: who.tenantId, userId: who.userId, action: 'session.logout', req });
     }
     res.json({ ok: true });
   } catch (err) { next(err); }
@@ -474,6 +487,7 @@ router.post('/logout-all', requireAuth, async (req: Request, res: Response, next
       return;
     }
     const revoked = await revokeAllForUser(userId, tenantId, 'logout_all');
+    await recordAuthEvent({ tenantId, userId, email: req.user?.email, action: 'session.logout_all', req, context: { revoked } });
     res.json({ ok: true, data: { revoked } });
   } catch (err) { next(err); }
 });
@@ -515,6 +529,7 @@ router.post('/forgot-password', validate(forgotPasswordSchema), async (req: Requ
         password_reset_expires: expires.toISOString(),
       }),
     );
+    await recordAuthEvent({ tenantId: user.tenant_id, userId: user.id, email: user.email, action: 'password.forgot_requested', req });
 
     // Send the reset email. emailService is a no-op when SMTP isn't
     // configured (dev), and we still log the URL so devs can paste it
@@ -620,6 +635,7 @@ router.post('/reset-password', validate(resetPasswordSchema), async (req: Reques
     // be logged out of every device. Best-effort; non-fatal.
     try {
       await revokeAllForUser(user.id, user.tenant_id, 'password_reset');
+      await recordAuthEvent({ tenantId: user.tenant_id, userId: user.id, email: user.email, action: 'password.reset_completed', req });
     } catch (err) {
       log.warn({ err }, '[auth/reset-password] revokeAllForUser failed');
     }
@@ -667,6 +683,7 @@ router.post('/verify-email', validate(verifyEmailSchema), async (req: Request, r
       }),
     );
 
+    await recordAuthEvent({ tenantId: user.tenant_id, userId: user.id, email: user.email, action: 'email.verified', req });
     res.json({ ok: true, data: { message: 'Email confirmed. You can now sign in.' } });
   } catch (err) { next(err); }
 });
@@ -752,6 +769,7 @@ router.post('/mfa/verify', async (req: Request, res: Response, next: NextFunctio
 
     const ok = await verifyMfaCode(challenge.sub, code);
     if (!ok) {
+      await recordAuthEvent({ tenantId: Number(challenge.tenant), userId: Number(challenge.sub), action: 'login.fail', req, context: { reason: 'bad_mfa_code' } });
       res.status(401).json({ ok: false, error: 'Invalid MFA code' });
       return;
     }
@@ -780,6 +798,8 @@ router.post('/mfa/verify', async (req: Request, res: Response, next: NextFunctio
       displayName: user.display_name,
       role:        user.role,
     }, req);
+
+    await recordAuthEvent({ tenantId: user.tenant_id, userId: user.id, email: user.email, action: 'login.success', req, context: { mfa: 'totp' } });
 
     res.json({
       ok: true,
