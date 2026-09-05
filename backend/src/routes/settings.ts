@@ -1,7 +1,7 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { reqDb } from '../db/reqDb';
 import { semanticDb } from '../db/knex';
-import { requireAuth, requireRole, verifyPassword } from '../middleware/auth';
+import { requireAuth, requireRole, verifyPassword, refuseDuringSupportSession } from '../middleware/auth';
 import { validate } from '../middleware/validate';
 import { deleteTenantSchema } from '../middleware/schemas';
 import { purgeTenant } from '../services/accountDeletion';
@@ -98,7 +98,7 @@ router.put('/approval', requireRole('admin'), async (req: Request, res: Response
 // pattern. Self-service within the caller's OWN tenant only; needs no
 // cross-tenant operator role.
 // ---------------------------------------------------------------------------
-router.post('/delete-tenant', requireRole('admin'), validate(deleteTenantSchema), async (req: Request, res: Response, next: NextFunction) => {
+router.post('/delete-tenant', requireRole('admin'), refuseDuringSupportSession, validate(deleteTenantSchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const db = reqDb(req);
     const tenantId = req.user!.tenantId;

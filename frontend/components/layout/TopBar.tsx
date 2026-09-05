@@ -84,6 +84,24 @@ export default function TopBar({ showSearch = true }: TopBarProps) {
   return (
     <>
       <CommandPalette />
+      {/* SUPPORT-SESSION BANNER (assessment 2-2): an operator working inside a
+          customer's workspace under a 15-minute impersonation token must be
+          told so on every screen — for the operator (this is not your data)
+          and for anyone looking over their shoulder. The claim rides in the
+          token; nothing else in the UI knows about it. */}
+      {payload?.impersonatedBy && (
+        <div
+          role="status"
+          className="h-8 bg-amber-100 border-b border-amber-300 text-amber-900 text-[12px] font-medium flex items-center justify-center gap-2 px-4 shrink-0"
+        >
+          <span aria-hidden="true">⚠</span>
+          <span>
+            Support session as <span className="font-mono">{payload.email}</span> — started by{' '}
+            <span className="font-mono">{String(payload.impersonatedBy)}</span>; it ends by itself within 15 minutes.
+            Tokens, passwords, MFA and account closure are not available in this session.
+          </span>
+        </div>
+      )}
       <header className="h-12 bg-raised border-b border-line flex items-center gap-3 px-4 shrink-0">
         {/* Wordmark */}
         <Link href="/query" className="flex items-center gap-[9px] font-display font-medium text-[17px] tracking-[-0.02em] text-ink leading-none">

@@ -14,7 +14,7 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import crypto from 'crypto';
 import { reqDb } from '../db/reqDb';
-import { requireAuth, requireRole, hashPassword, verifyPassword } from '../middleware/auth';
+import { requireAuth, requireRole, refuseDuringSupportSession, hashPassword, verifyPassword } from '../middleware/auth';
 import { config } from '../config';
 import { sendEmail } from '../services/emailService';
 import { validate } from '../middleware/validate';
@@ -160,6 +160,147 @@ router.post('/invite', requireRole('admin'), validate(inviteUserSchema), async (
       emailed,
       invite_url: process.env.NODE_ENV !== 'production' ? inviteUrl : undefined,
     });
+  } catch (err) { next(err); }
+});
+
+// ---------------------------------------------------------------------------
+// OWN-PROFILE ROUTES — registered BEFORE every `/:id` route on purpose.
+// Express matches in registration order, so with `PATCH /:id` first,
+// `PATCH /profile` resolved as `:id = 'profile'`: 403 for analysts and
+// viewers, 500 for admins (`Number('profile')` is NaN). Nobody could change
+// their display name (assessment 2-1; the fix first rode PR #114, which was
+// closed unmerged). Pinned by tests/wave-a-small.test.ts.
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// GET /api/users/profile — get own profile (any authenticated user)
+// ---------------------------------------------------------------------------
+router.get('/profile', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const db = reqDb(req);
+    const user = await db('users')
+      .where({ id: req.user!.sub })
+      .select('id', 'email', 'display_name', 'role', 'is_active', 'avatar_url', 'created_at')
+      .first();
+
+    if (!user) {
+      res.status(404).json({ ok: false, error: 'User not found' });
+      return;
+    }
+
+    // Get tenant info
+    const tenant = await db('tenants')
+      .where({ id: req.user!.tenantId })
+      .select('name', 'slug')
+      .first();
+
+    res.json({ ok: true, data: { ...user, tenant } });
+  } catch (err) { next(err); }
+});
+
+// ---------------------------------------------------------------------------
+// PATCH /api/users/profile — update own display name
+// ---------------------------------------------------------------------------
+router.patch('/profile', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const db = reqDb(req);
+    const { displayName } = req.body as { displayName: string };
+
+    if (!displayName?.trim()) {
+      res.status(400).json({ ok: false, error: 'Display name is required' });
+      return;
+    }
+
+    await db('users')
+      .where({ id: req.user!.sub })
+      .update({ display_name: displayName.trim(), updated_at: new Date().toISOString() });
+
+    res.json({ ok: true });
+  } catch (err) { next(err); }
+});
+
+// ---------------------------------------------------------------------------
+// POST /api/users/profile/password — change own password
+// ---------------------------------------------------------------------------
+router.post('/profile/password', refuseDuringSupportSession, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const db = reqDb(req);
+    const { currentPassword, newPassword } = req.body as {
+      currentPassword: string;
+      newPassword: string;
+    };
+
+    if (!currentPassword || !newPassword) {
+      res.status(400).json({ ok: false, error: 'Both current and new password are required' });
+      return;
+    }
+    if (newPassword.length < 8) {
+      res.status(400).json({ ok: false, error: 'New password must be at least 8 characters' });
+      return;
+    }
+
+    const user = await db('users').where({ id: req.user!.sub }).first();
+    if (!user) {
+      res.status(404).json({ ok: false, error: 'User not found' });
+      return;
+    }
+
+    const valid = await verifyPassword(currentPassword, user.password_hash);
+    if (!valid) {
+      res.status(401).json({ ok: false, error: 'Current password is incorrect' });
+      return;
+    }
+
+    const newHash = await hashPassword(newPassword);
+    await db('users')
+      .where({ id: req.user!.sub })
+      .update({ password_hash: newHash, updated_at: new Date().toISOString() });
+
+    // A password change invalidates every existing session on every
+    // device — if an attacker had access to ONE of the user's tokens,
+    // the user resetting their password should kick them out
+    // everywhere. The user's current session is also invalidated;
+    // frontend should redirect to login after a successful change.
+    try {
+      await revokeAllForUser(req.user!.sub, req.user!.tenantId, 'password_change');
+    } catch (err) {
+      log.warn({ err }, '[users/profile/password] revokeAllForUser failed');
+    }
+
+    await recordAudit(req, {
+      action:     'user.password_change',
+      entityType: 'user',
+      entityId:   req.user!.sub,
+    });
+
+    res.json({ ok: true, message: 'Password updated successfully' });
+  } catch (err) { next(err); }
+});
+
+// ---------------------------------------------------------------------------
+// POST /api/users/profile/avatar — upload avatar (base64 data URL)
+// ---------------------------------------------------------------------------
+router.post('/profile/avatar', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const db = reqDb(req);
+    const { avatar } = req.body as { avatar: string | null };
+
+    // avatar is a data URL like "data:image/png;base64,..." or null to remove
+    if (avatar && !avatar.startsWith('data:image/')) {
+      res.status(400).json({ ok: false, error: 'Avatar must be a data:image/* URL' });
+      return;
+    }
+
+    // Limit size (~500KB base64 = ~375KB image)
+    if (avatar && avatar.length > 500000) {
+      res.status(400).json({ ok: false, error: 'Avatar image is too large (max ~375KB)' });
+      return;
+    }
+
+    await db('users')
+      .where({ id: req.user!.sub })
+      .update({ avatar_url: avatar ?? null, updated_at: new Date().toISOString() });
+
+    res.json({ ok: true });
   } catch (err) { next(err); }
 });
 
@@ -465,139 +606,6 @@ router.get('/audit', requireRole('admin'), async (req: Request, res: Response, n
       data: rows,
       pagination: { limit, offset, total: Number(count) },
     });
-  } catch (err) { next(err); }
-});
-
-// ---------------------------------------------------------------------------
-// GET /api/users/profile — get own profile (any authenticated user)
-// ---------------------------------------------------------------------------
-router.get('/profile', async (req: Request, res: Response, next: NextFunction) => {
-  try {
-    const db = reqDb(req);
-    const user = await db('users')
-      .where({ id: req.user!.sub })
-      .select('id', 'email', 'display_name', 'role', 'is_active', 'avatar_url', 'created_at')
-      .first();
-
-    if (!user) {
-      res.status(404).json({ ok: false, error: 'User not found' });
-      return;
-    }
-
-    // Get tenant info
-    const tenant = await db('tenants')
-      .where({ id: req.user!.tenantId })
-      .select('name', 'slug')
-      .first();
-
-    res.json({ ok: true, data: { ...user, tenant } });
-  } catch (err) { next(err); }
-});
-
-// ---------------------------------------------------------------------------
-// PATCH /api/users/profile — update own display name
-// ---------------------------------------------------------------------------
-router.patch('/profile', async (req: Request, res: Response, next: NextFunction) => {
-  try {
-    const db = reqDb(req);
-    const { displayName } = req.body as { displayName: string };
-
-    if (!displayName?.trim()) {
-      res.status(400).json({ ok: false, error: 'Display name is required' });
-      return;
-    }
-
-    await db('users')
-      .where({ id: req.user!.sub })
-      .update({ display_name: displayName.trim(), updated_at: new Date().toISOString() });
-
-    res.json({ ok: true });
-  } catch (err) { next(err); }
-});
-
-// ---------------------------------------------------------------------------
-// POST /api/users/profile/password — change own password
-// ---------------------------------------------------------------------------
-router.post('/profile/password', async (req: Request, res: Response, next: NextFunction) => {
-  try {
-    const db = reqDb(req);
-    const { currentPassword, newPassword } = req.body as {
-      currentPassword: string;
-      newPassword: string;
-    };
-
-    if (!currentPassword || !newPassword) {
-      res.status(400).json({ ok: false, error: 'Both current and new password are required' });
-      return;
-    }
-    if (newPassword.length < 8) {
-      res.status(400).json({ ok: false, error: 'New password must be at least 8 characters' });
-      return;
-    }
-
-    const user = await db('users').where({ id: req.user!.sub }).first();
-    if (!user) {
-      res.status(404).json({ ok: false, error: 'User not found' });
-      return;
-    }
-
-    const valid = await verifyPassword(currentPassword, user.password_hash);
-    if (!valid) {
-      res.status(401).json({ ok: false, error: 'Current password is incorrect' });
-      return;
-    }
-
-    const newHash = await hashPassword(newPassword);
-    await db('users')
-      .where({ id: req.user!.sub })
-      .update({ password_hash: newHash, updated_at: new Date().toISOString() });
-
-    // A password change invalidates every existing session on every
-    // device — if an attacker had access to ONE of the user's tokens,
-    // the user resetting their password should kick them out
-    // everywhere. The user's current session is also invalidated;
-    // frontend should redirect to login after a successful change.
-    try {
-      await revokeAllForUser(req.user!.sub, req.user!.tenantId, 'password_change');
-    } catch (err) {
-      log.warn({ err }, '[users/profile/password] revokeAllForUser failed');
-    }
-
-    await recordAudit(req, {
-      action:     'user.password_change',
-      entityType: 'user',
-      entityId:   req.user!.sub,
-    });
-
-    res.json({ ok: true, message: 'Password updated successfully' });
-  } catch (err) { next(err); }
-});
-
-// ---------------------------------------------------------------------------
-// POST /api/users/profile/avatar — upload avatar (base64 data URL)
-// ---------------------------------------------------------------------------
-router.post('/profile/avatar', async (req: Request, res: Response, next: NextFunction) => {
-  try {
-    const db = reqDb(req);
-    const { avatar } = req.body as { avatar: string | null };
-
-    // avatar is a data URL like "data:image/png;base64,..." or null to remove
-    if (avatar && !avatar.startsWith('data:image/')) {
-      res.status(400).json({ ok: false, error: 'Avatar must be a data:image/* URL' });
-      return;
-    }
-
-    // Limit size (~500KB base64 = ~375KB image)
-    if (avatar && avatar.length > 500000) {
-      res.status(400).json({ ok: false, error: 'Avatar image is too large (max ~375KB)' });
-      return;
-    }
-
-    await db('users')
-      .where({ id: req.user!.sub })
-      .update({ avatar_url: avatar ?? null, updated_at: new Date().toISOString() });
-
-    res.json({ ok: true });
   } catch (err) { next(err); }
 });
 

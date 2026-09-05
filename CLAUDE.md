@@ -315,6 +315,48 @@ RE-SYNC exists.**
   line with `partial: true`, and a full re-sync's history row showing the
   `full re-sync` tag with row counts equal to the source's totals.
 
+**Wave A, item 6 — the small items CLOSED: `/users/profile` reachable,
+support sessions cannot mint or destroy, and four one-liners.**
+- **2-1** The four own-profile routes (`GET|PATCH /users/profile`,
+  `POST /users/profile/password|avatar`) are registered ABOVE every
+  `/:id` route with a comment saying why; `PATCH /users/profile` had been
+  matched as `:id = 'profile'` (403 for analysts/viewers, 500 for admins)
+  since `PATCH /:id` was added — the fix first rode PR #114, closed
+  unmerged.
+- **2-2** New `refuseDuringSupportSession` middleware (403, `code:
+  'support_session'`) on: API-token create/revoke, own password change,
+  MFA setup/enable/disable/regenerate, passkey register-options/verify
+  and credential delete, `POST /settings/delete-tenant`. `JwtPayload`
+  gains `impersonatedBy?: string` (both contract copies); the TopBar
+  renders an amber banner on every screen of a support session naming
+  the customer identity and the operator. Reads and ordinary work stay
+  possible — that is what support needs.
+- **8-2** Metrics, the "AI call completed" line and `ai_call_log` record
+  `effectiveModel` (the per-category override), not the requested model.
+- **8-5** The Anthropic client has a request timeout
+  (`ANTHROPIC_TIMEOUT_MS`, default 5 min; the SDK's was 10 min, retried).
+- **11-7** `Semaphore.acquire(timeoutMs)` / `KeyedSemaphore.acquire(key,
+  timeoutMs)`: a waiter that gets no permit in time is rejected with
+  `SemaphoreTimeoutError` and removed from the queue; DuckDBConnector
+  waits `DUCKDB_QUEUE_TIMEOUT_MS` (default 15 s, 0 = unbounded) for both
+  permits and surfaces "The platform is busy right now. Please try again
+  in a moment." instead of hanging — the per-query timeout only ever
+  started once a permit was held.
+- **8-1** was closed inside P0-2 (the email-report worker's
+  `withTenantAiContext`).
+- **New env vars** (`.env.example`): `ANTHROPIC_TIMEOUT_MS`,
+  `DUCKDB_QUEUE_TIMEOUT_MS`.
+- Tests: `tests/wave-a-small.test.ts` (7: viewer + admin can rename
+  themselves, `/:id` still works for a real id, the support token is
+  accepted for reads, refused on token create/revoke and on all nine
+  credential/closure routes with the tenant still present, the real admin
+  can still mint); `tests/semaphore.test.ts` +3 (timed-out waiter leaves
+  the queue and no debris, a waiter served before its deadline is not
+  rejected later, a timed-out keyed waiter does not pin an idle key).
+- Validation: `npm run check` clean, full backend vitest **65 files / 648
+  passed / 4 skipped** (run with P0-6 on the same tree), frontend `tsc`
+  clean + TopBar lint-clean, ten ratchets green.
+
 **Prior last updated:** 2026-09-05 (MARKET READINESS ASSESSMENT, SECOND PASS — doc
 only, no code changed; twelve-domain re-audit of main at 9ab13a2 after waves
 1+2, with one guard bypass REPRODUCED)

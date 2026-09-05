@@ -271,6 +271,27 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
 // Middleware: require a specific role (call after requireAuth)
 // ---------------------------------------------------------------------------
 
+/**
+ * Refuse a request made under an IMPERSONATION token (assessment 2-2). The
+ * `impersonatedBy` claim was written and read nowhere, so a 15-minute
+ * support session could mint a 180-day API token, change the customer's
+ * password, re-enrol MFA or close the account — none of which "a window
+ * that closes itself" may allow. Applied to exactly those routes; reading
+ * data and ordinary work stay possible, which is what support needs.
+ * 403 with a machine-readable code so the UI can say why.
+ */
+export function refuseDuringSupportSession(req: Request, res: Response, next: NextFunction): void {
+  if (req.user?.impersonatedBy) {
+    res.status(403).json({
+      ok: false,
+      error: 'Not available during a support session',
+      code: 'support_session',
+    });
+    return;
+  }
+  next();
+}
+
 export function requireRole(...roles: UserRole[]) {
   return (req: Request, res: Response, next: NextFunction): void => {
     if (!req.user || !roles.includes(req.user.role)) {

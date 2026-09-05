@@ -61,6 +61,12 @@ export interface JwtPayload {
   displayName: string;
   name?: string;        // alias for displayName (used in route handlers)
   role: UserRole;
+  /**
+   * Set ONLY on a 15-minute operator support-session token: the operator's
+   * email. The backend refuses token minting, password/MFA changes and
+   * account closure while it is present; the TopBar shows a banner.
+   */
+  impersonatedBy?: string;
   iat?: number;
   exp?: number;
   [key: string]: unknown; // allow additional properties

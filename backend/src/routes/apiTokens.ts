@@ -16,7 +16,7 @@
  */
 
 import { Router, Request, Response, NextFunction } from 'express';
-import { requireAuth } from '../middleware/auth';
+import { requireAuth, refuseDuringSupportSession } from '../middleware/auth';
 import { validate } from '../middleware/validate';
 import { createApiTokenSchema, revokeApiTokenSchema } from '../middleware/schemas';
 import { listTokens, mintToken, revokeToken } from '../services/apiTokens';
@@ -38,7 +38,7 @@ router.get('/', async (req: Request, res: Response, next: NextFunction) => {
   }
 });
 
-router.post('/', validate(createApiTokenSchema), async (req: Request, res: Response, next: NextFunction) => {
+router.post('/', refuseDuringSupportSession, validate(createApiTokenSchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { name, ttlDays } = req.body as { name: string; ttlDays?: number };
     const minted = await mintToken(reqDb(req), {
@@ -73,7 +73,7 @@ router.post('/', validate(createApiTokenSchema), async (req: Request, res: Respo
   }
 });
 
-router.delete('/:id', validate(revokeApiTokenSchema), async (req: Request, res: Response, next: NextFunction) => {
+router.delete('/:id', refuseDuringSupportSession, validate(revokeApiTokenSchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const id = Number(req.params.id);
     const ok = await revokeToken(reqDb(req), req.user!.tenantId, req.user!.sub, id);

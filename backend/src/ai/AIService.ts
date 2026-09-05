@@ -233,7 +233,14 @@ function getClient(): Anthropic {
     if (!process.env.ANTHROPIC_API_KEY && !process.env.VITEST) {
       dotenv.config({ path: path.resolve(process.cwd(), '../.env'), override: true });
     }
-    _client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+    // A bounded request (assessment 8-5): the SDK's default is 10 minutes,
+    // retried, which is longer than any legitimate call here (the bus-matrix
+    // design stream, the longest, is watched by its own watchdog). Env
+    // override for a deployment that genuinely needs more.
+    _client = new Anthropic({
+      apiKey: process.env.ANTHROPIC_API_KEY,
+      timeout: Number(process.env.ANTHROPIC_TIMEOUT_MS) || 300_000,
+    });
   }
   return _client;
 }
@@ -454,7 +461,10 @@ export async function callClaude(
       const usage: any = message.usage ?? {};
       const cacheReadTokens     = usage.cache_read_input_tokens     ?? 0;
       const cacheCreationTokens = usage.cache_creation_input_tokens ?? 0;
-      const props = { callLabel, model, attempt: String(attempt + 1), ...(tenantId ? { tenantId: String(tenantId) } : {}) };
+      // `effectiveModel`, not `model` (assessment 8-2): a per-category
+      // override changes what ran and what it cost, and the metrics and the
+      // cost log used to record the pre-override name.
+      const props = { callLabel, model: effectiveModel, attempt: String(attempt + 1), ...(tenantId ? { tenantId: String(tenantId) } : {}) };
       trackMetric('ai_call_duration_ms', durationMs, props);
       trackMetric('ai_input_tokens',     inputTokens, props);
       trackMetric('ai_output_tokens',    outputTokens, props);
@@ -462,7 +472,7 @@ export async function callClaude(
       if (cacheReadTokens > 0)     trackMetric('ai_cache_read_tokens',     cacheReadTokens, props);
       if (cacheCreationTokens > 0) trackMetric('ai_cache_creation_tokens', cacheCreationTokens, props);
       logger.info({
-        callLabel, tenantId, model, durationMs, inputTokens, outputTokens,
+        callLabel, tenantId, model: effectiveModel, durationMs, inputTokens, outputTokens,
         cacheReadTokens, cacheCreationTokens, attempt: attempt + 1,
       }, 'AI call completed');
 
@@ -477,7 +487,7 @@ export async function callClaude(
       // category / user / call type.
       logAiCall({
         callLabel: callLabel!,
-        model,
+        model: effectiveModel,
         inputTokens,
         outputTokens,
         cacheReadTokens,

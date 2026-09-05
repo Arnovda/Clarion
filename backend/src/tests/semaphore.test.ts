@@ -59,3 +59,40 @@ describe('KeyedSemaphore', () => {
     expect(ks.size).toBe(0);
   });
 });
+
+describe('Semaphore acquire timeout (assessment 11-7)', () => {
+  it('a waiter that gets no permit in time is rejected and leaves the queue', async () => {
+    const sem = new Semaphore(1);
+    const release = await sem.acquire();
+    await expect(sem.acquire(20)).rejects.toThrow(/No execution slot/);
+    expect(sem.waiting).toBe(0);
+    // The permit is still held by the first caller and still releasable.
+    expect(sem.inUse).toBe(1);
+    release();
+    expect(sem.inUse).toBe(0);
+    // A later caller is served normally — the timed-out waiter left no debris.
+    const r2 = await sem.acquire(20);
+    r2();
+  });
+
+  it('a waiter served before its deadline is not rejected afterwards', async () => {
+    const sem = new Semaphore(1);
+    const release = await sem.acquire();
+    const pending = sem.acquire(200);
+    release();
+    const r2 = await pending;
+    await new Promise((r) => setTimeout(r, 250));
+    r2();
+    expect(sem.inUse).toBe(0);
+  });
+
+  it('keyed: a timed-out waiter does not pin an idle key', async () => {
+    const keyed = new KeyedSemaphore(1);
+    const release = await keyed.acquire('t1');
+    await expect(keyed.acquire('t1', 20)).rejects.toThrow();
+    release();
+    // The key was pruned when its last permit was released; acquiring again works.
+    const r2 = await keyed.acquire('t1', 20);
+    r2();
+  });
+});

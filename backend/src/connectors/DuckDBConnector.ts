@@ -10,7 +10,7 @@ import {
   capResultRows,
 } from '../services/warehouse';
 import { logger as rootLogger } from '../utils/logger';
-import { Semaphore, KeyedSemaphore } from '../utils/semaphore';
+import { Semaphore, KeyedSemaphore, SemaphoreTimeoutError } from '../utils/semaphore';
 import {
   runnerEnabled,
   runQuery,
@@ -32,9 +32,23 @@ const PER_TENANT_QUERY_CONCURRENCY = Math.max(1, Number(process.env.DUCKDB_MAX_C
 // so the permit is held until the real query settles — true per-query kill is
 // the child-process runner pool in a later phase. 0 disables the timeout.
 const QUERY_TIMEOUT_MS = Number(process.env.DUCKDB_QUERY_TIMEOUT_MS ?? 45000);
+// How long a query may WAIT for an execution slot before it is refused with a
+// clear "busy" error instead of hanging (assessment 11-7). The per-query
+// timeout above starts only once a permit is held, so without this bound
+// three tenants opening 8-widget dashboards took all six permits and the
+// fourth caller waited indefinitely. 0 disables the bound.
+const QUEUE_TIMEOUT_MS = Number(process.env.DUCKDB_QUEUE_TIMEOUT_MS ?? 15000);
 
 const globalQuerySem = new Semaphore(GLOBAL_QUERY_CONCURRENCY);
 const tenantQuerySem = new KeyedSemaphore(PER_TENANT_QUERY_CONCURRENCY);
+
+/** The error a caller sees when no slot freed up in time — user-safe wording, no internals. */
+function busyError(cause: SemaphoreTimeoutError): Error {
+  log.warn({ waitedMs: QUEUE_TIMEOUT_MS }, 'duckdb queue timeout — no execution slot freed up');
+  const err = new Error('The platform is busy right now. Please try again in a moment.');
+  (err as Error & { cause?: unknown }).cause = cause;
+  return err;
+}
 
 /** Run a promise with a timeout. Rejects with a clear message if it takes too long. */
 function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
@@ -359,13 +373,19 @@ export class DuckDBConnector extends BaseConnector {
     // could occupy every global permit and starve the others (priority
     // inversion). This way a tenant only consumes a global permit once it has
     // cleared its own gate.
-    const releaseTenant = await tenantQuerySem.acquire(this.tenantKey());
+    const queueBudget = QUEUE_TIMEOUT_MS > 0 ? QUEUE_TIMEOUT_MS : undefined;
+    let releaseTenant: () => void;
+    try {
+      releaseTenant = await tenantQuerySem.acquire(this.tenantKey(), queueBudget);
+    } catch (err) {
+      throw err instanceof SemaphoreTimeoutError ? busyError(err) : err;
+    }
     let releaseGlobal: () => void;
     try {
-      releaseGlobal = await globalQuerySem.acquire();
+      releaseGlobal = await globalQuerySem.acquire(queueBudget);
     } catch (err) {
       releaseTenant();
-      throw err;
+      throw err instanceof SemaphoreTimeoutError ? busyError(err) : err;
     }
 
     // Preferred path: run the query in a child process so the timeout below can

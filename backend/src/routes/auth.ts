@@ -7,8 +7,7 @@ import {
   verifyPassword,
   signToken,
   verifyToken,
-  requireAuth,
-} from '../middleware/auth';
+  requireAuth, refuseDuringSupportSession } from '../middleware/auth';
 import { validate } from '../middleware/validate';
 import {
   registerSchema,
@@ -801,7 +800,7 @@ router.post('/mfa/verify', async (req: Request, res: Response, next: NextFunctio
  * Returns the TOTP secret + a QR-code data URL. User scans, then
  * confirms via /mfa/enable with the first valid code.
  */
-router.post('/mfa/setup', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
+router.post('/mfa/setup', requireAuth, refuseDuringSupportSession, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const userId = req.user!.sub;
     const email = req.user!.email;
@@ -822,7 +821,7 @@ router.post('/mfa/setup', requireAuth, async (req: Request, res: Response, next:
  * display these to the user EXACTLY ONCE — they're never retrievable
  * again, only regenerable (which invalidates the prior set).
  */
-router.post('/mfa/enable', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
+router.post('/mfa/enable', requireAuth, refuseDuringSupportSession, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { code } = req.body as { code?: string };
     if (!code) {
@@ -848,7 +847,7 @@ router.post('/mfa/enable', requireAuth, async (req: Request, res: Response, next
  * compromised a session could turn off MFA. If MFA is currently
  * enforced for this user, also requires a current TOTP code.
  */
-router.post('/mfa/disable', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
+router.post('/mfa/disable', requireAuth, refuseDuringSupportSession, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { password, code } = req.body as { password?: string; code?: string };
     if (!password) {
@@ -894,7 +893,7 @@ router.post('/mfa/disable', requireAuth, async (req: Request, res: Response, nex
  * code (or one of the EXISTING backup codes — verifyMfaCode accepts
  * either). Returns the new 10 codes.
  */
-router.post('/mfa/regenerate-backup-codes', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
+router.post('/mfa/regenerate-backup-codes', requireAuth, refuseDuringSupportSession, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { code } = req.body as { code?: string };
     if (!code) {
@@ -949,7 +948,7 @@ async function recordAuditSafe(req: Request, action: string, context?: Record<st
  * navigator.credentials.create() call. The challenge is bound to a
  * short-lived signed token the frontend echoes back on register-verify.
  */
-router.post('/webauthn/register-options', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
+router.post('/webauthn/register-options', requireAuth, refuseDuringSupportSession, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { options, challengeToken } = await buildRegistrationOptions(
       req.user!.sub,
@@ -969,7 +968,7 @@ router.post('/webauthn/register-options', requireAuth, async (req: Request, res:
  * stores the credential. The nickname is required so the user can
  * identify which credential to delete later ("My YubiKey").
  */
-router.post('/webauthn/register-verify', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
+router.post('/webauthn/register-verify', requireAuth, refuseDuringSupportSession, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { response, challengeToken, nickname } = req.body as {
       response?: unknown;
@@ -1096,7 +1095,7 @@ router.get('/webauthn/credentials', requireAuth, async (req: Request, res: Respo
  * any other 2FA factors — TOTP stays active even if all WebAuthn
  * credentials are removed.
  */
-router.delete('/webauthn/credentials/:id', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
+router.delete('/webauthn/credentials/:id', requireAuth, refuseDuringSupportSession, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const db = reqDb(req);
     const credentialRowId = Number(req.params.id);
