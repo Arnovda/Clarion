@@ -35,6 +35,22 @@ with false assumptions and produces broken code.
 can push to main and begin fixing the waves"*; the assessment v2 was
 fast-forwarded to main and each item landed as its own push, seven pushes)
 
+**Wave A, epilogue — PRODUCTION WAS TWO BACKEND BUILDS BEHIND MAIN WITH A
+GREEN DEPLOY RUN; new GitOps control `.ops/redeploy` closes the trap.**
+- Owner asked *"is it in main and prod?"*. Main: yes, every wave-A commit.
+  Prod: NO — it served `main-ed6d857` (P0-6). The deploy for 5a01778 (small
+  items) was CANCELLED by the next push's concurrency group, 116cafd and
+  ad3969d were HELD by the gate (a red e2e spec — the gate working), and
+  767df8d fixed only that spec, so its deploy run went green having built
+  NOTHING (paths-filter: no `backend/`/`frontend/` change). A green "Build
+  & Deploy" is not evidence that a build happened — read the `changes` job.
+- `workflow_dispatch` `force` is the documented remedy and is 403 for the
+  integration token (re-verified). So `.ops/redeploy` is now in BOTH the
+  frontend and backend path filters of deploy.yml: a dated comment edit
+  rebuilds and redeploys both from the commit it lands in, gate and
+  health-checked promote included. Documented in `.ops/README.md`. First
+  edit ships in the same push, so its deploy run IS the catch-up deploy.
+
 **Wave A, item 0 — P0-1 CLOSED: the SQL guard sees quoted function names.**
 - `utils/sqlGuard.ts`: new `EXTERNAL_FN_QUOTED_RE` scans SQL with comments
   and STRING literals removed but identifiers KEPT (`stripStrings`), and

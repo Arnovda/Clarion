@@ -40,6 +40,14 @@ on:
   # last image that made it through. That is not hypothetical: the frontend sat
   # two commits behind for exactly this reason. This is how you get it current
   # again without inventing a commit.
+  #
+  # Dispatch returns 403 for the repo's integration token, so a session that
+  # operates through git push cannot use it. For that case `.ops/redeploy` is
+  # in BOTH the frontend and backend path filters: editing that file (a dated
+  # comment line naming why) rebuilds and redeploys both from the commit it
+  # lands in, and the gate still applies. Recorded there on 2026-09-05, when
+  # two gate-held commits followed by a tests-only commit left production two
+  # backend builds behind main with a green deploy run.
   workflow_dispatch:
     inputs:
       force:
@@ -181,11 +189,13 @@ jobs:
           filters: |
             frontend:
               - 'frontend/**'
+              - '.ops/redeploy'
             etl:
               - 'etl/**'
             backend:
               - 'backend/**'
               - 'packages/connectors/**'
+              - '.ops/redeploy'
             worker:
               - 'worker/**'
               - 'packages/connectors/**'

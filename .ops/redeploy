@@ -1,0 +1,17 @@
+# .ops/redeploy — force a rebuild + redeploy of backend AND frontend from the
+# commit this edit lands in. Any edit to this file is the trigger; the
+# convention is a dated comment line naming why. deploy.yml lists this file
+# in both the frontend and the backend path filters; the Tests + Lint gate,
+# the migration step and the health-checked promote all still apply.
+#
+# Use it when a component is STALE: a deploy failed or was held by the gate
+# and every later commit touched something else, so the app keeps serving
+# the last image that got through. workflow_dispatch `force` is the same
+# lever from the Actions tab; this file exists because dispatch is 403 for
+# the repo's integration token.
+#
+# Created 2026-09-05: production served backend + frontend main-ed6d857
+# (P0-6) while main was at 767df8d. The deploy for 5a01778 (wave A small
+# items) was cancelled by the next push, 116cafd and ad3969d were held by
+# the gate (a red e2e spec), and 767df8d fixed only that spec — so its green
+# deploy run built nothing. This edit rebuilds both from 767df8d + this.

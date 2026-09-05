@@ -129,6 +129,24 @@ the control while the image is still building silently promotes the previous
 build (the exact race the container-mode control's log documents from
 2026-07-30).
 
+## `redeploy`
+
+Forces a **rebuild and redeploy of backend and frontend** from the commit the
+edit lands in. Any edit is the trigger; write a dated comment line saying why.
+The file is listed in both the `frontend` and `backend` path filters of
+`deploy.yml`, so the ordinary push-to-main pipeline runs in full — Tests + Lint
+gate, migrations if any, 0%-traffic revisions, health-checked promote.
+
+Exists for the case the workflow's own header describes: a component is built
+only when its own paths changed, so a deploy that fails or is held by the gate
+leaves that component **stale indefinitely** — every later commit that touches
+something else skips it, and a green deploy run can mean "nothing was built".
+`workflow_dispatch` with `force` is the same lever from the Actions tab; this
+file is for sessions that operate through git push, where dispatch is 403.
+
+First use, 2026-09-05: two gate-held commits followed by a tests-only commit
+left production two backend builds behind `main`.
+
 ## `db-role`
 
 Contains exactly one word: `admin` or `app`.
