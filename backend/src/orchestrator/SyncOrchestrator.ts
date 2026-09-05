@@ -27,7 +27,6 @@
  */
 
 import path from 'path';
-import { semanticDb } from '../db/knex';
 import { encryptCredentials, decryptCredentials } from '../utils/crypto';
 import { logger as rootLogger } from '../utils/logger';
 import {
@@ -69,9 +68,6 @@ const SYNC_MAX_DURATION_MS = Number(process.env.SYNC_MAX_DURATION_MS) || 30 * 60
  * `SET`. Parameterised so the isolation boundary can't become an injection
  * point if tenant ids ever stop being plain integers.
  */
-async function setTenant(tenantId: number): Promise<void> {
-  await semanticDb.raw(`SELECT set_config('app.current_tenant', ?, false)`, [String(Number(tenantId))]);
-}
 
 /**
  * Resolve the warehouse path that DuckDB should read from after a sync.
@@ -219,11 +215,10 @@ export async function triggerSync(args: {
 }): Promise<TriggerSyncResult> {
   const { connectionId, tenantId, triggeredByUserId } = args;
 
-  await setTenant(tenantId);
 
-  const conn = await semanticDb('connections')
+  const conn = await tenantQuery(tenantId, (db) => db('connections')
     .where({ id: connectionId, tenant_id: tenantId })
-    .first();
+    .first());
   if (!conn) throw new Error(`Connection ${connectionId} not found for this tenant`);
   if (!conn.connector_type) {
     throw new Error(`Connection ${connectionId} is not a source-connector connection — nothing to sync`);
@@ -232,11 +227,11 @@ export async function triggerSync(args: {
     throw new Error('Connection has no selected entities — nothing to sync');
   }
 
-  const inFlight = await semanticDb('source_sync_runs')
+  const inFlight = await tenantQuery(tenantId, (db) => db('source_sync_runs')
     .where({ connection_id: connectionId, tenant_id: tenantId })
     .whereIn('status', ['queued', 'running'])
     .orderBy('id', 'desc')
-    .first();
+    .first());
   if (inFlight) {
     log.info({ connectionId, syncRunId: inFlight.id }, 'sync already in flight');
     return { syncRunId: inFlight.id, started: false };
@@ -249,25 +244,25 @@ export async function triggerSync(args: {
   // won the race instead of erroring.
   let syncRunId: number;
   try {
-    const [insertedId] = await semanticDb('source_sync_runs')
+    const [insertedId] = await tenantQuery(tenantId, (db) => db('source_sync_runs')
       .insert({
         tenant_id: tenantId,
         connection_id: connectionId,
         status: 'queued',
         triggered_by_user_id: triggeredByUserId ?? null,
       })
-      .returning('id');
+      .returning('id'));
     syncRunId =
       typeof insertedId === 'object' ? (insertedId as { id: number }).id : (insertedId as number);
   } catch (e) {
     // 23505 = unique_violation. Another trigger inserted the in-flight row
     // between our SELECT and INSERT — return it rather than starting a second.
     if ((e as { code?: string }).code === '23505') {
-      const winner = await semanticDb('source_sync_runs')
+      const winner = await tenantQuery(tenantId, (db) => db('source_sync_runs')
         .where({ connection_id: connectionId, tenant_id: tenantId })
         .whereIn('status', ['queued', 'running'])
         .orderBy('id', 'desc')
-        .first();
+        .first());
       if (winner) {
         log.info({ connectionId, syncRunId: winner.id }, 'lost in-flight insert race — returning existing run');
         return { syncRunId: winner.id, started: false };
@@ -304,20 +299,19 @@ async function runSyncInBackground(args: {
   let logExcerpt = '';
 
   try {
-    await setTenant(tenantId);
 
     // Mark running. Loaded fresh after to make sure connector_config_encrypted
     // wasn't cleared between queue + start (defence in depth).
-    await semanticDb('source_sync_runs')
+    await tenantQuery(tenantId, (db) => db('source_sync_runs')
       .where({ id: syncRunId, tenant_id: tenantId })
-      .update({ status: 'running', started_at: semanticDb.fn.now(), heartbeat_at: semanticDb.fn.now() });
-    await semanticDb('connections')
+      .update({ status: 'running', started_at: db.fn.now(), heartbeat_at: db.fn.now() }));
+    await tenantQuery(tenantId, (db) => db('connections')
       .where({ id: connectionId, tenant_id: tenantId })
-      .update({ last_sync_status: 'running' });
+      .update({ last_sync_status: 'running' }));
 
-    const conn = await semanticDb('connections')
+    const conn = await tenantQuery(tenantId, (db) => db('connections')
       .where({ id: connectionId, tenant_id: tenantId })
-      .first();
+      .first());
     if (!conn) throw new Error('Connection vanished mid-sync');
     if (!conn.connector_type) throw new Error('connector_type was cleared mid-sync');
     if (!conn.connector_config_encrypted) throw new Error('connector_config_encrypted is missing');
@@ -332,9 +326,9 @@ async function runSyncInBackground(args: {
     // table being missing or unreadable must not block ingestion.
     let priorCursors: Record<string, { type: 'timestamp' | 'integer' | 'string'; value: string }> = {};
     try {
-      const rows = await semanticDb('entity_sync_cursors')
+      const rows = await tenantQuery(tenantId, (db) => db('entity_sync_cursors')
         .where({ tenant_id: tenantId, connection_id: connectionId })
-        .select('entity_name', 'cursor_type', 'cursor_value');
+        .select('entity_name', 'cursor_type', 'cursor_value'));
       for (const r of rows as Array<{ entity_name: string; cursor_type: string; cursor_value: string }>) {
         // Tight allow-list on cursor_type to match the CHECK constraint.
         if (r.cursor_type === 'timestamp' || r.cursor_type === 'integer' || r.cursor_type === 'string') {
@@ -399,10 +393,9 @@ async function runSyncInBackground(args: {
           (async () => {
             try {
               const reencrypted = encryptCredentials(JSON.stringify(newConfig));
-              await setTenant(tenantId);
-              await semanticDb('connections')
+              await tenantQuery(tenantId, (db) => db('connections')
                 .where({ id: connectionId, tenant_id: tenantId })
-                .update({ connector_config_encrypted: reencrypted });
+                .update({ connector_config_encrypted: reencrypted }));
               childLog.info('rotated credential persisted');
             } catch (err) {
               childLog.error({ err }, 'CRITICAL: failed to persist rotated credential — next sync may fail');
@@ -419,14 +412,13 @@ async function runSyncInBackground(args: {
           lastFlushAt = now;
           (async () => {
             try {
-              await setTenant(tenantId);
-              await semanticDb('source_sync_runs')
+              // heartbeat_at is what the liveness-based reaper keys on
+              // (services/reapers.ts, P1-1): a run that keeps flushing
+              // progress is alive whatever its age; one that stops is
+              // reaped within ~10 minutes.
+              await tenantQuery(tenantId, (db) => db('source_sync_runs')
                 .where({ id: syncRunId, tenant_id: tenantId })
-                // heartbeat_at is what the liveness-based reaper keys on
-                // (services/reapers.ts, P1-1): a run that keeps flushing
-                // progress is alive whatever its age; one that stops is
-                // reaped within ~10 minutes.
-                .update({ row_counts: JSON.stringify(rowCounts), heartbeat_at: semanticDb.fn.now() });
+                .update({ row_counts: JSON.stringify(rowCounts), heartbeat_at: db.fn.now() }));
             } catch { /* heartbeat swallowed */ }
           })().catch(() => undefined);
         }
@@ -476,15 +468,15 @@ async function runSyncInBackground(args: {
       // Defence in depth — every UPDATE includes tenant_id alongside the PK
       // so a misconfigured app.current_tenant can't accidentally cross
       // tenant boundaries even if RLS isn't enabled in the deployment.
-      await semanticDb('source_sync_runs')
+      await tenantQuery(tenantId, (db) => db('source_sync_runs')
         .where({ id: syncRunId, tenant_id: tenantId })
         .update({
           status: 'succeeded',
-          completed_at: semanticDb.fn.now(),
+          completed_at: db.fn.now(),
           row_counts: JSON.stringify(rowCounts),
           warnings: JSON.stringify(safeWarnings),
           log_excerpt: safeLogExcerpt,
-        });
+        }));
 
       // ── Persist per-entity cursors ──────────────────────────────────
       // Upsert one row per entity that emitted a new cursor. Defensive:
@@ -511,9 +503,9 @@ async function runSyncInBackground(args: {
           // Read current value first to enforce monotonicity in app logic
           // (the DB can't easily express "new >= old" in a single
           // INSERT ... ON CONFLICT).
-          const existing = await semanticDb('entity_sync_cursors')
+          const existing = await tenantQuery(tenantId, (db) => db('entity_sync_cursors')
             .where({ tenant_id: tenantId, connection_id: connectionId, entity_name: entityName })
-            .first() as { cursor_value: string; cursor_type: string } | undefined;
+            .first()) as { cursor_value: string; cursor_type: string } | undefined;
           if (existing && !cursorAdvances(cursor.type, existing.cursor_value, cursor.value)) {
             // Backwards / non-advancing. Loud log so this surfaces in
             // alerting — the data is fine (we just don't advance) but
@@ -527,7 +519,7 @@ async function runSyncInBackground(args: {
             }, 'CRITICAL: connector returned non-advancing cursor; refusing to update (possible connector bug)');
             continue;
           }
-          await semanticDb('entity_sync_cursors')
+          await tenantQuery(tenantId, (db) => db('entity_sync_cursors')
             .insert({
               tenant_id:        tenantId,
               connection_id:    connectionId,
@@ -535,36 +527,36 @@ async function runSyncInBackground(args: {
               cursor_type:      cursor.type,
               cursor_value:     cursor.value,
               rows_synced_last: rowCounts[entityName] ?? 0,
-              last_sync_at:     semanticDb.fn.now(),
+              last_sync_at:     db.fn.now(),
               last_status:      'success',
               last_error:       null,
-              updated_at:       semanticDb.fn.now(),
+              updated_at:       db.fn.now(),
             })
             .onConflict(['tenant_id', 'connection_id', 'entity_name'])
             .merge({
               cursor_type:      cursor.type,
               cursor_value:     cursor.value,
               rows_synced_last: rowCounts[entityName] ?? 0,
-              last_sync_at:     semanticDb.fn.now(),
+              last_sync_at:     db.fn.now(),
               last_status:      'success',
               last_error:       null,
-              updated_at:       semanticDb.fn.now(),
-            });
+              updated_at:       db.fn.now(),
+            }));
         } catch (err) {
           childLog.warn({ err, entityName }, 'failed to persist cursor — sync still counted as succeeded');
         }
       }
-      await semanticDb('connections')
+      await tenantQuery(tenantId, (db) => db('connections')
         .where({ id: connectionId, tenant_id: tenantId })
         .update({
           last_sync_status: 'succeeded',
-          last_synced_at: semanticDb.fn.now(),
+          last_synced_at: db.fn.now(),
           // Persist the path DuckDB will read from — `az://...` in Azure,
           // local FS path in dev. NOT the localWarehousePath above (that's
           // only what we passed to the local launcher).
           warehouse_path: duckdbReadPath,
           query_engine: 'duckdb',
-        });
+        }));
 
       // Fire-and-forget profiling. Sync is already counted as succeeded —
       // a profiler failure is its own concern, not a sync failure.
@@ -591,37 +583,37 @@ async function runSyncInBackground(args: {
         childLog.error({ err: e }, 'on-source-sync pipeline triggers failed (sync still counted as succeeded)');
       });
     } else if (exitCode === EXIT_CANCELLED) {
-      await semanticDb('source_sync_runs')
+      await tenantQuery(tenantId, (db) => db('source_sync_runs')
         .where({ id: syncRunId, tenant_id: tenantId })
         .update({
           status: 'cancelled',
-          completed_at: semanticDb.fn.now(),
+          completed_at: db.fn.now(),
           row_counts: JSON.stringify(rowCounts),
           warnings: JSON.stringify(safeWarnings),
           log_excerpt: safeLogExcerpt,
-        });
-      await semanticDb('connections')
+        }));
+      await tenantQuery(tenantId, (db) => db('connections')
         .where({ id: connectionId, tenant_id: tenantId })
-        .update({ last_sync_status: 'cancelled' });
+        .update({ last_sync_status: 'cancelled' }));
     } else {
       // The words 'sync run failed' are LOAD-BEARING: the .ops/alerts
       // scheduled-query rule and .ops/prod-logs both match this exact string.
       // Failures are otherwise only visible as a database row, which no alert
       // can read. Change the wording and the alert goes silently blind.
       childLog.error({ syncRunId, connectionId, tenantId, exitCode }, 'sync run failed');
-      await semanticDb('source_sync_runs')
+      await tenantQuery(tenantId, (db) => db('source_sync_runs')
         .where({ id: syncRunId, tenant_id: tenantId })
         .update({
           status: 'failed',
-          completed_at: semanticDb.fn.now(),
+          completed_at: db.fn.now(),
           row_counts: JSON.stringify(rowCounts),
           warnings: JSON.stringify(safeWarnings),
           error_message: redact(errorMessage ?? `Worker exited with code ${exitCode}`).slice(0, 4000),
           log_excerpt: safeLogExcerpt,
-        });
-      await semanticDb('connections')
+        }));
+      await tenantQuery(tenantId, (db) => db('connections')
         .where({ id: connectionId, tenant_id: tenantId })
-        .update({ last_sync_status: 'failed' });
+        .update({ last_sync_status: 'failed' }));
     }
   } catch (e) {
     cancellationHandles.delete(syncRunId);
@@ -630,17 +622,16 @@ async function runSyncInBackground(args: {
     // Same load-bearing alert signature as the worker-exit failure above.
     childLog.error({ syncRunId, connectionId, tenantId }, 'sync run failed');
     try {
-      await setTenant(tenantId);
-      await semanticDb('source_sync_runs')
+      await tenantQuery(tenantId, (db) => db('source_sync_runs')
         .where({ id: syncRunId, tenant_id: tenantId })
         .update({
           status: 'failed',
-          completed_at: semanticDb.fn.now(),
+          completed_at: db.fn.now(),
           error_message: redact(message).slice(0, 4000),
-        });
-      await semanticDb('connections')
+        }));
+      await tenantQuery(tenantId, (db) => db('connections')
         .where({ id: connectionId, tenant_id: tenantId })
-        .update({ last_sync_status: 'failed' });
+        .update({ last_sync_status: 'failed' }));
     } catch (persistErr) {
       childLog.error({ err: persistErr }, 'failed to persist orchestrator-side failure');
     }
@@ -736,9 +727,9 @@ export async function requestCancellation(
 
   // The in-memory path proves ownership via the registry; here we must prove it
   // against the database instead, so one tenant can't cancel another's run.
-  const row = await semanticDb('source_sync_runs')
+  const row = await tenantQuery(tenantId, (db) => db('source_sync_runs')
     .where({ id: syncRunId, tenant_id: tenantId })
-    .first();
+    .first());
   if (!row) return 'not_found';
   if (row.status !== 'queued' && row.status !== 'running') return 'not_found';
 
@@ -794,13 +785,13 @@ async function runProfilerInBackground(args: {
   tenantId: number;
 }): Promise<void> {
   const { connectionId, tenantId } = args;
-  await setTenant(tenantId);
 
   // Read the current connection state once. We need its stored
   // schema_hash for drift detection, plus the live row to pass into
-  // introspectAndHash and runSchemaProfiler. Tenant-scoped transaction:
-  // the session-level setTenant above lands on ONE pooled connection and
-  // this query may run on another (RLS would filter it to zero rows).
+  // introspectAndHash and runSchemaProfiler. Every read in this file is a
+  // short tenant-scoped transaction (P0-5, 2026-09-05): this code runs in
+  // the jobs-worker beside other tenants' jobs, and a session-level SET on
+  // the shared pool is fail-OPEN under pool reuse.
   const conn = await tenantQuery(tenantId, (trx) =>
     trx('connections').where({ id: connectionId, tenant_id: tenantId }).first(),
   );
@@ -821,10 +812,10 @@ async function runProfilerInBackground(args: {
     return;
   }
 
-  const existingTablesCount = (await semanticDb('source_tables')
+  const existingTablesCount = (await tenantQuery(tenantId, (db) => db('source_tables')
     .where({ connection_id: connectionId, tenant_id: tenantId })
     .count<{ count: string }[]>('id as count')
-    .first())?.count ?? '0';
+    .first()))?.count ?? '0';
   const existingTables = Number(existingTablesCount);
 
   // Hash matches stored value AND we already have tables persisted →
@@ -853,7 +844,7 @@ async function runProfilerInBackground(args: {
     if (existingTables === 0) {
       const connName = String(conn.name ?? `connection ${connectionId}`);
       try {
-        await semanticDb('connections')
+        await tenantQuery(tenantId, (db) => db('connections')
           .where({ id: connectionId, tenant_id: tenantId })
           .update({
             profiling_status: 'running',
@@ -861,9 +852,9 @@ async function runProfilerInBackground(args: {
             profiling_message: 'Registering synced tables in the catalog…',
             profiling_progress: 0,
             profiling_started_at: new Date().toISOString(),
-          });
+          }));
         const result = await runSchemaProfiler(connectionId, undefined, undefined, { mode: 'structural', connection: conn });
-        await semanticDb('connections')
+        await tenantQuery(tenantId, (db) => db('connections')
           .where({ id: connectionId, tenant_id: tenantId })
           .update({
             profiling_status: 'structural',
@@ -871,7 +862,7 @@ async function runProfilerInBackground(args: {
             profiling_message: `${result.tablesInserted} tables loaded into the catalog — run Analyse to add AI descriptions`,
             profiling_progress: 100,
             ...(currentHash ? { schema_hash: currentHash } : {}),
-          });
+          }));
         log.info(
           { connectionId, tables: result.tablesInserted, columns: result.columnsInserted, relationships: result.relationshipsInserted },
           'structural catalog registration complete (no AI tokens spent)',
@@ -894,9 +885,9 @@ async function runProfilerInBackground(args: {
         // through to the legacy notification-only path so the user still
         // hears about the sync.
         log.warn({ err, connectionId }, 'structural catalog registration failed — falling back to notification only');
-        await semanticDb('connections')
+        await tenantQuery(tenantId, (db) => db('connections')
           .where({ id: connectionId, tenant_id: tenantId })
-          .update({ profiling_status: null, profiling_phase: null, profiling_message: null, profiling_progress: null })
+          .update({ profiling_status: null, profiling_phase: null, profiling_message: null, profiling_progress: null }))
           .catch(() => undefined);
       }
     }
@@ -932,7 +923,7 @@ async function runProfilerInBackground(args: {
           const colsAdded = diff.changed_tables.reduce((n, t) => n + t.added_columns.length, 0);
           const colsRemoved = diff.changed_tables.reduce((n, t) => n + t.removed_columns.length, 0);
           const colsChanged = diff.changed_tables.reduce((n, t) => n + t.changed_columns.length, 0);
-          const [row] = await semanticDb('schema_changes').insert({
+          const [row] = await tenantQuery(tenantId, (db) => db('schema_changes').insert({
             tenant_id: tenantId,
             connection_id: connectionId,
             summary: diffSummary,
@@ -942,7 +933,7 @@ async function runProfilerInBackground(args: {
             columns_added: colsAdded,
             columns_removed: colsRemoved,
             columns_changed: colsChanged,
-          }).returning('id');
+          }).returning('id'));
           schemaChangeId = typeof row === 'object' ? (row as { id: number }).id : (row as number);
         }
       } catch (e) {
@@ -963,9 +954,9 @@ async function runProfilerInBackground(args: {
     // come through normally.
     if (driftKind === 'changed' && !diffHasContent) {
       try {
-        await semanticDb('connections')
+        await tenantQuery(tenantId, (db) => db('connections')
           .where({ id: connectionId, tenant_id: tenantId })
-          .update({ schema_hash: currentHash });
+          .update({ schema_hash: currentHash }));
         log.info(
           { connectionId, currentHash, storedHash: conn.schema_hash },
           'hash mismatch with empty diff — sync\'d hash silently (no notification fired)',
@@ -1011,9 +1002,9 @@ async function runProfilerInBackground(args: {
     // existing acted-on path.
     if (driftKind === 'changed' && currentHash) {
       try {
-        await semanticDb('connections')
+        await tenantQuery(tenantId, (db) => db('connections')
           .where({ id: connectionId, tenant_id: tenantId })
-          .update({ schema_hash: currentHash });
+          .update({ schema_hash: currentHash }));
       } catch (e) {
         log.warn({ err: e, connectionId }, 'failed to update schema_hash post-notification');
       }
@@ -1023,7 +1014,7 @@ async function runProfilerInBackground(args: {
 
   // Legacy auto-profile path — only reached when AUTO_REPROFILE_ON_SYNC=true.
   // Spends AI tokens to update descriptions whenever drift is detected.
-  await semanticDb('connections')
+  await tenantQuery(tenantId, (db) => db('connections')
     .where({ id: connectionId, tenant_id: tenantId })
     .update({
       profiling_status: 'running',
@@ -1031,20 +1022,20 @@ async function runProfilerInBackground(args: {
       profiling_message: 'Checking schema…',
       profiling_progress: 0,
       profiling_started_at: new Date().toISOString(),
-    });
+    }));
 
   try {
     await runSchemaProfiler(connectionId, (p) => {
       log.debug({ connectionId, phase: p.phase, msg: p.message }, 'profiler progress');
       // Best-effort persistence of progress — never break the profiler if
       // the DB write hiccups.
-      semanticDb('connections')
+      tenantQuery(tenantId, (db) => db('connections')
         .where({ id: connectionId, tenant_id: tenantId })
         .update({
           profiling_phase: p.phase,
           profiling_message: p.message,
           profiling_progress: profilingProgressPct(p.phase, p.tableIndex, p.tableCount),
-        })
+        }))
         .catch(() => undefined);
     }, undefined, { connection: conn });
 
@@ -1055,9 +1046,9 @@ async function runProfilerInBackground(args: {
     // own introspection).
     let newHash: string | null = null;
     try {
-      const conn2 = await semanticDb('connections')
+      const conn2 = await tenantQuery(tenantId, (db) => db('connections')
         .where({ id: connectionId, tenant_id: tenantId })
-        .first();
+        .first());
       if (conn2) {
         const { hash } = await introspectAndHash(conn2);
         newHash = hash;
@@ -1066,7 +1057,7 @@ async function runProfilerInBackground(args: {
       log.warn({ err, connectionId }, 'failed to compute schema hash post-profile (next sync will re-AI)');
     }
 
-    await semanticDb('connections')
+    await tenantQuery(tenantId, (db) => db('connections')
       .where({ id: connectionId, tenant_id: tenantId })
       .update({
         profiling_status: 'done',
@@ -1075,19 +1066,19 @@ async function runProfilerInBackground(args: {
         profiling_progress: 100,
         last_profiled_at: new Date().toISOString(),
         ...(newHash ? { schema_hash: newHash } : {}),
-      });
+      }));
     log.info({ connectionId, schemaHashed: !!newHash }, 'schema profiling complete');
   } catch (err) {
     const msg = err instanceof Error ? err.message : 'Profiling failed';
     log.error({ err, connectionId }, 'schema profiling failed');
-    await semanticDb('connections')
+    await tenantQuery(tenantId, (db) => db('connections')
       .where({ id: connectionId, tenant_id: tenantId })
       .update({
         profiling_status: 'error',
         profiling_phase: 'error',
         profiling_message: msg,
         profiling_progress: 0,
-      })
+      }))
       .catch(() => undefined);
     // Re-throw so the orchestrator's caller-side .catch() can log too.
     throw err;
@@ -1242,16 +1233,16 @@ function summariseSchemaDiff(diff: SchemaDiff): string | null {
  * produces, so the two can be diffed directly.
  */
 async function loadPersistedSchema(connectionId: number, tenantId: number): Promise<NormalisedTable[]> {
-  const tables = await semanticDb('source_tables')
+  const tables = await tenantQuery(tenantId, (db) => db('source_tables')
     .where({ connection_id: connectionId, tenant_id: tenantId, is_active: true })
-    .select('id', 'table_name');
+    .select('id', 'table_name'));
   if (tables.length === 0) return [];
   const tableIds = (tables as Array<{ id: number; table_name: string }>).map((t) => t.id);
-  const cols = await semanticDb('source_columns')
+  const cols = await tenantQuery(tenantId, (db) => db('source_columns')
     .whereIn('source_table_id', tableIds)
     .select<Array<{ source_table_id: number; column_name: string; data_type: string | null }>>(
       'source_table_id', 'column_name', 'data_type',
-    );
+    ));
   const colsByTable = new Map<number, NormalisedTable['columns']>();
   for (const c of cols) {
     const arr = colsByTable.get(c.source_table_id) ?? [];

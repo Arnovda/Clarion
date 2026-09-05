@@ -12,10 +12,10 @@
  *   • resolveScope(scope, tenantId)   — turn a scope JSON into concrete
  *                                       { sourceIds[], productIds[] }
  *   • listBuiltinPipelines(tenantId)  — auto-derived from the graph
- *   • topoSortProducts(productIds)    — Kahn's, used by the runner
+ *   • topoSortProducts(productIds, tenantId) — Kahn's, used by the runner
  */
 
-import { semanticDb } from '../db/knex';
+import { tenantQuery } from './tenantQuery';
 import { resolveUpstreamProductsTopo } from './productOwnership';
 
 // ── Scope shapes (mirror the migration's JSON discriminator) ───────────
@@ -94,26 +94,25 @@ export interface PipelineDag {
  *   • product → product edges come from `data_product_dependencies`.
  */
 export async function getDag(tenantId: number): Promise<PipelineDag> {
-  await semanticDb.raw(`SET app.current_tenant = '${Number(tenantId)}'`);
 
-  const conns = await semanticDb('connections')
+  const conns = await tenantQuery(tenantId, (db) => db('connections')
     .where('tenant_id', tenantId)
     .select('id', 'name', 'type', 'connector_type', 'last_synced_at', 'last_sync_status')
-    .orderBy('name');
+    .orderBy('name'));
 
-  const products = await semanticDb('data_products')
+  const products = await tenantQuery(tenantId, (db) => db('data_products')
     .select('id', 'name', 'status', 'connection_id', 'updated_at')
-    .orderBy('name');
+    .orderBy('name'));
 
   // Source→product edges: each product points at every distinct
   // connection it consumes source tables from.
   const dpsRows = products.length
-    ? await semanticDb('data_product_sources as dps')
+    ? await tenantQuery(tenantId, (db) => db('data_product_sources as dps')
         .join('source_tables as st', 'st.id', 'dps.source_table_id')
         .whereIn('dps.data_product_id', products.map((p: { id: number }) => p.id))
         .select<{ data_product_id: number; connection_id: number }[]>(
           'dps.data_product_id', 'st.connection_id',
-        )
+        ))
     : [];
 
   const seenSrcEdge = new Set<string>();
@@ -144,11 +143,11 @@ export async function getDag(tenantId: number): Promise<PipelineDag> {
 
   // Product↔product edges (shared dim consumption).
   const depRows = products.length
-    ? await semanticDb('data_product_dependencies')
+    ? await tenantQuery(tenantId, (db) => db('data_product_dependencies')
         .whereIn('dependent_product_id', products.map((p: { id: number }) => p.id))
         .select<{ dependent_product_id: number; source_product_id: number }[]>(
           'dependent_product_id', 'source_product_id',
-        )
+        ))
     : [];
   const productEdges: DagEdge[] = depRows.map((r) => ({
     source: { kind: 'product', id: r.source_product_id },
@@ -193,13 +192,12 @@ export async function getDag(tenantId: number): Promise<PipelineDag> {
  * what you're doing).
  */
 export async function resolveScope(scope: PipelineScope, tenantId: number): Promise<ResolvedScope> {
-  await semanticDb.raw(`SET app.current_tenant = '${Number(tenantId)}'`);
 
-  const allSources = (await semanticDb('connections')
+  const allSources = (await tenantQuery(tenantId, (db) => db('connections')
     .where('tenant_id', tenantId)
-    .select<{ id: number }[]>('id')).map((r) => r.id);
-  const allProducts = (await semanticDb('data_products')
-    .select<{ id: number }[]>('id')).map((r) => r.id);
+    .select<{ id: number }[]>('id'))).map((r) => r.id);
+  const allProducts = (await tenantQuery(tenantId, (db) => db('data_products')
+    .select<{ id: number }[]>('id'))).map((r) => r.id);
 
   switch (scope.type) {
     case 'all':
@@ -218,8 +216,8 @@ export async function resolveScope(scope: PipelineScope, tenantId: number): Prom
       // Sync this source + transform every product that consumes from it
       // (directly via data_product_sources OR indirectly via product
       // dependency chain).
-      const directIds = await productsConsumingSource(scope.sourceId);
-      const allDownstream = await expandDownstreamProducts(directIds);
+      const directIds = await productsConsumingSource(scope.sourceId, tenantId);
+      const allDownstream = await expandDownstreamProducts(directIds, tenantId);
       return {
         sourceIds: [scope.sourceId],
         productIds: allDownstream,
@@ -233,12 +231,12 @@ export async function resolveScope(scope: PipelineScope, tenantId: number): Prom
         : [];
       const productIds = [...new Set([...upstream, scope.productId])];
       const downstream = scope.includeDownstream
-        ? await expandDownstreamProducts([scope.productId])
+        ? await expandDownstreamProducts([scope.productId], tenantId)
         : [];
       const finalProducts = [...new Set([...productIds, ...downstream])];
       // Source ids = the connections feeding any product in scope
       const sourceIds = scope.includeUpstreamSync !== false
-        ? await sourcesForProducts(finalProducts)
+        ? await sourcesForProducts(finalProducts, tenantId)
         : [];
       return { sourceIds, productIds: finalProducts, shouldSyncSources: sourceIds.length > 0 };
     }
@@ -266,13 +264,13 @@ export async function resolveScope(scope: PipelineScope, tenantId: number): Prom
         for (const u of ups) productIds.add(u);
       }
       if (scope.includeDownstream) {
-        const downs = await expandDownstreamProducts(scope.productIds);
+        const downs = await expandDownstreamProducts(scope.productIds, tenantId);
         for (const d of downs) productIds.add(d);
       }
       // Always include sources that feed any product in scope, in addition
       // to whatever the user explicitly picked.
       const expandedProducts = Array.from(productIds);
-      const autoSources = await sourcesForProducts(expandedProducts);
+      const autoSources = await sourcesForProducts(expandedProducts, tenantId);
       const sourceSet = new Set<number>([...scope.sourceIds, ...autoSources]);
       return {
         sourceIds: Array.from(sourceSet).filter((id) => allSources.includes(id)),
@@ -290,19 +288,19 @@ export async function resolveScope(scope: PipelineScope, tenantId: number): Prom
   }
 }
 
-async function productsConsumingSource(sourceId: number): Promise<number[]> {
+async function productsConsumingSource(sourceId: number, tenantId: number): Promise<number[]> {
   // Direct: any product whose data_product_sources reference a source_table
   // belonging to this connection.
-  const direct = await semanticDb('data_product_sources as dps')
+  const direct = await tenantQuery(tenantId, (db) => db('data_product_sources as dps')
     .join('source_tables as st', 'st.id', 'dps.source_table_id')
     .where('st.connection_id', sourceId)
     .distinct('dps.data_product_id')
-    .select<{ data_product_id: number }[]>('dps.data_product_id');
+    .select<{ data_product_id: number }[]>('dps.data_product_id'));
   // Plus legacy products pinned by `data_products.connection_id` even if
   // they have no data_product_sources rows yet.
-  const pinned = await semanticDb('data_products')
+  const pinned = await tenantQuery(tenantId, (db) => db('data_products')
     .where({ connection_id: sourceId })
-    .select<{ id: number }[]>('id');
+    .select<{ id: number }[]>('id'));
   const set = new Set<number>([
     ...direct.map((r) => r.data_product_id),
     ...pinned.map((r) => r.id),
@@ -310,15 +308,15 @@ async function productsConsumingSource(sourceId: number): Promise<number[]> {
   return Array.from(set);
 }
 
-async function expandDownstreamProducts(seeds: number[]): Promise<number[]> {
+async function expandDownstreamProducts(seeds: number[], tenantId: number): Promise<number[]> {
   if (seeds.length === 0) return [];
   const all = new Set<number>(seeds);
   const queue = [...seeds];
   while (queue.length > 0) {
     const next = queue.shift()!;
-    const children = await semanticDb('data_product_dependencies')
+    const children = await tenantQuery(tenantId, (db) => db('data_product_dependencies')
       .where('source_product_id', next)
-      .select<{ dependent_product_id: number }[]>('dependent_product_id');
+      .select<{ dependent_product_id: number }[]>('dependent_product_id'));
     for (const c of children) {
       if (!all.has(c.dependent_product_id)) {
         all.add(c.dependent_product_id);
@@ -329,20 +327,20 @@ async function expandDownstreamProducts(seeds: number[]): Promise<number[]> {
   return Array.from(all);
 }
 
-async function sourcesForProducts(productIds: number[]): Promise<number[]> {
+async function sourcesForProducts(productIds: number[], tenantId: number): Promise<number[]> {
   if (productIds.length === 0) return [];
-  const rows = await semanticDb('data_product_sources as dps')
+  const rows = await tenantQuery(tenantId, (db) => db('data_product_sources as dps')
     .join('source_tables as st', 'st.id', 'dps.source_table_id')
     .whereIn('dps.data_product_id', productIds)
     .distinct('st.connection_id')
-    .select<{ connection_id: number }[]>('st.connection_id');
+    .select<{ connection_id: number }[]>('st.connection_id'));
   const fromSources = rows.map((r) => r.connection_id).filter((id): id is number => !!id);
   // Fallback to data_products.connection_id for products with no rows.
-  const pinned = await semanticDb('data_products')
+  const pinned = await tenantQuery(tenantId, (db) => db('data_products')
     .whereIn('id', productIds)
     .whereNotNull('connection_id')
     .distinct('connection_id')
-    .select<{ connection_id: number }[]>('connection_id');
+    .select<{ connection_id: number }[]>('connection_id'));
   return Array.from(new Set([...fromSources, ...pinned.map((r) => r.connection_id)]));
 }
 
@@ -353,15 +351,15 @@ async function sourcesForProducts(productIds: number[]): Promise<number[]> {
  * Products with no upstream in the set come first; descendants follow.
  * Cycle-safe — products in a cycle still get returned (deterministic order).
  */
-export async function topoSortProducts(productIds: number[]): Promise<number[]> {
+export async function topoSortProducts(productIds: number[], tenantId: number): Promise<number[]> {
   if (productIds.length === 0) return [];
   const idSet = new Set(productIds);
-  const edges = await semanticDb('data_product_dependencies')
+  const edges = await tenantQuery(tenantId, (db) => db('data_product_dependencies')
     .whereIn('dependent_product_id', productIds)
     .whereIn('source_product_id', productIds)
     .select<{ dependent_product_id: number; source_product_id: number }[]>(
       'dependent_product_id', 'source_product_id',
-    );
+    ));
 
   const inDeg = new Map<number, number>(productIds.map((id) => [id, 0]));
   const adj = new Map<number, number[]>(productIds.map((id) => [id, []]));
@@ -447,11 +445,10 @@ export async function enqueueSavedPipelineRun(opts: {
    *  'user:alice@x.com' / 'cron' / 'on-source-sync:42' */
   triggeredBy: string;
 }): Promise<EnqueuePipelineResult | null> {
-  await semanticDb.raw(`SET app.current_tenant = '${Number(opts.tenantId)}'`);
 
-  const row = await semanticDb('pipelines')
+  const row = await tenantQuery(opts.tenantId, (db) => db('pipelines')
     .where({ id: opts.pipelineId, tenant_id: opts.tenantId })
-    .first();
+    .first());
   if (!row) return null;
   if (!row.enabled) return null; // disabled pipelines never auto-fire
 
@@ -461,22 +458,22 @@ export async function enqueueSavedPipelineRun(opts: {
 
   // Persist the run row first so the bus-matrix worker can update its
   // status as it progresses.
-  const [runRow] = await semanticDb('pipeline_runs').insert({
+  const [runRow] = await tenantQuery(opts.tenantId, (db) => db('pipeline_runs').insert({
     tenant_id: opts.tenantId,
     pipeline_id: opts.pipelineId,
     status: 'queued',
     triggered_by: opts.triggeredBy,
-  }).returning('id');
+  }).returning('id'));
   const pipelineRunId = typeof runRow === 'object' ? (runRow as { id: number }).id : (runRow as number);
 
   // Lazy-import to avoid a cycle between services and jobs.
   const { getBusMatrixQueue } = await import('../jobs/queues');
   const queue = getBusMatrixQueue();
   if (!queue) {
-    await semanticDb('pipeline_runs').where({ id: pipelineRunId }).update({
+    await tenantQuery(opts.tenantId, (db) => db('pipeline_runs').where({ id: pipelineRunId }).update({
       status: 'failed',
       error_message: 'Job queue not available — Redis is not configured.',
-    });
+    }));
     return null;
   }
 
@@ -490,11 +487,11 @@ export async function enqueueSavedPipelineRun(opts: {
     pipelineName: row.name,
   });
 
-  await semanticDb('pipeline_runs').where({ id: pipelineRunId }).update({ job_id: String(job.id) });
-  await semanticDb('pipelines').where({ id: opts.pipelineId }).update({
+  await tenantQuery(opts.tenantId, (db) => db('pipeline_runs').where({ id: pipelineRunId }).update({ job_id: String(job.id) }));
+  await tenantQuery(opts.tenantId, (db) => db('pipelines').where({ id: opts.pipelineId }).update({
     last_run_at: new Date().toISOString(),
     last_status: 'queued',
-  });
+  }));
 
   return {
     jobId: job.id ?? null,

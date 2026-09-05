@@ -864,7 +864,7 @@ export async function runProductTransformation(
   // Sync updated product_columns to Neo4j (once after all tables)
   if (results.some((r) => r.status === 'success')) {
     try {
-      await syncProductToNeo4j(product.id);
+      await syncProductToNeo4j(product.id, tenantId);
     } catch (neo4jErr) {
       log.warn({ err: neo4jErr }, `Neo4j product sync failed (non-fatal)`);
     }

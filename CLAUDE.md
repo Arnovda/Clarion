@@ -191,6 +191,66 @@ apply on EVERY read path, not just Ask AI and the add-in.**
   connection` + e2e specs: wrong config, not a regression), `npm run check`
   clean, nine ratchets green from the repo root.
 
+**Wave A, item 4 — P0-5 CLOSED: tenant context is transaction-local
+everywhere the worker runs; a tenth ratchet holds it.**
+- **Every session-level `SET app.current_tenant` / `set_config(…, false)`
+  outside the request path is GONE**: `orchestrator/SyncOrchestrator.ts`
+  (`setTenant` deleted; 35 pool queries), `services/pipelineService.ts`
+  (17), `services/busMatrixOrchestrator.ts` (11), `deltaWriter.
+  recordRefreshHistory`, `auditService.recordSystemAudit` — each query is
+  now `tenantQuery(tenantId, (db) => db(…))`, a short transaction with the
+  context set locally. Long-running work (a sync waiting on its worker, an
+  AI design phase) stays OUTSIDE any transaction on purpose — one pool
+  connection per job pinned for 30 minutes was never the trade. The
+  pipelineService helpers (`productsConsumingSource`,
+  `expandDownstreamProducts`, `sourcesForProducts`, `topoSortProducts`)
+  take the tenant explicitly; `syncProductToNeo4j(productId, tenantId)`
+  too (11 call sites). `middleware/tenant.ts` (session-level, imported by
+  nothing) is deleted.
+- **THREE MORE SERVICES WERE RIDING THE SAME BROKEN CONTEXT and are
+  converted with it**: `notificationService` (every `notify*` from a worker
+  inserted `notifications` on the bare pool — under the app role that
+  insert FAILS its RLS WITH CHECK, so job-complete / quality / drift
+  notifications from background work were being swallowed as warnings),
+  `productGraphSync` (read `data_products` on the bare pool → zero rows →
+  the graph mirror silently skipped after every transformation), and
+  `autoApproveService` (its three UPDATEs matched ZERO rows under the app
+  role — stale AI drafts have never been auto-approved in production
+  since the 2026-08-06 role flip; the setting was a no-op).
+- **NEW ratchet `scripts/lint-no-session-tenant-set.ts`** (lint.yml, the
+  tenth): rule 1 HARD — no session-level SET anywhere in backend/src
+  except the allowlisted request-path fallback in `middleware/auth.ts`;
+  rule 2 COUNT — bare `semanticDb('…')` query starts outside routes/,
+  baseline **19**, only ever lowered, with a per-file reason list for the
+  deliberate root-pool reads (`tenants`/no-RLS enumeration, the
+  unauthenticated MFA/WebAuthn/refresh paths). Refuses an empty scan.
+- **The request-path fallback SET at `middleware/auth.ts:167` STAYS, on
+  purpose, and the assessment's "then delete it" is deferred with the
+  reason recorded**: 19 bare-pool sites in request-reachable services
+  (productContext, queryCache, aiBudget, glossaryContext, aiCallLogger,
+  the SchemaProfiler fallbacks, transformationRunner's optional-tenant
+  branches, warehouseMaintenance) still lean on it; deleting it before
+  they are converted turns "racy" into "always empty" on the request
+  path. The ratchet's baseline is the countdown; delete the fallback (and
+  its allowlist entry) when it reaches zero for those files.
+- **NEW `tests/services-under-app-role.test.ts`** — flips `DATABASE_URL`
+  to `databridge_app` BEFORE the app and the services are imported (the
+  superuser handle for seeding is created first; `db/knex.ts` reads the
+  env at import), then drives them with NO ambient context, exactly a
+  worker's situation: a bare read of `data_products` returns nothing (the
+  precondition), `notifyAdmins`/`notify` land under the right tenant, 12
+  interleaved two-tenant notifies never cross, `recordSystemAudit`
+  writes, `autoApproveStaleDrafts` approves the stale draft, `getDag` /
+  `resolveScope` / `topoSortProducts` see exactly the tenant's edges (the
+  fact is seeded with the LOWER id so an unread edge would flip the
+  order — and under the other tenant's context it does), and
+  `triggerSync` queues a run that the orchestrator's catch path marks
+  `failed` through tenantQuery. **Verified red**: with the bare-pool
+  notificationService restored, both notify tests fail on the RLS insert.
+- Validation: `npm run check` clean; all TEN ratchets green from the repo
+  root (lint.yml parses); full backend vitest **63 files / 632 passed /
+  4 skipped**.
+
 **Prior last updated:** 2026-09-05 (MARKET READINESS ASSESSMENT, SECOND PASS — doc
 only, no code changed; twelve-domain re-audit of main at 9ab13a2 after waves
 1+2, with one guard bypass REPRODUCED)
@@ -7793,7 +7853,6 @@ clarion/                              ← on disk: databridge/
 │       │
 │       ├── middleware/
 │       │   ├── auth.ts               ← JWT verify, password hash, role checks (admin/analyst/viewer)
-│       │   ├── tenant.ts             ← multi-tenant isolation (SET app.current_tenant)
 │       │   ├── validate.ts           ← Zod request validation middleware
 │       │   ├── schemas.ts            ← Zod schemas for auth, invites, etc.
 │       │   ├── requestLogger.ts      ← structured request logging with request IDs

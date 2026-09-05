@@ -1,4 +1,5 @@
 import { semanticDb } from '../db/knex';
+import { tenantQuery } from './tenantQuery';
 import { logger } from '../utils/logger';
 
 /**
@@ -18,7 +19,10 @@ import { logger } from '../utils/logger';
  * @returns count of auto-approved items
  */
 export async function autoApproveStaleDrafts(tenantId: number): Promise<number> {
-  // Look up tenant settings
+  // Look up tenant settings — `tenants` has no RLS, so the root pool is fine
+  // here; every tenant-owned UPDATE below runs under tenantQuery (P0-5): on
+  // the bare pool under the production role these updates matched ZERO rows,
+  // so auto-approval had silently never happened since the role flip.
   const tenant = await semanticDb('tenants').where({ id: tenantId }).first();
   if (!tenant) return 0;
 
@@ -31,7 +35,7 @@ export async function autoApproveStaleDrafts(tenantId: number): Promise<number> 
   let total = 0;
 
   // Auto-approve source_tables
-  const tablesUpdated = await semanticDb('source_tables')
+  const tablesUpdated = await tenantQuery(tenantId, (db) => db('source_tables')
     .where('tenant_id', tenantId)
     .where('ai_draft', true)
     .where(function () {
@@ -44,11 +48,11 @@ export async function autoApproveStaleDrafts(tenantId: number): Promise<number> 
       approval_status: 'approved',
       approved_by: null,
       approved_at: now,
-    });
+    }));
   total += tablesUpdated;
 
   // Auto-approve source_columns
-  const columnsUpdated = await semanticDb('source_columns')
+  const columnsUpdated = await tenantQuery(tenantId, (db) => db('source_columns')
     .where('tenant_id', tenantId)
     .where('ai_draft', true)
     .where(function () {
@@ -61,11 +65,11 @@ export async function autoApproveStaleDrafts(tenantId: number): Promise<number> 
       approval_status: 'approved',
       approved_by: null,
       approved_at: now,
-    });
+    }));
   total += columnsUpdated;
 
   // Auto-approve kpi_definitions
-  const kpisUpdated = await semanticDb('kpi_definitions')
+  const kpisUpdated = await tenantQuery(tenantId, (db) => db('kpi_definitions')
     .where('tenant_id', tenantId)
     .where('ai_draft', true)
     .where(function () {
@@ -78,7 +82,7 @@ export async function autoApproveStaleDrafts(tenantId: number): Promise<number> 
       approval_status: 'approved',
       approved_by: null,
       approved_at: now,
-    });
+    }));
   total += kpisUpdated;
 
   if (total > 0) {

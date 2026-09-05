@@ -1,4 +1,9 @@
-import { semanticDb } from '../db/knex';
+import { tenantQuery } from './tenantQuery';
+
+// Every write here is a short tenant-scoped transaction (P0-5, 2026-09-05).
+// notify*() is called from workers and background loops with no request
+// context; on the bare pool under the production role the `notifications`
+// insert fails its RLS WITH CHECK, and the `users` read returns nothing.
 
 export type NotificationType = 'job_complete' | 'quality_alert' | 'new_gap' | 'invite_accepted' | 'approval' | 'morning_brief';
 
@@ -17,7 +22,7 @@ interface CreateNotification {
  * Create a single notification for one user.
  */
 export async function notify(n: CreateNotification): Promise<void> {
-  await semanticDb('notifications').insert({
+  await tenantQuery(n.tenantId, (db) => db('notifications').insert({
     tenant_id: n.tenantId,
     user_id: n.userId,
     type: n.type,
@@ -26,7 +31,7 @@ export async function notify(n: CreateNotification): Promise<void> {
     entity_type: n.entityType ?? null,
     entity_id: n.entityId ?? null,
     link: n.link ?? null,
-  });
+  }));
 }
 
 /**
@@ -39,9 +44,9 @@ export async function notifyTenant(
   title: string,
   opts?: { message?: string; entityType?: string; entityId?: number; link?: string; excludeUserId?: number },
 ): Promise<void> {
-  const users = await semanticDb('users')
+  const users = await tenantQuery(tenantId, (db) => db('users')
     .where({ tenant_id: tenantId, is_active: true })
-    .select('id');
+    .select('id'));
 
   const rows = users
     .filter((u: { id: number }) => u.id !== opts?.excludeUserId)
@@ -57,7 +62,7 @@ export async function notifyTenant(
     }));
 
   if (rows.length > 0) {
-    await semanticDb('notifications').insert(rows);
+    await tenantQuery(tenantId, (db) => db('notifications').insert(rows));
   }
 }
 
@@ -70,9 +75,9 @@ export async function notifyAdmins(
   title: string,
   opts?: { message?: string; entityType?: string; entityId?: number; link?: string; excludeUserId?: number },
 ): Promise<void> {
-  const admins = await semanticDb('users')
+  const admins = await tenantQuery(tenantId, (db) => db('users')
     .where({ tenant_id: tenantId, is_active: true, role: 'admin' })
-    .select('id');
+    .select('id'));
 
   const rows = admins
     .filter((u: { id: number }) => u.id !== opts?.excludeUserId)
@@ -88,6 +93,6 @@ export async function notifyAdmins(
     }));
 
   if (rows.length > 0) {
-    await semanticDb('notifications').insert(rows);
+    await tenantQuery(tenantId, (db) => db('notifications').insert(rows));
   }
 }

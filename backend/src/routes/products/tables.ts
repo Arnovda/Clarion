@@ -41,7 +41,7 @@ router.post('/tables/:tableId/run', requireAuth, requireRole('admin'), async (re
     const result = (await runProductTransformation(product, [table], req.user?.tenantId))[0] ?? null;
 
     // Sync updated row counts / status to Neo4j
-    syncProductToNeo4j(product.id).catch(() => {}); // non-db — Neo4j graph sync, not a request-trx Knex query
+    syncProductToNeo4j(product.id, req.user!.tenantId).catch(() => {}); // non-db — Neo4j graph sync, not a request-trx Knex query
 
     res.json({ ok: true, data: result });
   } catch (err) { next(err); }

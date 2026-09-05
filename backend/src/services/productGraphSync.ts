@@ -3,7 +3,7 @@
  * Called after design, transformation runs, and deletion.
  */
 
-import { semanticDb } from '../db/knex';
+import { tenantQuery } from './tenantQuery';
 import * as graph from '../db/semanticGraph';
 import { nextPgId } from '../db/semanticGraph';
 import { logger as rootLogger } from '../utils/logger';
@@ -12,16 +12,21 @@ const log = rootLogger.child({ mod: 'productGraphSync' });
 
 /**
  * Sync a data product's tables and columns to Neo4j.
+ * `tenantId` is REQUIRED at the call site (P0-5, 2026-09-05): this runs
+ * from the transformation and bus-matrix workers as well as from routes,
+ * and every Postgres read here is a short tenant-scoped transaction —
+ * there is no session-level context to inherit, and under the production
+ * role a bare-pool read of `data_products` returns nothing.
  * - Allocates neo4j_pg_id for any rows that don't have one yet.
  * - Upserts ProductTable / ProductColumn nodes in Neo4j.
  * - Removes orphaned Neo4j nodes.
  */
-export async function syncProductToNeo4j(productId: number): Promise<void> {
+export async function syncProductToNeo4j(productId: number, tenantId: number | undefined): Promise<void> {
   try {
-    const product = await semanticDb('data_products').where({ id: productId }).first();
+    const product = await tenantQuery(tenantId, (db) => db('data_products').where({ id: productId }).first());
     if (!product) return;
 
-    const schemas = await semanticDb('star_schemas').where({ data_product_id: productId });
+    const schemas = await tenantQuery(tenantId, (db) => db('star_schemas').where({ data_product_id: productId }));
     const schemaIds = schemas.map((s: { id: number }) => s.id);
     if (!schemaIds.length) {
       // Product has no schemas — remove any leftover Neo4j nodes
@@ -29,21 +34,21 @@ export async function syncProductToNeo4j(productId: number): Promise<void> {
       return;
     }
 
-    const tables = await semanticDb('product_tables').whereIn('star_schema_id', schemaIds);
+    const tables = await tenantQuery(tenantId, (db) => db('product_tables').whereIn('star_schema_id', schemaIds));
     const tableIds = tables.map((t: { id: number }) => t.id);
     const columns = tableIds.length
-      ? await semanticDb('product_columns')
+      ? await tenantQuery(tenantId, (db) => db('product_columns')
           .whereIn('product_table_id', tableIds)
           // Don't sync technical columns to Neo4j — they're physical-storage
           // metadata, not semantic, and would clutter the graph.
-          .andWhere((qb) => qb.where('is_technical', false).orWhereNull('is_technical'))
+          .andWhere((qb) => qb.where('is_technical', false).orWhereNull('is_technical')))
       : [];
 
     // Allocate neo4j_pg_id for tables that don't have one
     for (const table of tables) {
       if (!table.neo4j_pg_id) {
         const pgId = await nextPgId();
-        await semanticDb('product_tables').where({ id: table.id }).update({ neo4j_pg_id: pgId });
+        await tenantQuery(tenantId, (db) => db('product_tables').where({ id: table.id }).update({ neo4j_pg_id: pgId }));
         table.neo4j_pg_id = pgId;
       }
     }
@@ -52,7 +57,7 @@ export async function syncProductToNeo4j(productId: number): Promise<void> {
     for (const col of columns) {
       if (!col.neo4j_pg_id) {
         const pgId = await nextPgId();
-        await semanticDb('product_columns').where({ id: col.id }).update({ neo4j_pg_id: pgId });
+        await tenantQuery(tenantId, (db) => db('product_columns').where({ id: col.id }).update({ neo4j_pg_id: pgId }));
         col.neo4j_pg_id = pgId;
       }
     }
@@ -106,12 +111,12 @@ export async function syncProductToNeo4j(productId: number): Promise<void> {
     // scoping of its own; the property is both the stamp on every node and the
     // predicate on every tenant-scoped read — a node written without it would
     // be invisible and unattributable, so a tenant-less row refuses to sync.
-    const tenantId = Number(product.tenant_id);
-    if (!Number.isInteger(tenantId) || tenantId <= 0) {
+    const rowTenantId = Number(product.tenant_id);
+    if (!Number.isInteger(rowTenantId) || rowTenantId <= 0) {
       log.warn({ productId }, 'Product row carries no tenant — skipping Neo4j sync rather than writing unattributable nodes');
       return;
     }
-    await graph.upsertProductGraph(productId, mappedTables, mappedColumns, tenantId);
+    await graph.upsertProductGraph(productId, mappedTables, mappedColumns, rowTenantId);
   } catch (err) {
     // Non-fatal: log and continue — Neo4j sync failure shouldn't block product operations
     log.error({ err }, `Failed to sync product ${productId} to Neo4j`);

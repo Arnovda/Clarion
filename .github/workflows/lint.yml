@@ -63,3 +63,11 @@ jobs:
 
       - name: contract-sync
         run: npx --yes tsx@4.22 backend/scripts/lint-contract-sync.ts
+
+      # Tenant context must be TRANSACTION-LOCAL: no session-level SET on the
+      # shared pool anywhere outside the allowlisted request fallback, and the
+      # count of bare-pool semanticDb('…') queries outside routes/ only goes
+      # down (P0-5 of the 2026-09-05 assessment — the jobs-worker runs jobs
+      # from different tenants concurrently on one pool).
+      - name: no-session-tenant-set
+        run: npx --yes tsx@4.22 backend/scripts/lint-no-session-tenant-set.ts

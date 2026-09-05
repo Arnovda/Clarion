@@ -19,6 +19,7 @@
 import type { Knex } from 'knex';
 import type { Request } from 'express';
 import { semanticDb } from '../db/knex';
+import { tenantQuery } from './tenantQuery';
 import { logger } from '../utils/logger';
 
 const log = logger.child({ component: 'audit' });
@@ -125,8 +126,7 @@ export async function recordSystemAudit(
   attribution: { source: string },
 ): Promise<void> {
   try {
-    await semanticDb.raw(`SET app.current_tenant = '${Number(tenantId)}'`);
-    await semanticDb('audit_events').insert({
+    await tenantQuery(tenantId, (db) => db('audit_events').insert({
       tenant_id:     tenantId,
       actor_user_id: null,
       actor_email:   `system:${attribution.source}`,
@@ -137,7 +137,7 @@ export async function recordSystemAudit(
       context:       input.context ? JSON.stringify(input.context) : null,
       ip:            null,
       user_agent:    null,
-    });
+    }));
   } catch (err) {
     log.warn({ err, action: input.action, tenantId }, 'failed to write system audit event');
   }

@@ -18,7 +18,6 @@
  *      between products).
  */
 
-import { semanticDb } from '../db/knex';
 import { tenantQuery } from './tenantQuery';
 import { generateBusMatrixStreaming, generateProductIcon } from '../ai/AIService';
 import { buildBusMatrix, validateBusMatrix, recoverIncompleteBusMatrix, prepareExtensionMatrix, BuiltProduct } from './busMatrixBuilder';
@@ -161,18 +160,20 @@ async function buildAiSourceContext(
 ): Promise<{ sourceContext: string; relCount: number }> {
   const sourceTableIds = sourceTables.map((t) => t.id);
   const sourceColumns = sourceTableIds.length
-    ? await semanticDb('source_columns').whereIn('table_id', sourceTableIds).orderBy('id')
+    ? await tenantQuery(tenantId, (db) => db('source_columns').whereIn('table_id', sourceTableIds).orderBy('id'))
     : [];
 
   const rowCountByTable = new Map<string, number>();
   try {
-    const profileQuery = semanticDb('dataset_profiles')
-      .where({ connection_id: connectionId })
-      .whereNotNull('row_count')
-      .orderBy('profiled_at', 'asc')
-      .select('table_name', 'row_count');
-    if (tenantId) profileQuery.andWhere('tenant_id', Number(tenantId));
-    const profileRows = await profileQuery;
+    const profileRows = await tenantQuery(tenantId, (db) => {
+      const q = db('dataset_profiles')
+        .where({ connection_id: connectionId })
+        .whereNotNull('row_count')
+        .orderBy('profiled_at', 'asc')
+        .select('table_name', 'row_count');
+      if (tenantId) q.andWhere('tenant_id', Number(tenantId));
+      return q;
+    });
     // Ascending order → the latest profile per table wins the map slot.
     for (const r of profileRows as Array<{ table_name: string; row_count: number }>) {
       rowCountByTable.set(r.table_name, Number(r.row_count));
@@ -229,14 +230,13 @@ export async function runBusMatrixWorkflow(
   // ── Phase A: read schema + relationships ─────────────────────────────
   emit({ type: 'phase', text: 'Reading schema…', friendly: 'Reading what your source contains…' });
 
-  if (tenantId) await semanticDb.raw(`SET app.current_tenant = '${Number(tenantId)}'`);
 
-  const connection = await semanticDb('connections').where({ id: connectionId }).first();
+  const connection = await tenantQuery(tenantId, (db) => db('connections').where({ id: connectionId }).first());
   if (!connection) throw new Error(`Connection ${connectionId} not found`);
 
-  const sourceTables = await semanticDb('source_tables as st')
+  const sourceTables = await tenantQuery(tenantId, (db) => db('source_tables as st')
     .where({ 'st.connection_id': connectionId, 'st.is_active': true })
-    .select('st.*');
+    .select('st.*'));
 
   // ── Phase A.5: deterministic connector template ──────────────────────
   // "Documentation before inference" (docs/SOURCE_ONBOARDING.md Phase F):
@@ -390,14 +390,12 @@ export async function runBusMatrixWorkflow(
 
     try {
       // Read every row through tenantQuery — the orchestrator runs in a
-      // BullMQ worker (no per-request middleware), and knex's connection
-      // pool can route subsequent queries to a different connection than
-      // the one that received the initial `SET app.current_tenant`. When
-      // that happens, RLS hides every row and `.first()` returns
-      // undefined → the transformation runner crashes reading
-      // `product.connection_id`. tenantQuery wraps each query in a short
-      // transaction with `SET LOCAL app.current_tenant` so RLS sees the
-      // right tenant regardless of pool dynamics.
+      // BullMQ worker (no per-request middleware) beside other tenants'
+      // jobs, and a session-level SET on the shared pool is fail-OPEN
+      // under pool reuse (a query can land on a connection carrying
+      // ANOTHER tenant's id). tenantQuery wraps each query in a short
+      // transaction with a transaction-local tenant context. Since P0-5
+      // (2026-09-05) this file has no session-level SET at all.
       const product = await tenantQuery(tenantId, (trx) =>
         trx('data_products').where({ id: p.id }).first()
       );
@@ -456,7 +454,7 @@ export async function runBusMatrixWorkflow(
       // Sync to Neo4j (non-blocking)
       try {
         const { syncProductToNeo4j } = await loadProductGraphSync();
-        syncProductToNeo4j(p.id).catch(() => { /* non-fatal */ });
+        syncProductToNeo4j(p.id, tenantId).catch(() => { /* non-fatal */ });
       } catch { /* ignore */ }
     } catch (runErr) {
       const msg = runErr instanceof Error ? runErr.message : 'Run failed';
@@ -520,9 +518,9 @@ async function waitForSyncRun(
   const start = Date.now();
   while (true) {
     await checkPipelineCancelled(opts);
-    const row = await semanticDb('source_sync_runs')
+    const row = await tenantQuery(tenantId, (db) => db('source_sync_runs')
       .where({ id: syncRunId, tenant_id: tenantId })
-      .first();
+      .first());
     if (!row) throw new Error(`Sync run ${syncRunId} not found`);
     if (row.status === 'succeeded' || row.status === 'failed' || row.status === 'cancelled') {
       return { status: row.status, error_message: row.error_message };
@@ -537,12 +535,11 @@ export async function runPipelineWorkflow(
 ): Promise<RunPipelineWorkflowResult> {
   const { scope, tenantId, emit, pipelineRunId } = opts;
 
-  await semanticDb.raw(`SET app.current_tenant = '${Number(tenantId)}'`);
 
   if (pipelineRunId) {
-    await semanticDb('pipeline_runs')
+    await tenantQuery(tenantId, (db) => db('pipeline_runs')
       .where({ id: pipelineRunId, tenant_id: tenantId })
-      .update({ status: 'running', started_at: new Date().toISOString() });
+      .update({ status: 'running', started_at: new Date().toISOString() }));
   }
 
   const sourceResults: RunPipelineWorkflowResult['sourceResults'] = [];
@@ -556,7 +553,7 @@ export async function runPipelineWorkflow(
     const syncs = await Promise.all(
       scope.sourceIds.map(async (sourceId) => {
         try {
-          const conn = await semanticDb('connections').where({ id: sourceId }).first();
+          const conn = await tenantQuery(tenantId, (db) => db('connections').where({ id: sourceId }).first());
           if (!conn?.connector_type) {
             emit({ type: 'log', text: `  ${conn?.name ?? sourceId}: skipped (not a source-connector)` });
             return { sourceId, status: 'skipped' as const };
@@ -608,7 +605,7 @@ export async function runPipelineWorkflow(
   // ── Phase 2 — product transformations (topological order) ────────────
   if (scope.productIds.length > 0) {
     const { topoSortProducts } = await import('./pipelineService');
-    const ordered = await topoSortProducts(scope.productIds);
+    const ordered = await topoSortProducts(scope.productIds, tenantId);
     emit({ type: 'phase', text: `Running ${ordered.length} product${ordered.length === 1 ? '' : 's'}…` });
 
     // Disambiguate duplicate product names in the log. Real-world hit: a
@@ -617,15 +614,15 @@ export async function runPipelineWorkflow(
     // the log says `Running "Sales"…` twice with no way to tell apart
     // which product just failed. Build a name → connection map up front so
     // we only suffix when we actually have a collision.
-    const orderedRows = await semanticDb('data_products')
+    const orderedRows = await tenantQuery(tenantId, (db) => db('data_products')
       .whereIn('id', ordered)
-      .select<{ id: number; name: string; connection_id: number | null }[]>('id', 'name', 'connection_id');
+      .select<{ id: number; name: string; connection_id: number | null }[]>('id', 'name', 'connection_id'));
     const nameCount = new Map<string, number>();
     for (const r of orderedRows) nameCount.set(r.name, (nameCount.get(r.name) ?? 0) + 1);
     const connIds = Array.from(new Set(orderedRows.map((r) => r.connection_id).filter((x): x is number => !!x)));
     const connNameById = new Map<number, string>();
     if (connIds.length > 0) {
-      const conns = await semanticDb('connections').whereIn('id', connIds).select('id', 'name');
+      const conns = await tenantQuery(tenantId, (db) => db('connections').whereIn('id', connIds).select('id', 'name'));
       for (const c of conns as { id: number; name: string }[]) connNameById.set(c.id, c.name);
     }
     const displayNameById = new Map<number, string>();
@@ -708,7 +705,7 @@ export async function runPipelineWorkflow(
         // Sync to Neo4j (non-blocking)
         try {
           const { syncProductToNeo4j } = await loadProductGraphSync();
-          syncProductToNeo4j(pid).catch(() => { /* non-fatal */ });
+          syncProductToNeo4j(pid, tenantId).catch(() => { /* non-fatal */ });
         } catch { /* ignore */ }
       } catch (err) {
         if (err instanceof CancelledError) throw err;
@@ -726,13 +723,13 @@ export async function runPipelineWorkflow(
   emit({ type: 'done', text: allOk ? 'All done!' : 'Pipeline completed with some errors.' });
 
   if (pipelineRunId) {
-    await semanticDb('pipeline_runs')
+    await tenantQuery(tenantId, (db) => db('pipeline_runs')
       .where({ id: pipelineRunId, tenant_id: tenantId })
       .update({
         status: allOk ? 'succeeded' : (productResults.length === 0 && sourceResults.every((s) => s.status === 'failed') ? 'failed' : 'partial'),
         completed_at: new Date().toISOString(),
         node_results: JSON.stringify({ sources: sourceResults, products: productResults }),
-      });
+      }));
   }
 
   return { allOk, sourceResults, productResults };
@@ -786,9 +783,9 @@ async function waitForSourceSync(
   let lastStatus = '';
   while (true) {
     await checkRefreshCancelled(opts);
-    const row = await semanticDb('source_sync_runs')
+    const row = await tenantQuery(tenantId, (db) => db('source_sync_runs')
       .where({ id: syncRunId, tenant_id: tenantId })
-      .first();
+      .first());
     if (!row) throw new Error(`Sync run ${syncRunId} not found`);
     if (row.status !== lastStatus) {
       lastStatus = row.status;
@@ -809,9 +806,7 @@ export async function runProductRefreshWorkflow(
 ): Promise<RunProductRefreshWorkflowResult> {
   const { productId, tenantId, emit, syncSource } = opts;
 
-  // SET app.current_tenant on a single pooled connection is unreliable —
-  // knex may route subsequent queries to a different connection where
-  // RLS will hide every row. Use tenantQuery for each read instead.
+  // Every read is a short tenant-scoped transaction (see Phase E above).
   const product = await tenantQuery(tenantId, (trx) =>
     trx('data_products').where({ id: productId }).first()
   );
@@ -923,7 +918,7 @@ export async function runProductRefreshWorkflow(
   // Sync to Neo4j (non-blocking)
   try {
     const { syncProductToNeo4j } = await loadProductGraphSync();
-    syncProductToNeo4j(productId).catch(() => { /* non-fatal */ });
+    syncProductToNeo4j(productId, tenantId).catch(() => { /* non-fatal */ });
   } catch { /* ignore */ }
 
   emit({ type: 'done', text: allOk ? 'All done!' : 'Refresh completed with some errors.' });
@@ -1268,7 +1263,7 @@ export async function runTopicExtensionWorkflow(
     }
     try {
       const { syncProductToNeo4j } = await loadProductGraphSync();
-      syncProductToNeo4j(built.id).catch(() => { /* non-fatal */ });
+      syncProductToNeo4j(built.id, tenantId).catch(() => { /* non-fatal */ });
     } catch { /* ignore */ }
   } catch (runErr) {
     if (runErr instanceof CancelledError) throw runErr;

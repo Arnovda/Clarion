@@ -32,7 +32,7 @@ import { randomUUID } from 'crypto';
 import type { Database } from 'duckdb-async';
 
 import { isAzurePath, sqlEscapePath } from './paths';
-import { semanticDb } from '../../db/knex';
+import { tenantQuery } from '../tenantQuery';
 import { logger } from '../../utils/logger';
 
 const log = logger.child({ component: 'deltaWriter' });
@@ -98,9 +98,8 @@ export function isDeltaStorageEnabled(): boolean {
  * Run the transformation SQL via DuckDB → tmp parquet → sidecar → Delta.
  * Persists a row in `product_table_refresh_history` for chart consumption.
  *
- * Caller is responsible for setting tenant context on the DB session
- * (`SET app.current_tenant = '<id>'`) before calling — the refresh-history
- * insert relies on RLS being correctly scoped.
+ * The refresh-history insert runs in its own tenant-scoped transaction
+ * (`tenantQuery(opts.tenantId, …)`) — callers set no session-level context.
  */
 export async function writeDeltaWithSidecar(opts: {
   db: Database;
@@ -260,8 +259,7 @@ async function recordRefreshHistory(opts: {
   refreshStartedAt: Date;
   result: DeltaWriteResult;
 }): Promise<void> {
-  await semanticDb.raw(`SET app.current_tenant = '${Number(opts.tenantId)}'`);
-  await semanticDb('product_table_refresh_history').insert({
+  await tenantQuery(opts.tenantId, (db) => db('product_table_refresh_history').insert({
     tenant_id: opts.tenantId,
     product_table_id: opts.productTableId,
     refresh_started_at: opts.refreshStartedAt.toISOString(),
@@ -274,7 +272,7 @@ async function recordRefreshHistory(opts: {
     rows_total: opts.result.rowsTotal,
     error_message: opts.result.error ?? null,
     storage_format: 'delta_v1',
-  });
+  }));
 }
 
 /**

@@ -326,7 +326,7 @@ router.post('/:id/design-stream', requireAuth, requireRole('admin'), async (req:
     emit({ type: 'sql_complete', tablesUpdated: allSavedTables.length });
 
     // Sync product graph to Neo4j for data dictionary
-    await syncProductToNeo4j(product.id);
+    await syncProductToNeo4j(product.id, req.user!.tenantId);
 
     emit({ type: 'done' });
     sse.end();
@@ -565,7 +565,7 @@ router.post('/:id/design', requireAuth, requireRole('admin'), async (req: Reques
     });
 
     // Sync product graph to Neo4j for data dictionary
-    await syncProductToNeo4j(product.id);
+    await syncProductToNeo4j(product.id, req.user!.tenantId);
 
     res.json({ ok: true, data: { status: 'approved', sqlGenerated: true } });
   } catch (err) {
@@ -626,7 +626,7 @@ router.post('/:id/run', requireAuth, requireRole('admin'), async (req: Request, 
     const results = await runProductTransformation(product, tables, req.user?.tenantId);
 
     // Sync updated row counts / status to Neo4j
-    syncProductToNeo4j(product.id).catch(() => {}); // non-db — Neo4j graph sync, not a request-trx Knex query
+    syncProductToNeo4j(product.id, req.user!.tenantId).catch(() => {}); // non-db — Neo4j graph sync, not a request-trx Knex query
 
     res.json({ ok: true, data: results });
   } catch (err) { next(err); }
