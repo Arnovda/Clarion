@@ -51,7 +51,7 @@ test.describe('Schedules under databridge_app', () => {
       data: { name: `Sched source ${ts}`, type: 'postgres', config: SOURCE_DB },
       ...authed(tokenA),
     });
-    expect(created.status(), `connection setup failed: ${await created.text()}`).toBe(200);
+    expect(created.status(), `connection setup failed: ${await created.text()}`).toBe(201);
     connectionId = (await created.json()).data.connectionId;
     expect(connectionId).toBeTruthy();
   });
