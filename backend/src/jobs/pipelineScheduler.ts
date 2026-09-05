@@ -16,17 +16,30 @@
 
 import { getPipelineScheduleQueue } from './queues';
 import type { PipelineScheduleJobData } from './queues';
+import type { Knex } from 'knex';
 import { semanticDb } from '../db/knex';
+import { readAcrossTenants, tenantQuery } from '../services/tenantQuery';
 import { enqueueSavedPipelineRun, type PipelineTrigger } from '../services/pipelineService';
 import { logger as rootLogger } from '../utils/logger';
 
 const log = rootLogger.child({ mod: 'pipelineScheduler' });
 
-interface PipelineRow {
+export interface PipelineRow {
   id: number;
   tenant_id: number;
   enabled: boolean;
   triggers: unknown; // JSONB — string OR parsed array depending on driver
+}
+
+/**
+ * Every enabled pipeline across every active tenant, read per tenant under
+ * tenant context (P0-2, 2026-09-05 — the root-pool read returned zero rows
+ * under `databridge_app`, so no cron trigger was ever registered).
+ */
+export async function listEnabledPipelines(db: Knex = semanticDb): Promise<PipelineRow[]> {
+  return readAcrossTenants(db, (trx) =>
+    trx('pipelines').where({ enabled: true }).select('id', 'tenant_id', 'enabled', 'triggers'),
+  );
 }
 
 function parseTriggers(raw: unknown): PipelineTrigger[] {
@@ -107,7 +120,7 @@ export async function loadPipelineSchedules(): Promise<void> {
     log.info('Redis not available — pipeline triggers disabled');
     return;
   }
-  const rows = await semanticDb('pipelines').where({ enabled: true }).select('id', 'tenant_id', 'enabled', 'triggers');
+  const rows = await listEnabledPipelines();
   let cronCount = 0;
   for (const r of rows) {
     const triggers = parseTriggers(r.triggers);
@@ -136,10 +149,13 @@ export async function firePipelineTriggersOnSourceSync(opts: {
   tenantId: number;
 }): Promise<void> {
   try {
-    await semanticDb.raw(`SET app.current_tenant = '${Number(opts.tenantId)}'`);
-    const rows = await semanticDb('pipelines')
-      .where({ tenant_id: opts.tenantId, enabled: true })
-      .select<Array<{ id: number; triggers: unknown }>>('id', 'triggers');
+    // Transaction-local tenant context; the former session-level SET on the
+    // shared pool was the fail-open race workers.ts forbids (P0-5).
+    const rows = await tenantQuery(opts.tenantId, (trx) =>
+      trx('pipelines')
+        .where({ tenant_id: opts.tenantId, enabled: true })
+        .select<Array<{ id: number; triggers: unknown }>>('id', 'triggers'),
+    );
     const matches: number[] = [];
     for (const r of rows) {
       const triggers = parseTriggers(r.triggers);

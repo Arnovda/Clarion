@@ -9,7 +9,7 @@
  *   5. Send via emailService.
  */
 
-import { semanticDb } from '../db/knex';
+import { tenantQuery } from './tenantQuery';
 import { createConnector, createProductConnector } from '../connectors/ConnectorFactory';
 import { sendEmail } from './emailService';
 import { generateReportNarrative, formatAnswer } from '../ai/AIService';
@@ -134,17 +134,31 @@ function buildHtmlEmail(
 // Main export — called by the BullMQ email-report worker
 // ---------------------------------------------------------------------------
 
-export async function sendScheduledReport(scheduleId: number): Promise<void> {
+export async function sendScheduledReport(scheduleId: number, tenantId: number): Promise<void> {
+  // Every read here runs under the schedule's tenant context. This service
+  // runs from a BullMQ worker with no request scope; on the root pool the
+  // RLS predicate is `tenant_id = NULL` and the production role reads
+  // nothing (P0-2, 2026-09-05) — the schedule row itself would never load.
+  // The explicit `tenant_id` filter beside the id is the house rule: an
+  // authorization decision never rides the session variable alone.
+  if (!Number.isFinite(tenantId) || tenantId <= 0) {
+    logger.warn({ scheduleId, tenantId }, '[report-email] refusing to send without a tenant');
+    return;
+  }
   // 1. Load schedule + target (dashboard XOR saved question — migration 83)
-  const schedule = await semanticDb('email_schedules').where({ id: scheduleId }).first();
+  const schedule = await tenantQuery(tenantId, (trx) =>
+    trx('email_schedules').where({ id: scheduleId, tenant_id: tenantId }).first(),
+  );
   if (!schedule || !schedule.enabled) return;
 
   if (schedule.saved_question_id) {
-    await sendScheduledQuestion(schedule);
+    await sendScheduledQuestion(schedule, tenantId);
     return;
   }
 
-  const dashboard = await semanticDb('dashboards').where({ id: schedule.dashboard_id }).first();
+  const dashboard = await tenantQuery(tenantId, (trx) =>
+    trx('dashboards').where({ id: schedule.dashboard_id, tenant_id: tenantId }).first(),
+  );
   if (!dashboard) {
     logger.warn({ scheduleId }, '[report-email] Dashboard not found');
     return;
@@ -168,7 +182,9 @@ export async function sendScheduledReport(scheduleId: number): Promise<void> {
 
   // Detect product-layer dashboards (spec carries productId)
   if (spec.productId) {
-    const product = await semanticDb('data_products').where({ id: spec.productId }).first();
+    const product = await tenantQuery(tenantId, (trx) =>
+      trx('data_products').where({ id: spec.productId, tenant_id: tenantId }).first(),
+    );
     if (!product) {
       logger.warn({ scheduleId }, '[report-email] Product not found');
       return;
@@ -178,14 +194,18 @@ export async function sendScheduledReport(scheduleId: number): Promise<void> {
     // was never updated — hidden behind an untyped dynamic import). Pass
     // the connection id it actually expects, and fail legibly when the
     // warehouse has nothing materialised.
-    const warehousePath = await getProductWarehousePath(product.connection_id as number);
+    const warehousePath = await tenantQuery(tenantId, (trx) =>
+      getProductWarehousePath(product.connection_id as number, trx),
+    );
     if (!warehousePath) {
       logger.warn({ scheduleId }, '[report-email] Product warehouse not materialised');
       return;
     }
-    connector = await createProductConnector(warehousePath, product.connection_id as number);
+    connector = await createProductConnector(warehousePath, product.connection_id as number, tenantId);
   } else {
-    const connection = await semanticDb('connections').where({ id: connectionId }).first();
+    const connection = await tenantQuery(tenantId, (trx) =>
+      trx('connections').where({ id: connectionId, tenant_id: tenantId }).first(),
+    );
     if (!connection) {
       logger.warn({ scheduleId }, '[report-email] Connection not found');
       return;
@@ -266,9 +286,9 @@ export async function sendScheduledReport(scheduleId: number): Promise<void> {
   });
 
   // 5. Update last_run_at
-  await semanticDb('email_schedules')
-    .where({ id: scheduleId })
-    .update({ last_run_at: new Date(), updated_at: new Date() });
+  await tenantQuery(tenantId, (trx) => trx('email_schedules')
+    .where({ id: scheduleId, tenant_id: tenantId })
+    .update({ last_run_at: new Date(), updated_at: new Date() }));
 
   logger.info({ scheduleId, recipients: recipients.length }, '[report-email] Sent');
 }
@@ -284,8 +304,10 @@ async function sendScheduledQuestion(schedule: {
   saved_question_id: number;
   recipients: string[] | string;
   ai_summary: boolean;
-}): Promise<void> {
-  const sq = await semanticDb('saved_questions').where({ id: schedule.saved_question_id }).first();
+}, tenantId: number): Promise<void> {
+  const sq = await tenantQuery(tenantId, (trx) =>
+    trx('saved_questions').where({ id: schedule.saved_question_id, tenant_id: tenantId }).first(),
+  );
   if (!sq) {
     logger.warn({ scheduleId: schedule.id }, '[report-email] Saved question not found');
     return;
@@ -295,7 +317,9 @@ async function sendScheduledQuestion(schedule: {
     : JSON.parse(schedule.recipients as string);
   if (!recipients.length) return;
 
-  const connection = await semanticDb('connections').where({ id: sq.connection_id }).first();
+  const connection = await tenantQuery(tenantId, (trx) =>
+    trx('connections').where({ id: sq.connection_id, tenant_id: tenantId }).first(),
+  );
   if (!connection) {
     logger.warn({ scheduleId: schedule.id }, '[report-email] Connection not found');
     return;
@@ -306,7 +330,7 @@ async function sendScheduledQuestion(schedule: {
   try {
     let connector;
     if (sq.data_layer === 'product') {
-      const warehousePath = await getProductWarehousePath(sq.connection_id);
+      const warehousePath = await tenantQuery(tenantId, (trx) => getProductWarehousePath(sq.connection_id, trx));
       if (!warehousePath) throw new Error('product warehouse not materialised');
       connector = await createProductConnector(warehousePath, sq.connection_id as number, sq.tenant_id as number);
     } else {
@@ -342,9 +366,9 @@ async function sendScheduledQuestion(schedule: {
     html,
   });
 
-  await semanticDb('email_schedules')
-    .where({ id: schedule.id })
-    .update({ last_run_at: new Date(), updated_at: new Date() });
+  await tenantQuery(tenantId, (trx) => trx('email_schedules')
+    .where({ id: schedule.id, tenant_id: tenantId })
+    .update({ last_run_at: new Date(), updated_at: new Date() }));
 
   logger.info({ scheduleId: schedule.id, recipients: recipients.length }, '[report-email] Saved-question report sent');
 }

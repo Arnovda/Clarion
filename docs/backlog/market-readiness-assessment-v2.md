@@ -182,10 +182,14 @@ All four tables carry `tenant_isolation` whose predicate is
 With no tenant set the predicate is `tenant_id = NULL`, never true, so each
 loader receives **zero rows** and registers zero repeatable jobs. They run from
 `index.ts:436-440` at boot and again from `jobs/scheduleReconciler.ts:42-45` on
-every Redis reconnect. The morning brief is the counter-example that proves
-the mechanism: it enumerates `tenants` (a table with no RLS) and then wraps
-every read in `tenantQuery(tenantId, …)` (`morningBriefService.ts:53-99`), so
-briefs work; schedules do not.
+every Redis reconnect. The morning brief has the right SHAPE — it enumerates
+`tenants` (a table with no RLS) and then wraps every read in
+`tenantQuery(tenantId, …)` (`morningBriefService.ts:53-99`) — which is the
+fix for the loaders. *(Correction found while fixing, 2026-09-05: the brief
+loop filters `tenants` on an `is_active` column that does not exist —
+`status` is the column — so the 06:00 job threw every morning and no brief
+was ever generated on a schedule either. Both are closed in the same
+change.)*
 
 `sendScheduledReport` has the same shape one layer down:
 `reportEmailService.ts:139` reads `email_schedules` by id on the root pool and

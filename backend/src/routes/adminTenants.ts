@@ -48,6 +48,7 @@ import { semanticDb } from '../db/knex';
 import { tenantQuery } from '../services/tenantQuery';
 import { isPlatformOperator } from '../services/featureFlags';
 import { recordAuditForTenant } from '../services/auditService';
+import { registerSchedulesForTenant, unregisterSchedulesForTenant } from '../jobs/tenantSchedules';
 import { readTenantRequestStats } from '../services/tenantRequestStats';
 import { logger } from '../utils/logger';
 
@@ -252,6 +253,18 @@ async function setTenantStatus(
     });
 
     log.info({ tenantId: id, status, operator: req.user!.email }, 'tenant status changed by operator');
+
+    // Suspend stops the tenant's scheduled syncs and report emails right
+    // away; resume brings them back without waiting for the next boot (the
+    // loaders only read ACTIVE tenants — P0-2). Best-effort: a queue blip
+    // must not fail the status change, and the reconciler catches up.
+    try {
+      if (status === 'suspended') await unregisterSchedulesForTenant(id);
+      else await registerSchedulesForTenant(id);
+    } catch (err) {
+      log.warn({ err, tenantId: id, status }, 'tenant schedule (un)registration failed after status change');
+    }
+
     res.json({ ok: true, data: { id, status } });
   } catch (err) { next(err); }
 }

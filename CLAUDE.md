@@ -75,6 +75,53 @@ fast-forwarded to main and each P0 lands as its own push)
   (no native `"read_text"(` execution here); the guard-level reproduction is
   the evidence.
 
+**Wave A, item 1 — P0-2 CLOSED: scheduled work loads under the production
+role, and the daily brief no longer crashes.**
+- **NEW `readAcrossTenants(db, fn)` + `listActiveTenantIds(db)` +
+  `tenantQueryOn(db, …)` in `services/tenantQuery.ts`**: enumerate `tenants`
+  (the one table with no RLS, filtered on `status = 'active'`) and read each
+  tenant's rows in a short transaction with `set_config(…, true)`. All four
+  boot-time loaders now go through it — `listEnabledTransformationSchedules`
+  (`jobs/scheduler.ts`), `listEnabledEmailSchedules`,
+  `listEnabledConnectionSyncSchedules`, `listEnabledPipelines` — each
+  exported with an injectable `db` so the suite can call them AS
+  `databridge_app`. On the root pool with no context the RLS predicate was
+  `tenant_id = NULL` → zero rows → zero repeatables since the 2026-08-06
+  role flip.
+- **FOUND WHILE FIXING: `tenants` has no `is_active` column** (that is a
+  `users` column; tenants carry `status`). `runDailyBriefs` filtered on it,
+  so the 06:00 job threw `column "is_active" does not exist` every morning
+  and no brief was ever generated on a schedule. Same fix
+  (`listActiveTenantIds`). The assessment v2's line "morning briefs work
+  because…" was WRONG and is corrected in the doc.
+- **`sendScheduledReport(scheduleId, tenantId)`** reads every row under the
+  tenant's context with an explicit `tenant_id` filter beside the id
+  (schedule, dashboard, product, connection, saved question, the
+  `last_run_at` update) and passes the tenant to `createProductConnector`
+  (it passed none → `listProductTablesByConnection(undefined)` → an empty
+  session). The email-report worker passes `job.data.tenantId` and wraps
+  the call in `withTenantAiContext` (it was the one worker without it —
+  assessment 8-1 closed with it); the inline no-Redis path in
+  `routes/emailSchedules.ts` passes `schedule.tenant_id`.
+- **Suspend/resume now (un)registers the tenant's repeatables**
+  (`jobs/tenantSchedules.ts`, called from `adminTenants.setTenantStatus`,
+  best-effort): a suspended customer's syncs and report emails stop within
+  the request instead of at the next boot, and resume brings them back —
+  the loaders only read ACTIVE tenants, so without this a resumed tenant
+  would have waited for a redeploy.
+- `firePipelineTriggersOnSourceSync` lost its session-level `SET` (first of
+  the eleven P0-5 sites, done here because the file was open).
+- **NEW `tests/schedule-loaders-rls.test.ts`**: opens a SECOND knex
+  connection as `databridge_app` (the role api-tests creates before
+  migrating), seeds two active tenants + one all-disabled + one SUSPENDED,
+  and pins: a bare `email_schedules` read as the app role returns NOTHING
+  (the defect, so a "simplification" back goes red), and each loader
+  returns exactly the two active tenants' enabled rows.
+- Validation: full backend vitest **60 files / 614 passed / 4 skipped**,
+  `npm run check` clean, nine ratchets green. **The production check in the
+  doc §8 still stands** — after this deploys the boot line
+  `Loaded N enabled connection-sync schedule(s)` must show the real count.
+
 **Prior last updated:** 2026-09-05 (MARKET READINESS ASSESSMENT, SECOND PASS — doc
 only, no code changed; twelve-domain re-audit of main at 9ab13a2 after waves
 1+2, with one guard bypass REPRODUCED)

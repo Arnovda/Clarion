@@ -15,7 +15,9 @@
 import { Queue } from 'bullmq';
 import { getRedisConnection } from './redis';
 import type { ConnectionSyncScheduleJobData } from './queues';
+import type { Knex } from 'knex';
 import { semanticDb } from '../db/knex';
+import { readAcrossTenants } from '../services/tenantQuery';
 import { logger as rootLogger } from '../utils/logger';
 
 const log = rootLogger.child({ mod: 'connSyncScheduler' });
@@ -92,9 +94,22 @@ export async function loadConnectionSyncSchedules(): Promise<void> {
     log.info('Redis not available — connection sync schedules disabled');
     return;
   }
-  const rows = await semanticDb('connection_sync_schedules').where({ enabled: true }).select('*');
+  const rows = await listEnabledConnectionSyncSchedules();
   for (const r of rows) {
     await registerConnectionSyncSchedule(r);
   }
+  // Load-bearing line: the production check for P0-2 (assessment v2 §8)
+  // compares N here with the enabled rows in the table.
   log.info(`Loaded ${rows.length} enabled connection-sync schedule(s)`);
+}
+
+/**
+ * Every enabled connection-sync schedule across every active tenant, read
+ * per tenant under tenant context (P0-2, 2026-09-05 — the root-pool read
+ * returned zero rows under `databridge_app`).
+ */
+export async function listEnabledConnectionSyncSchedules(db: Knex = semanticDb): Promise<ConnectionSyncSchedule[]> {
+  return readAcrossTenants(db, (trx) =>
+    trx('connection_sync_schedules').where({ enabled: true }).select('*'),
+  );
 }

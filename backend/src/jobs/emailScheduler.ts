@@ -9,9 +9,29 @@
  * unregisterEmailSchedule.
  */
 
+import type { Knex } from 'knex';
 import { getEmailReportQueue } from './queues';
 import { semanticDb } from '../db/knex';
+import { readAcrossTenants } from '../services/tenantQuery';
 import { logger } from '../utils/logger';
+
+export interface EmailScheduleRow {
+  id: number;
+  tenant_id: number;
+  cron_expression: string;
+  enabled: boolean;
+}
+
+/**
+ * Every enabled email schedule across every active tenant, read per tenant
+ * under tenant context. Reading `email_schedules` on the root pool with no
+ * context returned zero rows under the production role (P0-2, 2026-09-05).
+ */
+export async function listEnabledEmailSchedules(db: Knex = semanticDb): Promise<EmailScheduleRow[]> {
+  return readAcrossTenants(db, (trx) =>
+    trx('email_schedules').where({ enabled: true }).select('id', 'tenant_id', 'cron_expression', 'enabled'),
+  );
+}
 
 function jobName(scheduleId: number): string {
   return `email-report:${scheduleId}`;
@@ -63,7 +83,7 @@ export async function loadEmailSchedules(): Promise<void> {
   }
 
   try {
-    const schedules = await semanticDb('email_schedules').where({ enabled: true });
+    const schedules = await listEnabledEmailSchedules();
 
     for (const s of schedules) {
       await registerEmailSchedule(s);

@@ -16,7 +16,7 @@
  */
 
 import { semanticDb } from '../db/knex';
-import { tenantQuery } from './tenantQuery';
+import { tenantQuery, listActiveTenantIds } from './tenantQuery';
 import { logger } from '../utils/logger';
 import { notify } from './notificationService';
 import { createProductConnector } from '../connectors/ConnectorFactory';
@@ -96,7 +96,10 @@ export async function markBriefOpened(
 export async function runDailyBriefs(): Promise<{ tenantsRun: number; briefsCreated: number; observations: number }> {
   let tenantsRun = 0, briefsCreated = 0, observations = 0;
 
-  const tenants = await semanticDb('tenants').where({ is_active: true }).pluck<number[]>('id');
+  // `tenants` has no `is_active` column — this read threw every morning at
+  // 06:00 ("column is_active does not exist") and no brief was ever
+  // generated on a schedule. Found 2026-09-05 while closing P0-2.
+  const tenants = await listActiveTenantIds();
 
   for (const tenantId of tenants) {
     try {

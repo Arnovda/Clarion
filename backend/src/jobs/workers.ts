@@ -511,9 +511,13 @@ export function startWorkers(): void {
   const emailReportWorker = makeWorker<EmailReportJobData>(
     'email-report',
     async (job) => {
-      const { scheduleId } = job.data;
+      const { scheduleId, tenantId } = job.data;
       const { sendScheduledReport } = await import('../services/reportEmailService');
-      await sendScheduledReport(scheduleId);
+      // Tenant AI context so the narrative's tokens land on the tenant's
+      // budget and in ai_call_log (it was the one worker without it —
+      // assessment v2, 8-1); the tenant id itself makes every read inside
+      // run under RLS context (P0-2).
+      await withTenantAiContext(tenantId, () => sendScheduledReport(scheduleId, tenantId));
     },
     { ...defaultOpts, concurrency: 3 },
   );

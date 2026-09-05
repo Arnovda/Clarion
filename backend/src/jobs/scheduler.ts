@@ -9,7 +9,9 @@
 import { Queue } from 'bullmq';
 import { getRedisConnection } from './redis';
 import { TransformationJobData } from './queues';
+import type { Knex } from 'knex';
 import { semanticDb } from '../db/knex';
+import { readAcrossTenants } from '../services/tenantQuery';
 import { trackEvent } from '../utils/monitoring';
 import { registerWeeklyMaintenance } from './warehouseMaintenance';
 import { registerDailyBrief } from './morningBriefJob';
@@ -92,6 +94,30 @@ export async function removeSchedule(scheduleId: number): Promise<void> {
 }
 
 /**
+ * Every enabled transformation schedule across every active tenant, read
+ * per tenant under tenant context (see `readAcrossTenants`). On the root
+ * pool with no context the RLS predicate is `tenant_id = NULL` and the
+ * production role sees NOTHING — which is what this loader did until
+ * 2026-09-05 (assessment v2, P0-2). Exported so the suite can call it as
+ * `databridge_app`.
+ */
+export async function listEnabledTransformationSchedules(db: Knex = semanticDb): Promise<TransformationScheduleRow[]> {
+  return readAcrossTenants(db, (trx) =>
+    trx('transformation_schedules').where({ enabled: true }).select('*'),
+  );
+}
+
+export interface TransformationScheduleRow {
+  id: number;
+  product_id: number;
+  tenant_id: number;
+  cron_expression: string;
+  timezone: string;
+  enabled: boolean;
+  created_by?: string;
+}
+
+/**
  * Load all enabled schedules from DB and register them.
  * Called once on startup.
  */
@@ -102,7 +128,7 @@ export async function loadSchedules(): Promise<void> {
     return;
   }
 
-  const schedules = await semanticDb('transformation_schedules').where({ enabled: true });
+  const schedules = await listEnabledTransformationSchedules();
   log.info(`Loading ${schedules.length} schedule(s)…`);
 
   for (const s of schedules) {

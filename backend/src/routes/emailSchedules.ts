@@ -180,7 +180,7 @@ router.post('/:id/send-now', requireAuth, requireRole('admin', 'analyst'), async
     } else {
       // Inline execution (no Redis)
       const { sendScheduledReport } = await import('../services/reportEmailService');
-      sendScheduledReport(schedule.id).catch((err) => {
+      sendScheduledReport(schedule.id, schedule.tenant_id).catch((err) => {
         log.error({ err }, '[send-now] inline report failed');
       });
     }
