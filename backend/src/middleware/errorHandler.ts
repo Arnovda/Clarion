@@ -1,5 +1,5 @@
 import { Request, Response, NextFunction } from 'express';
-import { AiBudgetExceededError } from '../services/aiBudget';
+import { AiBudgetExceededError, AiDisabledError } from '../services/aiBudget';
 import { logger } from '../utils/logger';
 
 const log = logger.child({ component: 'error-handler' });
@@ -53,6 +53,17 @@ export function errorHandler(
 ): void {
   // Typed: AI token budget blown — tell the client clearly so the UI can
   // show a "contact admin" message rather than a generic failure.
+  // Typed: the tenant switched AI off (4-3). Not an error in the request —
+  // a setting an admin chose; say so and name where to change it.
+  if (err instanceof AiDisabledError) {
+    res.status(403).json({
+      ok: false,
+      error: 'AI features are switched off for this workspace. An administrator can turn them on under AI usage → routing.',
+      code: 'ai_disabled',
+    });
+    return;
+  }
+
   if (err instanceof AiBudgetExceededError) {
     res.status(429).json({
       ok: false,

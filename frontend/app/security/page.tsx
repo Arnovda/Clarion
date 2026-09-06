@@ -107,7 +107,7 @@ export default function SecurityPage() {
           <li><Strong>MFA</Strong> — planned. Implementation order tied to first enterprise request.</li>
           <li><Strong>Public Data Processing Agreement (DPA) template</Strong> — drafting with counsel.</li>
           <li><Strong>Sub-processor list</Strong> — to be published below when finalised.</li>
-          <li><Strong>Incident response runbook</Strong> — internal process is in place; formal published version pending.</li>
+          <li><Strong>Incident response runbook</Strong> — written and maintained in the repository (severity ladder, first-hour checklist, breach notification path); a customer-facing summary is pending.</li>
         </ul>
       </Section>
 

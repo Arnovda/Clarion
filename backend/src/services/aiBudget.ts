@@ -85,6 +85,21 @@ export class AiBudgetExceededError extends Error {
   }
 }
 
+/**
+ * 4-3: the tenant switched AI off (`tenants.ai_routing_mode = 'off'`).
+ * Thrown by the same gate as the budget error, before any prompt exists.
+ */
+export class AiDisabledError extends Error {
+  constructor(public readonly tenantId: number) {
+    super(`AI is switched off for tenant ${tenantId} (ai_routing_mode = 'off').`);
+    this.name = 'AiDisabledError';
+  }
+}
+
+export function isAiDisabledError(err: unknown): err is AiDisabledError {
+  return err instanceof AiDisabledError || (err instanceof Error && err.name === 'AiDisabledError');
+}
+
 function currentPeriodStart(): Date {
   const now = new Date();
   return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));

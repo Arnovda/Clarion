@@ -22,6 +22,31 @@ interface PythonResult {
 }
 
 /**
+ * Where the Python runtime is served from (assessment 4-2). Production serves
+ * it from THIS origin — `scripts/vendor-pyodide.mjs` puts the core and the
+ * numpy/pandas/matplotlib wheels under public/pyodide/ at build time — so a
+ * notebook never makes the browser contact a CDN. The CDN fallback exists
+ * for local development only (a checkout built with PYODIDE_VENDOR=skip);
+ * a production build without the vendored files fails loudly here instead
+ * of quietly reaching out to a host that is in no subprocessor list.
+ */
+const PYODIDE_VERSION = '0.26.4';
+const SELF_HOSTED_BASE = '/pyodide/';
+const CDN_BASE = `https://cdn.jsdelivr.net/pyodide/v${PYODIDE_VERSION}/full/`;
+
+async function resolvePyodideBase(): Promise<string> {
+  try {
+    const probe = await fetch(`${SELF_HOSTED_BASE}pyodide-lock.json`, { method: 'HEAD' });
+    if (probe.ok) return SELF_HOSTED_BASE;
+  } catch { /* fall through */ }
+  if (process.env.NODE_ENV === 'production') {
+    throw new Error('The Python runtime is not installed on this deployment (public/pyodide is missing — the build did not vendor it).');
+  }
+  console.warn('[notebooks] public/pyodide is missing — development fallback to the Pyodide CDN. Run `node scripts/vendor-pyodide.mjs` to self-host.');
+  return CDN_BASE;
+}
+
+/**
  * Hook to lazily load Pyodide and run Python code in the browser.
  * Provides a Databricks-like `sql()` function in Python that queries
  * DuckDB on the server and returns a pandas DataFrame.
@@ -42,15 +67,13 @@ export function usePyodide() {
 
     setLoading(true);
     try {
-      // Dynamic import from CDN — resolved at runtime, not by TS/bundler.
+      const base = await resolvePyodideBase();
+      // Dynamic import — resolved at runtime, not by TS/bundler.
       const { loadPyodide: loader } = await import(
         /* webpackIgnore: true */
-        // @ts-expect-error remote ESM URL has no type declarations
-        'https://cdn.jsdelivr.net/pyodide/v0.26.4/full/pyodide.mjs'
+        `${base}pyodide.mjs`
       );
-      const pyodide = await loader({
-        indexURL: 'https://cdn.jsdelivr.net/pyodide/v0.26.4/full/',
-      }) as PyodideInstance;
+      const pyodide = await loader({ indexURL: base }) as PyodideInstance;
 
       // Pre-load common packages
       await pyodide.loadPackagesFromImports('import pandas, numpy, json');

@@ -105,16 +105,17 @@ export function StoryModal({
 <meta charset="UTF-8" />
 <title>${dashboardTitle} — Story Report</title>
 <style>
-  @import url('https://fonts.googleapis.com/css2?family=Source+Serif+4:wght@400;600;700&family=Inter:wght@400;500&display=swap');
+  /* No web fonts: this window is a print-ready report and must not contact a
+     font CDN (4-2). System serif/sans stacks render it the same everywhere. */
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-  body { font-family: 'Inter', sans-serif; color: #1a1a1a; background: #fff; padding: 48px 56px; max-width: 860px; margin: 0 auto; }
-  h1 { font-family: 'Source Serif 4', Georgia, serif; font-size: 28px; font-weight: 700; color: #0f172a; line-height: 1.2; margin-bottom: 6px; }
-  .meta { font-size: 12px; color: #64748b; font-family: 'Inter', sans-serif; margin-bottom: 32px; letter-spacing: 0.04em; text-transform: uppercase; }
-  .headline { font-family: 'Source Serif 4', Georgia, serif; font-size: 18px; font-weight: 600; color: #0369a1; line-height: 1.4; padding: 16px 20px; border-left: 3px solid #0369a1; background: #f0f9ff; margin-bottom: 28px; border-radius: 0 6px 6px 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; color: #1a1a1a; background: #fff; padding: 48px 56px; max-width: 860px; margin: 0 auto; }
+  h1 { font-family: Georgia, 'Times New Roman', serif; font-size: 28px; font-weight: 700; color: #0f172a; line-height: 1.2; margin-bottom: 6px; }
+  .meta { font-size: 12px; color: #64748b; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; margin-bottom: 32px; letter-spacing: 0.04em; text-transform: uppercase; }
+  .headline { font-family: Georgia, 'Times New Roman', serif; font-size: 18px; font-weight: 600; color: #0369a1; line-height: 1.4; padding: 16px 20px; border-left: 3px solid #0369a1; background: #f0f9ff; margin-bottom: 28px; border-radius: 0 6px 6px 0; }
   .summary { font-size: 14px; line-height: 1.75; color: #374151; margin-bottom: 32px; }
   .divider { border: none; border-top: 1px solid #e5e7eb; margin: 28px 0; }
   .section { margin-bottom: 24px; }
-  .section h3 { font-family: 'Source Serif 4', Georgia, serif; font-size: 15px; font-weight: 600; color: #0f172a; margin-bottom: 6px; }
+  .section h3 { font-family: Georgia, 'Times New Roman', serif; font-size: 15px; font-weight: 600; color: #0f172a; margin-bottom: 6px; }
   .section p { font-size: 13px; line-height: 1.7; color: #374151; }
   .recommendation { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px; padding: 14px 18px; font-size: 13px; line-height: 1.6; color: #374151; margin-top: 28px; }
   .dashboard-img { margin-top: 36px; page-break-before: always; }

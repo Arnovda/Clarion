@@ -15,7 +15,18 @@
 
 import { semanticDb } from '../../db/knex';
 
-export type AiRoutingMode = 'claude' | 'hybrid' | 'azure';
+/**
+ * 'off' (4-3) is the per-tenant AI opt-out: enforceAiBudget in AIService —
+ * the gate every AI call passes — throws AiDisabledError before any prompt
+ * is built, so no customer content leaves for a provider. The other three
+ * choose WHERE it goes.
+ */
+export type AiRoutingMode = 'claude' | 'hybrid' | 'azure' | 'off';
+export const AI_ROUTING_MODES: readonly AiRoutingMode[] = ['claude', 'hybrid', 'azure', 'off'];
+
+export function parseAiRoutingMode(raw: unknown): AiRoutingMode | null {
+  return (AI_ROUTING_MODES as readonly unknown[]).includes(raw) ? (raw as AiRoutingMode) : null;
+}
 
 const TTL_MS = 15_000;
 
@@ -35,8 +46,7 @@ export async function getTenantAiMode(tenantId: number | undefined): Promise<AiR
       [tenantId],
     );
     const raw = result.rows[0]?.ai_routing_mode as string | undefined;
-    const mode: AiRoutingMode =
-      raw === 'hybrid' || raw === 'azure' || raw === 'claude' ? raw : 'claude';
+    const mode: AiRoutingMode = parseAiRoutingMode(raw) ?? 'claude';
     store.set(tenantId, { mode, expiresAt: Date.now() + TTL_MS });
     return mode;
   } catch {

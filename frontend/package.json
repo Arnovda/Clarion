@@ -4,6 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "next dev -p 3000",
+    "prebuild": "node scripts/vendor-pyodide.mjs",
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
@@ -51,6 +52,7 @@
     "eslint-config-next": "14.2.35",
     "jsdom": "^26.0.0",
     "postcss": "^8.5.25",
+    "pyodide": "0.26.4",
     "tailwindcss": "^3.4.1",
     "typescript": "^5",
     "vitest": "^4.0.18"
@@ -67,18 +69,18 @@
     "    the `$postcss` reference form until 2026-09-01: npm 10's $ref only",
     "    resolves against `dependencies`, and postcss lives in",
     "    devDependencies, so every `npm install` (as opposed to `npm ci`)",
-    "    failed with 'Unable to resolve reference'. Literal now \u2014 KEEP THE",
+    "    failed with 'Unable to resolve reference'. Literal now — KEEP THE",
     "    TWO PINS IN STEP when bumping postcss (here and devDependencies).",
     "",
     "NOT overridden, on purpose:",
-    "  next / eslint-config-next / glob \u2014 the only published fix is next@16,",
+    "  next / eslint-config-next / glob — the only published fix is next@16,",
     "    two majors up from the pinned 14.2.35, and 14.x has no patch. The",
     "    live advisory is a DoS in the Image Optimizer via `remotePatterns`;",
     "    this app configures no `remotePatterns` and imports `next/image`",
     "    nowhere, so the vulnerable path is not reachable. Track the upgrade",
-    "    as its own piece of work \u2014 bundling a two-major framework bump into",
+    "    as its own piece of work — bundling a two-major framework bump into",
     "    a dependency-patch change would make both harder to review.",
-    "  brace-expansion \u2014 dev-only (eslint/glob), and the fixed version is",
+    "  brace-expansion — dev-only (eslint/glob), and the fixed version is",
     "    several majors above what those packages pin."
   ],
   "overrides": {

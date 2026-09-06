@@ -34,3 +34,6 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# vendored Python runtime (built by scripts/vendor-pyodide.mjs at build time)
+/public/pyodide/

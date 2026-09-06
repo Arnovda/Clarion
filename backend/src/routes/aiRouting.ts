@@ -4,8 +4,9 @@
  *   GET  /api/admin/ai-routing
  *     Returns global mode, azure status, available models, per-category overrides.
  *
- *   PUT  /api/admin/ai-routing  { mode: 'claude' | 'hybrid' | 'azure' }
- *     Updates the global routing mode.
+ *   PUT  /api/admin/ai-routing  { mode: 'claude' | 'hybrid' | 'azure' | 'off' }
+ *     Updates the global routing mode. 'off' (4-3) refuses every AI call
+ *     for the tenant — nothing leaves for any provider.
  *
  *   GET  /api/admin/ai-routing/categories
  *     Returns all call categories with their current model assignments.
@@ -20,7 +21,7 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { requireAuth, requireRole } from '../middleware/auth';
 import { reqDb } from '../db/reqDb';
-import { invalidateTenantAiMode, type AiRoutingMode } from '../services/ai/tenantAiMode';
+import { invalidateTenantAiMode, parseAiRoutingMode, type AiRoutingMode } from '../services/ai/tenantAiMode';
 import { isAzureConfigured, isAzureOpenAIConfigured, getAzureOpenAIDeployments } from '../services/ai/azureClient';
 import { getAllCallCategoryConfigs, invalidateCallCategoryCache } from '../services/ai/callCategoryConfig';
 import { ALL_CALL_CATEGORIES, CALL_CATEGORY_META } from '../services/ai/router';
@@ -31,7 +32,7 @@ const router = Router();
 router.use(requireAuth, requireRole('admin'));
 
 function parseMode(raw: unknown): AiRoutingMode | null {
-  return raw === 'claude' || raw === 'hybrid' || raw === 'azure' ? raw : null;
+  return parseAiRoutingMode(raw);
 }
 
 const VALID_PROVIDERS = ['anthropic', 'azure-openai', 'azure-foundry'] as const;
@@ -91,7 +92,7 @@ router.put('/', async (req: Request, res: Response, next: NextFunction) => {
     const tenantId = req.user!.tenantId;
     const mode = parseMode((req.body as { mode?: unknown })?.mode);
     if (!mode) {
-      res.status(400).json({ ok: false, error: 'mode must be one of: claude, hybrid, azure' });
+      res.status(400).json({ ok: false, error: 'mode must be one of: claude, hybrid, azure, off' });
       return;
     }
     await reqDb(req)('tenants').where('id', tenantId).update({ ai_routing_mode: mode });

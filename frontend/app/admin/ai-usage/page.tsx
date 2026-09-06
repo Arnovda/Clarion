@@ -268,10 +268,10 @@ function DashboardBody() {
 }
 
 // ───────────────────────────────────────────────────────────────────────────
-// AI routing toggle — Claude Full / Hybrid / Azure Full
+// AI routing toggle — Claude Full / Hybrid / Azure Full / AI off (4-3)
 // ───────────────────────────────────────────────────────────────────────────
 
-type RoutingMode = 'claude' | 'hybrid' | 'azure';
+type RoutingMode = 'claude' | 'hybrid' | 'azure' | 'off';
 
 const ROUTING_OPTIONS: Array<{
   mode: RoutingMode;
@@ -296,6 +296,12 @@ const ROUTING_OPTIONS: Array<{
     title: 'Azure Full',
     blurb: 'Every AI call goes to Azure AI Foundry.',
     detail: 'No customer data leaves Azure. Quality depends on the deployed model — expect some regressions versus Claude.',
+  },
+  {
+    mode: 'off',
+    title: 'AI off',
+    blurb: 'No AI call of any kind is made for this workspace.',
+    detail: 'Nothing leaves for any AI provider. Ask AI, dashboard generation, source analysis, briefs and self-repair are unavailable until switched back on; dashboards, tables and everything already built keep working.',
   },
 ];
 
@@ -386,7 +392,7 @@ function RoutingPanel() {
           Loading…
         </div>
       ) : (
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3">
           {ROUTING_OPTIONS.map((opt) => {
             const selected = mode === opt.mode;
             return (

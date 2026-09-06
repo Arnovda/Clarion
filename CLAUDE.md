@@ -97,6 +97,63 @@ with it. The lawyer half stays the owner's.**
   flip. NOT built: the account-closure UI (`POST /settings/delete-tenant`
   stays API-only, as before); a ZIP64 export.
 
+**Wave C, item 2 — 4-1/4-2/4-3: the privacy claims are true in code — no
+browser request leaves this origin for a font or the Python runtime, a
+tenant can switch AI OFF, and the incident runbook the DPA promises
+exists. (Owner, same day: *"Don't do Wave C item 4: 8-3 eval harness"* —
+wave C engineering is items 1–3.)**
+- **4-2 fonts**: `Source Serif 4` joins Inter/Manrope under `next/font`
+  (fetched once at BUILD time, served from this origin); the runtime
+  `@import` of fonts.googleapis.com is GONE from `globals.css` (the three
+  `--font-*` tokens now resolve to the next/font variables) and from the
+  story window (`StoryModal.tsx` — a print-ready popup, now system
+  serif/sans stacks). Repo-wide grep for `googleapis|gstatic` in app code:
+  one comment.
+- **4-2 Pyodide**: NEW `frontend/scripts/vendor-pyodide.mjs`, run by
+  `prebuild` (so `npm run build` in the Docker image and in CI vendors it;
+  test.yml's `frontend-checks` uses `npx next build` and does not): copies
+  the runtime core from the `pyodide` npm devDependency (pinned 0.26.4,
+  the version the loader pins) into `public/pyodide/` (gitignored) and
+  downloads the wheel CLOSURE of numpy + pandas + matplotlib (13 wheels,
+  resolved from `pyodide-lock.json`) from the Pyodide CDN with the lock's
+  sha256 checked on every file — the only build-time network step, in CI,
+  never in a customer's browser. Idempotent. `PYODIDE_VENDOR=skip` skips
+  (local dev without egress: cdn.jsdelivr.net is 403 from this sandbox,
+  so the dry-run was verified here and the first real download is the
+  next frontend image build — read it). `usePyodide.ts` loads from
+  `/pyodide/`; if the vendored files are missing it falls back to the CDN
+  in DEVELOPMENT only and throws a clear error in production — a misbuilt
+  image must not quietly reach a host in no subprocessor list.
+- **4-3 AI opt-out**: migration 95 widens the `ai_routing_mode` CHECK to
+  `off`; `tenantAiMode.ts` exports `AI_ROUTING_MODES` + `parseAiRoutingMode`;
+  NEW `AiDisabledError` (`services/aiBudget.ts`) is thrown by
+  `enforceAiBudget` in AIService — the ONE gate every AI call passes
+  (callClaude, streaming, multi-turn, both design streams), so nothing is
+  built, let alone sent, for a tenant that is off. errorHandler answers
+  403 `ai_disabled` with the sentence naming the setting; `/query/think`
+  says the same on its error card (warn, not error). `PUT /admin/ai-
+  routing` accepts `off`; the AI usage page shows a fourth card "AI off".
+  Recorded, not engineered: the "not used for training" claim still rests
+  on Anthropic's standard terms (no zero-retention configuration exists).
+- **4-1 NEW `docs/runbooks/incident-response.md`**: severity ladder (any
+  personal data reaching the wrong party is Sev 1 by definition), the
+  detection surfaces (alert rules, `/api/health`, `.ops/prod-logs`,
+  `/admin/ops`), a first-hour checklist whose every lever exists (rollback
+  workflow, tenant suspend, AI off, `.ops/duckdb-lockdown`, queue cancel,
+  secret rotation + `.ops/redeploy`, announcements), evidence preservation
+  against the 30-day Log Analytics window, the processor's breach path
+  (first notice to affected admins within 24 h, what it contains, the
+  72 h follow-up, the record), the incident log/write-up convention
+  (`docs/incidents/`), and a quarterly rehearsal that has not happened.
+  `/security`'s line about the runbook now says what is true.
+- Tests: NEW `tests/ai-opt-out.test.ts` (3): PUT off/400 on nonsense, the
+  gate refuses `callClaude` under the tenant's context BEFORE any client
+  exists and lets it through again when switched back (a different error,
+  the missing API key), errorHandler 403 shape. Full suite 73 files / 689
+  passed; tsc clean both sides; ten ratchets green; frontend audit gate
+  clean with the new devDependency; `next build` green (vendoring skipped
+  here, see above).
+
 **Wave B, epilogue — THE DEPLOY CATCHES UP BY ITSELF NOW; the item-7 deploy
 was cancelled by the very push that fixed the two red controls.**
 - **What happened**: deploy run #573 (30ff5c8, the 11-1 code) sat PENDING
@@ -8523,6 +8580,7 @@ clarion/                              ← on disk: databridge/
     ├── postcss.config.mjs
     ├── .eslintrc.json
     ├── Dockerfile                    ← Next.js frontend container
+    ├── scripts/vendor-pyodide.mjs    ← prebuild: core from npm + wheel closure into public/pyodide/ (4-2)
     ├── public/
     │   └── logo.svg
     ├── app/
@@ -8637,7 +8695,7 @@ clarion/                              ← on disk: databridge/
     │   │   └── types.ts             ← shared TypeScript types for semantic components
     │   ├── notebooks/
     │   │   ├── SchemaExplorer.tsx    ← left sidebar table/schema tree
-    │   │   └── usePyodide.ts         ← Pyodide runtime hook (loads from CDN)
+    │   │   └── usePyodide.ts         ← Pyodide runtime hook (self-hosted /pyodide/, vendored at build)
     │   └── ui/                       ← Observatory primitives (preferred callsites)
     │       ├── Toast.tsx             ← <Toast> + <Toaster /> + useToast() hook (module-level dispatch queue)
     │       ├── NotificationBell.tsx  ← (newer variant, dev use)
@@ -8656,7 +8714,7 @@ clarion/                              ← on disk: databridge/
             └── useDebounce.ts       ← custom debounce hook
 ```
 
-### Database Migrations (94 files on disk)
+### Database Migrations (95 files on disk)
 
 ```
 20260328000001  create_connections
@@ -8696,6 +8754,7 @@ clarion/                              ← on disk: databridge/
 20260905000092  customer_record_and_caps         (P0-8: tenants.plan/seats/max_connections/…)
 20260905000093  ops_correlation_and_announcements (6-1 source_sync_runs.request_id; 6-4 announcements)
 20260906000094  legal_acceptances                 (P0-7: who accepted which versions, when, from where)
+20260906000095  ai_routing_mode_off               (4-3: tenants.ai_routing_mode may be 'off')
 ```
 
 ---

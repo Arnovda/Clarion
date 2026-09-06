@@ -194,10 +194,12 @@ import {
   checkTenantAiBudget,
   recordTenantAiUsage,
   AiBudgetExceededError,
+  AiDisabledError,
 } from '../services/aiBudget';
 import { logAiCall } from '../services/aiCallLogger';
 import { getGlossaryPromptBlock } from '../services/glossaryContext';
 import { pickBackend, callAzureBackend, callAzureOpenAIBackend, resolveModel, callLabelToCategory, type AiCallKind } from '../services/ai/router';
+import { getTenantAiMode } from '../services/ai/tenantAiMode';
 
 /**
  * Load the tenant-wide business glossary block for inclusion in AI prompts.
@@ -263,6 +265,13 @@ const RETRY_DELAYS = [2000, 5000, 10000]; // ms — exponential-ish backoff
 async function enforceAiBudget(callLabel: string): Promise<number | null> {
   const tenantId = getTenantAiContext();
   if (!tenantId) return null;
+  // 4-3: the opt-out is checked HERE, at the one gate every AI call passes,
+  // so switching a tenant off stops every path — streaming, multi-turn,
+  // design, formatting — without each of them remembering to ask.
+  if ((await getTenantAiMode(tenantId)) === 'off') {
+    trackEvent('ai_disabled_blocked', { tenantId: String(tenantId), callLabel });
+    throw new AiDisabledError(tenantId);
+  }
   const status = await checkTenantAiBudget(tenantId);
   if (!status.allowed) {
     trackEvent('ai_budget_blocked', { tenantId: String(tenantId), callLabel, used: String(status.used), budget: String(status.budget ?? -1) });
