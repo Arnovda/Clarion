@@ -97,6 +97,43 @@ with it. The lawyer half stays the owner's.**
   flip. NOT built: the account-closure UI (`POST /settings/delete-tenant`
   stays API-only, as before); a ZIP64 export.
 
+**Wave C, item 3 — 9-1/9-3/9-5: a wrong URL or a render throw has a way
+back, the viewer's home is the viewer's, and the playground is not in
+production. WAVE C ENGINEERING (items 1–3) IS COMPLETE; item 4 (the eval
+harness) was dropped by the owner.**
+- **9-1** NEW `app/not-found.tsx` (server component, no shell — it must
+  render signed-out), `app/error.tsx` (client boundary: Try again calls
+  `reset`, Go to home; shows `error.digest` as a reference and NEVER the
+  message — a render error can carry SQL or a customer's data) and
+  `app/global-error.tsx` (root-layout boundary, inline styles because
+  globals.css is not guaranteed there). Any mistyped URL now lands on a
+  Clarion page with two doors instead of the stock Next.js page.
+- **9-3** `/home` renders TWO shapes from the same `GET /home/summary`:
+  the operator page as before for admin/analyst, and NEW
+  `app/home/ViewerHome.tsx` for viewers — greeting, ONE honest line on how
+  current the data is ("Data as of 2 hours ago · 1 item waiting on a
+  refresh", nothing to click: the refresh is not theirs to trigger), a
+  question box that lands on `/query?q=…&autoSubmit=1`, the morning brief,
+  their dashboards and questions, and a Subjects door. No health ring, no
+  "Definitions 12/40", no pipelines, no AI-review count — every one of
+  those was a door to a "not authorized" card. `HomeSummary` moved to
+  `app/home/types.ts` and the two ACT sections to `app/home/sections.tsx`
+  (a page file may export only its default — Next's typed-routes check
+  refused a second export). The role is read once on mount; the page
+  waits for it so neither shape flashes.
+- **9-5** NEW `app/dev/layout.tsx` calls `notFound()` in a production
+  build unless `CLARION_DEV_PAGES=1`; the widget-render-gate job sets that
+  variable (it is the one legitimate production-build consumer of
+  `/dev/widgets`). Verified on the built output: `.next/server/app/dev/
+  {ui,widgets}.html` carry the not-found page.
+- Tests: NEW `frontend/tests/errorPages.test.tsx` (3): 404 links, the
+  error page shows the digest and not the message and Try again calls
+  reset, the viewer home renders brief/box/dashboards/subjects and none of
+  the operator vocabulary, and the question box carries the question.
+  Frontend vitest 5 files / 27 passed; tsc clean; touched files lint-clean
+  (`Calendar` and `Library` were unused imports on the home page and are
+  gone); `next build` green.
+
 **Wave C, item 2 — 4-1/4-2/4-3: the privacy claims are true in code — no
 browser request leaves this origin for a font or the Python runtime, a
 tenant can switch AI OFF, and the incident runbook the DPA promises
@@ -8592,6 +8629,12 @@ clarion/                              ← on disk: databridge/
     │   ├── reset-password/page.tsx   ← password reset confirmation (token-based)
     │   ├── profile/page.tsx          ← user profile: display name, password change
     │   ├── onboarding/page.tsx       ← new-user onboarding wizard
+    │   ├── home/                     ← the daily driver; two shapes by role (9-3)
+    │   │   ├── page.tsx              ← operator page (health / attention / act)
+    │   │   ├── ViewerHome.tsx        ← the viewer's page: brief, question box, dashboards, subjects
+    │   │   ├── sections.tsx          ← DashboardsSection + RecentQuestionsSection, shared
+    │   │   └── types.ts              ← HomeSummary
+    │   ├── not-found.tsx / error.tsx / global-error.tsx  ← the 9-1 boundaries
     │   ├── setup/page.tsx            ← admin: connect sources, trigger AI schema profiling (RequireRole)
     │   ├── semantic/page.tsx         ← definitions: tables/columns/relationships/glossary tabs (KPIs moved to /products)
     │   ├── topics/                   ← TOPIC-FIRST FRONT DOOR (business user's home)
@@ -8651,7 +8694,9 @@ clarion/                              ← on disk: databridge/
     │   │   ├── page.tsx              ← list + create notebook
     │   │   └── [id]/page.tsx         ← editor with cells, schema explorer
     │   └── dev/                      ← internal-only playground (UI, tokens, icons)
-    │       └── ui/page.tsx
+    │       ├── layout.tsx            ← notFound() in production unless CLARION_DEV_PAGES=1 (9-5)
+    │       ├── ui/page.tsx
+    │       └── widgets/page.tsx      ← the widget gallery the render gate drives
     │
     ├── components/
     │   ├── Nav.tsx                   ← legacy role-aware nav (kept for non-shell pages)

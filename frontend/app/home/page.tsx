@@ -18,14 +18,23 @@
  *
  * Everything reads from a single GET /api/home/summary so the page is
  * snappy and refreshes on focus.
+ *
+ * TWO SHAPES (assessment 9-3). The three layers above are an OPERATOR's
+ * home: a health ring built from definitions and pipeline runs, a
+ * "Freshness" tile that jumps to /pipelines, an AI review count — every
+ * one of them a door a viewer cannot open ("not authorized" card) and a
+ * vocabulary a viewer never chose. Viewers — the ten colleagues, the
+ * people every login is for — get `ViewerHome`: the brief, a question box,
+ * their dashboards and questions, the subjects, and one honest line on how
+ * current the data is. Same endpoint, different page.
  */
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import {
-  AlertTriangle, Calendar, CheckCircle2, Clock, Database, Boxes,
-  RefreshCw, Sparkles, Library, ShieldCheck, ChevronRight, BarChart3,
-  Loader2, Star, Plus, X, Gauge,
+  AlertTriangle, CheckCircle2, Clock, Database, Boxes,
+  RefreshCw, Sparkles, ShieldCheck, ChevronRight, BarChart3,
+  Loader2, X, Gauge,
 } from 'lucide-react';
 import dynamic from 'next/dynamic';
 import api from '@/lib/api';
@@ -33,49 +42,16 @@ import { OBSERVATORY } from '@/lib/observatory';
 import { formatRelative } from '@/lib/dates';
 import { compactNarrative } from '@/lib/qualityNarrative';
 import { cn } from '@/lib/cn';
+import { getRole, type Role } from '@/lib/role';
+import type { HomeSummary } from './types';
+import { DashboardsSection, RecentQuestionsSection } from './sections';
+import { ViewerHome } from './ViewerHome';
 
 // Dynamic imports — these aren't critical for first paint and pull
 // in their own state machinery, so let them stream in after.
 const PulsePanel = dynamic(() => import('@/components/pulse/PulsePanel'), { ssr: false });
 const MorningBriefCard = dynamic(() => import('@/components/briefs/MorningBriefCard'), { ssr: false });
 
-interface HomeSummary {
-  health: {
-    overall: number | null;
-    freshness: number | null;
-    definitions: number | null;
-    quality: number | null;
-    pipelines: number | null;
-  };
-  quality: {
-    profiledTables: { passing: number; total: number };
-    activeRules:    { passing: number; total: number };
-  };
-  freshness: {
-    sources:  { fresh: number; total: number };
-    products: { fresh: number; total: number };
-    stale: Array<{ id: number; name: string; lastSyncedAt: string | null }>;
-    staleProducts: Array<{ id: number; name: string; status: string; lastRefreshedAt: string | null; isStale: boolean }>;
-    allSources: Array<{ id: number; name: string; connectorType: string | null; lastSyncedAt: string | null; lastSyncStatus: string | null; isStale: boolean }>;
-    allProducts: Array<{ id: number; name: string; status: string; lastRefreshedAt: string | null; isStale: boolean }>;
-  };
-  definitions: {
-    tables:        { defined: number; total: number };
-    columns:       { defined: number; total: number };
-    relationships: { approved: number; total: number };
-    pendingReview: { tables: number; columns: number; relationships: number; total: number };
-  };
-  pipelines: {
-    runsThisWeek: number;
-    successCount: number;
-    failureCount: number;
-    activeNow: number;
-    successRate: number | null;
-  };
-  dashboards: Array<{ id: number; title: string; starred: boolean; updatedAt: string | null }>;
-  recentQuestions: Array<{ id: number; title: string | null; lastMessageAt: string | null }>;
-  alerts: Array<{ id: number; severity: string; message: string; aiContext: string | null; kind: string; createdAt: string | null }>;
-}
 
 export default function HomePage() {
   const router = useRouter();
@@ -84,6 +60,10 @@ export default function HomePage() {
   const [refreshing, setRefreshing] = useState(false);
   const [userName, setUserName] = useState<string>('');
   const [freshnessOpen, setFreshnessOpen] = useState(false);
+  // Read once on mount (the JWT is in storage, not available during SSR).
+  // Null until read so neither shape flashes before the other.
+  const [role, setRole] = useState<Role | null>(null);
+  useEffect(() => { setRole(getRole()); }, []);
 
   const load = useCallback(async (silent = false) => {
     if (!silent) setLoading(true);
@@ -123,7 +103,7 @@ export default function HomePage() {
     weekday: 'long', month: 'long', day: 'numeric',
   }), []);
 
-  if (loading) {
+  if (loading || role === null) {
     return (
       <div className="flex-1 flex items-center justify-center">
         <Loader2 className="w-5 h-5 animate-spin text-muted" />
@@ -136,6 +116,10 @@ export default function HomePage() {
         Could not load home page.
       </div>
     );
+  }
+
+  if (role === 'viewer') {
+    return <ViewerHome summary={summary} userName={userName} today={today} onJump={(p) => router.push(p)} />;
   }
 
   return (
@@ -510,128 +494,6 @@ function AttentionSection({ summary, onJump }: { summary: HomeSummary; onJump: (
             )}
           </div>
         ))}
-      </div>
-    </div>
-  );
-}
-
-// ─── Pinned dashboards ─────────────────────────────────────────────────────
-
-function DashboardsSection({
-  dashboards, onJump,
-}: {
-  dashboards: HomeSummary['dashboards'];
-  onJump: (path: string) => void;
-}) {
-  return (
-    <div className="bg-raised border border-line rounded-lg overflow-hidden">
-      <header className="px-5 py-3 border-b border-line bg-softer/40 flex items-center justify-between">
-        <p className="text-[10px] font-mono tracking-[0.14em] uppercase text-muted">Your dashboards</p>
-        <button
-          onClick={() => onJump('/dashboards')}
-          className="text-[11px] font-mono tracking-[0.06em] uppercase text-ocean hover:text-ocean-hover"
-        >
-          Open all
-        </button>
-      </header>
-      <div className="px-5 py-4">
-        {dashboards.length === 0 ? (
-          <div className="text-center py-6">
-            <BarChart3 className="w-6 h-6 mx-auto mb-2 text-muted-2" strokeWidth={1.5} />
-            <p className="text-[13px] text-ink-2 mb-3">No dashboards yet</p>
-            <button
-              onClick={() => onJump('/dashboards')}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-[12px] font-medium bg-ocean text-white rounded-md hover:bg-ocean-hover transition-colors"
-            >
-              <Plus className="w-3.5 h-3.5" strokeWidth={2.5} />
-              Build a dashboard
-            </button>
-          </div>
-        ) : (
-          <ul className="space-y-1">
-            {dashboards.map((d) => (
-              <li key={d.id}>
-                <button
-                  onClick={() => onJump(`/dashboards?id=${d.id}`)}
-                  className="w-full flex items-center gap-2.5 px-2 py-2 rounded hover:bg-softer transition-colors group text-left"
-                >
-                  {d.starred ? (
-                    <Star className="w-3.5 h-3.5 shrink-0" fill={OBSERVATORY.warn} stroke={OBSERVATORY.warn} />
-                  ) : (
-                    <BarChart3 className="w-3.5 h-3.5 shrink-0 text-muted-2" strokeWidth={1.75} />
-                  )}
-                  <span className="text-[13px] text-ink truncate flex-1">{d.title}</span>
-                  {d.updatedAt && (
-                    <span className="text-[10.5px] font-mono text-muted-2 shrink-0">
-                      {formatRelative(d.updatedAt)}
-                    </span>
-                  )}
-                  <ChevronRight className="w-3 h-3 text-muted-2 opacity-0 group-hover:opacity-100" />
-                </button>
-              </li>
-            ))}
-          </ul>
-        )}
-      </div>
-    </div>
-  );
-}
-
-// ─── Recent questions ──────────────────────────────────────────────────────
-
-function RecentQuestionsSection({
-  questions, onJump,
-}: {
-  questions: HomeSummary['recentQuestions'];
-  onJump: (path: string) => void;
-}) {
-  return (
-    <div className="bg-raised border border-line rounded-lg overflow-hidden">
-      <header className="px-5 py-3 border-b border-line bg-softer/40 flex items-center justify-between">
-        <p className="text-[10px] font-mono tracking-[0.14em] uppercase text-muted">Recent questions</p>
-        <button
-          onClick={() => onJump('/query')}
-          className="text-[11px] font-mono tracking-[0.06em] uppercase text-ocean hover:text-ocean-hover inline-flex items-center gap-1"
-        >
-          <Sparkles className="w-3 h-3" strokeWidth={2} /> Ask a new one
-        </button>
-      </header>
-      <div className="px-5 py-4">
-        {questions.length === 0 ? (
-          <div className="text-center py-6">
-            <Sparkles className="w-6 h-6 mx-auto mb-2 text-muted-2" strokeWidth={1.5} />
-            <p className="text-[13px] text-ink-2 mb-3">No questions yet</p>
-            <button
-              onClick={() => onJump('/query')}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-[12px] font-medium bg-ocean text-white rounded-md hover:bg-ocean-hover transition-colors"
-            >
-              <Sparkles className="w-3.5 h-3.5" strokeWidth={2} />
-              Ask the AI
-            </button>
-          </div>
-        ) : (
-          <ul className="space-y-1">
-            {questions.map((q) => (
-              <li key={q.id}>
-                <button
-                  onClick={() => onJump(`/query?conversationId=${q.id}`)}
-                  className="w-full flex items-center gap-2.5 px-2 py-2 rounded hover:bg-softer transition-colors group text-left"
-                >
-                  <Library className="w-3.5 h-3.5 shrink-0 text-muted-2" strokeWidth={1.75} />
-                  <span className="text-[13px] text-ink truncate flex-1">
-                    {q.title || 'Untitled question'}
-                  </span>
-                  {q.lastMessageAt && (
-                    <span className="text-[10.5px] font-mono text-muted-2 shrink-0">
-                      {formatRelative(q.lastMessageAt)}
-                    </span>
-                  )}
-                  <ChevronRight className="w-3 h-3 text-muted-2 opacity-0 group-hover:opacity-100" />
-                </button>
-              </li>
-            ))}
-          </ul>
-        )}
       </div>
     </div>
   );

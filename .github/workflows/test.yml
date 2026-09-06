@@ -402,6 +402,10 @@ jobs:
   widget-render-gate:
     name: Widget Render Gate (real browser)
     runs-on: ubuntu-latest
+    env:
+      # /dev/* answers 404 in a production build (9-5); this job is the one
+      # legitimate production-build consumer of /dev/widgets.
+      CLARION_DEV_PAGES: '1'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
