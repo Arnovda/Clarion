@@ -95,8 +95,26 @@ router tests, which are their own entry below.**
   sign-in footer reaches). The CommandPalette's Glossary entry pointed at
   `/glossary`, a redirect stub — it points at `/catalog` directly now; the
   stubs themselves stay for bookmarks.
-- Validation: backend `npm run check` clean; full backend vitest **78 files /
-  704 passed / 4 skipped**; ten ratchets green from the repo root; frontend
+- **THE ROUTER TESTS FOUND A SECOND SWALLOWED-CATCH BUG, in the governance
+  control this time.** NEW `tests/policies.test.ts` (12) went red on its
+  first run: `GET /api/policies` answered **500 for every tenant**, because
+  the handler filters on a bare `tenant_id` while left-joining `users`
+  TWICE — and `users` has a `tenant_id` too, so Postgres refuses the whole
+  statement as ambiguous. `/policies` caught it with a bare
+  `catch { /* silently fail */ }` and rendered an empty list, so a
+  workspace with row filters and column masks in force looked like a
+  workspace with none. Qualified to `data_policies.tenant_id`; the page now
+  renders a red "this is a fault, not an empty list" strip instead of
+  swallowing. Exactly the Home defect's shape — found the same way, by
+  writing the router's first test.
+- NEW `tests/pulse-briefs.test.ts` (10): both routers are scoped per USER as
+  well as per tenant, and RLS isolates tenants but nothing isolates
+  colleagues — so a colleague sees an empty watchlist, cannot edit or delete
+  another person's entry, sees only their own briefs, and the AI-spending
+  manual re-run stays admin-only. `/pulse/state` answers with no
+  observations rather than failing.
+- Validation: backend `npm run check` clean; full backend vitest **80 files /
+  726 passed / 4 skipped**; ten ratchets green from the repo root; frontend
   `tsc` clean; `next build` green **46/46** (was 47 — onboarding gone).
   SANDBOX NOTE: `tsc` failed once on `.next/types/app/onboarding/page.ts`
   after deleting the page — stale generated types from an earlier build, not

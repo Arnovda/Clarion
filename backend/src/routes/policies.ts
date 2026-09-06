@@ -25,8 +25,14 @@ router.use(requireAuth);
 router.get('/', requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const db = reqDb(req);
+    // QUALIFIED on purpose: `users` also has a `tenant_id`, so the bare
+    // column is ambiguous once the two joins below are in the query and
+    // Postgres refuses the whole statement. This route 500'd for every
+    // tenant until 2026-09-06 and the page's blanket catch hid it — the
+    // same shape as the Home dashboards bug found the same day. The
+    // policies list is the governance control's only read surface.
     const policies = await db('data_policies')
-      .where({ tenant_id: req.user!.tenantId })
+      .where({ 'data_policies.tenant_id': req.user!.tenantId })
       .leftJoin('users as u', 'data_policies.user_id', 'u.id')
       .leftJoin('users as cb', 'data_policies.created_by', 'cb.id')
       .select(

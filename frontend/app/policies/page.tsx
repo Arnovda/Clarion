@@ -87,6 +87,7 @@ function PoliciesPageInner() {
   const [policies, setPolicies] = useState<Policy[]>([]);
   const [users, setUsers] = useState<User[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [showModal, setShowModal] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [form, setForm] = useState<PolicyForm>(emptyForm);
@@ -106,8 +107,12 @@ function PoliciesPageInner() {
       ]);
       setPolicies(pRes.data.data ?? pRes.data ?? []);
       setUsers(uRes.data.data ?? uRes.data ?? []);
-    } catch {
-      // silently fail
+    } catch (e) {
+      // Never silent: a swallowed failure here is indistinguishable from
+      // "this workspace has no policies", which is the most dangerous thing
+      // a governance screen can imply. (2026-09-06 — the list endpoint had
+      // been 500ing for every tenant behind exactly this catch.)
+      setLoadError(e instanceof Error ? e.message : 'Could not load data policies.');
     } finally {
       setLoading(false);
     }
@@ -230,6 +235,13 @@ function PoliciesPageInner() {
         <div className="p-8 text-[11px] font-mono tracking-[0.08em] uppercase text-muted">Loading…</div>
       ) : (
         <div className="max-w-5xl mx-auto px-6 pt-10 pb-10 space-y-6">
+          {loadError && (
+            <div className="rounded-md border border-err/30 bg-err-soft px-4 py-3 text-[13px] text-err">
+              <strong className="font-medium">Could not load your data policies.</strong>{' '}
+              This is a fault, not an empty list — the rules below may not be everything that is in force.{' '}
+              <span className="font-mono text-[11.5px] text-ink-3">{loadError}</span>
+            </div>
+          )}
           <header className="flex items-end justify-between gap-4">
             <div>
               <p className="text-[10px] font-mono tracking-[0.14em] uppercase text-muted mb-2">Policies</p>
