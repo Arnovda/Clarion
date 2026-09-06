@@ -35,6 +35,30 @@ with false assumptions and produces broken code.
 can push to main and begin fixing the waves"*; the assessment v2 was
 fast-forwarded to main and each item landed as its own push, seven pushes)
 
+**Wave B, epilogue — THE DEPLOY CATCHES UP BY ITSELF NOW; the item-7 deploy
+was cancelled by the very push that fixed the two red controls.**
+- **What happened**: deploy run #573 (30ff5c8, the 11-1 code) sat PENDING
+  behind #572; the controls-fix push four minutes later took the group's
+  one pending slot, #573 was cancelled, #574 built nothing (workflow and
+  `.ops` files only) and went green — production stayed on the item-6
+  image with a green board. The exact trap `.ops/redeploy` was created for
+  that morning, hit again the same evening, this time by the session that
+  had documented it. A rule that lives in a comment ("do not push again
+  until the deploy has started") is not a control.
+- **The control**: deploy.yml's `changes` job gained a CATCH-UP step
+  (push events only): it walks back through this branch's completed deploy
+  runs until one whose `deploy` job SUCCEEDED, reads the file list of every
+  commit deployed by the runs in between (from the commits API, so a run
+  cancelled before it had any jobs still counts) and forces backend /
+  frontend / worker / migrations for whatever they touched. Dry-run against
+  a stub replaying #572→#574: reports "run #573 never shipped: backend" and
+  forces the backend build. `force` and `.ops/redeploy` stay as the manual
+  levers. The push carrying this step IS the catch-up deploy for 30ff5c8 —
+  read run #575's `changes` summary ("Catch-up") and its Go live.
+- **db-pool run #2 and alerts run #7 are green**: `backend: <unset> → 6`
+  on revision 0000330 at 100%, worker restarted with 8; all eleven alert
+  rules ✓. 5-2's mute and 5-3's ceilings are live.
+
 **Wave B, item 7 — 11-1 CLOSED: a streaming response no longer pins a
 Postgres connection. WAVE B IS COMPLETE.**
 - **The mechanism is in `requireAuth`, so every SSE route got it without

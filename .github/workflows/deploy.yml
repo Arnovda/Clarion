@@ -48,6 +48,12 @@ on:
   # lands in, and the gate still applies. Recorded there on 2026-09-05, when
   # two gate-held commits followed by a tests-only commit left production two
   # backend builds behind main with a green deploy run.
+  #
+  # Since the same evening the `changes` job also CATCHES UP by itself: it
+  # walks back to the last deploy whose `deploy` job succeeded and forces a
+  # rebuild of every component the runs in between changed but never
+  # shipped (cancelled by the next push, held by the gate). `force` and
+  # `.ops/redeploy` remain the manual levers for anything that rule misses.
   workflow_dispatch:
     inputs:
       force:
@@ -174,12 +180,15 @@ jobs:
   # ── Detect which areas changed ────────────────────────────────────────────
   changes:
     runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
     outputs:
-      frontend: ${{ steps.f.outputs.frontend == 'true' || contains(inputs.force, 'frontend') }}
-      backend: ${{ steps.f.outputs.backend == 'true' || contains(inputs.force, 'backend') }}
+      frontend: ${{ steps.f.outputs.frontend == 'true' || contains(inputs.force, 'frontend') || steps.catchup.outputs.frontend == 'true' }}
+      backend: ${{ steps.f.outputs.backend == 'true' || contains(inputs.force, 'backend') || steps.catchup.outputs.backend == 'true' }}
       etl: ${{ steps.f.outputs.etl }}
-      worker: ${{ steps.f.outputs.worker }}
-      migrations: ${{ steps.f.outputs.migrations }}
+      worker: ${{ steps.f.outputs.worker == 'true' || steps.catchup.outputs.worker == 'true' }}
+      migrations: ${{ steps.f.outputs.migrations == 'true' || steps.catchup.outputs.migrations == 'true' }}
       neo4j: ${{ steps.f.outputs.neo4j }}
     steps:
       - uses: actions/checkout@v4
@@ -203,6 +212,55 @@ jobs:
               - 'backend/src/db/migrations/**'
             neo4j:
               - 'backend/src/db/neo4j.ts'
+
+      # CATCH-UP: a component whose changes never shipped is rebuilt now,
+      # whatever THIS commit touched. A concurrency group holds one pending
+      # run, so the deploy of a code commit is CANCELLED whenever the next
+      # push arrives before it starts — the item-7 deploy of wave B (run
+      # #573, commit 30ff5c8) was cancelled by the controls-fix push four
+      # minutes later, run #574 then built nothing, and production kept
+      # serving the previous image with a green run on the board. The same
+      # shape with a gate-held run is what `.ops/redeploy` was created for
+      # on 2026-09-05. Rule: walk back through the completed deploy runs of
+      # this branch until one whose `deploy` job SUCCEEDED (the last shipped
+      # deploy); every commit deployed by the runs in between changed files
+      # that are not live, so their components are forced. Reads the
+      # commits' file lists from the API, so a run that was cancelled before
+      # it had any jobs is still accounted for.
+      - name: Catch up components a cancelled or failed deploy left stale
+        id: catchup
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          BRANCH: ${{ github.ref_name }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          BACKEND=false; FRONTEND=false; WORKER=false; MIGRATIONS=false; NOTE=""
+          RUNS=$(gh api "repos/$REPO/actions/workflows/deploy.yml/runs?branch=$BRANCH&status=completed&per_page=15"                    --jq ".workflow_runs[] | select(.id != $RUN_ID) | \"\(.id) \(.conclusion) \(.head_sha) \(.run_number)\"" 2>/dev/null || true)
+          while read -r ID CONCL SHA NUM; do
+            [ -n "${ID:-}" ] || continue
+            SHIPPED=$(gh api "repos/$REPO/actions/runs/$ID/jobs?per_page=50"                         --jq '[.jobs[] | select(.name == "deploy" and .conclusion == "success")] | length' 2>/dev/null || echo 0)
+            if [ "$SHIPPED" != "0" ]; then break; fi
+            FILES=$(gh api "repos/$REPO/commits/$SHA" --jq '.files[].filename' 2>/dev/null || true)
+            HIT=""
+            if echo "$FILES" | grep -qE '^(backend/|packages/connectors/)'; then BACKEND=true; HIT="$HIT backend"; fi
+            if echo "$FILES" | grep -qE '^frontend/'; then FRONTEND=true; HIT="$HIT frontend"; fi
+            if echo "$FILES" | grep -qE '^(worker/|packages/connectors/)'; then WORKER=true; HIT="$HIT worker"; fi
+            if echo "$FILES" | grep -qE '^backend/src/db/migrations/'; then MIGRATIONS=true; HIT="$HIT migrations"; fi
+            [ -n "$HIT" ] && NOTE="$NOTE\n- run #$NUM (\`${SHA:0:7}\`, $CONCL) never shipped:$HIT"
+          done <<< "$RUNS"
+          echo "backend=$BACKEND" >> "$GITHUB_OUTPUT"
+          echo "frontend=$FRONTEND" >> "$GITHUB_OUTPUT"
+          echo "worker=$WORKER" >> "$GITHUB_OUTPUT"
+          echo "migrations=$MIGRATIONS" >> "$GITHUB_OUTPUT"
+          if [ -n "$NOTE" ]; then
+            printf '## Catch-up\nEarlier deploys on `%s` did not ship these changes; their components are rebuilt from this commit:%b\n' "$BRANCH" "$NOTE" >> "$GITHUB_STEP_SUMMARY"
+            printf 'Catch-up:%b\n' "$NOTE"
+          else
+            echo "Catch-up: nothing stale."
+          fi
 
   # ── Builds (each gated to its service; all layer-cached) ──────────────────
   build-frontend:
