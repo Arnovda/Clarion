@@ -53,8 +53,10 @@ was cancelled by the very push that fixed the two red controls.**
   frontend / worker / migrations for whatever they touched. Dry-run against
   a stub replaying #572→#574: reports "run #573 never shipped: backend" and
   forces the backend build. `force` and `.ops/redeploy` stay as the manual
-  levers. The push carrying this step IS the catch-up deploy for 30ff5c8 —
-  read run #575's `changes` summary ("Catch-up") and its Go live.
+  levers. **Run #575 did exactly that**: `changes` reported "run #573 never
+  shipped: backend", built only the backend, and Go live promoted
+  `main-959dad0` at 100% with `/api/health` 200 on all six components
+  (2026-09-06 06:59 UTC). Production carries every wave B commit.
 - **db-pool run #2 and alerts run #7 are green**: `backend: <unset> → 6`
   on revision 0000330 at 100%, worker restarted with 8; all eleven alert
   rules ✓. 5-2's mute and 5-3's ceilings are live.
