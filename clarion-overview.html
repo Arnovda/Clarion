@@ -151,6 +151,26 @@
   }
   .highlight p { margin: 0; color: #0f172a; font-size: 10.5pt; }
 
+  /* Anything not shipped yet carries this badge. Rule (2026-09-06 functional
+     requirements evaluation): every claim in this document is either true of
+     the product today, or visibly marked as roadmap. A promise a customer
+     cannot exercise is the most expensive kind of copy there is. */
+  .roadmap-badge {
+    display: inline-block;
+    font-family: 'Geist Mono', monospace;
+    font-size: 7.5pt;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: #92400e;
+    background: #fef3c7;
+    border: 1px solid #fde68a;
+    border-radius: 999px;
+    padding: 1px 7px;
+    vertical-align: middle;
+    margin-left: 8px;
+    font-weight: 600;
+  }
+
   /* ── Audience cards ── */
   .card-grid {
     display: grid;
@@ -341,14 +361,16 @@
   <div class="highlight">
     <p><strong>The core promise:</strong> Any business user — from a CEO to a sales manager — can
     open Clarion, type a question like "What were my top 10 customers by
-    revenue last quarter?" and receive a clear, accurate answer with a chart,
-    in under five seconds. No training required.</p>
+    revenue last quarter?" and get an answer with a chart, in plain language,
+    with the sources and the freshness of the data shown beside it. No SQL,
+    no training. When Clarion is not confident enough to answer, it says so
+    instead of guessing.</p>
   </div>
 
   <div class="stat-row">
     <div class="stat">
-      <span class="stat-num">&lt; 5s</span>
-      <span class="stat-label">Average answer time</span>
+      <span class="stat-num">70%</span>
+      <span class="stat-label">Confidence floor — below it, Clarion refuses rather than guesses</span>
     </div>
     <div class="stat">
       <span class="stat-num">0</span>
@@ -450,9 +472,10 @@
   <p>
     Describe the dashboard you want in a sentence. Clarion designs it,
     writes all the underlying queries, and renders a fully interactive
-    dashboard — with filters, drill-down, date range selectors, and KPI
-    cards — in under 30 seconds. Dashboards can be saved, shared, and
-    refreshed automatically.
+    dashboard — with filters, drill-down, date range selectors and KPI
+    cards. Dashboards are saved, shared with your team, rearranged by hand,
+    and refreshed automatically; opening one costs no AI at all. Refining is
+    a conversation: "add a customer filter", "make that a bar chart".
   </p>
 
   <h3>3. Scheduled Email Reports</h3>
@@ -489,12 +512,16 @@
     making even large datasets feel instant.
   </p>
 
-  <h3>7. Multi-Source Queries</h3>
+  <h3>7. Multi-Source Queries <span class="roadmap-badge">On the roadmap</span></h3>
   <p>
-    Connect multiple data sources — accounting, CRM, operations — and ask
-    questions that span all of them. Clarion maintains a knowledge graph
-    of how your data sources relate to each other and can join across them
-    transparently.
+    Today you connect multiple sources and each is modelled, catalogued and
+    queried on its own; Clarion measures and records how tables relate,
+    including across sources, on the relationship canvas. Asking one question
+    that <em>spans</em> two source systems is the next major piece of work —
+    it needs a shared set of business dimensions and a per-record identity
+    layer, so that "the customer" means the same thing in your accounting
+    package and your webshop. We would rather build that than join two
+    systems on a guess.
   </p>
 
   <h3>8. Role-Based Access</h3>
@@ -553,7 +580,7 @@
       <div class="step-num">5</div>
       <div class="step-body">
         <h4>Automate delivery</h4>
-        <p>Schedule dashboards as email reports. Set up alerts for quality issues or KPI thresholds. The platform works in the background so you wake up to insight, not raw data.</p>
+        <p>Schedule any dashboard or saved question as an email report with an AI-written summary. Clarion watches your data quality in the background and raises an alert, in plain language, when something changes. <span class="roadmap-badge">On the roadmap</span> thresholds you set yourself on any metric ("tell me when margin drops below 30%").</p>
       </div>
     </div>
   </div>
@@ -574,22 +601,22 @@
 
   <div class="usecase">
     <h4>Monthly management reporting — automated</h4>
-    <p>A wholesale distributor replaces its monthly Excel-based management pack with a Clarion dashboard that updates daily. The CFO receives a scheduled email every Monday morning with an AI summary of the week's performance. Board packs are generated in one click.</p>
+    <p>A wholesale distributor replaces its monthly Excel-based management pack with a Clarion dashboard that updates daily. The CFO receives a scheduled email every Monday morning with an AI summary of the week's performance, and exports the figures to Excel for the board file.</p>
   </div>
 
   <div class="usecase">
     <h4>Sales performance visibility</h4>
-    <p>A sales director asks "Which of my reps is underperforming vs target this month?" Clarion queries the CRM and accounting data, identifies the gap by rep and product category, and suggests where to investigate — without a single meeting with IT.</p>
+    <p>A sales director asks "How did each of my reps sell this month, against the same month last year?" Clarion answers with the ranking and the trend, and one click on "Investigate" runs the follow-up queries that explain where a gap came from — without a single meeting with IT. <span class="roadmap-badge">On the roadmap</span> comparing against a target or budget you set.</p>
   </div>
 
   <div class="usecase">
     <h4>Inventory &amp; purchasing optimisation</h4>
-    <p>An operations manager sets a quality alert: "Notify me when any product's stock coverage drops below 2 weeks." Clarion monitors the warehouse daily and sends an email with a plain-language explanation the moment the threshold is crossed.</p>
+    <p>An operations manager keeps a stock-coverage dashboard and a daily morning brief that names what moved overnight; Clarion also raises a quality alert, with a plain-language explanation, when the underlying data itself goes wrong — a feed that stopped, a field that emptied. <span class="roadmap-badge">On the roadmap</span> alerting on a business threshold the manager sets.</p>
   </div>
 
   <div class="usecase">
     <h4>Customer revenue analysis</h4>
-    <p>A CEO asks "Who are my top 20 customers and what is their year-on-year revenue trend?" Clarion returns a ranked table with a trend sparkline for each customer, identifies the three customers with the sharpest decline, and offers a drill-down into the underlying invoices.</p>
+    <p>A CEO asks "Who are my top 20 customers and what is their year-on-year revenue trend?" Clarion returns the ranking with a chart of the trend, shows which tables the answer came from and how fresh they are, and drills into the underlying invoices behind any figure.</p>
   </div>
 
   <div class="usecase">
@@ -700,15 +727,15 @@
         <td class="cross">✗ Enterprise pricing</td>
       </tr>
       <tr>
-        <td>Multi-tenant / white-label</td>
-        <td class="check">✓ Built-in</td>
+        <td>Multi-tenant isolation</td>
+        <td class="check">✓ Row-level, enforced in the database</td>
         <td class="partial">~ Limited</td>
         <td class="partial">~ Limited</td>
         <td class="partial">~ Limited</td>
       </tr>
       <tr>
-        <td>Data stays in your environment</td>
-        <td class="check">✓ Your Azure infra</td>
+        <td>EU data residency</td>
+        <td class="check">✓ Hosted in the EU</td>
         <td class="partial">~ Microsoft cloud</td>
         <td class="partial">~ Qlik cloud</td>
         <td class="partial">~ Salesforce cloud</td>
@@ -757,13 +784,13 @@
     <li><strong>JWT authentication:</strong> All API calls require a signed JWT token with 8-hour expiry. Passwords are hashed with bcrypt (cost factor 10).</li>
     <li><strong>No raw SQL to users:</strong> Business users never see database queries. A "show query" toggle is available only to admin and analyst roles.</li>
     <li><strong>Confidence gating:</strong> AI-generated queries below 70% confidence are blocked and logged — never executed. This prevents hallucinated or incorrect answers reaching users.</li>
-    <li><strong>GDPR-ready:</strong> Data resides entirely in your Azure region (West Europe by default). No data is sent to third-party analytics services.</li>
+    <li><strong>EU-hosted:</strong> Your data is stored in the European Union (Azure West Europe). It is not sold, and it is not sent to third-party analytics services. The AI provider is our one data subprocessor for answering questions — see the privacy policy and subprocessor list.</li>
     <li><strong>Audit trail:</strong> All queries, dashboard accesses, and definition changes are logged with user, timestamp, and tenant context.</li>
     <li><strong>Rate limiting:</strong> API endpoints are rate-limited (200 req/min global, 30 req/min for AI endpoints) to prevent abuse.</li>
   </ul>
 
   <div class="highlight">
-    <p><strong>GDPR note:</strong> The AI (Anthropic Claude) processes only the schema metadata and query results — not the raw personal data in your tables. Personal data never leaves your Azure environment unless you explicitly export it.</p>
+    <p><strong>What reaches the AI, stated plainly:</strong> your question, the structure of your data, sampled field values and the results of the query run to answer you. Those results can contain personal data — that is what makes the answer an answer. Under our agreement with the provider, API inputs and outputs are not used to train their models. Row filters and column masks you set are applied <em>before</em> a query runs, so a masked column reaches neither the model nor the reader. A tenant can also switch AI off entirely, which disables the AI features rather than silently degrading them. The privacy policy and the subprocessor list are the authoritative version of this paragraph.</p>
   </div>
 </div>
 

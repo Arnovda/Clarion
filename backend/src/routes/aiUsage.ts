@@ -311,4 +311,53 @@ router.get('/recent', async (req: Request, res: Response, next: NextFunction) =>
   } catch (err) { next(err); }
 });
 
+/**
+ * GET /admin/ai-usage/answer-latency?days=30
+ *
+ * How long a question actually takes, end to end — the measurement behind
+ * the product's "under five seconds" claim (2026-09-06 evaluation, C12).
+ * Distinct from the per-CALL `duration_ms` on `ai_call_log` above: one
+ * question is one to four model calls plus a warehouse query plus policy
+ * work, and only `query_log.duration_ms` spans the whole wait.
+ *
+ * Percentiles come from `percentile_cont`, over MEASURED rows only —
+ * questions asked before the column existed are excluded rather than
+ * counted as zero, so a small `measured` next to a large `total` means
+ * "not enough history yet", not "fast".
+ */
+router.get('/answer-latency', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const tenantId = req.user!.tenantId;
+    const days = Math.min(Math.max(Number(req.query.days) || 30, 1), 365);
+
+    const data = await tenantQuery(tenantId, async (trx) => {
+      const row = await trx('query_log')
+        .whereRaw(`created_at >= now() - (? || ' days')::interval`, [String(days)])
+        .select(
+          trx.raw(`COUNT(*) as total`),
+          trx.raw(`COUNT(duration_ms) as measured`),
+          trx.raw(`PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY duration_ms) as p50`),
+          trx.raw(`PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY duration_ms) as p95`),
+          trx.raw(`MAX(duration_ms) as max_ms`),
+          trx.raw(`COUNT(*) FILTER (WHERE duration_ms IS NOT NULL AND duration_ms <= 5000) as under_5s`),
+        )
+        .first() as unknown as Record<string, string | null> | undefined;
+
+      const measured = Number(row?.measured ?? 0);
+      return {
+        days,
+        total:    Number(row?.total ?? 0),
+        measured,
+        p50_ms:   row?.p50 != null ? Math.round(Number(row.p50)) : null,
+        p95_ms:   row?.p95 != null ? Math.round(Number(row.p95)) : null,
+        max_ms:   row?.max_ms != null ? Number(row.max_ms) : null,
+        // The share the promise is actually about.
+        under_5s_pct: measured > 0 ? Number(row?.under_5s ?? 0) / measured : null,
+      };
+    });
+
+    res.json({ ok: true, data });
+  } catch (err) { next(err); }
+});
+
 export default router;

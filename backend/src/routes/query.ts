@@ -400,6 +400,9 @@ async function upsertDefinitionGap(
 
 // POST /api/query
 router.post('/', requireAuth, validate(askQuestionSchema), async (req: Request, res: Response, next: NextFunction) => {
+  // Time-to-answer starts when the request lands, not when the model is
+  // called: the promise is about the wait a person feels (C12).
+  const askedAt = Date.now();
   try {
     const db = reqDb(req);
     const { connectionId, question, domains, conversationId, dataLayer: requestedLayerRaw, dashboardContext } = req.body as {
@@ -476,6 +479,7 @@ router.post('/', requireAuth, validate(askQuestionSchema), async (req: Request, 
       // to render as clickable chips. No SQL execution.
       if (nlResult.intent === 'clarify') {
         await db('query_log').insert({
+          duration_ms: Date.now() - askedAt,
           tenant_id:        tenantId,
           user_id:          req.user!.sub,
           question_text:    question,
@@ -489,6 +493,7 @@ router.post('/', requireAuth, validate(askQuestionSchema), async (req: Request, 
 
       if (nlResult.intent === 'explain' && nlResult.explanation) {
         await db('query_log').insert({
+          duration_ms: Date.now() - askedAt,
           tenant_id:        tenantId,
           user_id:          req.user!.sub,
           question_text:    question,
@@ -510,6 +515,7 @@ router.post('/', requireAuth, validate(askQuestionSchema), async (req: Request, 
       const blockCheck = shouldBlockQuery(nlResult);
       const [logRow] = await db('query_log')
         .insert({
+          duration_ms: Date.now() - askedAt,
           tenant_id:        tenantId,
           user_id:          req.user!.sub,
           question_text:    question,
@@ -567,7 +573,9 @@ router.post('/', requireAuth, validate(askQuestionSchema), async (req: Request, 
         validateQueryResultIfNeeded(nlResult.confidence, question, productExecSql, execRows),
       ]);
 
-      await db('query_log').where({ id: queryLogId }).update({ executed: true, result_summary: answer });
+      await db('query_log').where({ id: queryLogId }).update({
+        duration_ms: Date.now() - askedAt, executed: true, result_summary: answer,
+      });
 
       res.json({
         ok: true,
@@ -983,6 +991,7 @@ router.post('/', requireAuth, validate(askQuestionSchema), async (req: Request, 
     // Meta-question short-circuit (source layer).
     if (nlResult.intent === 'clarify') {
       await db('query_log').insert({
+        duration_ms: Date.now() - askedAt,
         tenant_id:        tenantId,
         user_id:          req.user!.sub,
         question_text:    question,
@@ -996,6 +1005,7 @@ router.post('/', requireAuth, validate(askQuestionSchema), async (req: Request, 
 
     if (nlResult.intent === 'explain' && nlResult.explanation) {
       await db('query_log').insert({
+        duration_ms: Date.now() - askedAt,
         tenant_id:        tenantId,
         user_id:          req.user!.sub,
         question_text:    question,
@@ -1018,6 +1028,7 @@ router.post('/', requireAuth, validate(askQuestionSchema), async (req: Request, 
     const blockCheck = shouldBlockQuery(nlResult);
     const [logRow] = await db('query_log')
       .insert({
+        duration_ms: Date.now() - askedAt,
         tenant_id:        tenantId,
         user_id:          req.user!.sub,
         question_text:    question,
@@ -1239,6 +1250,7 @@ router.post('/', requireAuth, validate(askQuestionSchema), async (req: Request, 
 
     // 8. Update query log as executed
     await db('query_log').where({ id: queryLogId }).update({
+      duration_ms: Date.now() - askedAt,
       executed:       true,
       result_summary: answer,
     });
@@ -1378,6 +1390,7 @@ router.post('/think', requireAuth, validate(thinkQuerySchema), async (req: Reque
             resolveAnswerSources(db, req.user!.tenantId, vq.tables_used ?? []),
           ]);
           await db('query_log').insert({
+            duration_ms: Date.now() - askedAt,
             tenant_id: req.user!.tenantId, user_id: req.user!.sub,
             question_text: question, generated_sql: vq.sql,
             confidence_score: 1, was_flagged: false,
@@ -1447,6 +1460,7 @@ router.post('/think', requireAuth, validate(thinkQuerySchema), async (req: Reque
       // Meta-question short-circuit (product layer). Skip SQL execution.
       if (nlResult.intent === 'clarify') {
         await db('query_log').insert({
+          duration_ms: Date.now() - askedAt,
           tenant_id:        thinkTenantId,
           user_id:          req.user!.sub,
           question_text:    question,
@@ -1462,6 +1476,7 @@ router.post('/think', requireAuth, validate(thinkQuerySchema), async (req: Reque
 
       if (nlResult.intent === 'explain' && nlResult.explanation) {
         await db('query_log').insert({
+          duration_ms: Date.now() - askedAt,
           tenant_id:        thinkTenantId,
           user_id:          req.user!.sub,
           question_text:    question,
@@ -1495,6 +1510,7 @@ router.post('/think', requireAuth, validate(thinkQuerySchema), async (req: Reque
 
       const thinkBlockCheck = shouldBlockQuery(nlResult);
       const [logRow] = await db('query_log').insert({
+        duration_ms: Date.now() - askedAt,
         tenant_id: thinkTenantId,
         user_id: req.user!.sub, question_text: question, generated_sql: nlResult.sql,
         confidence_score: nlResult.confidence, was_flagged: thinkBlockCheck.blocked,
@@ -1571,6 +1587,7 @@ router.post('/think', requireAuth, validate(thinkQuerySchema), async (req: Reque
       // On a repair the log was written with the SQL that failed. Correct it:
       // this table is the record of what ran, and it feeds the gaps review.
       await db('query_log').where({ id: queryLogId }).update({
+        duration_ms: Date.now() - askedAt,
         executed: true, result_summary: answer,
         ...(healed.repair ? { generated_sql: thinkSql } : {}),
       });
@@ -1721,6 +1738,7 @@ router.post('/think', requireAuth, validate(thinkQuerySchema), async (req: Reque
     // conversation history to be loaded — which we already do above.
     if (nlResult.intent === 'clarify') {
       await db('query_log').insert({
+        duration_ms: Date.now() - askedAt,
         tenant_id:        thinkTenantId,
         user_id:          (req as Request & { user?: { sub: string } }).user!.sub,
         question_text:    question,
@@ -1736,6 +1754,7 @@ router.post('/think', requireAuth, validate(thinkQuerySchema), async (req: Reque
 
     if (nlResult.intent === 'explain' && nlResult.explanation) {
       await db('query_log').insert({
+        duration_ms: Date.now() - askedAt,
         tenant_id:        thinkTenantId,
         user_id:          (req as Request & { user?: { sub: string } }).user!.sub,
         question_text:    question,
@@ -1768,6 +1787,7 @@ router.post('/think', requireAuth, validate(thinkQuerySchema), async (req: Reque
     // ── 4. Log ──────────────────────────────────────────────────────────────
     const thinkBlockCheck = shouldBlockQuery(nlResult);
     const [logRow] = await db('query_log').insert({
+      duration_ms: Date.now() - askedAt,
       tenant_id:        thinkTenantId,
       user_id:          (req as Request & { user?: { sub: string } }).user!.sub,
       question_text:    question,
@@ -1915,6 +1935,7 @@ router.post('/think', requireAuth, validate(thinkQuerySchema), async (req: Reque
 
     // See the product-layer note: the log must hold the SQL that ran.
     await db('query_log').where({ id: queryLogId }).update({
+      duration_ms: Date.now() - askedAt,
       executed: true, result_summary: answer,
       ...(srcHealed.repair ? { generated_sql: thinkSrcSql } : {}),
     });
@@ -2295,6 +2316,7 @@ router.post('/repair', requireAuth, validate(repairQuerySchema), async (req: Req
 // ---------------------------------------------------------------------------
 
 router.post('/forecast', requireAuth, validate(forecastQuerySchema), async (req: Request, res: Response, next: NextFunction) => {
+  const askedAt = Date.now();
   try {
     const db = reqDb(req);
     const { connectionId, question, domains } = req.body as {
@@ -2429,6 +2451,7 @@ router.post('/forecast', requireAuth, validate(forecastQuerySchema), async (req:
 
     // 6. Log the query
     await db('query_log').insert({
+      duration_ms: Date.now() - askedAt,
       tenant_id:        req.user!.tenantId,
       user_id:          req.user!.sub,
       question_text:    question,

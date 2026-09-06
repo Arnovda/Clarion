@@ -47,6 +47,18 @@ interface Summary {
   } | null;
 }
 
+/** Time-to-answer, end to end — the measurement behind the "under five
+ *  seconds" claim. Distinct from the per-model-call duration below. */
+interface AnswerLatency {
+  days: number;
+  total: number;
+  measured: number;
+  p50_ms: number | null;
+  p95_ms: number | null;
+  max_ms: number | null;
+  under_5s_pct: number | null;
+}
+
 interface DailyRow { day: string; cost_usd: number; calls: number; }
 interface CategoryRow { category: string; cost_usd: number; calls: number; avg_cost_usd: number; }
 interface UserRow {
@@ -116,6 +128,7 @@ function DashboardBody() {
   const [byUser, setByUser] = useState<UserRow[]>([]);
   const [byLabel, setByLabel] = useState<CallLabelRow[]>([]);
   const [recent, setRecent] = useState<RecentRow[]>([]);
+  const [latency, setLatency] = useState<AnswerLatency | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -123,13 +136,14 @@ function DashboardBody() {
     setLoading(true);
     setError(null);
     try {
-      const [s, d, c, u, l, r] = await Promise.all([
+      const [s, d, c, u, l, r, lat] = await Promise.all([
         api.get('/admin/ai-usage/summary'),
         api.get(`/admin/ai-usage/daily?days=${days}`),
         api.get(`/admin/ai-usage/by-category?days=${days}`),
         api.get(`/admin/ai-usage/by-user?days=${days}`),
         api.get(`/admin/ai-usage/by-call-label?days=${days}`),
         api.get('/admin/ai-usage/recent?limit=100'),
+        api.get(`/admin/ai-usage/answer-latency?days=${days}`),
       ]);
       setSummary(s.data.data);
       setDaily(d.data.data);
@@ -137,6 +151,7 @@ function DashboardBody() {
       setByUser(u.data.data);
       setByLabel(l.data.data);
       setRecent(r.data.data);
+      setLatency(lat.data.data);
     } catch (e) {
       // Surface so admins know loading failed instead of staring at
       // empty charts. Most likely failure: 401 (token expired —
@@ -205,6 +220,9 @@ function DashboardBody() {
         <>
           {/* KPIs */}
           <SummaryStrip summary={summary} />
+
+          {/* Time to answer — the measurement behind the product claim */}
+          <AnswerLatencyPanel latency={latency} days={days} />
 
           {/* AI routing toggle */}
           <RoutingPanel />
@@ -620,6 +638,60 @@ function SummaryStrip({ summary }: { summary: Summary }) {
         icon={<Users className="w-3.5 h-3.5 text-muted" strokeWidth={1.75} />}
       />
     </div>
+  );
+}
+
+/**
+ * How long a question takes, end to end.
+ *
+ * The product overview promised "under five seconds" while nothing measured
+ * it (2026-09-06 evaluation, C12). This panel exists so the claim is set
+ * from a number. It reports MEASURED questions only — a small measured
+ * count next to a large total means "not enough history yet", which the
+ * copy says outright rather than implying the product is fast.
+ */
+function AnswerLatencyPanel({ latency, days }: { latency: AnswerLatency | null; days: number }) {
+  if (!latency) return null;
+
+  const fmt = (ms: number | null) => (ms == null ? '—' : ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${ms} ms`);
+  const share = latency.under_5s_pct;
+  const nothingMeasured = latency.measured === 0;
+
+  return (
+    <section className="bg-raised border border-line rounded-md p-5 mb-8">
+      <header className="mb-4 flex items-baseline justify-between">
+        <div>
+          <h2 className="text-[15px] font-medium text-ink m-0">Time to answer</h2>
+          <p className="text-[12.5px] text-muted mt-0.5 m-0">
+            The whole wait a person feels — understanding the question, writing and running the
+            query, writing the answer. Last {days} days.
+          </p>
+        </div>
+        {!nothingMeasured && (
+          <span className="text-[11px] font-mono text-muted-2 tabular-nums">
+            {latency.measured} of {latency.total} measured
+          </span>
+        )}
+      </header>
+
+      {nothingMeasured ? (
+        <p className="text-[13px] text-muted m-0">
+          No questions have been measured in this window yet.
+        </p>
+      ) : (
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+          <Kpi label="Typical (p50)" value={fmt(latency.p50_ms)} sub="half of questions are faster" valueIsText />
+          <Kpi label="Slowest 5% start at (p95)" value={fmt(latency.p95_ms)} sub="one in twenty is slower" valueIsText />
+          <Kpi label="Slowest" value={fmt(latency.max_ms)} sub="in this window" valueIsText />
+          <Kpi
+            label="Under five seconds"
+            value={share == null ? '—' : `${Math.round(share * 100)}%`}
+            sub="of measured questions"
+            valueIsText
+          />
+        </div>
+      )}
+    </section>
   );
 }
 
