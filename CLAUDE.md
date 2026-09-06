@@ -31,7 +31,67 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-09-06 (WAVE C, ENGINEERING ONLY — owner: *"I only want you to
+**Last updated:** 2026-09-06 (FUNCTIONAL REQUIREMENTS EVALUATION — doc only,
+no product code changed; below it, WAVE C ENGINEERING and WAVE B as before)
+
+**Owner: *"Evaluate the functional requirements that Clarion should have (to be
+the platform we promise to be and blow users out of the water), and what its
+goal is. Then evaluate what we have today in the code base, see if everything
+is covered and if we have to improve modify or add things."* NEW DOC:
+`docs/backlog/functional-requirements-evaluation.md`. Artifact: "Clarion
+Promise Audit".** The promise was taken from Clarion's OWN words
+(`clarion-overview.html` — seventeen numbered claims — plus `APP_BLUEPRINT.md`,
+the draft terms and the sign-in screen); ~75 requirements in eight areas
+(Connect · Understand · Ask · See · Push · Govern · Collaborate · Quality)
+were derived from it and graded against the code by six parallel
+investigations, every claim `file:line`, the load-bearing ones re-verified by
+hand (one investigator claim REJECTED on that check: auth events ARE audited —
+14 `recordAuthEvent` sites).
+- **Scorecard: of the seventeen promises, six are true, six half-true, five
+  NOT true** — cross-source questions (P7), threshold alerts (P10), actuals
+  vs budget / rep vs target (P11), one-click board packs (P12), white-label
+  (P16); and P17 "data stays in your environment" is CONTRADICTED by the
+  terms. "Under five seconds" and "accurate" are UNMEASURED: nothing records
+  time-to-answer per question and there is no eval harness.
+- **Seven defects in shipped behaviour** (doc §5): (1) **Home shows "No
+  dashboards yet" for every tenant** — `routes/home.ts:206-209` orders/selects
+  `dashboards.starred`, a column that does not exist (`is_favorite`), inside a
+  swallowed catch; both homes; no `/api/home` test exists (queued as a
+  separate task card, NOT fixed in this doc-only branch); (2)
+  `GET /semantic/product-preview` is any-role and applies NO data policy — a
+  viewer reads unmasked product rows; (3) the API honours `dataLayer:'source'`
+  from any role (client-only gate); (4) a topic REBUILD destroys product-level
+  human edits (`busMatrixBuilder.ts:441-447`, no snapshot — the profiler has
+  one); (5) the Sources page admits analysts into admin-only connection
+  routes (guaranteed 403s) — one of SIX role-table discrepancies, so the role
+  table in this file is WRONG and must be regenerated from code; (6) catalog
+  source-table sample rows are admin-only (403 for analysts/viewers); (7)
+  `/query/cross-view` runs model SQL with no read guard — unreachable (the
+  only UI that created cross views is dead code) — delete it.
+- **The first fifteen minutes are the weakest part**: every customer must
+  register their OWN OAuth app with Exact/Entra before step 3 of the wizard
+  (no platform-level app exists); the wizard lands on an EMPTY `/catalog`
+  after save; entities start unticked; nine to ten actions across three
+  manual navigations to a first answer; `/onboarding` is 606 lines of dead
+  mock; no CSV, no Google Sheets (placeholder tiles).
+- **Ranked plan (doc §6)**: 6.1 make promise and product agree (rewrite the
+  overview, measure time-to-answer, fix the seven, delete dead doors — three
+  orphan pages, four redirect stubs, ten unimported components,
+  `SourceSelector`, the ghost cross-source branch of `POST /query`); 6.2 the
+  first fifteen minutes (platform OAuth apps, chained first run, recommended
+  entities, hosted sample workspace, CSV); 6.3 "the product comes to you"
+  (emailed brief — `emailed_at` still written nowhere; thresholds on any KPI;
+  targets; share links; phone-usable Home; exception lists); 6.4 understand
+  better (AI-written `question_text`/`plain_summary` — nothing writes them
+  today; "Ask AI to change it"; product-layer entity pre-flight; eval
+  harness); 6.5 multi-source LAST (none of §5.8 has started; two disconnected
+  cross-source mechanisms to collapse into one first).
+- Validation: doc only. Verified by hand on this tree: the `starred` column
+  absence, the product-preview gate, the `dataLayer` schema, the cross-view
+  execution path, the Sources/connections role split, the preview gate, the
+  14 auth-audit sites.
+
+**Prior last updated:** 2026-09-06 (WAVE C, ENGINEERING ONLY — owner: *"I only want you to
 [do] the engineering work, nothing else"*; item 1 below. Below it, WAVE B
 REMEDIATION COMPLETE — owner: *"Start wave B"*; all seven items landed as
 seven pushes, plus the epilogue's self-healing deploy)
