@@ -313,15 +313,6 @@ export const repairQuerySchema = z.object({
   }).passthrough(),
 });
 
-// POST /query/cross-view
-export const crossViewQuerySchema = z.object({
-  body: z.object({
-    viewId: positiveInt,
-    question: nonBlankString,
-    conversationId: nullableId,
-  }).passthrough(),
-});
-
 // POST /query/forecast
 export const forecastQuerySchema = z.object({
   body: z.object({

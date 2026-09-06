@@ -282,7 +282,7 @@ router.post(
 );
 
 // GET /api/connections — list this tenant's connections
-router.get('/', requireAuth, requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
+router.get('/', requireAuth, requireRole('admin', 'analyst'), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const db = reqDb(req);
     // Explicit tenant filter — Postgres RLS would catch this too in the
@@ -322,7 +322,7 @@ router.get('/', requireAuth, requireRole('admin'), async (req: Request, res: Res
 router.post(
   '/:id/sync',
   requireAuth,
-  requireRole('admin'),
+  requireRole('admin', 'analyst'),
   validate(triggerSyncSchema),
   async (req: Request, res: Response, next: NextFunction) => {
     try {

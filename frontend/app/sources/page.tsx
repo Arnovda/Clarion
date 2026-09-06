@@ -8,6 +8,7 @@ import { connectorMark, CONNECTOR_LABELS } from '@/lib/connectorIcons';
 import IngestionWizard from '@/components/IngestionWizard';
 import api from '@/lib/api';
 import { getToken } from '@/lib/auth';
+import { useRole } from '@/lib/role';
 import { streamSSE, SSEHttpError } from '@/lib/sse';
 
 // ---------------------------------------------------------------------------
@@ -535,6 +536,12 @@ function ConnectionCard({
   highlightedSchemaChangeId?: number;
 }) {
   const router = useRouter();
+  // Role split (2026-09-06 evaluation, defect 5): analysts may READ a
+  // source, run a sync and look at its history; connecting, editing,
+  // removing, analysing (AI spend), enriching and scheduling are admin acts
+  // — the backend already refused them for analysts, so hiding the buttons
+  // turns six guaranteed 403s into a coherent read-and-refresh card.
+  const isAdmin = useRole() === 'admin';
   const connector = connectorForType(conn.type);
   const config = getConfig(conn);
   const [deleting, setDeleting] = useState(false);
@@ -1196,7 +1203,7 @@ function ConnectionCard({
             Full re-sync
           </button>
         )}
-        {isSourceConnector && (
+        {isSourceConnector && isAdmin && (
           <button
             onClick={toggleSchedule}
             className="px-3 py-1.5 text-[12px] bg-raised border border-line text-ink-2 rounded-md hover:bg-softer hover:border-line-strong transition-colors"
@@ -1207,6 +1214,7 @@ function ConnectionCard({
         {/* "Analyse" until the AI pass has run at least once; "Re-analyse"
             after. Emphasised while the source is synced-but-unanalysed so
             the remaining step is impossible to miss. */}
+        {isAdmin && (
         <button
           onClick={handleReProfile}
           disabled={reprofiling}
@@ -1220,10 +1228,11 @@ function ConnectionCard({
             ? 'Analysing…'
             : (profilingState.status === 'done' || profilingState.status === 'error' ? 'Re-analyse' : 'Analyse')}
         </button>
+        )}
         {/* Enrichment only makes sense on an analysed catalog (vendor bases
             persisted). Admin-only server-side; drafts land in the review
             queue, vendor text stays the immutable base. */}
-        {profilingState.status === 'done' && (
+        {profilingState.status === 'done' && isAdmin && (
           <button
             onClick={handleEnrich}
             disabled={enriching}
@@ -1232,15 +1241,17 @@ function ConnectionCard({
             {enriching ? 'Enriching…' : 'Enrich descriptions'}
           </button>
         )}
+        {isAdmin && (
         <button
           onClick={() => onEdit(conn)}
           className="px-3 py-1.5 text-[12px] bg-raised border border-line text-ink-2 rounded-md hover:bg-softer hover:border-line-strong transition-colors"
         >
           Edit
         </button>
+        )}
         {/* Re-ingest is for direct-DB connections (the legacy ETL path) — hidden
             for source-connector connections, which use "Sync now" instead. */}
-        {!isSourceConnector && (
+        {!isSourceConnector && isAdmin && (
           <button
             onClick={() => onReIngest(conn)}
             className="px-3 py-1.5 text-[12px] bg-raised border border-line text-ink-2 rounded-md hover:bg-softer hover:border-line-strong transition-colors"
@@ -1251,14 +1262,18 @@ function ConnectionCard({
 
         {/* Tier 3 — destructive. Sits below a divider, smaller visual weight,
             requires an explicit click. */}
-        <div className="h-px bg-line my-1" />
-        <button
-          onClick={handleDelete}
-          disabled={deleting}
-          className="px-3 py-1.5 text-[12px] text-err border border-line rounded-md bg-raised hover:bg-err-soft transition-colors disabled:opacity-50"
-        >
-          {deleting ? 'Removing…' : 'Remove'}
-        </button>
+        {isAdmin && (
+          <>
+            <div className="h-px bg-line my-1" />
+            <button
+              onClick={handleDelete}
+              disabled={deleting}
+              className="px-3 py-1.5 text-[12px] text-err border border-line rounded-md bg-raised hover:bg-err-soft transition-colors disabled:opacity-50"
+            >
+              {deleting ? 'Removing…' : 'Remove'}
+            </button>
+          </>
+        )}
       </div>
     </div>
   );
@@ -2115,6 +2130,7 @@ function SourcesPageInner() {
   // Fetched from the backend so adding a new connector to the registry makes it
   // show up here automatically — no frontend change per connector.
   const [registryConnectors, setRegistryConnectors] = useState<Connector[]>([]);
+  const isAdmin = useRole() === 'admin';
   // A live registry connector always wins over a hardcoded tile of the same id.
   // Without this the two lists can each render the same product — which is
   // exactly what happened to Exact Online: a stale "coming soon" placeholder
@@ -2424,7 +2440,10 @@ function SourcesPageInner() {
           )}
         </section>
 
-        {/* Add a Source */}
+        {/* Add a Source — connecting a system is an admin act (the create,
+            test and OAuth routes are admin-only); analysts see the sources
+            that exist, not a door that 403s. */}
+        {isAdmin && (
         <section id="add-source" className="scroll-mt-6">
           <div className="mb-3">
             <p className="text-[10px] font-mono tracking-[0.14em] uppercase text-muted mb-2">Add a source</p>
@@ -2448,6 +2467,7 @@ function SourcesPageInner() {
             ))}
           </div>
         </section>
+        )}
       </div>
 
       {/* Slide-in panel (create or edit) */}

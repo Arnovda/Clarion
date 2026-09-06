@@ -31,7 +31,77 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-09-06 (FUNCTIONAL REQUIREMENTS EVALUATION — doc only,
+**Last updated:** 2026-09-06 (THE SEVEN DEFECTS FROM THE FUNCTIONAL
+REQUIREMENTS EVALUATION ARE FIXED — same branch/PR as the doc; owner: *"Let's
+begin fixing it"*. Below it, the evaluation entry, then WAVE C and WAVE B)
+
+**All seven §5 defects of `docs/backlog/functional-requirements-evaluation.md`
+closed in one push, each with a test that was red on the old code:**
+- **(1) Home dashboards** — `routes/home.ts` reads `is_favorite` (the
+  column that exists) and mirrors `GET /dashboards`' visibility rule (own +
+  shared); the catch now logs `'home summary: dashboards query failed'`
+  instead of swallowing. NEW `tests/home-summary.test.ts` (2) — the first
+  test on `/api/home`.
+- **(2 + 6) Sample rows obey policies, for every role** — NEW
+  `services/previewRead.ts` (`readPreviewRows`): a one-row probe learns the
+  column list, then an EXPLICIT select (never `*` — a star names no column,
+  so a mask can never rewrite it) goes through `prepareUserRead`. Both
+  `GET /semantic/product-preview` and `GET /semantic/preview` use it;
+  `/preview` is any-role now (the Release A decision, applied to the source
+  layer) and validates the table against the Postgres `source_tables`
+  mirror instead of the graph. **Found on the way: the policy engine's
+  unqualified-column pattern stopped at a double quote**, so `"iban"`
+  walked past a mask unmasked — `policyEngine.ts` now matches quoted
+  identifiers too (masks only get stricter). NEW
+  `tests/preview-policies.test.ts` (5): viewer gets the row filter + the
+  mask with the column name kept, analyst admitted, admin unmasked, foreign
+  table 400; `data-policies-everywhere` + `core-loop` still green.
+- **(3) Source layer is a curator surface at the API** — exported
+  `layerForRole` in `routes/query.ts`, applied at POST `/`, `/think`,
+  `/repair`: a viewer's `dataLayer:'source'` is IGNORED (they land on the
+  product layer, exactly what the UI gives them), never refused. NEW
+  `tests/source-layer-role.test.ts` (3).
+- **(4) A rebuild carries human edits across** — `busMatrixBuilder.ts`
+  gained `snapshotProductEdits` (exported): before the retire sweep it
+  reads `data_products.hidden`, `product_tables.plain_summary` and
+  `product_kpis.question_text` by NAME plus every human-authored KPI
+  (`ai_draft=false`), and merges them back after the inserts — a KPI the
+  new design did not re-propose is re-inserted whole (a formula that no
+  longer compiles is visible on the KPI; a vanished KPI is not). Migration
+  70's snapshot-and-merge, third application. NEW
+  `tests/rebuild-keeps-edits.test.ts` (2) drives the real builder twice.
+- **(5) The role model agrees with itself, and the table in this file is
+  regenerated from code** (see Roles & Permissions). Decisions: analysts
+  READ sources and run a sync (`GET /connections`, `POST /:id/sync` are
+  admin+analyst now — pipelines already let them sync); connect / edit /
+  remove / analyse / enrich / schedule stay admin, and the Sources page
+  HIDES those buttons and the "Add a source" grid for analysts
+  (`useRole()` in `ConnectionCard` and the page) — six guaranteed 403s
+  gone. Also aligned: `POST /products` = PUT (admin+analyst); the two
+  older bus-matrix entry points (`/bus-matrix-stream`, `/build-bus-matrix`)
+  = the start route; `PATCH /products/tables/:id` and
+  `PATCH /semantic/product-tables|product-columns/:id` = the source-layer
+  PATCHes (analysts in Manage mode can save the summary the UI offers);
+  product-table quality profile = the source one; `/catalog` rail entry
+  includes viewers (the page already admitted them).
+- **(7) The unguarded, unreachable cross-view path is GONE**:
+  `POST /query/cross-view` (181 lines, model SQL into `ATTACH`ed SQLite
+  with no read guard), `crossViewQuerySchema`, the whole `/api/cross-views`
+  router (11 endpoints — the ONLY thing that could create a cross view, and
+  its panel was dead), `components/IntegrationsPanel.tsx`,
+  `components/semantic/DatabaseTree.tsx`, `SourceSelector` and the `v:`
+  branch on `/query`. The `cross_view_relationships` TABLE and the
+  SchemaProfiler snapshot of it stay (no migration; rows are inert); the
+  cross-source enrichment branch of the ghost `POST /query` stays too —
+  guarded by `shouldBlockQuery`, and a no-op with no views. validate-
+  coverage baseline LOWERED 159→151 (the router carried eight unvalidated
+  mutating routes).
+- Validation: backend `npm run check` clean; full backend vitest **77 files
+  / 701 passed / 4 skipped**; ten ratchets green from the repo root;
+  frontend `tsc` clean, touched files carry only the documented
+  pre-existing lint findings; `next build` green.
+
+**Prior last updated:** 2026-09-06 (FUNCTIONAL REQUIREMENTS EVALUATION — doc only,
 no product code changed; below it, WAVE C ENGINEERING and WAVE B as before)
 
 **Owner: *"Evaluate the functional requirements that Clarion should have (to be
@@ -8959,23 +9029,41 @@ All output stored with `ai_draft: true` until a human confirms.
 
 ## Roles & Permissions
 
-| Feature                          | admin | analyst | viewer |
-|---------------------------------|-------|---------|--------|
-| Connect / manage data sources    | YES   | NO      | NO     |
-| Run schema profiling             | YES   | NO      | NO     |
-| Review / confirm definitions     | YES   | NO      | NO     |
-| Add / edit KPI definitions       | YES   | NO      | NO     |
-| View definition gaps             | YES   | NO      | NO     |
-| Manage team (users / invites)    | YES   | NO      | NO     |
-| Design star schema products      | YES   | YES     | NO     |
-| Manage transformation schedules  | YES   | YES     | NO     |
-| Ask questions (chat)             | YES   | YES     | YES    |
-| Build and view dashboards        | YES   | YES     | YES    |
-| Build and view reports           | YES   | YES     | YES    |
-| View full query log              | YES   | YES     | NO     |
-| See "show query" SQL toggle      | YES   | YES     | NO     |
+> Regenerated from the route gates and `frontend/lib/role.ts` on 2026-09-06
+> (functional-requirements evaluation, defect 5 — the previous table
+> contradicted the code in six rows). Keep it that way: when a gate changes,
+> change this table in the same commit. A fourth axis exists beside the three
+> roles — `operatorOnly` (`PLATFORM_OPERATOR_EMAILS`) for the `/admin/*`
+> consoles; it is not a role and never widens a tenant user's rights.
 
----
+| Feature                                        | admin | analyst | viewer | Where the gate is |
+|------------------------------------------------|-------|---------|--------|-------------------|
+| Connect / edit / remove / re-authorise a source | YES   | NO      | NO     | `routes/connections.ts` (create, test, PATCH, source-config, oauth-reconnect, DELETE) |
+| See sources, sync history, run a sync           | YES   | YES     | NO     | `GET /connections`, `/:id/sync-runs`, `POST /:id/sync`; page `app/sources` hides the admin buttons for analysts |
+| Sync schedules (edit)                           | YES   | NO      | NO     | `routes/connectionSyncSchedules.ts` (GET is admin+analyst) |
+| Analyse / re-analyse a source (AI profiling)    | YES   | NO      | NO     | `POST /connections/:id/profile`, `/enrich-descriptions` |
+| Review / confirm definitions (source layer)     | YES   | YES     | NO     | `PATCH /semantic/tables|columns|relationships/:id`, `/review` page |
+| Edit product-layer definitions & summaries      | YES   | YES     | NO     | `PATCH /semantic/product-tables|product-columns/:id`, `PATCH /products/tables/:id` |
+| Create, design, extend, rebuild subjects        | YES   | YES     | NO     | `POST/PUT /products`, every `/products/bus-matrix*` and `/build-*` route, `/build` page |
+| Per-product workshop actions (run-full, refresh-start, propose) | YES | NO | NO | `routes/products/build.ts` (`/:id/run-full`, `/:id/refresh-start`, `/propose*`, `/build-proposed`) |
+| Pipelines / Refresh                             | YES   | YES     | NO     | `routes/pipelines.ts`, `/pipelines` page |
+| Relationships canvas (measure, flag, confirm)   | YES   | YES     | NO     | `routes/relationships.ts`, `/relationships` page |
+| Your tables (managed grids)                     | YES   | YES     | NO     | `routes/managedGrids.ts` (no viewer read yet) |
+| Glossary edit                                   | YES   | YES     | NO     | `POST/PUT/DELETE /semantic/glossary` |
+| Quality: profile a table, evaluate rules        | YES   | YES     | NO     | `routes/quality.ts` profile/evaluate (source + product) |
+| Quality: rules and thresholds (write)           | YES   | NO      | NO     | `routes/quality.ts` rules/settings |
+| Catalog (browse, sample rows, lineage)          | YES   | YES     | YES    | `/catalog` page; `GET /semantic/preview` + `/product-preview` are any-role and policy-aware; lineage endpoint admin+analyst |
+| Data policies (row filters, column masks)       | YES   | NO      | NO     | `routes/policies.ts`, `/policies` page |
+| Manage team (users / invites / audit export)    | YES   | NO      | NO     | `routes/users.ts`, `/users` page |
+| AI usage & routing, tenant export               | YES   | NO      | NO     | `routes/aiUsage.ts`, `aiRouting.ts`, `GET /settings/export.zip` |
+| Ask questions (chat)                            | YES   | YES     | YES    | `routes/query.ts` |
+| Query the raw SOURCE layer explicitly           | YES   | YES     | NO     | `layerForRole` in `routes/query.ts` — a viewer's `dataLayer:'source'` is ignored |
+| See SQL, confidence detail, error detail        | YES   | YES     | NO     | `canCurate` in `frontend/lib/role.ts`; wire-gated on `/think` |
+| Build and view dashboards                       | YES   | YES     | YES    | `routes/dashboards.ts` |
+| Notebooks                                       | YES   | YES     | NO     | `routes/notebooks.ts`, rail |
+| Saved questions: verify / schedule              | YES   | YES     | NO     | `routes/savedQuestions.ts` (save is any role) |
+| Investigate (root-cause agent)                  | YES   | YES     | YES    | `routes/investigations.ts` (SQL in the view gated by `canSeeSql`) |
+| API tokens for the Excel add-in                 | YES   | YES     | YES    | `routes/apiTokens.ts` — a token never outranks its owner |
 
 ## Multi-Tenancy
 

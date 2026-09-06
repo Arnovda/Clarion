@@ -659,7 +659,7 @@ router.get('/bus-matrix/:jobId/stream', requireAuth, requireRole('admin', 'analy
 // (LEGACY — kept for backward compat. New flow uses /bus-matrix/start.)
 // ---------------------------------------------------------------------------
 
-router.post('/bus-matrix-stream', requireAuth, requireRole('admin'), async (req: Request, res: Response) => {
+router.post('/bus-matrix-stream', requireAuth, requireRole('admin', 'analyst'), async (req: Request, res: Response) => {
   const reqId = `bms-${Date.now().toString(36)}`;
   const startTs = Date.now();
   const sse = startSSE(res);
@@ -779,7 +779,7 @@ router.post('/bus-matrix-stream', requireAuth, requireRole('admin'), async (req:
 // Creates data products, star schemas, tables (with SQL), columns, relationships.
 // ---------------------------------------------------------------------------
 
-router.post('/build-bus-matrix', requireAuth, requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
+router.post('/build-bus-matrix', requireAuth, requireRole('admin', 'analyst'), async (req: Request, res: Response, next: NextFunction) => {
   const reqId = `bm-save-${Date.now().toString(36)}`;
   try {
     const db = reqDb(req);

@@ -204,11 +204,22 @@ export function applyPolicyRows(sql: string, policies: DataPolicy[]): PolicyAppl
     // aliases (caught by tests/core-loop.test.ts). Masking a same-named
     // column of another table in the same query is the conservative direction.
     void tableName;
+    // A DOUBLE-QUOTED identifier is the same column (`"iban"`, `c."iban"`):
+    // the catalog's sample-row preview names every column quoted, and the
+    // bare patterns below stop at the quote — so a quoted reference walked
+    // past the mask unmasked (2026-09-06, defect 2). Quoted forms are
+    // matched first; the token is the same, so the aliasing below applies.
     const qualifiedPattern = new RegExp(
-      `\\b(?:[A-Za-z_][A-Za-z0-9_]*|"[^"]+")\\.${escapeRegex(colName)}\\b`,
+      `\\b(?:[A-Za-z_][A-Za-z0-9_]*|"[^"]+")\\.(?:"${escapeRegex(colName)}"|${escapeRegex(colName)}\\b)`,
       'gi',
     );
     modifiedSql = modifiedSql.replace(qualifiedPattern, token);
+
+    const unqualifiedQuotedPattern = new RegExp(
+      `(?<=SELECT\\s[\\s\\S]*?)(?<![.\\w])"${escapeRegex(colName)}"(?=[\\s,)])`,
+      'gi',
+    );
+    modifiedSql = modifiedSql.replace(unqualifiedQuotedPattern, token);
 
     // Replace unqualified references in SELECT (only if the table is referenced)
     // Be conservative: only replace if it looks like a column reference, and

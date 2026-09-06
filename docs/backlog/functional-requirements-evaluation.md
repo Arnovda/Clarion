@@ -222,7 +222,7 @@ Status vocabulary: **BUILT** (does what the requirement says) · **PARTIAL** (ex
 
 ## 5. Defects found in shipped behaviour (fix, do not plan)
 
-Ranked by who notices first.
+Ranked by who notices first. **Status (same day, same PR): all seven fixed** — the CLAUDE.md Current State entry of 2026-09-06 records what changed and which test pins each. Item 1 also gained the first test on `/api/home`; item 2 turned up a second defect in the policy engine (a double-quoted column reference walked past a mask), fixed with it.
 
 1. **Home shows "No dashboards yet" for everyone** — `routes/home.ts:206-209` queries `dashboards.starred`; the column is `is_favorite`; the error is swallowed. Both homes. Queued as a separate task; needs the first `/api/home` test.
 2. **A viewer reads unmasked product rows** through `GET /semantic/product-preview` (`semantic.ts:1953`): any role, no policy. Add `prepareUserRead`-equivalent masking to the preview (mask columns, apply row filters) or gate it to curators again.

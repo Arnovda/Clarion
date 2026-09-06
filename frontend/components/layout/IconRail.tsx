@@ -112,7 +112,7 @@ const NAV_ITEMS: NavItem[] = [
   // The curator's working surface: browse both layers, edit definitions,
   // preview data. The one relationship surface stays /relationships — the
   // catalog's own diagram tab was retired the day this entry returned.
-  { key: 'catalog',    href: '/catalog',    label: 'Catalog',         icon: ICONS.book,    roles: ['admin', 'analyst'],            group: 'studio' },
+  { key: 'catalog',    href: '/catalog',    label: 'Catalog',         icon: ICONS.book,    roles: ['admin', 'analyst', 'viewer'],  group: 'studio' },
   { key: 'pipelines',  href: '/pipelines',  label: 'Refresh',         icon: ICONS.workflow,roles: ['admin', 'analyst'],            group: 'studio' },
   { key: 'review',     href: '/review',     label: 'Suggestions',     icon: ICONS.inbox,   roles: ['admin', 'analyst'],            group: 'studio', badgeKey: 'review' },
   // ── Settings — admin-only org config ────────────────────────────────────

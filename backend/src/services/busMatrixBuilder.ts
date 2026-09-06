@@ -6,6 +6,7 @@
  * worker (new /bus-matrix/start job-based flow).
  */
 
+import type { Knex } from 'knex';
 import { semanticDb } from '../db/knex';
 import { deleteProductGraph } from '../db/semanticGraph';
 import { parseAliasMap, deriveColumnLineage, DerivedLineage } from './lineageDerivation';
@@ -384,6 +385,72 @@ export function validateBusMatrix(busMatrix: BusMatrixOutput): string[] {
  * dependencies, and KPIs. dim_date is auto-injected for build_order=1
  * products.
  */
+/**
+ * What a person typed onto a product after it was built — and therefore what
+ * a retire-and-replace rebuild must carry across, by NAME, because every id
+ * changes (2026-09-06 functional-requirements evaluation, defect 4).
+ *
+ * Mirrors the profiler's snapshot-and-merge for source tables (migration 70,
+ * `SchemaProfiler.ts`): read before the delete, merge after the insert. The
+ * fields are exactly the ones only a human writes today —
+ * `product_kpis.question_text`, `product_tables.plain_summary`,
+ * `data_products.hidden` — plus KPIs a person AUTHORED (`ai_draft=false`
+ * and not re-proposed by the new design), which are re-inserted whole: a
+ * formula that no longer compiles is visible on the KPI; a KPI that
+ * vanished is not.
+ */
+export interface ProductEditSnapshot {
+  hidden: boolean | null;
+  /** table_name → plain_summary */
+  tableSummaries: Map<string, string>;
+  /** kpi name → question_text */
+  kpiQuestions: Map<string, string>;
+  /** Human-authored KPIs, keyed by name, to re-insert if the new design lacks them. */
+  userKpis: Map<string, { description: string | null; formula_plain_text: string | null; formula_sql: string | null; owner_name: string | null; question_text: string | null }>;
+}
+
+export async function snapshotProductEdits(
+  db: Knex | Knex.Transaction,
+  products: Array<{ id: number; name: string }>,
+): Promise<Map<string, ProductEditSnapshot>> {
+  const out = new Map<string, ProductEditSnapshot>();
+  if (products.length === 0) return out;
+  const ids = products.map((p) => p.id);
+
+  const productRows: Array<{ id: number; hidden: boolean | null }> = await db('data_products')
+    .whereIn('id', ids).select('id', 'hidden');
+  const tableRows: Array<{ data_product_id: number; table_name: string; plain_summary: string | null }> = await db('product_tables as pt')
+    .join('star_schemas as ss', 'ss.id', 'pt.star_schema_id')
+    .whereIn('ss.data_product_id', ids)
+    .whereNotNull('pt.plain_summary')
+    .select('ss.data_product_id', 'pt.table_name', 'pt.plain_summary');
+  const kpiRows: Array<{ data_product_id: number; name: string; description: string | null; formula_plain_text: string | null; formula_sql: string | null; owner_name: string | null; question_text: string | null; ai_draft: boolean | null }> = await db('product_kpis')
+    .whereIn('data_product_id', ids)
+    .select('data_product_id', 'name', 'description', 'formula_plain_text', 'formula_sql', 'owner_name', 'question_text', 'ai_draft');
+
+  const nameById = new Map(products.map((p) => [p.id, p.name]));
+  const hiddenById = new Map(productRows.map((r) => [r.id, r.hidden]));
+  for (const p of products) {
+    out.set(p.name, { hidden: hiddenById.get(p.id) ?? null, tableSummaries: new Map(), kpiQuestions: new Map(), userKpis: new Map() });
+  }
+  for (const t of tableRows) {
+    const snap = out.get(nameById.get(t.data_product_id) ?? '');
+    if (snap && t.plain_summary && t.plain_summary.trim()) snap.tableSummaries.set(t.table_name, t.plain_summary);
+  }
+  for (const k of kpiRows) {
+    const snap = out.get(nameById.get(k.data_product_id) ?? '');
+    if (!snap) continue;
+    if (k.question_text && k.question_text.trim()) snap.kpiQuestions.set(k.name, k.question_text);
+    if (k.ai_draft === false) {
+      snap.userKpis.set(k.name, {
+        description: k.description, formula_plain_text: k.formula_plain_text, formula_sql: k.formula_sql,
+        owner_name: k.owner_name, question_text: k.question_text,
+      });
+    }
+  }
+  return out;
+}
+
 export async function buildBusMatrix(opts: BuildBusMatrixOptions): Promise<BuildBusMatrixResult> {
   const { connectionId, tenantId, userEmail, busMatrix, templateVersion } = opts;
   const { DIM_DATE_SQL, DIM_DATE_COLUMNS } = await import('../ai/prompts/starSchemaPrompt');
@@ -442,6 +509,8 @@ export async function buildBusMatrix(opts: BuildBusMatrixOptions): Promise<Build
       .where({ connection_id: connectionId })
       .whereIn('name', newNames)
       .select('id', 'name');
+    // Human edits ride across the rebuild by name (defect 4, 2026-09-06).
+    const editSnapshot = await snapshotProductEdits(trx, staleProducts);
     if (staleProducts.length > 0) {
       await trx('data_products').whereIn('id', staleProducts.map((s) => s.id)).del();
       retiredIds.push(...staleProducts.map((s) => s.id));
@@ -472,12 +541,14 @@ export async function buildBusMatrix(opts: BuildBusMatrixOptions): Promise<Build
         created_by: userEmail || 'ai',
         tenant_id: tenantId,
         template_version: templateVersion ?? null,
+        hidden: editSnapshot.get(dp.name)?.hidden ?? null,
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
       }).returning('id');
 
       const pid = typeof productRow === 'object' ? (productRow as { id: number }).id : (productRow as number);
       productIdByName.set(dp.name, pid);
+      const productEdits = editSnapshot.get(dp.name);
 
       const depProductNames = new Set<string>();
       for (const factName of dp.fact_tables) {
@@ -827,6 +898,35 @@ export async function buildBusMatrix(opts: BuildBusMatrixOptions): Promise<Build
             ai_draft: true,
           })),
         );
+      }
+
+      // Merge the snapshot back: summaries by table name, questions by KPI
+      // name, and the person's own KPIs the new design did not re-propose.
+      if (productEdits) {
+        for (const [tableName, summary] of productEdits.tableSummaries) {
+          const tableId = tableNameToId.get(tableName);
+          if (tableId) await trx('product_tables').where({ id: tableId }).update({ plain_summary: summary });
+        }
+        for (const [kpiName, question] of productEdits.kpiQuestions) {
+          await trx('product_kpis').where({ data_product_id: pid, name: kpiName }).update({ question_text: question });
+        }
+        const proposedNames = new Set(productKpis.map((k) => k.name));
+        for (const [kpiName, kpi] of productEdits.userKpis) {
+          if (proposedNames.has(kpiName)) continue;
+          await trx('product_kpis').insert({
+            tenant_id: tenantId,
+            data_product_id: pid,
+            name: kpiName,
+            description: kpi.description,
+            formula_plain_text: kpi.formula_plain_text,
+            formula_sql: kpi.formula_sql,
+            owner_name: kpi.owner_name,
+            question_text: kpi.question_text,
+            ai_draft: false,
+          });
+        }
+        const carried = productEdits.tableSummaries.size + productEdits.kpiQuestions.size + productEdits.userKpis.size;
+        if (carried > 0) log.info({ product: dp.name, carried }, 'bus-matrix rebuild: carried human edits across the rebuild');
       }
 
       await trx('data_products').where({ id: pid }).update({

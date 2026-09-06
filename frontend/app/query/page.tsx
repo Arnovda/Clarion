@@ -359,18 +359,11 @@ function QueryPageInner() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [seedQuestion]);
 
-  // Load available connections + integration views (silent — no UI picker shown)
+  // Load available connections (silent — no UI picker shown)
   useEffect(() => {
-    Promise.all([
-      api.get('/connections').catch(() => ({ data: { data: [] } })),
-      api.get('/cross-views').catch(() => ({ data: { data: [] } })),
-    ]).then(([connRes, viewRes]) => {
+    api.get('/connections').catch(() => ({ data: { data: [] } })).then((connRes) => {
       const conns = (connRes.data.data ?? []) as { id: number; name: string }[];
-      const views = (viewRes.data.data ?? []) as { id: number; name: string }[];
-      const all: DataSource[] = [
-        ...conns.map((c) => ({ type: 'connection' as const, id: c.id, label: c.name })),
-        ...views.map((v) => ({ type: 'view' as const, id: v.id, label: v.name })),
-      ];
+      const all: DataSource[] = conns.map((c) => ({ type: 'connection' as const, id: c.id, label: c.name }));
 
       // Priority: URL param > localStorage > first source
       if (urlConnectionId && all.some((s) => s.type === 'connection' && s.id === Number(urlConnectionId))) {
@@ -379,7 +372,7 @@ function QueryPageInner() {
         setItem(storageKeys.querySource, key);
       } else {
         const saved = getItem(storageKeys.querySource);
-        if (saved && all.some((s) => `${s.type === 'connection' ? 'c' : 'v'}:${s.id}` === saved)) {
+        if (saved && all.some((s) => `c:${s.id}` === saved)) {
           setSelectedSource(saved);
         } else if (all.length > 0) {
           setSelectedSource(`c:${all[0].id}`);
@@ -1198,47 +1191,7 @@ function QueryPageInner() {
     }
 
     try {
-      const isCrossView = selectedSource.startsWith('v:');
       const sourceId    = Number(selectedSource.split(':')[1]);
-
-      // Cross-view queries use the regular (non-streaming) route
-      if (isCrossView) {
-        const res = await api.post('/query/cross-view', {
-          viewId: sourceId,
-          question: q,
-          ...(cid && cid > 0 ? { conversationId: cid } : {}),
-        });
-        const d   = res.data.data;
-        const assistantId = nextId.current++;
-        const assistantMsg: Message = {
-          id: assistantId, role: 'assistant', text: d.answer, question: q,
-          sql: d.sql, tablesUsed: d.tablesUsed, confidence: d.confidence, warning: d.warning,
-          blocked: d.blocked, flagReason: d.flagReason, subScores: d.subScores, uncertaintyNotes: d.uncertaintyNotes,
-          assumptions: d.assumptions,
-          intent: d.intent, ambiguity: d.ambiguity, options: d.options,
-          needsClarification: d.needsClarification,
-          ambiguities: d.ambiguities, mismatches: d.mismatches, debug: d.debug, rows: d.rows,
-          queryLayer: d.queryLayer,
-          visualization: d.visualization,
-          parentServerId: parent.serverId ?? null,
-          parentLocalId: parent.localId ?? undefined,
-        };
-        // Persist to server
-        if (cid && cid > 0) {
-          const serverId = await persistMessage(cid, assistantMsg);
-          if (serverId) assistantMsg.serverId = serverId;
-        }
-        setMessages((prev) => [...prev, assistantMsg]);
-        landStep(assistantId);
-        if (d.warning && !d.blocked && d.sql && d.rows) {
-          startRepair({
-            messageId: assistantId, question: q, originalSql: d.sql, originalRows: d.rows, warning: d.warning,
-            conversationId: cid && cid > 0 ? cid : undefined,
-            messageServerId: assistantMsg.serverId,
-          });
-        }
-        return;
-      }
 
       // Forecast detection — lightweight keyword check before the main query path
       // NOTE: bare 'project' was removed — it substring-matched "projects"

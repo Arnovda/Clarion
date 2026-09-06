@@ -10,45 +10,16 @@
 
 import { Fragment } from 'react';
 
-// ─── DataSource type (shared with SourceSelector) ───────────────────────────
+// ─── DataSource ─────────────────────────────────────────────────────────────
+// Only connections are askable. Integration views (the SQLite-only
+// cross-view path) were removed 2026-09-06 — no UI could create one since
+// the panel that did was orphaned, and the route that ran them carried no
+// read guard. Cross-source questions arrive with the multi-source plan.
 
 export interface DataSource {
-  type: 'connection' | 'view';
+  type: 'connection';
   id: number;
   label: string;
-}
-
-// ─── SourceSelector ─────────────────────────────────────────────────────────
-
-interface SourceSelectorProps {
-  sources: DataSource[];
-  selectedId: string; // "c:1" or "v:2"
-  onChange: (id: string) => void;
-}
-
-export function SourceSelector({ sources, selectedId, onChange }: SourceSelectorProps) {
-  return (
-    <select
-      value={selectedId}
-      onChange={(e) => onChange(e.target.value)}
-      className="text-[12px] bg-raised border border-line rounded-md px-2.5 py-1.5 text-ink-2 focus:outline-none focus:border-ocean focus:ring-1 focus:ring-ocean/30 max-w-[200px]"
-    >
-      {sources.filter((s) => s.type === 'connection').length > 0 && (
-        <optgroup label="Single source">
-          {sources.filter((s) => s.type === 'connection').map((s) => (
-            <option key={`c:${s.id}`} value={`c:${s.id}`}>{s.label}</option>
-          ))}
-        </optgroup>
-      )}
-      {sources.filter((s) => s.type === 'view').length > 0 && (
-        <optgroup label="Integration views">
-          {sources.filter((s) => s.type === 'view').map((s) => (
-            <option key={`v:${s.id}`} value={`v:${s.id}`}>🔗 {s.label}</option>
-          ))}
-        </optgroup>
-      )}
-    </select>
-  );
 }
 
 // ─── BoldText — inline **bold** renderer ─────────────────────────────────────

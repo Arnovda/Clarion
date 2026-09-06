@@ -42,7 +42,6 @@ import semanticRouter     from './routes/semantic';
 import queryRouter        from './routes/query';
 import reportsRouter      from './routes/reports';
 import dashboardsRouter   from './routes/dashboards';
-import crossViewsRouter   from './routes/cross-views';
 import relationshipsRouter from './routes/relationships';
 import lineageRouter      from './routes/lineage';
 import qualityRouter      from './routes/quality';
@@ -282,7 +281,6 @@ app.use('/api/reports',      reportsRouter);
 // budget — the mount below still applies computeLimiter to everything else.
 app.use(['/api/dashboards/generate', '/api/dashboards/refine-spec'], aiLimiter);
 app.use('/api/dashboards',   computeLimiter, dashboardsRouter);
-app.use('/api/cross-views',  crossViewsRouter);
 app.use('/api/relationships', computeLimiter, relationshipsRouter);
 app.use('/api/lineage',      lineageRouter);
 app.use('/api/quality',      computeLimiter, qualityRouter);

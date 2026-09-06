@@ -652,7 +652,7 @@ router.get('/tables', requireAuth, async (req, res, next) => {
 // POST /api/quality/product/:productTableId/profile — trigger quality profiling for a product table.
 // If the row is a reference to a shared dim, resolves to the owner product so we
 // read the actual materialised parquet (not the consumer's empty stub directory).
-router.post('/product/:productTableId/profile', requireAuth, requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
+router.post('/product/:productTableId/profile', requireAuth, requireRole('admin', 'analyst'), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const db = reqDb(req);
     const ptId = Number(req.params.productTableId);

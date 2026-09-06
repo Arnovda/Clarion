@@ -17,6 +17,9 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { requireAuth } from '../middleware/auth';
 import { reqDb } from '../db/reqDb';
+import { logger } from '../utils/logger';
+
+const log = logger.child({ mod: 'home' });
 
 const router = Router();
 
@@ -198,21 +201,33 @@ router.get('/summary', requireAuth, async (req: Request, res: Response, next: Ne
       }
     } catch { /* pipeline_runs migration may not have been run yet */ }
 
-    // ── Last few dashboards (recency / starred first) ─────────────────
+    // ── Last few dashboards (favourites first, then recency) ───────────
+    // The column is `is_favorite` (migration 20260329000008); `starred` is
+    // a conversations/notebooks/messages column and a 2026-09-06 audit
+    // found this block selecting it — the query threw on every request and
+    // the catch below hid it, so Home read "No dashboards yet" for every
+    // tenant. The wire field stays `starred` for the two homes. Visibility
+    // mirrors GET /dashboards: the caller's own plus the team's shared ones.
     let dashboards: Array<{ id: number; title: string; starred: boolean; updatedAt: string | null }> = [];
     try {
       const rows = await db('dashboards')
         .where('tenant_id', tenantId)
-        .orderBy([{ column: 'starred', order: 'desc' }, { column: 'updated_at', order: 'desc' }])
+        .where(function () {
+          this.where({ user_id: req.user!.sub }).orWhere({ is_shared: true });
+        })
+        .orderBy([{ column: 'is_favorite', order: 'desc' }, { column: 'updated_at', order: 'desc' }])
         .limit(6)
-        .select<{ id: number; title: string; starred: boolean; updated_at: Date | string | null }[]>(
-          'id', 'title', 'starred', 'updated_at',
+        .select<{ id: number; title: string; is_favorite: boolean | null; updated_at: Date | string | null }[]>(
+          'id', 'title', 'is_favorite', 'updated_at',
         );
       dashboards = rows.map((r) => ({
-        id: r.id, title: r.title, starred: !!r.starred,
+        id: r.id, title: r.title, starred: !!r.is_favorite,
         updatedAt: r.updated_at ? String(r.updated_at) : null,
       }));
-    } catch { /* dashboards table may not exist for this user */ }
+    } catch (err) {
+      // Never silent again: a wrong column name must show up in the logs.
+      log.warn({ err, tenantId }, 'home summary: dashboards query failed');
+    }
 
     // ── Recent conversations (last 5) ──────────────────────────────────
     let recentQuestions: Array<{ id: number; title: string | null; lastMessageAt: string | null }> = [];

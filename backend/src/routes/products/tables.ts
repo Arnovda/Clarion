@@ -52,7 +52,7 @@ router.post('/tables/:tableId/run', requireAuth, requireRole('admin'), async (re
 // (currently: description, display_name)
 // ---------------------------------------------------------------------------
 
-router.patch('/tables/:tableId', requireAuth, requireRole('admin'), validate(updateProductTableSchema), async (req: Request, res: Response, next: NextFunction) => {
+router.patch('/tables/:tableId', requireAuth, requireRole('admin', 'analyst'), validate(updateProductTableSchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const db = reqDb(req);
     const allowed = ['description', 'display_name', 'plain_summary'];

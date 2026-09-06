@@ -23,7 +23,7 @@ const router = Router();
 // POST /api/products — Create a data product
 // ---------------------------------------------------------------------------
 
-router.post('/', requireAuth, requireRole('admin'), validate(createProductSchema), async (req: Request, res: Response, next: NextFunction) => {
+router.post('/', requireAuth, requireRole('admin', 'analyst'), validate(createProductSchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const db = reqDb(req);
     const { name, description, connectionId, sourceTables } = req.body as {

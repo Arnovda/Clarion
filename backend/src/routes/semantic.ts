@@ -1,6 +1,8 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import type { Knex } from 'knex';
 import { requireAuth, requireRole } from '../middleware/auth';
+import { actorOf } from '../services/readPolicy';
+import { readPreviewRows } from '../services/previewRead';
 import { validate } from '../middleware/validate';
 import {
   updateTableSchema, updateColumnSchema, createRelationshipSchema, updateRelationshipSchema,
@@ -1029,7 +1031,17 @@ router.delete('/glossary/:id', requireAuth, requireRole('admin', 'analyst'), asy
 // (reads from SQLite source — unchanged)
 // ---------------------------------------------------------------------------
 
-router.get('/preview', requireAuth, requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
+// GET /api/semantic/preview?connectionId=&table=&limit=
+//
+// ALL ROLES since 2026-09-06 — the same decision as /product-preview below
+// (Release A, 2026-08-27): sample rows are content every role can already
+// read through Ask AI. It was admin-only while the catalog's table panel
+// advertised a Sample tab to analysts and viewers — a 403 as UX (defect 6
+// of the functional-requirements evaluation). The read goes through the
+// policy-aware preview helper, so a viewer sees masked and filtered rows.
+// The table name is validated against the Postgres `source_tables` mirror
+// (RLS-scoped through reqDb) — the ownership oracle, never the raw string.
+router.get('/preview', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const db = reqDb(req);
     const { connectionId, table, limit = '10' } = req.query as Record<string, string>;
@@ -1038,11 +1050,10 @@ router.get('/preview', requireAuth, requireRole('admin'), async (req: Request, r
       return;
     }
 
-    // Validate table name against known tables to prevent SQL injection
-    const knownTables = await graph.getTablesByConnection(Number(connectionId), req.user!.tenantId);
-    const validTable = (knownTables as { table_name: string }[]).find(
-      (t) => t.table_name === table,
-    );
+    const validTable = await db('source_tables')
+      .where({ connection_id: Number(connectionId), table_name: table })
+      .select('table_name')
+      .first() as { table_name: string } | undefined;
     if (!validTable) {
       res.status(400).json({ ok: false, error: `Table "${table}" not found in this connection` });
       return;
@@ -1059,10 +1070,13 @@ router.get('/preview', requireAuth, requireRole('admin'), async (req: Request, r
     await connector.connect();
 
     try {
-      const result = await connector.executeQuery(
-        `SELECT * FROM "${validTable.table_name}" LIMIT ${safeLimit}`,
+      const preview = await readPreviewRows(
+        (sql) => connector.executeQuery(sql),
+        validTable.table_name,
+        safeLimit,
+        actorOf(req),
       );
-      res.json({ ok: true, data: { rows: result.rows, columns: result.rows.length ? Object.keys(result.rows[0] as object) : [] } });
+      res.json({ ok: true, data: { rows: preview.rows, columns: preview.columns, policiesApplied: preview.policiesApplied } });
     } finally {
       connector.disconnect();
     }
@@ -1812,7 +1826,7 @@ router.get('/product-columns', requireAuth, async (req: Request, res: Response, 
 });
 
 // PATCH /api/semantic/product-tables/:id — Update product table definition
-router.patch('/product-tables/:id', requireAuth, requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
+router.patch('/product-tables/:id', requireAuth, requireRole('admin', 'analyst'), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const db = reqDb(req);
     const pgId = Number(req.params.id);
@@ -1835,7 +1849,7 @@ router.patch('/product-tables/:id', requireAuth, requireRole('admin'), async (re
 });
 
 // PATCH /api/semantic/product-columns/:id — Update product column definition
-router.patch('/product-columns/:id', requireAuth, requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
+router.patch('/product-columns/:id', requireAuth, requireRole('admin', 'analyst'), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const db = reqDb(req);
     const pgId = Number(req.params.id);
@@ -2010,15 +2024,21 @@ router.get('/product-preview', requireAuth, async (req: Request, res: Response, 
 
     try {
       await connector.connect();
-      const result = await connector.executeQuery(
-        `SELECT * FROM "${tableName}" LIMIT ${safeLimit}`,
+      // Policy-aware read (defect 2, 2026-09-06): the actor's row filters and
+      // column masks apply to sample rows exactly as they do in Ask AI.
+      const preview = await readPreviewRows(
+        (sql) => connector.executeQuery(sql),
+        tableName,
+        safeLimit,
+        actorOf(req),
       );
 
       res.json({
         ok: true,
         data: {
-          rows: result.rows,
-          columns: result.rows.length ? Object.keys(result.rows[0] as object) : [],
+          rows: preview.rows,
+          columns: preview.columns,
+          policiesApplied: preview.policiesApplied,
         },
       });
     } catch (queryErr) {
