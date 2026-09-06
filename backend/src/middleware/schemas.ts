@@ -41,6 +41,17 @@ export const registerSchema = z.object({
     email,
     password: z.string().min(8, 'Password must be at least 8 characters'),
     displayName: nonEmptyString,
+    // P0-7: required to be true while LEGAL_IN_FORCE — checked in the
+    // handler, not here, so the schema stays valid on both sides of the flag.
+    acceptTerms: z.boolean().optional(),
+  }),
+});
+
+// POST /legal/accept — the signed-in acceptance gate (P0-7). The literal
+// `true` is the point: a body that merely mentions the field is not consent.
+export const legalAcceptSchema = z.object({
+  body: z.object({
+    acceptTerms: z.literal(true, { message: 'You must accept the Terms, Privacy Policy and DPA to continue' }),
   }),
 });
 

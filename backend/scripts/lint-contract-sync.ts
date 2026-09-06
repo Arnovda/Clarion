@@ -23,14 +23,21 @@ import { readFileSync, existsSync } from 'fs';
 import { join } from 'path';
 import { createHash } from 'crypto';
 
-const BACKEND_COPY = join('backend', 'src', 'shared', 'contract.ts');
-const FRONTEND_COPY = join('frontend', 'lib', 'contract.ts');
+// Every lint-locked pair. contract.ts is the wire types; legalVersions.ts is
+// the in-force flag + document versions the backend enforces and the
+// frontend asks for (P0-7) — runtime constants, so it cannot live in
+// contract.ts, but the two copies must agree for exactly the same reason.
+const PAIRS: Array<[string, string]> = [
+  [join('backend', 'src', 'shared', 'contract.ts'), join('frontend', 'lib', 'contract.ts')],
+  [join('backend', 'src', 'shared', 'legalVersions.ts'), join('frontend', 'lib', 'legal', 'versions.ts')],
+];
 
 function fail(message: string): never {
   process.stderr.write(`lint-contract-sync: ${message}\n`);
   process.exit(1);
 }
 
+for (const [BACKEND_COPY, FRONTEND_COPY] of PAIRS) {
 for (const file of [BACKEND_COPY, FRONTEND_COPY]) {
   if (!existsSync(file)) {
     fail(`missing copy: ${file}\nBoth copies of the shared contract must exist.`);
@@ -67,5 +74,6 @@ if (backendText !== frontendText) {
 }
 
 const sha = createHash('sha256').update(backendText).digest('hex');
-process.stdout.write(`lint-contract-sync: OK — both contract copies are byte-identical (sha256 ${sha.slice(0, 12)}…).\n`);
+process.stdout.write(`lint-contract-sync: OK — ${BACKEND_COPY} and its frontend copy are byte-identical (sha256 ${sha.slice(0, 12)}…).\n`);
+}
 process.exit(0);

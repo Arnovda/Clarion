@@ -11,6 +11,7 @@ import { cn } from '@/lib/cn';
 import NotificationBell from '../NotificationBell';
 import CommandPalette from './CommandPalette';
 import AnnouncementBanner from './AnnouncementBanner';
+import LegalAcceptanceGate from './LegalAcceptanceGate';
 
 interface TopBarProps {
   /** Legacy prop — ignored under Observatory chrome (page title lives in the page body header). */
@@ -89,6 +90,10 @@ export default function TopBar({ showSearch = true }: TopBarProps) {
           every screen, both chromes — TopBar is the one component both
           mount, which is why it lives here. */}
       <AnnouncementBanner />
+      {/* ACCEPTANCE GATE (P0-7): renders nothing until the legal documents
+          are in force; then blocks every screen until the current versions
+          are accepted. Same both-chromes reasoning as the banner above. */}
+      <LegalAcceptanceGate />
       {/* SUPPORT-SESSION BANNER (assessment 2-2): an operator working inside a
           customer's workspace under a 15-minute impersonation token must be
           told so on every screen — for the operator (this is not your data)

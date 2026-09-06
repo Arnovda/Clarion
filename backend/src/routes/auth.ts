@@ -1,4 +1,5 @@
 import { recordAuthEvent } from '../services/auditService';
+import { legalInForce, currentLegalVersions, recordLegalAcceptance } from '../services/legal';
 import { defaultSeats, defaultMaxConnections } from '../services/tenantLimits';
 import { Router, Request, Response, NextFunction } from 'express';
 import crypto from 'crypto';
@@ -68,14 +69,27 @@ const router = Router();
 
 router.post('/register', validate(registerSchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { companyName, email, password, displayName } = req.body as {
+    const { companyName, email, password, displayName, acceptTerms } = req.body as {
       companyName: string;
       email: string;    // already lowercased + trimmed by Zod
       password: string;
       displayName: string;
+      acceptTerms?: boolean;
     };
 
     const normalizedEmail = email; // already normalized by Zod transform
+
+    // P0-7: once the documents are in force, no workspace without an
+    // acceptance. Refused BEFORE anything is created, with a code the
+    // register screen recognises. Inert while LEGAL_IN_FORCE is false.
+    if (legalInForce() && acceptTerms !== true) {
+      res.status(400).json({
+        ok: false,
+        error: 'Please accept the Terms of Service, Privacy Policy and Data Processing Agreement to create a workspace',
+        code: 'terms_required',
+      });
+      return;
+    }
 
     // Check if email already exists. Wrapped in unauthQuery so the
     // SELECT runs with a clean tenant context — a pool connection that
@@ -163,11 +177,21 @@ router.post('/register', validate(registerSchema), async (req: Request, res: Res
           email_verification_expires: verification?.expiresAt.toISOString() ?? null,
         })
         .returning('id');
+      const newUserId: number = typeof row === 'object' ? (row as { id: number }).id : (row as number);
+      // P0-7: the acceptance rides the SAME transaction as the user row —
+      // a workspace that exists without one is not a state this door can
+      // produce. Nothing is written while the documents are drafts.
+      if (legalInForce()) {
+        await recordLegalAcceptance(trx, { tenantId: tenantId!, userId: newUserId, source: 'register', req });
+      }
       return row;
     });
 
     const userId: number = typeof userRow === 'object' ? (userRow as { id: number }).id : (userRow as number);
-    await recordAuthEvent({ tenantId, userId, email: normalizedEmail, action: 'user.register', req, context: { requiresVerification } });
+    await recordAuthEvent({
+      tenantId, userId, email: normalizedEmail, action: 'user.register', req,
+      context: { requiresVerification, ...(legalInForce() ? { legal: currentLegalVersions() } : {}) },
+    });
 
     if (requiresVerification && verification) {
       // Send the confirmation link and stop here — no tokens until the

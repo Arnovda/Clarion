@@ -158,6 +158,7 @@ function UsersPageInner() {
         { key: 'members', label: 'Members' },
         { key: 'invites', label: 'Invites' },
         { key: 'audit',   label: 'Audit log' },
+        { key: 'data',    label: 'Your data' },
       ]}
       activePill={activePill}
       onPillChange={setActivePill}
@@ -341,6 +342,38 @@ function UsersPageInner() {
                 {inviteResult.error}
               </div>
             )}
+          </div>
+        </div>
+      ) : activePill === 'data' ? (
+        /* Your data pill (P0-7): the export the DPA promises. */
+        <div className="max-w-2xl mx-auto px-6 pt-10 pb-10">
+          <header className="mb-6">
+            <p className="text-[10px] font-mono tracking-[0.14em] uppercase text-muted mb-2">Your data</p>
+            <h1 className="font-display text-[32px] text-ink leading-tight tracking-[-0.02em]">
+              Take everything with you
+            </h1>
+          </header>
+          <div className="bg-raised border border-line rounded-lg p-6 space-y-4">
+            <p className="text-[13.5px] text-ink-2 leading-relaxed">
+              One ZIP with every record this workspace holds — sources, definitions, topics, dashboards,
+              questions, users, the audit trail — as JSON, one file per table, plus a list of your data
+              warehouse files and how to fetch them. Passwords, source-system credentials and session
+              tokens are withheld and named in the manifest so nothing is silently missing.
+            </p>
+            <p className="text-[12.5px] text-muted leading-relaxed">
+              Large workspaces take a minute to stream. The export is recorded in the audit log.
+            </p>
+            <button
+              type="button"
+              onClick={() => {
+                const base = (process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001/api').replace(/\/$/, '');
+                downloadFile(`${base}/settings/export.zip`, `clarion-export-${new Date().toISOString().slice(0, 10)}.zip`);
+                toast.info('Preparing your export — the download starts when it is ready.');
+              }}
+              className="px-4 py-2 rounded-md bg-ocean text-white text-[13px] font-medium hover:bg-ocean-hover transition-colors"
+            >
+              Download export (.zip)
+            </button>
           </div>
         </div>
       ) : activePill === 'audit' ? (

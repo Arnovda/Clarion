@@ -31,9 +31,71 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-09-05 (WAVE B REMEDIATION COMPLETE — owner: *"Start wave B"*; all seven items landed as seven pushes. Below it, WAVE A REMEDIATION COMPLETE — owner: *"You
-can push to main and begin fixing the waves"*; the assessment v2 was
-fast-forwarded to main and each item landed as its own push, seven pushes)
+**Last updated:** 2026-09-06 (WAVE C, ENGINEERING ONLY — owner: *"I only want you to
+[do] the engineering work, nothing else"*; item 1 below. Below it, WAVE B
+REMEDIATION COMPLETE — owner: *"Start wave B"*; all seven items landed as
+seven pushes, plus the epilogue's self-healing deploy)
+
+**Wave C, item 1 — P0-7's engineering half: acceptance is RECORDED per
+version once the documents are in force, and a tenant can take everything
+with it. The lawyer half stays the owner's.**
+- **The flag and the versions are one lint-locked pair now**:
+  `backend/src/shared/legalVersions.ts` ↔ `frontend/lib/legal/versions.ts`
+  (`LEGAL_IN_FORCE`, the four `*_VERSION`/`*_UPDATED`, `CURRENT_LEGAL_
+  VERSIONS`), checked by `lint-contract-sync` (which now walks a PAIRS
+  list). `lib/legal/*.ts` and `LegalPage.tsx` import from it. Runtime
+  constants cannot live in contract.ts (its rule is types only), and the
+  backend must refuse what the register screen asks for from the SAME
+  value — so a second locked pair, not a copy. Flipping it, after counsel,
+  is ONE edit in both files; `docs/legal/README.md` says so.
+- **Migration 94 `legal_acceptances`** (canonical RLS dance): one row per
+  ACT of acceptance — user, the three versions, `source` register|login,
+  ip, user agent, timestamp — never updated, so a version bump adds a row
+  and the history is complete. NEW `services/legal.ts`: `legalInForce()`,
+  `currentLegalVersions()`, `legalStatusForUser()` (acceptanceRequired =
+  in force AND the latest row is not the current three versions),
+  `recordLegalAcceptance()`; `_setLegalForTests` injects the in-force state
+  so the constants stay false until counsel.
+- **Register** (`registerSchema` gains optional `acceptTerms`): in force
+  and not `true` → 400 `terms_required` BEFORE anything is created; the
+  acceptance row rides the SAME transaction as the user row. NEW
+  `routes/legal.ts` (`/api/legal`): `GET /status`, `POST /accept`
+  (Zod `z.literal(true)` — a body that mentions the field is not consent;
+  409 `not_in_force` while drafts; audited `legal.accept`).
+- **Frontend**: the register page shows the required checkbox with the
+  three document links only when `LEGAL_IN_FORCE`; NEW
+  `components/layout/LegalAcceptanceGate.tsx` is mounted in TopBar (both
+  chromes), fetches nothing while the flag is false, and otherwise blocks
+  every screen with an undismissable dialog until `/legal/accept` — an
+  existing customer accepts on their next visit, a bump re-asks everyone.
+- **THE EXPORT** (the DPA's promise, previously true nowhere): NEW
+  `services/tenantExport.ts` + `GET /api/settings/export.zip` (admin, not
+  in a support session, audited `tenant.export` before the stream, then
+  `res.flushHeaders()` so 11-1 releases the transaction). One STORE zip
+  streamed through NEW `utils/zipStream.ts` (data-descriptor form, ZIP64
+  refused at 4 GiB, dependency-free like the xlsx zip; `Crc32` streaming
+  class added to xlsxBuilder): `README.txt`, `tables/<t>.json` for EVERY
+  table with a `tenant_id` column (discovered like purgeTenant, paged 2000
+  by id, explicit `tenant_id` filter), `warehouse.json` (local file list;
+  Azure per-tenant container → 24 h read+list SAS; shared container →
+  list only, a SAS cannot be scoped), `manifest.json`. Secrets never
+  leave: columns matching `REDACTED_COLUMN_RE` are dropped and NAMED per
+  table; `refresh_tokens`, `api_tokens`, `mfa_backup_codes`,
+  `webauthn_credentials`, `oauth_pending` are omitted whole and listed.
+  Users page gained a "Your data" pill with the download.
+- Tests: NEW `tests/legal-and-export.test.ts` (7): drafts → nothing asked,
+  nothing written, accept 409; in force → register refused + nothing
+  created, accepted + row with ip/source, existing user asked → `false`
+  body 400 → accepted → cleared → V2 bump re-asks → two rows; the zip
+  writer round-trips through a reader written in the test; export 403 for
+  a viewer, every tenant table present, `password_hash` absent and named,
+  omitted tables absent, the other tenant's admin nowhere in either
+  archive, audit row. Full suite 72 files / 686 passed; tsc clean both
+  sides; ten ratchets green (validate-coverage baseline 159 untouched);
+  `next build` green.
+- **Still the owner's / counsel's**: the review, the placeholders, the
+  flip. NOT built: the account-closure UI (`POST /settings/delete-tenant`
+  stays API-only, as before); a ZIP64 export.
 
 **Wave B, epilogue — THE DEPLOY CATCHES UP BY ITSELF NOW; the item-7 deploy
 was cancelled by the very push that fixed the two red controls.**
@@ -8400,6 +8462,7 @@ clarion/                              ← on disk: databridge/
 │       │   ├── adminTenants.ts       ← operator console: customers, caps, usage CSV, user-admin
 │       │   ├── adminOps.ts           ← operator console: errors feed, queues, announcements
 │       │   ├── announcements.ts      ← GET /announcements (the shell banner's feed)
+│       │   ├── legal.ts              ← GET /legal/status, POST /legal/accept (P0-7)
 │       │   ├── users.ts              ← admin-only user management; invites; role updates; audit export
 │       │   ├── conversations.ts      ← chat history persistence; export results
 │       │   ├── notifications.ts      ← user notifications (job complete, quality alerts, invites)
@@ -8409,6 +8472,8 @@ clarion/                              ← on disk: databridge/
 │       │   ├── tenantLimits.ts             ← seats / sources caps + cron cadence floor (P0-8)
 │       │   ├── announcements.ts            ← operator announcements (6-4)
 │       │   ├── invites.ts                  ← inviteUser(), shared by tenant admin and operator doors
+│       │   ├── legal.ts                    ← in-force flag, acceptance status + record (P0-7)
+│       │   ├── tenantExport.ts             ← the streamed ZIP export (P0-7)
 │       │   ├── notificationService.ts      ← notify(), notifyTenant()
 │       │   ├── productContext.ts           ← build star schema semantic context for NL→SQL; detects rollup tables
 │       │   ├── transformationRunner.ts     ← DuckDB transformation materialization (Parquet) + monthly rollup generation
@@ -8427,6 +8492,7 @@ clarion/                              ← on disk: databridge/
 │       │   ├── requestScope.ts       ← the one AsyncLocalStorage; correlation id (6-1)
 │       │   ├── logger.ts             ← Pino structured logging (mixin writes requestId/jobId)
 │       │   ├── crypto.ts             ← AES-256-GCM credential encryption/decryption
+│       │   ├── zipStream.ts          ← streaming STORE zip writer (export)
 │       │   ├── cache.ts              ← in-memory cache utility
 │       │   ├── monitoring.ts         ← Azure App Insights telemetry
 │       │   ├── paginate.ts           ← pagination helper
@@ -8434,6 +8500,7 @@ clarion/                              ← on disk: databridge/
 │       │   └── storage.ts            ← Azure Blob Storage helpers
 │       │
 │       ├── shared/
+│       │   ├── legalVersions.ts      ← LEGAL_IN_FORCE + versions; lint-locked with frontend/lib/legal/versions.ts
 │       │   └── types.ts              ← backend-internal shared types
 │       │
 │       └── tests/
@@ -8589,7 +8656,7 @@ clarion/                              ← on disk: databridge/
             └── useDebounce.ts       ← custom debounce hook
 ```
 
-### Database Migrations (93 files on disk)
+### Database Migrations (94 files on disk)
 
 ```
 20260328000001  create_connections
@@ -8628,6 +8695,7 @@ clarion/                              ← on disk: databridge/
 20260905000091  sync_run_truthfulness            (P0-6: source_sync_runs.mode + failed_entities)
 20260905000092  customer_record_and_caps         (P0-8: tenants.plan/seats/max_connections/…)
 20260905000093  ops_correlation_and_announcements (6-1 source_sync_runs.request_id; 6-4 announcements)
+20260906000094  legal_acceptances                 (P0-7: who accepted which versions, when, from where)
 ```
 
 ---

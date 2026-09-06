@@ -5,6 +5,7 @@ import { requireAuth, requireRole, verifyPassword, refuseDuringSupportSession } 
 import { validate } from '../middleware/validate';
 import { deleteTenantSchema } from '../middleware/schemas';
 import { purgeTenant } from '../services/accountDeletion';
+import { streamTenantExport } from '../services/tenantExport';
 import { recordAudit } from '../services/auditService';
 import { logger as rootLogger } from '../utils/logger';
 
@@ -135,6 +136,45 @@ router.post('/delete-tenant', requireRole('admin'), refuseDuringSupportSession, 
     const result = await purgeTenant(semanticDb, tenantId);
 
     res.json({ ok: true, data: result });
+  } catch (err) { next(err); }
+});
+
+// ---------------------------------------------------------------------------
+// GET /api/settings/export.zip — everything this workspace holds, as one ZIP
+// (P0-7: the DPA's "data export" promise). Admin only, not during a support
+// session (an operator inside a customer's workspace must not walk out with
+// the customer's data). Audited BEFORE the stream starts, on the request
+// transaction; the stream itself runs on the per-query handle after
+// flushHeaders (11-1), so a long export never pins a pool connection.
+// ---------------------------------------------------------------------------
+router.get('/export.zip', requireRole('admin'), refuseDuringSupportSession, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const tenantId = req.user!.tenantId;
+    await recordAudit(req, { action: 'tenant.export', entityType: 'tenant', entityId: tenantId });
+    log.info({ tenantId, actor: req.user!.email }, 'tenant export requested');
+
+    const stamp = new Date().toISOString().slice(0, 10);
+    res.setHeader('Content-Type', 'application/zip');
+    res.setHeader('Content-Disposition', `attachment; filename="clarion-export-${tenantId}-${stamp}.zip"`);
+    res.setHeader('Cache-Control', 'no-store');
+    res.flushHeaders();
+
+    const sink = {
+      write: (chunk: Buffer) => new Promise<void>((resolve, reject) => {
+        if (res.destroyed) { reject(new Error('client disconnected')); return; }
+        if (res.write(chunk)) resolve();
+        else res.once('drain', () => resolve());
+      }),
+    };
+    try {
+      await streamTenantExport(reqDb(req), sink, { tenantId, requestedBy: req.user!.email ?? null });
+      res.end();
+    } catch (err) {
+      // Headers are gone; the only honest outcome is a truncated archive the
+      // client cannot open, plus a log line that says why.
+      log.error({ err, tenantId }, 'tenant export failed mid-stream');
+      res.destroy();
+    }
   } catch (err) { next(err); }
 });
 

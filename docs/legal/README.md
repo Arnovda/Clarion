@@ -37,13 +37,23 @@ to drift (the contract-sync lesson).
 
 1. Lawyer reviews and edits the four string modules (they are plain text with
    markdown-style headings).
-2. Remove the draft banner: set `LEGAL_IN_FORCE = true` in
-   `frontend/app/legal/LegalPage.tsx` and set the real effective dates in the
-   documents.
-3. Wire acceptance into registration (the deliberately-missing piece): the
-   register screen's agree-language plus, if the lawyer wants it recorded, an
-   `accepted_terms_version` column on `users` stamped at signup.
-4. Existing customers (if any by then) accept on next login or by email.
+2. Flip the flag: set `LEGAL_IN_FORCE = true` and the real versions/dates in
+   BOTH copies of the lint-locked pair, `backend/src/shared/legalVersions.ts`
+   and `frontend/lib/legal/versions.ts` (CI refuses a build where they
+   differ). That one edit removes the draft banner AND switches on the
+   acceptance flow, which is already built (P0-7, 2026-09-06):
+   - registration shows a required checkbox linking the three documents and
+     the backend refuses a signup without it (`400 terms_required`);
+   - every acceptance is a row in `legal_acceptances` (user, the three
+     versions, source, ip, user agent, timestamp) — written in the same
+     transaction as the user row at signup, and by `POST /api/legal/accept`
+     from the in-app gate;
+   - a signed-in user who has not accepted the CURRENT versions sees a
+     blocking dialog on every screen until they do (`GET /api/legal/status`
+     decides). Existing customers therefore accept on their next visit, and
+     bumping any version re-asks everyone. No email step is needed.
+3. Nothing to wire by hand. Bump a version in the pair whenever a document
+   changes materially; the rows record which version each person accepted.
 
 ## Facts the drafts are grounded in (verified in code on 2026-09-01)
 
@@ -63,3 +73,7 @@ to drift (the contract-sync lesson).
   unless the operator configures a window.
 - Erasure (`services/accountDeletion.ts`): user anonymisation and full tenant
   purge across database, warehouse files and semantic graph — irreversible.
+- Export (`services/tenantExport.ts`, `GET /api/settings/export.zip`, the
+  "Your data" tab on the team page): one ZIP with every tenant-scoped table
+  as JSON, a manifest naming the withheld credential columns, and the
+  warehouse file list (a 24 h read-only link in per-tenant container mode).

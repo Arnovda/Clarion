@@ -9,8 +9,9 @@
  * demonstrably implements.
  */
 
-export const DPA_VERSION = '0.1-draft';
-export const DPA_UPDATED = '2026-09-01';
+
+import { DPA_VERSION, DPA_UPDATED } from './versions';
+export { DPA_VERSION, DPA_UPDATED };
 
 export const DPA = `
 # Data Processing Agreement

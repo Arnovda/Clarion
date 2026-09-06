@@ -8,6 +8,7 @@ import { setAuthTokens } from '@/lib/auth';
 import AuthLayout from '@/components/layout/AuthLayout';
 import { Input } from '@/components/ui/Input';
 import { Button } from '@/components/ui/Button';
+import { LEGAL_IN_FORCE } from '@/lib/legal/versions';
 
 export default function RegisterPage() {
   const router = useRouter();
@@ -17,6 +18,10 @@ export default function RegisterPage() {
   const [password, setPassword]               = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [error, setError]                     = useState('');
+  // P0-7: only asked — and only sent — once the documents are in force.
+  // The backend refuses a registration without it from the same flag
+  // (shared/legalVersions.ts, lint-locked with lib/legal/versions.ts).
+  const [acceptTerms, setAcceptTerms]         = useState(false);
   const [loading, setLoading]                 = useState(false);
   // Set when the server withholds tokens pending email verification —
   // the form is replaced by a check-your-inbox notice.
@@ -27,10 +32,14 @@ export default function RegisterPage() {
     setError('');
     if (password !== confirmPassword) { setError('Passwords do not match.'); return; }
     if (password.length < 8)          { setError('Password must be at least 8 characters.'); return; }
+    if (LEGAL_IN_FORCE && !acceptTerms) { setError('Please accept the terms to create a workspace.'); return; }
 
     setLoading(true);
     try {
-      const res = await api.post('/auth/register', { companyName, email, password, displayName });
+      const res = await api.post('/auth/register', {
+        companyName, email, password, displayName,
+        ...(LEGAL_IN_FORCE ? { acceptTerms } : {}),
+      });
       const data = res.data?.data ?? {};
       if (data.requiresVerification) {
         // No tokens until the address is confirmed via the emailed link.
@@ -138,6 +147,26 @@ export default function RegisterPage() {
           required
           disabled={loading}
         />
+
+        {LEGAL_IN_FORCE && (
+          <label className="flex items-start gap-2.5 text-[12.5px] text-ink-2 leading-relaxed cursor-pointer select-none">
+            <input
+              type="checkbox"
+              checked={acceptTerms}
+              onChange={(e) => setAcceptTerms(e.target.checked)}
+              className="mt-0.5 accent-ocean"
+              disabled={loading}
+              required
+            />
+            <span>
+              I accept the{' '}
+              <a href="/legal/terms" target="_blank" rel="noreferrer" className="text-ocean hover:text-ocean-hover">Terms of Service</a>,{' '}
+              <a href="/legal/privacy" target="_blank" rel="noreferrer" className="text-ocean hover:text-ocean-hover">Privacy Policy</a> and{' '}
+              <a href="/legal/dpa" target="_blank" rel="noreferrer" className="text-ocean hover:text-ocean-hover">Data Processing Agreement</a>{' '}
+              on behalf of my organisation.
+            </span>
+          </label>
+        )}
 
         {error && (
           <div className="font-mono text-[10.5px] text-err uppercase tracking-[0.04em]">

@@ -269,10 +269,28 @@ const crcTable = (() => {
   return table;
 })();
 
-function crc32(buf: Buffer): number {
-  let crc = 0xFFFFFFFF;
+export function crc32(buf: Buffer, seed = 0xFFFFFFFF): number {
+  let crc = seed;
   for (let i = 0; i < buf.length; i++) {
     crc = crcTable[(crc ^ buf[i]) & 0xFF] ^ (crc >>> 8);
   }
   return (crc ^ 0xFFFFFFFF) >>> 0;
+}
+
+/**
+ * Streaming form: feed chunks, read the running value. `crc32(buf)` above is
+ * `new Crc32().update(buf).value` for one chunk; this exists for the zip
+ * STREAM writer, which never holds a whole entry in memory.
+ */
+export class Crc32 {
+  private crc = 0xFFFFFFFF;
+  update(buf: Buffer): this {
+    let crc = this.crc;
+    for (let i = 0; i < buf.length; i++) {
+      crc = crcTable[(crc ^ buf[i]) & 0xFF] ^ (crc >>> 8);
+    }
+    this.crc = crc;
+    return this;
+  }
+  get value(): number { return (this.crc ^ 0xFFFFFFFF) >>> 0; }
 }

@@ -7,8 +7,9 @@
  * aspirational belongs here.
  */
 
-export const SUBPROCESSORS_VERSION = '0.1-draft';
-export const SUBPROCESSORS_UPDATED = '2026-09-01';
+
+import { SUBPROCESSORS_VERSION, SUBPROCESSORS_UPDATED } from './versions';
+export { SUBPROCESSORS_VERSION, SUBPROCESSORS_UPDATED };
 
 export const SUBPROCESSORS = `
 # Subprocessors

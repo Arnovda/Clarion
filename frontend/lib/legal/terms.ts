@@ -6,8 +6,9 @@
  * Plain text with markdown-style headings; rendered by app/legal/LegalPage.
  */
 
-export const TERMS_VERSION = '0.1-draft';
-export const TERMS_UPDATED = '2026-09-01';
+
+import { TERMS_VERSION, TERMS_UPDATED } from './versions';
+export { TERMS_VERSION, TERMS_UPDATED };
 
 export const TERMS = `
 # Terms of Service

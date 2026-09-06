@@ -76,6 +76,7 @@ import { featuresRouter, featureFlagsRouter } from './routes/featureFlags';
 import adminTenantsRouter    from './routes/adminTenants';
 import adminOpsRouter        from './routes/adminOps';
 import announcementsRouter   from './routes/announcements';
+import legalRouter           from './routes/legal';
 import { startWorkers, stopWorkers } from './jobs/workers';
 import { closeQueues } from './jobs/queues';
 import { closeRedis } from './jobs/redis';
@@ -329,6 +330,7 @@ app.use('/api/admin/feature-flags', featureFlagsRouter);
 app.use('/api/admin/tenants',       adminTenantsRouter);
 app.use('/api/admin/ops',           adminOpsRouter);
 app.use('/api/announcements',       announcementsRouter);
+app.use('/api/legal',               legalRouter);
 
 // Admin-only: re-run schema profiling for an existing connection
 app.post('/api/connections/:id/profile', requireAuth, requireRole('admin'), async (req, res, next) => {

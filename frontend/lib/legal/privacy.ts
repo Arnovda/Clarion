@@ -7,8 +7,9 @@
  * reach Anthropic's API, and the real retention/erasure mechanics.
  */
 
-export const PRIVACY_VERSION = '0.1-draft';
-export const PRIVACY_UPDATED = '2026-09-01';
+
+import { PRIVACY_VERSION, PRIVACY_UPDATED } from './versions';
+export { PRIVACY_VERSION, PRIVACY_UPDATED };
 
 export const PRIVACY = `
 # Privacy Policy

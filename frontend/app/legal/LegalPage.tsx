@@ -5,17 +5,22 @@
  * lib/legal/*.ts — one source each, rendered here deterministically (no
  * markdown dependency; the grammar is four line shapes and inline bold).
  *
- * LEGAL_IN_FORCE gates the draft banner. It stays FALSE until the documents
- * have been reviewed by a lawyer (docs/legal/README.md is the checklist):
- * presenting unreviewed AI-drafted text as the binding agreement is the one
- * thing the P0-4 work was instructed never to do. Flipping it — and wiring
- * acceptance into registration — is the owner's act after that review.
+ * LEGAL_IN_FORCE (lib/legal/versions.ts, lint-locked with the backend's
+ * copy) gates the draft banner AND the acceptance flow. It stays FALSE until
+ * the documents have been reviewed by a lawyer (docs/legal/README.md is the
+ * checklist): presenting unreviewed AI-drafted text as the binding agreement
+ * is the one thing the P0-4 work was instructed never to do. Flipping it is
+ * the owner's act after that review; the acceptance wiring (P0-7) is built
+ * and switches on with the flag.
  */
 
 import Link from 'next/link';
 import type { ReactNode } from 'react';
+import { LEGAL_IN_FORCE } from '@/lib/legal/versions';
 
-export const LEGAL_IN_FORCE = false;
+// Re-exported for the callers that imported it from here; the value itself
+// lives in lib/legal/versions.ts, the lint-locked twin of the backend's copy.
+export { LEGAL_IN_FORCE };
 
 const DOCS = [
   { href: '/legal/terms', label: 'Terms of Service' },
