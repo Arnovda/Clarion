@@ -40,12 +40,10 @@ import {
   RESULT_VALIDATION_SYSTEM,
   buildResultValidationUser,
   ResultValidationOutput,
-  NL_TO_SQL_CROSS_SYSTEM,
   buildNlToSqlCrossUser,
 } from './prompts/nlToSqlPrompt';
 import {
   NL_TO_SQL_DUCKDB_SYSTEM,
-  NL_TO_SQL_CROSS_DUCKDB_SYSTEM,
 } from './prompts/nlToSqlPromptDuckDB';
 import {
   REPORT_NARRATIVE_SYSTEM,
@@ -1460,41 +1458,6 @@ export async function validateQueryResultIfNeeded(
     return { ok: true };
   }
   return validateQueryResult(question, sql, rows);
-}
-
-// ---------------------------------------------------------------------------
-// Cross-source variant of Call Type 2a
-// ---------------------------------------------------------------------------
-
-export async function generateCrossSourceSql(
-  question: string,
-  semanticContext: string,
-  relationshipContext: string,
-  kpiFormulas: string,
-  dialect: SqlDialect = 'sqlite',
-  conversationHistory?: Array<{ role: string; content: string }>,
-): Promise<NlToSqlOutput> {
-  const glossary = await loadGlossaryBlock();
-  const systemPrompt = dialect === 'duckdb'
-    ? NL_TO_SQL_CROSS_DUCKDB_SYSTEM(semanticContext, relationshipContext, kpiFormulas, currentDateStr(), glossary)
-    : NL_TO_SQL_CROSS_SYSTEM(semanticContext, relationshipContext, kpiFormulas, currentDateStr(), glossary);
-
-  if (conversationHistory && conversationHistory.length > 0) {
-    const messages: Array<{ role: 'user' | 'assistant'; content: string }> = [
-      ...conversationHistory.map((m) => ({
-        role: m.role as 'user' | 'assistant',
-        content: m.content,
-      })),
-      { role: 'user', content: buildNlToSqlCrossUser(question) },
-    ];
-    const raw = await callClaudeMultiTurn(systemPrompt, messages, { temperature: 0 });
-    return defaultSubScores(parseJson<Record<string, unknown>>(raw));
-  }
-
-  // Cross-source system prompt is stable per tenant — cache same as single-source.
-  // temperature 0: deterministic SQL.
-  const raw = await callClaude(systemPrompt, buildNlToSqlCrossUser(question), { cacheSystem: true, temperature: 0 });
-  return defaultSubScores(parseJson<Record<string, unknown>>(raw));
 }
 
 // ---------------------------------------------------------------------------

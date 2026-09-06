@@ -56,7 +56,7 @@ const ACTIONS_ALL: ActionDef[] = [
   { type: 'action', id: 'dashboard',  title: 'Create a dashboard', subtitle: 'Describe a report, AI builds it',  icon: 'grid',  href: '/dashboards', roles: ALL },
   { type: 'action', id: 'subjects',   title: 'Subjects',           subtitle: 'Everything your team can ask about', icon: 'grid', href: '/subjects',   roles: ALL },
   { type: 'action', id: 'catalog',    title: 'Browse the catalog', subtitle: 'Find & understand your data',      icon: 'book',  href: '/catalog',    roles: ALL },
-  { type: 'action', id: 'glossary',   title: 'Business glossary',  subtitle: 'Shared terms & definitions',       icon: 'book',  href: '/glossary',   roles: ALL },
+  { type: 'action', id: 'glossary',   title: 'Business glossary',  subtitle: 'Shared terms & definitions',       icon: 'book',  href: '/catalog',   roles: ALL },
   { type: 'action', id: 'connect',    title: 'Connect a source',   subtitle: 'Studio · add a data source',       icon: 'plug',  href: '/sources',    roles: ['admin', 'analyst'] },
   { type: 'action', id: 'shared',     title: 'Shared data',        subtitle: 'Studio · the lookups every topic slices by', icon: 'book', href: '/shared-data', roles: ['admin', 'analyst'] },
   { type: 'action', id: 'grids',      title: 'Your tables',        subtitle: 'Studio · budgets, mappings & lists you keep in Clarion', icon: 'columns', href: '/grids', roles: ['admin', 'analyst'] },

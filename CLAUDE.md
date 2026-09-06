@@ -31,7 +31,78 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-09-06 (THE SEVEN DEFECTS FROM THE FUNCTIONAL
+**Last updated:** 2026-09-06 (§6.1 OF THE EVALUATION — "make the promise and
+the product agree" — IS CLOSED; owner: *"Put it in main and production, then
+proceed"*. The seven defects went live in production first: deploy run #580,
+`main-540c351`, Go live health-checked and shifted traffic 19:52 UTC.)
+
+**What §6.1 asked for and what landed. The whole item is done except the
+router tests, which are their own entry below.**
+- **TIME TO ANSWER IS MEASURED — the claim can now be set from a number.**
+  The overview promised "under five seconds" and nothing recorded how long a
+  question takes: `ai_call_log.duration_ms` times ONE model call, but a
+  question is one to four calls plus a warehouse query plus policy work.
+  **Migration 96** adds `query_log.duration_ms` (nullable — rows written
+  before it are honestly "not measured", never zero) with a partial index on
+  `(tenant_id, created_at) WHERE duration_ms IS NOT NULL`. Stamped at all
+  **eighteen** answer paths: at INSERT for terminal rows (clarify, explain,
+  the verified fast path, forecast — the answer ends there) and re-stamped at
+  the completion UPDATE for executed ones, so every row has a duration and
+  executed rows carry the true end-to-end time. `askedAt` starts when the
+  request lands, not when the model is called: the promise is about the wait
+  a person feels. NEW `GET /admin/ai-usage/answer-latency?days=` —
+  `percentile_cont` p50/p95, max, and the share under five seconds, over
+  MEASURED rows only; a small `measured` next to a large `total` reads as
+  "not enough history yet", never as "fast". A **Time to answer** panel on
+  `/admin/ai-usage`. NEW `tests/answer-latency.test.ts` (3).
+- **THE OVERVIEW TELLS THE TRUTH NOW** (`clarion-overview.html`). Rule
+  written into the file: every claim is either true of the product today or
+  carries a `.roadmap-badge`. Badged: multi-source questions, user-set metric
+  thresholds, targets to compare against. DELETED as untrue: "board packs in
+  one click", per-row sparklines with automatic decliner detection,
+  "white-label" (→ "multi-tenant isolation", which is real), "data stays in
+  your environment" (→ "EU data residency" — the old row CONTRADICTED the
+  drafted terms, which say Clarion keeps a copy in an EU warehouse). The
+  "< 5s average answer time" headline stat is replaced by the 70% confidence
+  floor, which is a real mechanism. **Two privacy claims corrected to match
+  `frontend/lib/legal/privacy.ts`**: it said the AI sees "only schema
+  metadata and query results — not the raw personal data" and that data
+  "never leaves your Azure environment". The privacy draft says outright that
+  questions, schema, SAMPLED VALUES and QUERY RESULTS reach Anthropic, which
+  may process in the US. A customer reading both documents catches that; it
+  now says what the policy says.
+- **THE DEAD DOORS ARE GONE.** The ghost cross-source branch of `POST /query`
+  (145 lines: read `cross_view_relationships`, upgraded the prompt to
+  cross-source mode, executed model SQL against `ATTACH`ed SQLite) — with
+  `/api/cross-views` deleted in the previous push no row can ever be created
+  again, and it was SQLite-only so it could never serve the API connectors
+  this platform ships. With it went `generateCrossSourceSql`,
+  `NL_TO_SQL_CROSS_SYSTEM`, `NL_TO_SQL_CROSS_DUCKDB_SYSTEM` (303 lines of
+  prompt), the `better-sqlite3` import and `sanitizeAlias`. **`/api/jobs`
+  deleted** — zero callers since its only consumer was the dead
+  `JobProgressBanner`, and `/admin/ops` → Queues does status, retry and
+  cancel with tenant attribution. **`/onboarding` deleted** (606 lines of
+  mock: fake tables, a simulated scan timer, no API calls, linked from
+  nowhere, and its steps contradicted the real flow). **Eight components with
+  no importer deleted** (`PageHeader`, `AuditPanel`, `PathFinderPanel`,
+  `KpiPanel`, `BulkImportModal`, `PageWrapper`, `SchedulePanel`, the root
+  `JobProgressBanner`). validate-coverage baseline LOWERED 151→150.
+- **Two "orphans" from the evaluation were WRONG and are corrected**:
+  `/gaps` is reachable — four `notifyAdmins(... link: '/gaps')` sites take an
+  admin there, and IconRail aliases it under `/review`; it stays.
+  `/security` was genuinely unreachable, and rather than delete the public
+  trust page it is now linked from the legal-document cross-nav (which the
+  sign-in footer reaches). The CommandPalette's Glossary entry pointed at
+  `/glossary`, a redirect stub — it points at `/catalog` directly now; the
+  stubs themselves stay for bookmarks.
+- Validation: backend `npm run check` clean; full backend vitest **78 files /
+  704 passed / 4 skipped**; ten ratchets green from the repo root; frontend
+  `tsc` clean; `next build` green **46/46** (was 47 — onboarding gone).
+  SANDBOX NOTE: `tsc` failed once on `.next/types/app/onboarding/page.ts`
+  after deleting the page — stale generated types from an earlier build, not
+  a source error; `rm -rf .next/types` clears it.
+
+**Prior last updated:** 2026-09-06 (THE SEVEN DEFECTS FROM THE FUNCTIONAL
 REQUIREMENTS EVALUATION ARE FIXED — same branch/PR as the doc; owner: *"Let's
 begin fixing it"*. Below it, the evaluation entry, then WAVE C and WAVE B)
 

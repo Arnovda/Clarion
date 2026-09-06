@@ -242,6 +242,13 @@ The ranking rule: **first make the promise and the product agree; then remove th
 
 ### 6.1 Make the promise true or stop making it (days)
 
+> **Status: done, 2026-09-06.** The seven defects shipped to production
+> (deploy #580); time-to-answer is measured (`query_log.duration_ms` +
+> `/admin/ai-usage/answer-latency`); the overview states only what is true
+> and badges the rest as roadmap; the dead doors are deleted. The router
+> tests are the one line still open — see the CLAUDE.md entry.
+
+
 | Action | Kind | Effort |
 |---|---|---|
 | Rewrite `clarion-overview.html` (and any copy derived from it) to the §4 scorecard: drop P16 white-label and P17 "stays in your environment", reword P7/P10/P11/P12 as roadmap or remove, replace "under five seconds" with a measured claim once C12 exists | modify | 0.5 d |

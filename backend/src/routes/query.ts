@@ -1,6 +1,5 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import path from 'path';
-import Database from 'better-sqlite3';
 import type { Knex } from 'knex';
 import { requireAuth } from '../middleware/auth';
 import { validate } from '../middleware/validate';
@@ -18,7 +17,7 @@ import { createConnector, createProductConnector } from '../connectors/Connector
 import { buildProductSemanticContext, getProductWarehousePath } from '../services/productContext';
 import { applyDataPolicies } from '../services/policyEngine';
 import { buildSemanticContextForQuery, getDimensionColumns, getJoinPaths, getTableAndColumnNames, buildRelevantSubgraph } from '../db/semanticGraph';
-import { generateSql, generateSqlStreaming, generateCrossSourceSql, formatAnswer, validateQueryResultIfNeeded, callClaudeMultiTurn, extractEntitiesFromQuestion, forecastQuery, SqlDialect } from '../ai/AIService';
+import { generateSql, generateSqlStreaming, formatAnswer, validateQueryResultIfNeeded, callClaudeMultiTurn, extractEntitiesFromQuestion, forecastQuery, SqlDialect } from '../ai/AIService';
 import { computeForecast, TimeSeriesPoint } from '../services/forecastEngine';
 import {
   getRepairSystem,
@@ -29,15 +28,6 @@ import {
 } from '../ai/prompts/repairPrompt';
 
 const router = Router();
-
-// Shared alias helper — used by both the single-source and cross-view handlers
-function sanitizeAlias(name: string): string {
-  return (name
-    .toLowerCase()
-    .replace(/[-\s]+/g, '_')
-    .replace(/[^a-z0-9_]/g, '')
-    .replace(/_(sqlite|db)$/, '') || 'db');
-}
 
 // Helper — derive SQL dialect from connection record
 function getDialect(connection: { query_engine?: string } | undefined): SqlDialect {
@@ -803,150 +793,15 @@ router.post('/', requireAuth, validate(askQuestionSchema), async (req: Request, 
       ? `${semanticContext}${colDisambig}\n\n--- Data Quality Hints ---\n${qualityHints}`
       : `${semanticContext}${colDisambig}`;
 
-    // 2b. Integration enrichment — automatically include cross-source context
-    //     if any integration views involve this connection's tables.
-    //     When present, the prompt is upgraded to cross-source mode and SQL
-    //     execution uses ATTACH DATABASE automatically.
-    type CrossRel = {
-      from_table: string; from_conn_id: number; from_column: string | null;
-      to_table:   string; to_conn_id:   number; to_column:   string | null;
-      relationship_type: string;
-    };
-    type XTable = {
-      table_id: number; table_name: string; display_name: string; description: string;
-      connection_id: number; connection_name: string; connection_config: string | Record<string, unknown>;
-    };
-    type XCol = { table_id: number; column_name: string; data_type: string; description: string; is_dimension: boolean; is_measure: boolean };
-
-    // tableIds: pgId values for all active tables returned from Neo4j (used for cross-view lookup)
-    const tableIds = (tables as { id: number }[]).map((t) => t.id);
-
-    let crossConnAliasMap: Map<number, { alias: string; filepath: string }> | null = null;
-    let enrichedSemanticContext  = semanticContextWithQuality;
-    let enrichedRelationshipContext = relationshipContextWithPaths;
-    let isCrossSourceQuery = false;
-
-    if (tableIds.length) {
-      // Find all cross-view relationships where at least one side belongs to this connection
-      const crossRels: CrossRel[] = await db('cross_view_relationships as r')
-        .leftJoin('source_columns as fc', 'r.from_column_id', 'fc.id')
-        .leftJoin('source_columns as tc', 'r.to_column_id',   'tc.id')
-        .leftJoin('source_tables  as ft', 'r.from_table_id',  'ft.id')
-        .leftJoin('source_tables  as tt', 'r.to_table_id',    'tt.id')
-        .where(function () {
-          this.whereIn('r.from_table_id', tableIds).orWhereIn('r.to_table_id', tableIds);
-        })
-        .select(
-          'ft.table_name as from_table', 'ft.connection_id as from_conn_id', 'fc.column_name as from_column',
-          'tt.table_name as to_table',   'tt.connection_id as to_conn_id',   'tc.column_name as to_column',
-          'r.relationship_type',
-        );
-
-      if (crossRels.length) {
-        // Collect all unique table IDs referenced in these relationships
-        const allRelTableIds = [...new Set([
-          ...crossRels.map((r) => r.from_conn_id),  // we need table ids, not conn ids
-        ])];
-        void allRelTableIds; // unused — we query by relation table names below
-
-        // Collect all connection IDs referenced (other than the primary connection)
-        const relatedConnIds = [...new Set([
-          ...crossRels.map((r) => r.from_conn_id),
-          ...crossRels.map((r) => r.to_conn_id),
-        ])];
-
-        // Load ALL tables from related connections that appear in cross-view relationships
-        const relatedTableNames = [...new Set([
-          ...crossRels.map((r) => r.from_table),
-          ...crossRels.map((r) => r.to_table),
-        ])];
-
-        const xTables: XTable[] = await db('source_tables as st')
-          .join('connections as c', 'st.connection_id', 'c.id')
-          .whereIn('st.connection_id', relatedConnIds)
-          .whereIn('st.table_name',    relatedTableNames)
-          .select(
-            'st.id as table_id', 'st.table_name', 'st.display_name', 'st.description',
-            'st.connection_id', 'c.name as connection_name', 'c.config as connection_config',
-          );
-
-        // Build alias map for every involved connection
-        crossConnAliasMap = new Map();
-        for (const xt of xTables) {
-          if (!crossConnAliasMap.has(xt.connection_id)) {
-            const cfg = typeof xt.connection_config === 'string'
-              ? JSON.parse(xt.connection_config) as { filepath: string }
-              : xt.connection_config as { filepath: string };
-            crossConnAliasMap.set(xt.connection_id, {
-              alias:    sanitizeAlias(xt.connection_name),
-              filepath: path.resolve(cfg.filepath),
-            });
-          }
-        }
-
-        // Load columns for all cross-source tables
-        const xTableIds = xTables.map((t) => t.table_id);
-        const xCols: XCol[] = xTableIds.length
-          ? await db('source_columns').whereIn('table_id', xTableIds)
-          : [];
-
-        // Build enriched semantic context — primary tables + cross-source tables, all aliased
-        const primaryAlias = crossConnAliasMap.get(connectionId)?.alias ?? sanitizeAlias(
-          (await db('connections').where({ id: connectionId }).first())?.name ?? 'primary',
-        );
-
-        // Re-build primary tables with alias prefix
-        const primaryContext = tables.map((t: { id: number; table_name: string; description: string }) => {
-          const cols = columns
-            .filter((c: { table_id: number }) => c.table_id === t.id)
-            .map((c: { column_name: string; data_type: string; description: string; is_dimension: boolean; is_measure: boolean }) =>
-              `    ${c.column_name} (${c.data_type})${c.is_dimension ? ' [dimension]' : ''}${c.is_measure ? ' [measure]' : ''}: ${c.description ?? ''}`,
-            ).join('\n');
-          return `Database: ${primaryAlias}\nTable: ${primaryAlias}.${t.table_name} — ${t.description ?? ''}\n  Columns:\n${cols}`;
-        }).join('\n\n');
-
-        // Cross-source tables context
-        const crossContext = xTables
-          .filter((t) => t.connection_id !== connectionId)
-          .map((t) => {
-            const alias = crossConnAliasMap!.get(t.connection_id)?.alias ?? 'db';
-            const cols = xCols
-              .filter((c) => c.table_id === t.table_id)
-              .map((c) =>
-                `    ${c.column_name} (${c.data_type})${c.is_dimension ? ' [dimension]' : ''}${c.is_measure ? ' [measure]' : ''}: ${c.description ?? ''}`,
-              ).join('\n');
-            return `Database: ${alias}\nTable: ${alias}.${t.table_name} — ${t.description ?? ''}\n  Columns:\n${cols}`;
-          }).join('\n\n');
-
-        enrichedSemanticContext = [
-          primaryContext,
-          crossContext,
-          qualityHints ? `--- Data Quality Hints ---\n${qualityHints}` : '',
-        ].filter(Boolean).join('\n\n');
-
-        // Build enriched relationship context — single-source + cross-source rels
-        const singleSourceRels = relationships.length
-          ? relationships.map((r: { from_table: string; from_column: string | null; to_table: string; to_column: string | null; relationship_type: string; description: string | null }) => {
-              const from = r.from_column ? `${primaryAlias}.${r.from_table}.${r.from_column}` : `${primaryAlias}.${r.from_table}`;
-              const to   = r.to_column   ? `${primaryAlias}.${r.to_table}.${r.to_column}`     : `${primaryAlias}.${r.to_table}`;
-              return `- ${from} → ${to} (${r.relationship_type})${r.description ? `: ${r.description}` : ''}`;
-            }).join('\n')
-          : '';
-
-        const crossSourceRels = crossRels.map((r) => {
-          const fa   = crossConnAliasMap!.get(r.from_conn_id)?.alias ?? 'db';
-          const ta   = crossConnAliasMap!.get(r.to_conn_id)?.alias   ?? 'db';
-          const from = r.from_column ? `${fa}.${r.from_table}.${r.from_column}` : `${fa}.${r.from_table}`;
-          const to   = r.to_column   ? `${ta}.${r.to_table}.${r.to_column}`     : `${ta}.${r.to_table}`;
-          return `- ${from} → ${to} (${r.relationship_type}) [cross-source]`;
-        }).join('\n');
-
-        enrichedRelationshipContext = [singleSourceRels, crossSourceRels].filter(Boolean).join('\n')
-          || 'No relationships defined yet.';
-
-        isCrossSourceQuery = true;
-      }
-    }
+    // Cross-source enrichment used to live here: it read
+    // `cross_view_relationships` and, when a row matched, upgraded the prompt
+    // to cross-source mode and executed the model's SQL against ATTACHed
+    // SQLite files. Deleted 2026-09-06 with the rest of that path — the only
+    // UI that could create such a view was orphaned, the route that ran them
+    // carried no read guard, and the mechanism was SQLite-only, so it could
+    // never serve the API connectors this platform actually ships. Asking one
+    // question across two sources returns with the multi-source plan, built
+    // on conformed dimensions and a per-record identity layer instead.
 
     // 2. Generate SQL + confidence (Call Type 2a)
     //    Use cross-source SQL generator when integration context is present.
@@ -961,12 +816,11 @@ router.post('/', requireAuth, validate(askQuestionSchema), async (req: Request, 
       tenantId, connectionId, layer: 'source',
       domains,
       question,
-      semanticContext:     enrichedSemanticContext,
-      relationshipContext: enrichedRelationshipContext,
+      semanticContext:     semanticContextWithQuality,
+      relationshipContext: relationshipContextWithPaths,
       kpiFormulas,
     });
-    const useSrcCache =
-      !isCrossSourceQuery && (!conversationHistory || conversationHistory.length === 0);
+    const useSrcCache = !conversationHistory || conversationHistory.length === 0;
     const nlStart = Date.now();
     let nlResult: NlToSqlOutput | null = useSrcCache
       ? await getCachedSql(tenantId, srcCacheKey)
@@ -974,9 +828,7 @@ router.post('/', requireAuth, validate(askQuestionSchema), async (req: Request, 
     const srcCacheHit = !!nlResult;
 
     if (!nlResult) {
-      nlResult = isCrossSourceQuery
-        ? await generateCrossSourceSql(question, enrichedSemanticContext, enrichedRelationshipContext, kpiFormulas, dialect, conversationHistory)
-        : await generateSql(question, enrichedSemanticContext, enrichedRelationshipContext, kpiFormulas, dialect, conversationHistory, dashboardContext);
+      nlResult = await generateSql(question, semanticContextWithQuality, relationshipContextWithPaths, kpiFormulas, dialect, conversationHistory, dashboardContext);
       if (useSrcCache) {
         await putCachedSql(tenantId, srcCacheKey, question, nlResult);
       }
@@ -984,7 +836,6 @@ router.post('/', requireAuth, validate(askQuestionSchema), async (req: Request, 
     trackMetric('nl_to_sql_ms', Date.now() - nlStart, {
       layer: 'source',
       cache: srcCacheHit ? 'hit' : 'miss',
-      cross: String(isCrossSourceQuery),
     });
     trackEvent(srcCacheHit ? 'query_cache_hit' : 'query_cache_miss', { layer: 'source' });
 
@@ -1222,23 +1073,15 @@ router.post('/', requireAuth, validate(askQuestionSchema), async (req: Request, 
     const srcExecSql = srcPolicyResult.sql;
     let execRows: Record<string, unknown>[];
 
-    if (isCrossSourceQuery && crossConnAliasMap && crossConnAliasMap.size > 0) {
-      // Open in-memory DB, ATTACH every source involved
-      const inMemDb = new Database(':memory:');
-      try {
-        for (const [, { alias, filepath }] of crossConnAliasMap) {
-          inMemDb.exec(`ATTACH DATABASE '${filepath.replace(/'/g, "''")}' AS "${alias}"`);
-        }
-        execRows = inMemDb.prepare(srcExecSql).all() as Record<string, unknown>[];
-      } finally {
-        inMemDb.close();
-      }
-    } else {
+    {
       const queryConnector = await createConnector(connection);
       await queryConnector.connect();
-      const queryResult = await queryConnector.executeQuery(srcExecSql);
-      queryConnector.disconnect();
-      execRows = queryResult.rows;
+      try {
+        const queryResult = await queryConnector.executeQuery(srcExecSql);
+        execRows = queryResult.rows;
+      } finally {
+        queryConnector.disconnect();
+      }
     }
 
     // 7. Run result sanity check (Call Type 2c) — parallel with answer formatting
@@ -1269,7 +1112,6 @@ router.post('/', requireAuth, validate(askQuestionSchema), async (req: Request, 
         assumptions: nlResult.assumptions ?? [],
         assumptionDetails: nlResult.assumption_details ?? [],
         blocked:     false,
-        crossSource: isCrossSourceQuery,
         tablesUsed:  nlResult.tables_used,
         queryLayer:  'source',
         ...(srcPolicyResult.policiesApplied > 0 ? { policyNotice: 'Results filtered by data access policies' } : {}),
@@ -1284,9 +1126,9 @@ router.post('/', requireAuth, validate(askQuestionSchema), async (req: Request, 
           confirmedColumns:       columns.length,
           confirmedRelationships: relationships.length,
           confirmedKpis:          kpis.length,
-          hint: `Query executed successfully with confidence ${Math.round(nlResult.confidence * 100)}%.${isCrossSourceQuery ? ' (cross-source via integration view)' : ''}`,
-          semanticContext:      enrichedSemanticContext,
-          relationshipContext:  enrichedRelationshipContext,
+          hint: `Query executed successfully with confidence ${Math.round(nlResult.confidence * 100)}%.`,
+          semanticContext,
+          relationshipContext,
           kpiFormulas,
         },
       },

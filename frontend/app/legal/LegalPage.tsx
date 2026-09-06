@@ -27,6 +27,9 @@ const DOCS = [
   { href: '/legal/privacy', label: 'Privacy Policy' },
   { href: '/legal/dpa', label: 'Data Processing Agreement' },
   { href: '/legal/subprocessors', label: 'Subprocessors' },
+  // The public trust page. It was reachable from nowhere in the app until
+  // 2026-09-06; a security posture nobody can find is not a posture.
+  { href: '/security', label: 'Security' },
 ];
 
 /** Inline pass: only **bold** is supported — the documents use nothing else. */
