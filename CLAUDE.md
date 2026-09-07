@@ -33,7 +33,12 @@ with false assumptions and produces broken code.
 
 **Last updated:** 2026-09-07 (TIER 1, THREE ITEMS — the authoring surfaces are
 guarded, there is ONE warehouse session builder, and the two subject chats are
-one conversation; owner: *"Do all of these"*)
+one conversation; owner: *"Do all of these"*, then *"TO MAIN AND PRODUCTION
+PLS"*. **IN MAIN AND PRODUCTION**: deploy run #586, `main-ef8991f`, gate
+required Tests + Lint green for the commit, Go live health-checked the new
+backend and shifted traffic at 15:01 UTC. `migrate-sql` skipped correctly —
+this change adds no migration. PR #124 auto-closed as merged on the
+fast-forward.)
 
 **The three items the owner picked from the coherence review's Tier 1, each of
 which was a decision rather than a defect — so each carries the reasoning that
