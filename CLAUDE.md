@@ -34,7 +34,10 @@ with false assumptions and produces broken code.
 **Last updated:** 2026-09-07 (HOME IS A BRIEFING NOW — R1 + R2 of
 `docs/backlog/home-experience.md`; owner: *"Let's implement your proposals"*,
 having settled board = per-user and the ops line = visible to viewers without
-the Refresh action)
+the Refresh action. **IN MAIN AND PRODUCTION** — owner: *"Pls put in main and
+production"*; PR #125 rebase-merged, deploy run #588, `main-a405116`, Go live
+health-checked all six components ok and shifted backend + frontend to 100% at
+18:47 UTC.)
 
 **THE GOVERNING RULE, AND IT IS THE WHOLE CHANGE: the assistant speaks first.**
 `/home` led with the number **73** and four sub-scores. Every number above the
@@ -173,13 +176,19 @@ the bottom.
   Re-validated: backend **84 files / 772 passed / 4 skipped**, eleven
   ratchets green, frontend **6 files / 52 passed**, lint clean, build 46/46
   (`/home` 15.1 kB).
-- **NOT runtime-exercised against a live tenant.** The overnight investigation
-  has never run on real data — watch the first 06:00 job after deploy for
-  `'morningBriefService: overnight investigation complete'`, and the first
-  Home open for a card reading "Why? — already worked out". A run of
+- **STILL NOT runtime-exercised against a live tenant, and it is now LIVE —
+  this is the one thing owed.** The overnight investigation has never run on
+  real data; the deploy above means **the next 06:00 job is its first real
+  execution**. Watch for `'morningBriefService: overnight investigation
+  complete'` in that run (`.ops/prod-logs` is the reader), and the first Home
+  open after it for a card reading "Why? — already worked out". A run of
   `'overnight investigation failed'` warnings means the picked entry's product
   is not queryable, which degrades to the pre-R2 behaviour (a fresh run on
-  click), not to a broken page.
+  click), not to a broken page. **There is no feature flag on any of this** —
+  `FEATURE_FLAGS` has been empty since 2026-08-31 and `CURRENT_RELEASE` is
+  null, so reaching production IS reaching every user. That is the standing
+  decision, not an oversight; the lever if it goes wrong is Actions →
+  **Rollback production**, which shifts traffic back to the previous revision.
 - **NOT built (R3/R4, sequenced in the doc)**: promotion of board entries from
   `query_log` repeat counts, nightly materialisation of board tiles, and
   absence detection ("you'd normally be at €40k by now"). **Also not done**: a
