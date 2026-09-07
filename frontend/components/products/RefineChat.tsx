@@ -13,6 +13,17 @@
  * Slides in from the right edge, ~520px wide. Doesn't claim a tab in
  * the existing tab bar; doesn't dim the underlying canvas (the user
  * needs to keep referencing the schema while chatting).
+ *
+ * ONE BOX, NOT TWO (2026-09-07). This panel used to dead-end on anything it
+ * could not do to THIS subject: `unsupported` rendered a reason and a "try
+ * somewhere else" line, and the somewhere else was a different chat on a
+ * different page. But "I want to see quotations" is not a question the user
+ * can pre-sort into change-this or add-that — working that out IS the
+ * question. So an `unsupported` verdict now escalates, silently and in the
+ * same thread, to the shared subject assistant (`@/lib/subjectAssistant`,
+ * also behind /build's box) ANCHORED to this subject. It answers from the
+ * real catalog and, when the right answer is a new subject, offers the same
+ * one-button additive build. The user asks once, in one place.
  */
 
 import { useEffect, useState, useCallback, useRef } from 'react';
@@ -25,6 +36,11 @@ import { format as sqlFormatter } from 'sql-formatter';
 import api from '@/lib/api';
 import { useToast } from '@/components/ui/Toast';
 import { formatRelativeShort } from '@/lib/dates';
+import {
+  askSubjectAssistant,
+  startSubjectAddition,
+  type SubjectProposal,
+} from '@/lib/subjectAssistant';
 
 /**
  * Pretty-print SQL with sql-formatter — same library + dialect the SQL
@@ -105,6 +121,18 @@ export default function RefineChat({
 }: RefineChatProps) {
   const toast = useToast();
   const [items, setItems] = useState<Refinement[]>([]);
+  /**
+   * The escalation for one refinement the refine flow could not serve.
+   * Keyed by refinement id so a later message never re-labels an earlier
+   * answer, and so we escalate each one exactly once.
+   */
+  const [escalations, setEscalations] = useState<Record<number, {
+    reply: string;
+    proposal: SubjectProposal | null;
+    adding?: boolean;
+    started?: boolean;
+    error?: string;
+  }>>({});
   const [draft, setDraft] = useState('');
   const [sending, setSending] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -118,6 +146,59 @@ export default function RefineChat({
     } catch { /* network blip — retry on next focus / send */ }
     finally { setLoading(false); }
   }, [productId]);
+
+  // ── Escalation ────────────────────────────────────────────────────────────
+  // An `unsupported` verdict means the refine flow cannot do this TO THIS
+  // SUBJECT — it does not mean the user asked for something impossible. Hand
+  // the same words to the shared assistant, anchored here, and let it answer
+  // from the catalog: already covered, a change elsewhere, or a new subject
+  // (which it can then build). Runs once per refinement.
+  useEffect(() => {
+    const pending = items.find((r) => r.intent === 'unsupported' && !(r.id in escalations));
+    if (!pending) return;
+    let cancelled = false;
+    // Mark it claimed immediately so a poll landing mid-flight cannot fire a
+    // second call for the same refinement.
+    setEscalations((prev) => ({ ...prev, [pending.id]: { reply: '', proposal: null } }));
+    askSubjectAssistant([{ role: 'user', content: pending.user_message }], productId)
+      .then((res) => {
+        if (cancelled) return;
+        setEscalations((prev) => ({
+          ...prev,
+          [pending.id]: { reply: res.reply, proposal: res.proposal },
+        }));
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        const msg = (err as { response?: { data?: { error?: string } } })?.response?.data?.error
+          ?? 'Could not check this against your other subjects.';
+        setEscalations((prev) => ({ ...prev, [pending.id]: { reply: '', proposal: null, error: msg } }));
+      });
+    return () => { cancelled = true; };
+  }, [items, escalations, productId]);
+
+  /** Approve an escalated addition — the same additive build /build offers. */
+  const addSubject = useCallback(async (refinementId: number, p: SubjectProposal) => {
+    setEscalations((prev) => ({ ...prev, [refinementId]: { ...prev[refinementId], adding: true } }));
+    try {
+      await startSubjectAddition(p);
+      setEscalations((prev) => ({
+        ...prev,
+        [refinementId]: { ...prev[refinementId], adding: false, started: true },
+      }));
+      toast.success(`Building "${p.name}"`, {
+        description: 'It appears under Subjects when the build finishes.',
+      });
+    } catch (err) {
+      const msg = (err as { response?: { data?: { error?: string } } })?.response?.data?.error
+        ?? 'Could not start the build.';
+      setEscalations((prev) => ({
+        ...prev,
+        [refinementId]: { ...prev[refinementId], adding: false, error: msg },
+      }));
+      toast.error('Could not start the build', { description: msg });
+    }
+  }, [toast]);
 
   // Initial load + poll while open. Polling is the simplest way to get
   // team-visible updates without SSE infrastructure for the MVP.
@@ -241,6 +322,8 @@ export default function RefineChat({
               onApprove={() => approve(r.id)}
               onReject={() => reject(r.id)}
               onRefreshAffected={refreshAffected}
+              escalation={escalations[r.id]}
+              onAddSubject={(p) => addSubject(r.id, p)}
             />
           ))
         )}
@@ -325,12 +408,21 @@ function Example({ children }: { children: React.ReactNode }) {
 // ───────────────────────────────────────────────────────────────────────────
 
 function RefinementBubble({
-  item, onApprove, onReject, onRefreshAffected,
+  item, onApprove, onReject, onRefreshAffected, escalation, onAddSubject,
 }: {
   item: Refinement;
   onApprove: () => void;
   onReject: () => void;
   onRefreshAffected: (products: Array<{ id: number; name: string }>) => Promise<void>;
+  /** Present only on an `unsupported` item the shared assistant picked up. */
+  escalation?: {
+    reply: string;
+    proposal: SubjectProposal | null;
+    adding?: boolean;
+    started?: boolean;
+    error?: string;
+  };
+  onAddSubject: (p: SubjectProposal) => void;
 }) {
   const [showDetails, setShowDetails] = useState(item.status === 'pending');
   const proposal = item.proposal;
@@ -371,6 +463,12 @@ function RefinementBubble({
             onReject={onReject}
             onRefreshAffected={onRefreshAffected}
           />
+          {escalation && (
+            <EscalationCard
+              escalation={escalation}
+              onAdd={onAddSubject}
+            />
+          )}
         </div>
       </div>
     </div>
@@ -378,6 +476,81 @@ function RefinementBubble({
 }
 
 // ───────────────────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------------
+// Escalation card — what the shared assistant said about an ask this subject
+// could not serve. Rendered directly under the `unsupported` verdict so the
+// thread reads as ONE answer: "not here, but here is where it does belong",
+// and, when that is a new subject, the button that builds it.
+// ---------------------------------------------------------------------------
+
+function EscalationCard({
+  escalation, onAdd,
+}: {
+  escalation: {
+    reply: string;
+    proposal: SubjectProposal | null;
+    adding?: boolean;
+    started?: boolean;
+    error?: string;
+  };
+  onAdd: (p: SubjectProposal) => void;
+}) {
+  const { reply, proposal, adding, started, error } = escalation;
+
+  // Claimed but not answered yet — the assistant is still looking.
+  if (!reply && !error) {
+    return (
+      <div className="mt-2 flex items-center gap-2 text-[12px] text-muted">
+        <Loader2 className="w-3 h-3 animate-spin" strokeWidth={2} />
+        Checking your other subjects&hellip;
+      </div>
+    );
+  }
+
+  if (error) {
+    return <div className="mt-2 text-[12px] text-muted">{error}</div>;
+  }
+
+  return (
+    <div className="mt-2 border-l-2 border-ocean/40 pl-3">
+      <div className="text-[12.5px] leading-[1.55] text-ink-2 whitespace-pre-wrap">{reply}</div>
+
+      {proposal && !started && (
+        <div className="mt-2 rounded-md border border-line bg-canvas px-3 py-2.5">
+          <div className="text-[12.5px] text-ink">
+            New subject <span className="font-medium">{proposal.name}</span>
+          </div>
+          {proposal.description && (
+            <div className="mt-0.5 text-[12px] text-muted">{proposal.description}</div>
+          )}
+          <div className="mt-1 text-[11.5px] text-muted-2">
+            Built from {proposal.entities.slice(0, 4).join(', ')}
+            {proposal.entities.length > 4 ? ` +${proposal.entities.length - 4} more` : ''}
+            {' · your existing subjects stay untouched'}
+          </div>
+          <button
+            type="button"
+            onClick={() => onAdd(proposal)}
+            disabled={adding}
+            className="mt-2 inline-flex items-center gap-1.5 rounded bg-ocean px-3 py-1.5 text-[12.5px] font-medium text-white hover:opacity-90 disabled:opacity-50"
+          >
+            {adding
+              ? <><Loader2 className="w-3 h-3 animate-spin" strokeWidth={2} /> Starting&hellip;</>
+              : <>Add {proposal.name}</>}
+          </button>
+        </div>
+      )}
+
+      {started && (
+        <div className="mt-2 flex items-center gap-1.5 text-[12px] text-ok">
+          <Check className="w-3.5 h-3.5" strokeWidth={2} />
+          Building &mdash; it appears under Subjects when it finishes.
+        </div>
+      )}
+    </div>
+  );
+}
+
 // Proposal card — renders the right diff for the intent
 // ───────────────────────────────────────────────────────────────────────────
 
@@ -415,15 +588,11 @@ function ProposalCard({
       <div className="border border-line bg-softer rounded-md px-3 py-2.5">
         <div className="flex items-start gap-2 text-[12.5px] text-ink-2">
           <Ban className="w-3.5 h-3.5 mt-0.5 flex-shrink-0 text-muted" strokeWidth={1.75} />
-          <div>
-            <div>{proposal.reason}</div>
-            {proposal.suggested_action && (
-              <div className="text-[12px] text-muted mt-1">
-                <span className="font-mono text-[10px] uppercase tracking-[0.1em] mr-1">Try</span>
-                {proposal.suggested_action}
-              </div>
-            )}
-          </div>
+          {/* `suggested_action` is deliberately not rendered: it used to say
+              "try the Build page", and the escalation directly below now
+              answers the ask here instead of sending the user away. Two
+              instructions pointing different directions is worse than one. */}
+          <div>{proposal.reason}</div>
         </div>
       </div>
     );

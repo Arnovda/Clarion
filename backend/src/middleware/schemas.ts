@@ -665,6 +665,15 @@ export const buildChatSchema = z.object({
       role: z.enum(['user', 'assistant']),
       content: z.string().min(1).max(4000),
     })).min(1).max(16),
+    /**
+     * The subject the user is looking at, when they are inside one. The
+     * assistant is the SAME assistant from /build and from a topic page; the
+     * anchor is what tells it whether "I want quotations" means "change this
+     * subject" or "add a new one". Optional: /build has no anchor.
+     * Ownership is checked in the route — an id from another tenant is
+     * ignored, never trusted into the prompt.
+     */
+    anchorProductId: z.number().int().positive().optional(),
   }),
 });
 

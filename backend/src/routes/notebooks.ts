@@ -29,13 +29,8 @@ import { parsePagination, paginatedResponse } from '../utils/paginate';
 import { callClaudeMultiTurn } from '../ai/AIService';
 import { Database } from 'duckdb-async';
 import path from 'path';
-import {
-  isAzurePath,
-  setupDuckDBForWarehouse,
-  createScanView,
-} from '../services/warehouse';
-import { listSourceTables, listProductTablesByConnection } from '../services/tableCatalog';
 import { actorOf, prepareUserRead } from '../services/readPolicy';
+import { buildConnectionWarehouseSession } from '../services/productWarehouse';
 import { clientAbort } from '../utils/requestAbort';
 import { logger as rootLogger } from '../utils/logger';
 
@@ -45,88 +40,6 @@ const router = Router();
 router.use(requireAuth);
 router.use(requireRole('admin', 'analyst'));
 
-// ─── Helper: build a namespaced DuckDB instance for a connection ──────────────
-// Creates schemas for source tables (schema = connection name) and product tables
-// (schema = product name), so queries like `SELECT * FROM wholesale_erp.artikelgroepen` work.
-async function buildNamespacedDuckDB(
-  pgDb: Knex | Knex.Transaction,
-  connectionId: number,
-  tenantId: number | undefined,
-): Promise<Database> {
-  const connection = await pgDb('connections').where({ id: connectionId }).first();
-  if (!connection) throw new Error('Connection not found');
-
-  // Azure mode is needed if either the connection warehouse OR any product
-  // delta_path is an azure URI — product tables can live on Azure Blob even
-  // when the source connection is local.
-  const productDeltaPaths = await pgDb('product_tables')
-    .join('star_schemas', 'product_tables.star_schema_id', 'star_schemas.id')
-    .join('data_products', 'star_schemas.data_product_id', 'data_products.id')
-    .where('data_products.connection_id', connectionId)
-    .whereNotNull('product_tables.delta_path')
-    .pluck<string[]>('product_tables.delta_path');
-  const isAzure = isAzurePath(connection.warehouse_path ?? '') || productDeltaPaths.some(isAzurePath);
-
-  const db = await Database.create(':memory:');
-  await setupDuckDBForWarehouse(db, isAzure);
-
-  const registeredSchemas = new Set<string>();
-  const createView = async (schema: string, viewName: string, tablePath: string) => {
-    registeredSchemas.add(schema.replace(/"/g, '""'));
-    await createScanView(db, viewName, tablePath, { schema });
-  };
-
-  // Source tables — schema = connection name. Catalog returns
-  // host-usable URIs covering both legacy ETL (`ingested_tables`) and
-  // source-connector flows (`selected_entities`) without us caring.
-  // The tenant is passed explicitly: these catalog reads open their OWN
-  // root-pool transaction and do not inherit this request's tenant context,
-  // so `undefined` made the RLS predicate `tenant_id = NULL` and the whole
-  // notebook came up with an empty schema (2026-09-07 coherence review, D2).
-  const sources = await listSourceTables(tenantId, connectionId);
-  for (const t of sources) {
-    try {
-      await createView(connection.name, t.tableName, t.uri);
-    } catch (err) {
-      log.warn({ err }, `Failed to create view for source ${connection.name}.${t.tableName}`);
-    }
-  }
-
-  // Product tables — schema = product name. One catalog call returns
-  // every materialised product table for this connection across all
-  // products, so we can register them in a single loop.
-  const products = await pgDb('data_products')
-    .where({ connection_id: connectionId })
-    .whereIn('status', ['approved', 'success'])
-    .select('id');
-  if (products.length > 0) {
-    const productTables = await listProductTablesByConnection(tenantId, connectionId);
-    for (const t of productTables) {
-      try {
-        await createView(t.productName, t.tableName, t.uri);
-      } catch (err) {
-        log.warn({ err }, `Failed to create view for product ${t.productName}.${t.tableName}`);
-      }
-    }
-  }
-
-  // Allow unqualified table refs (e.g. `FROM fact_sales_order_lines`) to resolve
-  // against any registered schema — important so AI-generated SQL from the Ask
-  // page (which is unqualified) is paste-and-run in notebooks.
-  if (registeredSchemas.size > 0) {
-    // DuckDB SET takes a single scalar string value: comma-separated names inside one quoted string.
-    const schemaList = [...registeredSchemas]
-      .map((s) => s.replace(/'/g, "''"))
-      .join(',');
-    try {
-      await db.exec(`SET search_path = '${schemaList}';`);
-    } catch (err) {
-      log.warn({ err }, 'Failed to set search_path');
-    }
-  }
-
-  return db;
-}
 
 // ─── DIRECT SQL QUERY — for Python cells to call via fetch ────────────────────
 // POST /api/notebooks/query { connectionId, sql }
@@ -147,7 +60,7 @@ router.post('/query', async (req: Request, res: Response, next: NextFunction) =>
     // Guard, then the acting user's row filters and column masks (P0-4):
     // a notebook is a read surface like any other.
     const safeSql = (await prepareUserRead(sqlText, actorOf(req))).sql;
-    db = await buildNamespacedDuckDB(pgDb, connectionId, req.user!.tenantId);
+    db = await buildConnectionWarehouseSession(pgDb, connectionId, req.user!.tenantId);
     const rawRows = await db.all(safeSql) as Record<string, unknown>[];
     const rows = rawRows.slice(0, 500).map((row) => {
       const out: Record<string, unknown> = {};
@@ -238,7 +151,7 @@ router.post('/generate', validate(generateNotebookCodeSchema), async (req: Reque
       // Only tables that are ACTUALLY queryable in the DuckDB session —
       // i.e. materialised to a delta_path. A table can be status='success'
       // yet have a null delta_path (shared-dim stub, or a build that never
-      // persisted a path); buildNamespacedDuckDB skips those, so the AI
+      // persisted a path); buildConnectionWarehouseSession skips those, so the AI
       // must not see them or it generates SQL against tables that resolve
       // to "table does not exist". Matches listProductTablesByConnection.
       const tables = await pgDb('product_tables')
@@ -790,7 +703,7 @@ router.post('/cells/:cellId/execute', async (req: Request, res: Response, next: 
     if (!sqlText) { res.status(400).json({ ok: false, error: 'No SQL to execute' }); return; }
     if (!cell.connection_id) { res.status(400).json({ ok: false, error: 'No connection selected for this notebook' }); return; }
 
-    db = await buildNamespacedDuckDB(pgDb, cell.connection_id, req.user!.tenantId);
+    db = await buildConnectionWarehouseSession(pgDb, cell.connection_id, req.user!.tenantId);
 
     try {
       // Security guard: confine notebook SQL to safe read-only queries over the

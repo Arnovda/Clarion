@@ -9,6 +9,7 @@ import { requireAuth, requireRole } from '../../middleware/auth';
 import { Database } from 'duckdb-async';
 import { reqDb } from '../../db/reqDb';
 import { buildConnectionWarehouseSession } from '../../services/productWarehouse';
+import { assertSafeReadQuery } from '../../utils/sqlGuard';
 import { log } from './shared';
 
 const router = Router();
@@ -105,7 +106,16 @@ router.post('/refinements/:id/preview', requireAuth, requireRole('admin', 'analy
     }
 
     duckDb = await buildConnectionWarehouseSession(reqDb(req), plan.connectionId, req.user!.tenantId);
-    const inner = plan.sql.trim().replace(/;\s*$/, '');
+    // GUARDED. `plan.sql` is AI-authored (the refinement proposal writes it)
+    // and ran unguarded until 2026-09-07. The SELECT wrapper below already
+    // stopped DDL, but nothing stopped `read_parquet('az://…')` pointed at
+    // ANOTHER tenant's warehouse prefix — the P0-1 vector on a surface the
+    // notebook guard never covered. Guard the INNER sql, before it is wrapped:
+    // the wrapper is ours and would pass on its own.
+    //
+    // Guard only, not `prepareUserRead` — see the note in cells.ts: a preview
+    // must show what deploy produces, and the transformation runs unmasked.
+    const inner = assertSafeReadQuery(plan.sql).trim().replace(/;\s*$/, '');
     const rawRows = await duckDb.all(`SELECT * FROM (\n${inner}\n) AS _preview LIMIT 12`) as Record<string, unknown>[];
     const rows = rawRows.map((row) => {
       const out: Record<string, unknown> = {};

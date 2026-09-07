@@ -16,20 +16,22 @@
  * and points at the topic's own Manage mode.
  *
  * Vocabulary: business words only, same rule as the rest of /build.
+ *
+ * ONE ASSISTANT, TWO ENTRY POINTS (2026-09-07). The asking and the building
+ * live in `@/lib/subjectAssistant`, shared with the topic page's Refine chat.
+ * The difference between the two is the ANCHOR, not the feature set: /build
+ * has no subject to be inside, so it cannot offer changes — which is an
+ * honest consequence of where you are, not a missing capability.
  */
 
 import { useCallback, useRef, useState } from 'react';
 import { ArrowRight, Loader2, MessageSquare, Plus, Sparkles } from 'lucide-react';
-import api from '@/lib/api';
 import { cn } from '@/lib/cn';
-
-interface Proposal {
-  connection_id: number;
-  name: string;
-  description: string;
-  focus?: string | null;
-  entities: string[];
-}
+import {
+  askSubjectAssistant,
+  startSubjectAddition,
+  type SubjectProposal as Proposal,
+} from '@/lib/subjectAssistant';
 
 interface ChatMsg {
   role: 'user' | 'assistant';
@@ -72,8 +74,9 @@ export default function AskPanel({ building, onAttach }: {
         .filter((m) => !m.error)
         .slice(-12)
         .map((m) => ({ role: m.role, content: m.content }));
-      const res = await api.post('/products/build-chat', { messages: payload });
-      const data = res.data?.data as { reply: string; proposal: Proposal | null };
+      // Unanchored: /build has no subject to be "inside". The same call from
+      // a topic page passes that subject as the anchor.
+      const data = await askSubjectAssistant(payload);
       setMessages((ms) => [...ms, { role: 'assistant', content: data.reply, proposal: data.proposal }]);
     } catch (err) {
       const ax = err as { response?: { data?: { error?: string } } };
@@ -92,17 +95,9 @@ export default function AskPanel({ building, onAttach }: {
     if (adding || building) return;
     setAdding(true);
     try {
-      const res = await api.post('/products/bus-matrix/extend-start', {
-        connectionId: p.connection_id,
-        name: p.name,
-        description: p.description,
-        focus: p.focus ?? undefined,
-        entities: p.entities,
-      });
-      const jobId = res.data?.data?.jobId as string | undefined;
-      if (!jobId) throw new Error('No job id returned');
+      const started = await startSubjectAddition(p);
       setMessages((ms) => ms.map((m, i) => (i === msgIndex ? { ...m, proposalUsed: true } : m)));
-      onAttach(jobId, p.connection_id);
+      onAttach(started.jobId, started.connectionId);
     } catch (err) {
       const ax = err as { response?: { data?: { error?: string; jobId?: string } } };
       const existingJobId = ax?.response?.data?.jobId;

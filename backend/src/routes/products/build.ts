@@ -198,13 +198,41 @@ router.post('/build-chat', requireAuth, requireRole('admin', 'analyst'), validat
     const tenantId = req.user?.tenantId;
     if (!tenantId) { res.status(401).json({ ok: false, error: 'Tenant context required' }); return; }
 
-    const { messages } = req.body as { messages: Array<{ role: 'user' | 'assistant'; content: string }> };
+    const { messages, anchorProductId } = req.body as {
+      messages: Array<{ role: 'user' | 'assistant'; content: string }>;
+      anchorProductId?: number;
+    };
 
     const { buildCoverageContext } = await import('../../services/buildChatContext');
     const coverage = await buildCoverageContext(db, tenantId);
 
+    // THE ANCHOR. This is the same assistant whether it is opened from /build
+    // or from inside a subject, and the anchor is the whole difference: it is
+    // what lets "I want to see quotations" resolve to "Sales does not carry
+    // that" rather than a generic answer. Without it the user has to decide
+    // whether their question is a change or an addition BEFORE asking — which
+    // is the thing they opened the assistant to find out.
+    //
+    // Read under the request's tenant scope and matched on tenant_id
+    // EXPLICITLY: an id from another tenant resolves to nothing and is simply
+    // dropped, so a forged anchor cannot put another tenant's subject name
+    // into the prompt.
+    let anchorLine = '';
+    if (anchorProductId) {
+      const anchor = await db('data_products')
+        .where({ id: anchorProductId, tenant_id: tenantId })
+        .first('name', 'description');
+      if (anchor) {
+        anchorLine = `\n\n## WHERE THE USER IS\n`
+          + `They are looking at the subject "${anchor.name}"`
+          + `${anchor.description ? ` (${anchor.description})` : ''}. `
+          + 'Answer in that frame: say plainly whether what they want is already in this '
+          + 'subject, is a change to it, or is a different subject altogether.';
+      }
+    }
+
     const { respondBuildChat } = await import('../../ai/AIService');
-    const response = await respondBuildChat(coverage.text, messages);
+    const response = await respondBuildChat(coverage.text + anchorLine, messages);
 
     // Server-side proposal validation — the model's suggestion only survives
     // when every part of it checks out against the real catalog. A proposal

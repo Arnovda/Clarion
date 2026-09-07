@@ -31,7 +31,86 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-09-07 (TIER 1 / D5 — the unreachable product-authoring
+**Last updated:** 2026-09-07 (TIER 1, THREE ITEMS — the authoring surfaces are
+guarded, there is ONE warehouse session builder, and the two subject chats are
+one conversation; owner: *"Do all of these"*)
+
+**The three items the owner picked from the coherence review's Tier 1, each of
+which was a decision rather than a defect — so each carries the reasoning that
+settled it.**
+- **(1) THE AUTHORING PREVIEWS RAN MODEL SQL WITH NO READ GUARD.** Two
+  surfaces executed SQL straight into DuckDB: the notebook cell runner
+  (`products/cells.ts` — both the cell's own SQL and the `CREATE OR REPLACE
+  VIEW` chaining of every preceding cell) and the refinement preview
+  (`refineChat.ts`, wrapped as an inner SELECT). Both sessions hold the
+  account-wide storage credential, so `read_parquet('az://…another tenant…')`
+  was reachable from an authoring screen — the P0-1 vector, closed everywhere
+  else since 2026-07-23 and open here. `assertSafeReadQuery` now wraps every
+  one of those executions.
+  **Deliberately the GUARD, not `prepareUserRead`**: a preview exists to show
+  what the deploy will produce, and the transformation itself runs unmasked —
+  a masked preview would be a different query from the one being authored, so
+  a curator would tune SQL against numbers the pipeline never emits. The guard
+  refuses cross-tenant and non-SELECT; it does not rewrite the query. Row
+  filters and column masks stay where they belong: on the READ paths (Ask AI,
+  dashboards, notebooks' own `/query`, the add-in), which already have them.
+- **(2) ONE WAREHOUSE SESSION BUILDER, NOT TWO.** `notebooks.ts` carried
+  `buildNamespacedDuckDB` (82 lines) beside `productWarehouse.ts`'s builder,
+  and the two had DRIFTED: the notebook one registered source + product tables
+  and stopped, so a notebook could not see **managed grids** (the budgets and
+  mappings on `/grids`, which Ask AI joins as ordinary tables) or the
+  **monthly rollups** — the fast aggregate the dashboard prompt is told to
+  prefer. Ask AI saw more than the notebook, on the same data, with no
+  explanation on screen. `buildConnectionWarehouseSession` is now THE builder
+  (source tables under the connection's schema, product tables under the
+  product's, rollups via `rollupViewName`, grids unqualified in the default
+  schema exactly as `createProductConnector` registers them) and notebooks
+  call it at both sites. `buildNamespacedDuckDB` is deleted, with its five
+  orphaned imports; notebooks.ts 912 → 831 lines.
+  **A grid whose view name collides with a registered table is SKIPPED with a
+  warning, never silently shadowing it** — grids are user-named and a product
+  table is not, so the platform's own object wins.
+- **(3) THE TWO SUBJECT CHATS ARE ONE CONVERSATION NOW.** "Ask about your
+  subjects" (`/build`) proposes NEW subjects; "Ask for a change"
+  (`/topics/:id?manage=1`) refines an EXISTING one. Two boxes, two places, and
+  **the seam between them was already in the data**: the refinement planner
+  answers `unsupported` when a request needs a field the subject does not
+  carry — which is precisely "this wants a new or extended subject", the other
+  chat's job. So an `unsupported` refinement now **escalates automatically**:
+  `frontend/lib/subjectAssistant.ts` (new, shared by both surfaces) asks the
+  build assistant with the subject as an anchor, and the answer renders in the
+  refine chat as an `EscalationCard` with the proposal's one build button.
+  The user never learns there were two systems.
+  **`anchorProductId` is the new half on the backend** (`buildChatSchema` +
+  `build-chat`): the coverage context gains a `## WHERE THE USER IS` line
+  naming the subject and its description, read under an EXPLICIT `tenant_id`
+  filter so an id from another tenant is simply dropped rather than answered.
+  The route stays READ-ONLY by construction — it has no mutation path, and
+  only the button builds.
+  Also removed: the `suggested_action` "Try:" line under an escalated
+  refinement, which would have contradicted the escalation sitting beside it.
+- **Tests**: NEW `authoring-surface-guard.test.ts` (16) — the guard's
+  admit/refuse matrix plus SOURCE-level assertions that it is wired into both
+  execution sites and that exactly one session builder exists (the second one
+  cannot come back without a red test); NEW `subject-assistant-anchor.test.ts`
+  (5) — mocks `respondBuildChat` to capture the coverage string and pins that
+  the anchor reaches the prompt for its owner, is DROPPED for another tenant,
+  degrades quietly for a nonexistent id, and 400s on a malformed one. Both
+  verified RED first (guard: by restoring `duckDb.all(sqlToRun.trim())`).
+- Validation: backend `npm run check` clean; full backend vitest **83 files /
+  753 passed / 4 skipped**; all ELEVEN ratchets green from the repo root with
+  per-ratchet exit codes; frontend `tsc` clean, vitest 5 files / 27 passed,
+  touched files lint-clean, `next build` green 46/46.
+- **NOT done from Tier 1, deliberately**: the **subject picker in Ask AI**
+  stays unbuilt — `thinkQuerySchema` accepts `productId` and `/think` forwards
+  it, but the frontend has never sent it, so switching it on lights a path
+  that has never run in production, and two coupled hazards (shared-dimension
+  stubs, product-layer entity pre-flight) must be fixed in the SAME change or
+  answers get worse. Cross-source questions stay refused by
+  `tableCatalog.ts`'s one line. Both are the multi-source plan's, not this
+  slice's.
+
+**Prior last updated:** 2026-09-07 (TIER 1 / D5 — the unreachable product-authoring
 surface is DELETED, 2,712 lines; owner: *"stop the workflow and just take the
 deletions on the evidence so far"*. Tier 0 is in main and PRODUCTION: deploy run
 #584, `main-e28ed58`, Go live health-checked all six components and shifted
@@ -9306,6 +9385,8 @@ clarion/                              ← on disk: databridge/
         ├── cn.ts                    ← classnames helper (clsx + tailwind-merge)
         ├── dates.ts                 ← formatDate/formatDateTime/formatRelative/formatRelativeLong/Short (en-GB)
         ├── sqlProvenance.ts         ← FROM/JOIN extraction for the "How it's built" provenance trail
+        ├── askLink.ts               ← askAboutSubject() — the one /query deep-link builder
+        ├── subjectAssistant.ts      ← the ONE subject chat: askSubjectAssistant + startSubjectAddition
         ├── observatory.ts           ← JS/SVG mirror of globals.css tokens + SERIES chart palette
         ├── freshness.ts             ← data-freshness helpers (formatRelativeTime, getFreshnessStatus)
         └── hooks/

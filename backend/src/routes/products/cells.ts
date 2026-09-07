@@ -11,6 +11,7 @@ import { listSourceTables, listProductTablesByConnection } from '../../services/
 import { Database } from 'duckdb-async';
 import { reqDb } from '../../db/reqDb';
 import { buildConnectionWarehouseSession } from '../../services/productWarehouse';
+import { assertSafeReadQuery } from '../../utils/sqlGuard';
 
 const router = Router();
 
@@ -189,14 +190,31 @@ router.post('/tables/cells/:cellId/execute', requireAuth, requireRole('admin', '
       const prevSql = prev.cell_type === 'nl' ? prev.generated_sql : prev.source;
       if (prevSql?.trim()) {
         try {
+          // Guarded like the cell itself: a predecessor becomes a VIEW in the
+          // same session, so an unguarded one is the same hole one step back.
+          assertSafeReadQuery(prevSql);
           await duckDb.exec(`CREATE OR REPLACE VIEW _cell_${prev.id} AS ${prevSql}`);
-        } catch { /* skip failed predecessor */ }
+        } catch { /* skip failed or refused predecessor */ }
       }
     }
 
-    // Execute the cell
+    // Execute the cell. GUARDED — SELECT-only and no external access.
+    //
+    // This SQL is AI-authored (the `nl` cell type generates it) and it ran raw
+    // until 2026-09-07: DDL was allowed, and so was `read_parquet('az://…')`
+    // against ANOTHER tenant's warehouse prefix — the P0-1 vector, on a
+    // surface the notebook guard never covered. A cell is a transformation
+    // being drafted, and a transformation is a SELECT, so SELECT-only costs
+    // this surface nothing.
+    //
+    // Deliberately the GUARD only, not `prepareUserRead`: data policies are
+    // not applied here. A cell preview must show what DEPLOY will produce,
+    // and the transformation runner builds the table from unmasked source
+    // rows — a preview masked for the author would misrepresent the output.
+    // The guard is a tenant/filesystem boundary; policies are a reader
+    // concern, and this is an authoring surface.
     const start = Date.now();
-    const rawRows = await duckDb.all(sqlToRun.trim()) as Record<string, unknown>[];
+    const rawRows = await duckDb.all(assertSafeReadQuery(sqlToRun)) as Record<string, unknown>[];
     const durationMs = Date.now() - start;
 
     const rows = rawRows.slice(0, 500).map((row) => {
