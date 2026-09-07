@@ -1,0 +1,853 @@
+<title>The Standing Brief</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,600;1,8..60,400&family=Inter:wght@400;500;600&family=Geist+Mono:wght@400;500&display=swap">
+<style>
+/* ───────────────────────────────────────────────────────────────────────
+   Clarion "Observatory" tokens — copied verbatim from frontend/lib/observatory.ts
+   and app/globals.css so this prototype is the real product, not a lookalike.
+   Deliberately single-theme: Clarion is a committed light product, so every
+   colour is painted explicitly rather than inherited from the host.
+   ─────────────────────────────────────────────────────────────────────── */
+:root{
+  color-scheme: light;
+  --bg:#eef0f2; --surface:#f8f9fa; --raised:#ffffff;
+  --soft:#e3e6ea; --softer:#edeff2; --line:#d0d5da; --line-strong:#b8bec5;
+  --ink:#0f1a22; --ink-2:#334049; --ink-3:#4a5660; --muted:#6b7680; --muted-2:#8891a0;
+  --ocean:#164e63; --ocean-hover:#103d4f; --ocean-soft:#d0e1e6; --ocean-softer:#e8f0f3;
+  --ai:#c08a5e; --ai-soft:#f1e4d6;
+  --ok:#3f7a5c; --ok-soft:#dbe8e0;
+  --warn:#a06a1c; --warn-soft:#f1e4c8;
+  --err:#a43a3a; --err-soft:#f1d7d7;
+  --r-sm:6px; --r-md:10px; --r-lg:14px;
+  --sh-1:0 1px 2px rgba(15,26,34,.04);
+  --sh-2:0 1px 2px rgba(15,26,34,.04),0 4px 12px -4px rgba(15,26,34,.06);
+  --sh-3:0 1px 2px rgba(15,26,34,.04),0 12px 40px -12px rgba(15,26,34,.12);
+  --ease:cubic-bezier(.22,1,.36,1);
+  --f-display:"Source Serif 4",Georgia,"Times New Roman",serif;
+  --f-sans:Inter,system-ui,-apple-system,"Segoe UI",sans-serif;
+  --f-mono:"Geist Mono",ui-monospace,SFMono-Regular,Menlo,monospace;
+}
+*{box-sizing:border-box}
+body{
+  margin:0;background:var(--bg);color:var(--ink);
+  font-family:var(--f-sans);font-size:14px;line-height:1.55;
+  -webkit-font-smoothing:antialiased;
+}
+button{font:inherit;color:inherit;cursor:pointer;background:none;border:none}
+:focus-visible{outline:none;box-shadow:0 0 0 3px var(--ocean-soft);border-radius:var(--r-sm)}
+
+/* ── App chrome ─────────────────────────────────────────────────────── */
+.app{display:flex;min-height:100vh}
+.rail{
+  width:58px;flex:0 0 58px;background:var(--soft);
+  border-right:1px solid var(--line);
+  display:flex;flex-direction:column;align-items:center;
+  padding:14px 0;gap:3px;
+}
+.rail .mark{
+  width:26px;height:26px;border-radius:7px;background:var(--ocean);
+  color:#fff;font-family:var(--f-display);font-size:15px;font-weight:600;
+  display:grid;place-items:center;margin-bottom:14px;
+}
+.rail button{
+  width:34px;height:34px;border-radius:8px;display:grid;place-items:center;
+  color:var(--muted);transition:background var(--ease) 120ms;
+}
+.rail button:hover{background:rgba(255,255,255,.6)}
+.rail button.on{background:var(--raised);color:var(--ocean);box-shadow:var(--sh-1)}
+.rail .sep{width:22px;height:1px;background:var(--line-strong);margin:9px 0}
+
+.main{flex:1;min-width:0;display:flex;flex-direction:column}
+.topbar{
+  height:52px;flex:0 0 52px;border-bottom:1px solid var(--line);
+  background:var(--surface);display:flex;align-items:center;
+  padding:0 20px;gap:12px;
+}
+.wordmark{font-family:var(--f-display);font-size:17px;letter-spacing:-.01em}
+.tenant{
+  font-family:var(--f-mono);font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;
+  color:var(--muted);border:1px solid var(--line);border-radius:999px;padding:3px 9px;
+}
+.topbar .sp{flex:1}
+.avatar{
+  width:26px;height:26px;border-radius:999px;background:var(--ocean-softer);
+  color:var(--ocean);display:grid;place-items:center;font-size:11px;font-weight:600;
+  border:1px solid var(--ocean-soft);
+}
+
+/* ── Prototype state switcher (not part of the design) ──────────────── */
+.switcher{
+  background:var(--ink);color:#e8ecef;padding:9px 20px;
+  display:flex;align-items:center;gap:10px;flex-wrap:wrap;
+}
+.switcher .lbl{
+  font-family:var(--f-mono);font-size:9.5px;letter-spacing:.16em;
+  text-transform:uppercase;color:#9aa6ae;margin-right:2px;
+}
+.switcher button{
+  font-size:12px;padding:4px 11px;border-radius:999px;
+  border:1px solid rgba(255,255,255,.18);color:#c9d2d8;
+}
+.switcher button:hover{border-color:rgba(255,255,255,.4);color:#fff}
+.switcher button.on{background:#fff;color:var(--ink);border-color:#fff;font-weight:500}
+
+/* ── Page ───────────────────────────────────────────────────────────── */
+.scroll{flex:1;overflow:auto}
+.page{max-width:780px;margin:0 auto;padding:38px 24px 72px}
+.eyebrow{
+  font-family:var(--f-mono);font-size:10px;letter-spacing:.15em;
+  text-transform:uppercase;color:var(--muted);
+}
+
+/* The lead — the biggest thing on the page is a sentence about the
+   business, not a score. This inversion is the whole proposal. */
+.lead{margin-bottom:26px}
+.lead .date{margin-bottom:9px}
+.lead h1{
+  font-family:var(--f-display);font-weight:400;
+  font-size:31px;line-height:1.28;letter-spacing:-.015em;
+  margin:0;text-wrap:balance;color:var(--ink);
+}
+.lead h1 em{font-style:normal;box-shadow:inset 0 -.44em 0 var(--warn-soft)}
+.lead .sub{
+  margin:11px 0 0;font-size:13px;color:var(--muted);
+  display:flex;align-items:center;gap:7px;flex-wrap:wrap;
+}
+.dot{width:3px;height:3px;border-radius:999px;background:var(--muted-2);flex:0 0 3px}
+
+/* Ask box */
+.ask{
+  display:flex;align-items:center;gap:10px;height:48px;
+  background:var(--raised);border:1px solid var(--line);border-radius:var(--r-md);
+  padding:0 6px 0 14px;box-shadow:var(--sh-2);margin-bottom:12px;
+  transition:border-color 120ms var(--ease),box-shadow 120ms var(--ease);
+}
+.ask:focus-within{border-color:var(--ocean);box-shadow:0 0 0 3px var(--ocean-soft)}
+.ask input{
+  flex:1;min-width:0;border:none;background:none;font:inherit;font-size:14px;
+  color:var(--ink);outline:none;
+}
+.ask input::placeholder{color:var(--muted-2)}
+.ask .go{
+  background:var(--ocean);color:#fff;border-radius:var(--r-sm);
+  padding:8px 15px;font-size:13px;font-weight:500;
+}
+.ask .go:hover{background:var(--ocean-hover)}
+.chips{display:flex;gap:7px;flex-wrap:wrap;margin-bottom:34px}
+.chip{
+  font-size:12.5px;color:var(--ink-2);background:var(--raised);
+  border:1px solid var(--line);border-radius:999px;padding:5px 12px;
+  transition:all 120ms var(--ease);
+}
+.chip:hover{border-color:var(--ocean);color:var(--ocean);background:var(--ocean-softer)}
+
+/* Section heads */
+.shead{
+  display:flex;align-items:baseline;justify-content:space-between;
+  gap:12px;margin:0 0 12px;
+}
+.shead .act{
+  font-family:var(--f-mono);font-size:10.5px;letter-spacing:.07em;
+  text-transform:uppercase;color:var(--ocean);
+}
+.shead .act:hover{color:var(--ocean-hover);text-decoration:underline}
+section{margin-bottom:34px}
+
+/* ── Movement cards ─────────────────────────────────────────────────── */
+.moves{display:flex;flex-direction:column;gap:10px}
+.move{
+  background:var(--raised);border:1px solid var(--line);border-radius:var(--r-md);
+  box-shadow:var(--sh-1);overflow:hidden;
+}
+/* Severity stripe: state encoded in form, not colour alone — each card
+   also carries a worded tag. */
+.move{border-left:3px solid var(--line-strong)}
+.move.sev-high{border-left-color:var(--err)}
+.move.sev-med{border-left-color:var(--warn)}
+.move.sev-good{border-left-color:var(--ok)}
+.move .body{padding:14px 16px;display:flex;gap:16px;align-items:flex-start}
+.move .txt{flex:1;min-width:0}
+.move .tag{
+  font-family:var(--f-mono);font-size:9.5px;letter-spacing:.12em;text-transform:uppercase;
+  display:inline-flex;align-items:center;gap:5px;margin-bottom:5px;
+}
+.tag-high{color:var(--err)} .tag-med{color:var(--warn)} .tag-good{color:var(--ok)}
+.move h3{
+  margin:0 0 4px;font-size:14.5px;font-weight:600;letter-spacing:-.005em;
+  color:var(--ink);line-height:1.4;
+}
+.move p{margin:0;font-size:13px;color:var(--ink-3);line-height:1.55}
+.move .num{
+  font-family:var(--f-mono);font-variant-numeric:tabular-nums;
+  color:var(--ink);font-weight:500;
+}
+.spark{flex:0 0 92px;display:flex;flex-direction:column;align-items:flex-end;gap:3px}
+.spark .delta{
+  font-family:var(--f-mono);font-size:11.5px;font-variant-numeric:tabular-nums;
+  display:flex;align-items:center;gap:3px;
+}
+.d-up{color:var(--err)} .d-down{color:var(--err)} .d-good{color:var(--ok)}
+.move .foot{
+  border-top:1px solid var(--softer);padding:8px 16px;
+  display:flex;align-items:center;gap:8px;background:#fcfcfd;
+}
+.btn-s{
+  font-size:12px;padding:5px 11px;border-radius:var(--r-sm);
+  border:1px solid var(--line);color:var(--ink-2);background:var(--raised);
+  transition:all 120ms var(--ease);
+}
+.btn-s:hover{border-color:var(--ocean);color:var(--ocean)}
+.btn-s.primary{background:var(--ocean-softer);border-color:var(--ocean-soft);color:var(--ocean);font-weight:500}
+.btn-s.primary:hover{background:var(--ocean-soft)}
+.foot .sp{flex:1}
+.foot .meta{font-family:var(--f-mono);font-size:10px;color:var(--muted-2);letter-spacing:.04em}
+
+/* Pre-computed investigation trail */
+.trail{border-top:1px solid var(--softer);background:var(--ocean-softer);padding:0 16px;
+  max-height:0;overflow:hidden;transition:max-height 320ms var(--ease),padding 320ms var(--ease)}
+.trail.open{max-height:520px;padding:14px 16px 16px}
+.trail .th{
+  font-family:var(--f-mono);font-size:9.5px;letter-spacing:.12em;text-transform:uppercase;
+  color:var(--ocean);margin-bottom:10px;display:flex;align-items:center;gap:6px;
+}
+.trail ol{margin:0;padding:0 0 0 0;list-style:none;display:flex;flex-direction:column;gap:9px}
+.trail li{display:flex;gap:10px;font-size:12.5px;color:var(--ink-2);line-height:1.5}
+.trail li .n{
+  flex:0 0 18px;height:18px;border-radius:999px;background:var(--raised);
+  border:1px solid var(--ocean-soft);color:var(--ocean);
+  font-family:var(--f-mono);font-size:9.5px;display:grid;place-items:center;margin-top:1px;
+}
+.trail .concl{
+  margin-top:12px;padding-top:11px;border-top:1px solid var(--ocean-soft);
+  font-size:13px;color:var(--ink);line-height:1.55;
+}
+.trail .concl strong{font-weight:600}
+
+/* ── Board ──────────────────────────────────────────────────────────── */
+.board{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}
+@media(min-width:660px){.board{grid-template-columns:repeat(4,1fr)}}
+.tile{
+  background:var(--raised);border:1px solid var(--line);border-radius:var(--r-md);
+  padding:12px 13px 10px;box-shadow:var(--sh-1);text-align:left;width:100%;
+  display:flex;flex-direction:column;gap:6px;
+  transition:border-color 120ms var(--ease),box-shadow 120ms var(--ease);
+}
+.tile:hover{border-color:var(--ocean-soft);box-shadow:var(--sh-2)}
+.tile .lab{font-size:11.5px;color:var(--muted);line-height:1.35;min-height:31px}
+.tile .val{
+  font-family:var(--f-mono);font-size:19px;font-weight:500;letter-spacing:-.02em;
+  font-variant-numeric:tabular-nums;color:var(--ink);line-height:1.1;
+}
+.tile .dl{font-family:var(--f-mono);font-size:10.5px;display:flex;align-items:center;gap:3px;font-variant-numeric:tabular-nums}
+.tile svg{display:block;margin-top:1px}
+
+/* Promotion prompt — how something joins the board without a settings screen */
+.promote{
+  margin-top:10px;background:var(--ai-soft);border:1px solid #e4d0bb;
+  border-radius:var(--r-md);padding:11px 13px;
+  display:flex;align-items:center;gap:12px;flex-wrap:wrap;
+}
+.promote .pt{flex:1;min-width:210px;font-size:12.5px;color:#6d4a2c;line-height:1.5}
+.promote .pt b{color:#4a331f;font-weight:600}
+.btn-ai{
+  font-size:12px;padding:5px 12px;border-radius:var(--r-sm);font-weight:500;
+  background:var(--ai);color:#fff;border:1px solid var(--ai);
+}
+.btn-ai:hover{filter:brightness(.94)}
+.btn-ghost{font-size:12px;padding:5px 10px;border-radius:var(--r-sm);color:#7a5a3c}
+.btn-ghost:hover{background:rgba(0,0,0,.05)}
+
+/* ── Watch input ────────────────────────────────────────────────────── */
+.watch{
+  background:var(--raised);border:1px dashed var(--line-strong);border-radius:var(--r-md);
+  padding:14px 16px;
+}
+.watch p{margin:0 0 10px;font-size:13px;color:var(--ink-3)}
+.watch .row{display:flex;gap:8px;align-items:center}
+.watch input{
+  flex:1;min-width:0;height:36px;border:1px solid var(--line);border-radius:var(--r-sm);
+  padding:0 11px;font:inherit;font-size:13px;background:var(--surface);color:var(--ink);outline:none;
+}
+.watch input:focus{border-color:var(--ocean);box-shadow:0 0 0 3px var(--ocean-soft)}
+.watch input::placeholder{color:var(--muted-2)}
+.watching{display:flex;flex-wrap:wrap;gap:6px;margin-top:11px}
+.wpill{
+  font-size:11.5px;color:var(--ink-2);background:var(--softer);
+  border:1px solid var(--line);border-radius:999px;padding:3px 6px 3px 10px;
+  display:inline-flex;align-items:center;gap:6px;
+}
+.wpill button{color:var(--muted-2);display:grid;place-items:center;padding:2px;border-radius:999px}
+.wpill button:hover{color:var(--err);background:var(--err-soft)}
+
+/* ── Recent ─────────────────────────────────────────────────────────── */
+.recent{background:var(--raised);border:1px solid var(--line);border-radius:var(--r-md);overflow:hidden}
+.recent button.row{
+  width:100%;display:flex;align-items:center;gap:10px;padding:10px 14px;text-align:left;
+  border-bottom:1px solid var(--softer);transition:background 120ms var(--ease);
+}
+.recent button.row:last-child{border-bottom:none}
+.recent button.row:hover{background:var(--softer)}
+.recent .t{flex:1;min-width:0;font-size:13px;color:var(--ink);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.recent .w{font-family:var(--f-mono);font-size:10px;color:var(--muted-2);flex:0 0 auto}
+.recent .ic{flex:0 0 auto;color:var(--muted-2);display:grid;place-items:center}
+
+/* ── Operational strip — one line, at the bottom, consequence-framed ── */
+.ops{
+  display:flex;align-items:center;gap:10px;padding:10px 14px;flex-wrap:wrap;
+  background:var(--surface);border:1px solid var(--line);border-radius:var(--r-md);
+}
+.ops .txt{flex:1;min-width:220px;font-size:12.5px;color:var(--ink-3)}
+.ops .txt b{font-weight:600;color:var(--ink-2)}
+.ops .warnico{color:var(--warn);flex:0 0 auto;display:grid;place-items:center}
+.ops a{color:var(--ocean);text-decoration:none;font-size:12.5px}
+.ops a:hover{text-decoration:underline}
+
+/* Quiet + cold states */
+.quiet{
+  background:var(--raised);border:1px solid var(--line);border-radius:var(--r-md);
+  padding:20px;display:flex;gap:14px;align-items:flex-start;
+}
+.quiet .ic{flex:0 0 auto;color:var(--ok);margin-top:1px}
+.quiet h3{margin:0 0 5px;font-size:14px;font-weight:600}
+.quiet p{margin:0;font-size:13px;color:var(--ink-3);line-height:1.6}
+.quiet ul{margin:9px 0 0;padding-left:17px;font-size:12.5px;color:var(--muted);line-height:1.75}
+
+.night{
+  background:var(--ocean);color:#dfeaee;border-radius:var(--r-md);
+  padding:18px 20px;box-shadow:var(--sh-2);
+}
+.night .th{
+  font-family:var(--f-mono);font-size:9.5px;letter-spacing:.14em;text-transform:uppercase;
+  color:#8fb3bf;margin-bottom:11px;
+}
+.night ol{margin:0;padding:0;list-style:none;display:flex;flex-direction:column;gap:10px}
+.night li{display:flex;gap:11px;font-size:13px;line-height:1.5}
+.night li .n{
+  flex:0 0 19px;height:19px;border-radius:999px;background:rgba(255,255,255,.13);
+  font-family:var(--f-mono);font-size:9.5px;display:grid;place-items:center;
+  color:#cfe0e6;margin-top:1px;
+}
+.night li b{color:#fff;font-weight:600}
+
+.hidden{display:none !important}
+
+/* Annotation callouts — explain the design decision, prototype only */
+.note{
+  border-left:2px solid var(--ai);background:#fdf9f5;
+  padding:9px 13px;margin:0 0 14px;border-radius:0 var(--r-sm) var(--r-sm) 0;
+  font-size:12px;color:#7a5a3c;line-height:1.55;
+}
+.note b{color:#5c422a;font-weight:600}
+</style>
+
+<div class="app">
+  <!-- Nav rail (chrome, so the page reads as in-app) -->
+  <nav class="rail" aria-label="Clarion sections">
+    <div class="mark" aria-hidden="true">C</div>
+    <button class="on" title="Home" aria-label="Home"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9.5 12 3l9 6.5V20a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"/></svg></button>
+    <button title="Ask" aria-label="Ask"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.4 8.4 0 0 1-9 8.4L3 21l1.1-9A8.4 8.4 0 1 1 21 11.5z"/></svg></button>
+    <button title="Dashboards" aria-label="Dashboards"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><path d="M7 15v3M12 9v9M17 12v6"/></svg></button>
+    <button title="Subjects" aria-label="Subjects"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="m12 3 9 5-9 5-9-5z"/><path d="m3 13 9 5 9-5"/></svg></button>
+    <div class="sep" aria-hidden="true"></div>
+    <button title="Sources" aria-label="Sources"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5.5" rx="8" ry="3"/><path d="M4 5.5v13c0 1.7 3.6 3 8 3s8-1.3 8-3v-13"/><path d="M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3"/></svg></button>
+    <button title="Build" aria-label="Build"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1.4"/><rect x="14" y="3" width="7" height="7" rx="1.4"/><rect x="3" y="14" width="7" height="7" rx="1.4"/><rect x="14" y="14" width="7" height="7" rx="1.4"/></svg></button>
+  </nav>
+
+  <div class="main">
+    <header class="topbar">
+      <span class="wordmark">Clarion</span>
+      <span class="tenant">VDA Analytics</span>
+      <span class="sp"></span>
+      <span class="avatar">A</span>
+    </header>
+
+    <!-- Prototype-only control. Not part of the proposed design. -->
+    <div class="switcher" role="group" aria-label="Prototype state">
+      <span class="lbl">Prototype state</span>
+      <button class="on" data-state="moved">A morning where something moved</button>
+      <button data-state="quiet">A quiet morning</button>
+      <button data-state="cold">Day one, nothing learned yet</button>
+    </div>
+
+    <div class="scroll">
+      <main class="page">
+
+        <!-- ══ THE LEAD ══════════════════════════════════════════════ -->
+        <div class="lead">
+          <p class="eyebrow date">Monday 7 September · 07:12</p>
+
+          <h1 id="lead-head">
+            Revenue is <em>€38k behind</em> where you'd normally be by the 7th —
+            and almost all of it is one customer.
+          </h1>
+
+          <p class="sub" id="lead-sub">
+            <span>Checked 6 things at 06:00</span>
+            <span class="dot"></span>
+            <span>3 worth your time</span>
+            <span class="dot"></span>
+            <span>Data through Fri 5 Sept</span>
+          </p>
+        </div>
+
+        <!-- ══ ASK ═══════════════════════════════════════════════════ -->
+        <div class="ask">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#8891a0" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 11.5a8.4 8.4 0 0 1-9 8.4L3 21l1.1-9A8.4 8.4 0 1 1 21 11.5z"/></svg>
+          <input id="askbox" type="text" placeholder="Ask anything about your business…" aria-label="Ask a question about your business">
+          <button class="go">Ask</button>
+        </div>
+        <div class="chips" id="chips">
+          <button class="chip">Which customers stopped ordering?</button>
+          <button class="chip">Show me overdue invoices over €10k</button>
+          <button class="chip">Margin by supplier, this year vs last</button>
+        </div>
+
+        <!-- ══ WHAT MOVED ════════════════════════════════════════════ -->
+        <section id="sec-moves">
+          <div class="shead">
+            <p class="eyebrow">What moved since Friday</p>
+            <button class="act">All 6 things I watch</button>
+          </div>
+          <div class="moves">
+
+            <!-- Card 1 — the one with the answer already waiting -->
+            <article class="move sev-high">
+              <div class="body">
+                <div class="txt">
+                  <span class="tag tag-high">
+                    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><path d="M12 8v5M12 17h.01"/><circle cx="12" cy="12" r="9"/></svg>
+                    Needs a decision
+                  </span>
+                  <h3>Terrie sprl has ordered nothing since 12 August</h3>
+                  <p>They bought every month for 14 months, averaging <span class="num">€10.4k</span>. Three weeks of silence is <span class="num">€31k</span> of the <span class="num">€38k</span> revenue gap.</p>
+                </div>
+                <div class="spark">
+                  <span class="delta d-down">
+                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14M19 12l-7 7-7-7"/></svg>
+                    −100%
+                  </span>
+                  <svg width="92" height="30" viewBox="0 0 92 30" role="img" aria-label="Monthly orders from Terrie sprl, steady for 14 months then zero for the last three weeks">
+                    <path d="M2 16 L8.4 14 L14.8 17 L21.2 13 L27.6 15 L34 12 L40.4 16 L46.8 13 L53.2 14 L59.6 11 L66 15 L72.4 13 L78.8 28 L85.2 28 L91 28"
+                          fill="none" stroke="#a43a3a" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+                    <circle cx="91" cy="28" r="2.6" fill="#a43a3a"/>
+                  </svg>
+                </div>
+              </div>
+              <div class="foot">
+                <button class="btn-s primary" data-trail="t1">Why? — already worked out</button>
+                <button class="btn-s">Draft a check-in email</button>
+                <span class="sp"></span>
+                <span class="meta">CHECKED 06:04</span>
+              </div>
+              <div class="trail" id="t1">
+                <p class="th">
+                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M18.4 5.6l-2.1 2.1M7.7 16.3l-2.1 2.1"/></svg>
+                  Clarion looked into this at 06:04 — 4 steps, 11 seconds
+                </p>
+                <ol>
+                  <li><span class="n">1</span><span>Isolated the revenue gap by customer. Terrie sprl accounts for <span class="num">€31.2k</span> of <span class="num">€38.4k</span> — the rest is ordinary variation.</span></li>
+                  <li><span class="n">2</span><span>Checked their order history: 14 consecutive months, last order <span class="num">12 Aug</span> for <span class="num">€9,840</span>. Nothing since.</span></li>
+                  <li><span class="n">3</span><span>Ruled out a data problem — their records are still syncing, and two credit notes posted on 28 Aug.</span></li>
+                  <li><span class="n">4</span><span>Found <span class="num">€4,210</span> of theirs now <span class="num">71 days</span> overdue, unpaid since before the silence.</span></li>
+                </ol>
+                <p class="concl"><strong>Most likely:</strong> this is a payment dispute, not a lost customer. The overdue invoice predates the drop, and the credit notes suggest something was contested. Worth a phone call before it becomes a write-off.</p>
+              </div>
+            </article>
+
+            <!-- Card 2 -->
+            <article class="move sev-med">
+              <div class="body">
+                <div class="txt">
+                  <span class="tag tag-med">
+                    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg>
+                    Worth watching
+                  </span>
+                  <h3>Overdue receivables crossed €80k</h3>
+                  <p>Up <span class="num">€19k</span> in nine days. Three invoices are <span class="num">62%</span> of the total, and the oldest is now <span class="num">71 days</span> out.</p>
+                </div>
+                <div class="spark">
+                  <span class="delta d-up">
+                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 19V5M5 12l7-7 7 7"/></svg>
+                    +29%
+                  </span>
+                  <svg width="92" height="30" viewBox="0 0 92 30" role="img" aria-label="Overdue receivables rising from 62k to 84k over nine days">
+                    <path d="M2 21 L13 20 L24 22 L35 19 L46 17 L57 14 L68 12 L79 8 L91 5"
+                          fill="none" stroke="#a06a1c" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+                    <circle cx="91" cy="5" r="2.6" fill="#a06a1c"/>
+                  </svg>
+                </div>
+              </div>
+              <div class="foot">
+                <button class="btn-s primary">Show me the three</button>
+                <button class="btn-s">Why?</button>
+                <span class="sp"></span>
+                <span class="meta">CHECKED 06:04</span>
+              </div>
+            </article>
+
+            <!-- Card 3 — the absence signal -->
+            <article class="move sev-med">
+              <div class="body">
+                <div class="txt">
+                  <span class="tag tag-med">
+                    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
+                    Didn't happen
+                  </span>
+                  <h3>You've invoiced €12k this month — you'd normally be at €40k by now</h3>
+                  <p>Nothing is wrong in the data — the invoices simply haven't been raised. Six delivered orders are still sitting unbilled.</p>
+                </div>
+                <div class="spark">
+                  <span class="delta d-down">
+                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14M19 12l-7 7-7-7"/></svg>
+                    −70%
+                  </span>
+                  <svg width="92" height="30" viewBox="0 0 92 30" role="img" aria-label="Invoicing pace this month well below the usual pace by day seven">
+                    <path d="M2 26 L15 21 L28 16 L41 12 L54 9 L67 6 L80 4 L91 3"
+                          fill="none" stroke="#d0d5da" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="3 3"/>
+                    <path d="M2 26 L15 25 L28 24 L41 23"
+                          fill="none" stroke="#a06a1c" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
+                    <circle cx="41" cy="23" r="2.6" fill="#a06a1c"/>
+                  </svg>
+                </div>
+              </div>
+              <div class="foot">
+                <button class="btn-s primary">Show the six orders</button>
+                <button class="btn-s">Why?</button>
+                <span class="sp"></span>
+                <span class="meta">USUAL PACE, DASHED</span>
+              </div>
+            </article>
+          </div>
+        </section>
+
+        <!-- ══ QUIET STATE ═══════════════════════════════════════════ -->
+        <section id="sec-quiet" class="hidden">
+          <div class="shead"><p class="eyebrow">This morning</p></div>
+          <div class="quiet">
+            <span class="ic" aria-hidden="true">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="m8.5 12.5 2.5 2.5 4.5-5"/></svg>
+            </span>
+            <div>
+              <h3>Nothing needs you this morning.</h3>
+              <p>All six things you watch are inside their normal range, and both sources came in on time. The last thing worth flagging was Thursday's receivables jump, which you've since looked at.</p>
+              <ul>
+                <li>Revenue is tracking <span class="num">4%</span> ahead of last September</li>
+                <li>Overdue receivables fell <span class="num">€6k</span> after two payments landed</li>
+                <li>No supplier price moved by more than <span class="num">1%</span></li>
+              </ul>
+            </div>
+          </div>
+          <p class="note" style="margin-top:14px;margin-bottom:0">
+            <b>Design decision — the courage to say nothing.</b> A briefing that always finds three
+            things is a briefing nobody believes. Rendering "all quiet" as the success state is what
+            makes the loud days credible. This is the single most important state on the page.
+          </p>
+        </section>
+
+        <!-- ══ COLD START ════════════════════════════════════════════ -->
+        <section id="sec-cold" class="hidden">
+          <div class="shead"><p class="eyebrow">Starting tonight</p></div>
+          <div class="night">
+            <p class="th">While you're asleep</p>
+            <ol>
+              <li><span class="n">1</span><span>I take a reading of <b>every number you've asked about</b>, so tomorrow I can tell you what changed.</span></li>
+              <li><span class="n">2</span><span>I compare each one against its own history — not a threshold someone guessed, <b>your own normal</b>.</span></li>
+              <li><span class="n">3</span><span>Where something moved, I <b>work out why before you ask</b>, and leave the answer here.</span></li>
+            </ol>
+          </div>
+          <p class="note" style="margin-top:14px;margin-bottom:0">
+            <b>Design decision — day one has no data, so sell the mechanism.</b> The cold start is
+            where most products show an empty dashboard and lose the user. Instead: say plainly what
+            happens overnight, and make the ask box the only thing to do. Every question asked today
+            is what makes tomorrow's page good — and telling the user that is what earns the second visit.
+          </p>
+        </section>
+
+        <!-- ══ THE BOARD ═════════════════════════════════════════════ -->
+        <section id="sec-board">
+          <div class="shead">
+            <p class="eyebrow">Your board <span style="color:var(--muted-2);text-transform:none;letter-spacing:0;font-family:var(--f-sans);font-size:11px">— built from what you actually look at</span></p>
+            <button class="act">Edit</button>
+          </div>
+          <div class="board">
+            <button class="tile">
+              <span class="lab">Revenue this month</span>
+              <span class="val">€112.4k</span>
+              <span class="dl d-down">
+                <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14M19 12l-7 7-7-7"/></svg>
+                −25% vs Aug
+              </span>
+              <svg width="100%" height="24" viewBox="0 0 120 24" preserveAspectRatio="none" role="img" aria-label="Revenue trending down over the last 12 weeks">
+                <path d="M0 8 L11 6 L22 10 L33 7 L44 9 L55 6 L66 11 L77 9 L88 13 L99 16 L110 19 L120 21" fill="none" stroke="#164e63" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke"/>
+              </svg>
+            </button>
+
+            <button class="tile">
+              <span class="lab">Open receivables</span>
+              <span class="val">€84.2k</span>
+              <span class="dl d-up">
+                <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 19V5M5 12l7-7 7 7"/></svg>
+                +€19k, 9 days
+              </span>
+              <svg width="100%" height="24" viewBox="0 0 120 24" preserveAspectRatio="none" role="img" aria-label="Open receivables rising over the last 12 weeks">
+                <path d="M0 18 L11 17 L22 19 L33 16 L44 17 L55 14 L66 13 L77 11 L88 9 L99 7 L110 5 L120 3" fill="none" stroke="#164e63" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke"/>
+              </svg>
+            </button>
+
+            <button class="tile">
+              <span class="lab">Cash received, 30 days</span>
+              <span class="val">€96.8k</span>
+              <span class="dl d-good">
+                <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 19V5M5 12l7-7 7 7"/></svg>
+                +6% vs usual
+              </span>
+              <svg width="100%" height="24" viewBox="0 0 120 24" preserveAspectRatio="none" role="img" aria-label="Cash received holding steady with a slight rise">
+                <path d="M0 14 L11 15 L22 12 L33 14 L44 11 L55 13 L66 10 L77 12 L88 9 L99 11 L110 8 L120 9" fill="none" stroke="#164e63" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke"/>
+              </svg>
+            </button>
+
+            <button class="tile">
+              <span class="lab">Gross margin</span>
+              <span class="val">31.2%</span>
+              <span class="dl d-up">
+                <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14M19 12l-7 7-7-7"/></svg>
+                −1.4 pt
+              </span>
+              <svg width="100%" height="24" viewBox="0 0 120 24" preserveAspectRatio="none" role="img" aria-label="Gross margin drifting down over the last 12 weeks">
+                <path d="M0 7 L11 8 L22 6 L33 9 L44 8 L55 10 L66 9 L77 12 L88 11 L99 14 L110 13 L120 15" fill="none" stroke="#164e63" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke"/>
+              </svg>
+            </button>
+          </div>
+
+          <!-- How something joins the board: promotion, not a settings screen -->
+          <div class="promote" id="promo">
+            <span class="ic" aria-hidden="true" style="color:#a5763f;display:grid;place-items:center">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m12 3 2.2 5.9 6.3.3-4.9 4 1.7 6.1L12 15.9 6.7 19.3l1.7-6.1-4.9-4 6.3-.3z"/></svg>
+            </span>
+            <span class="pt">You've asked about <b>margin by supplier</b> three times this month. Want it on your board every morning?</span>
+            <button class="btn-ai" id="promo-yes">Add it</button>
+            <button class="btn-ghost" id="promo-no">No thanks</button>
+          </div>
+        </section>
+
+        <!-- ══ WATCH ═════════════════════════════════════════════════ -->
+        <section id="sec-watch">
+          <div class="shead"><p class="eyebrow">Tell me what to keep an eye on</p></div>
+          <div class="watch">
+            <p>Plain English is fine. I'll work out which numbers that means and check them every morning.</p>
+            <div class="row">
+              <input id="watchbox" type="text" placeholder="e.g. tell me if any customer stops ordering" aria-label="Describe what to watch">
+              <button class="btn-s primary" style="padding:8px 14px">Watch it</button>
+            </div>
+            <div class="watching" id="watching">
+              <span class="wpill">Overdue receivables over €10k <button aria-label="Stop watching overdue receivables"><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg></button></span>
+              <span class="wpill">Customers who stop ordering <button aria-label="Stop watching customers who stop ordering"><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg></button></span>
+              <span class="wpill">Supplier price changes <button aria-label="Stop watching supplier price changes"><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg></button></span>
+            </div>
+          </div>
+        </section>
+
+        <!-- ══ RECENT ════════════════════════════════════════════════ -->
+        <section id="sec-recent">
+          <div class="shead">
+            <p class="eyebrow">Pick up where you left off</p>
+            <button class="act">All</button>
+          </div>
+          <div class="recent">
+            <button class="row">
+              <span class="ic" aria-hidden="true"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.4 8.4 0 0 1-9 8.4L3 21l1.1-9A8.4 8.4 0 1 1 21 11.5z"/></svg></span>
+              <span class="t">Which suppliers had the highest purchase cost?</span>
+              <span class="w">FRI</span>
+            </button>
+            <button class="row">
+              <span class="ic" aria-hidden="true"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><path d="M7 15v3M12 9v9M17 12v6"/></svg></span>
+              <span class="t">Cash position — weekly</span>
+              <span class="w">FRI</span>
+            </button>
+            <button class="row">
+              <span class="ic" aria-hidden="true"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.4 8.4 0 0 1-9 8.4L3 21l1.1-9A8.4 8.4 0 1 1 21 11.5z"/></svg></span>
+              <span class="t">Show me margin by supplier for this year</span>
+              <span class="w">THU</span>
+            </button>
+          </div>
+        </section>
+
+        <!-- ══ THE OPERATIONAL STRIP ═════════════════════════════════ -->
+        <div class="ops">
+          <span class="warnico" aria-hidden="true">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
+          </span>
+          <span class="txt">
+            Everything above includes sales and purchasing <b>through Friday 5 September</b>.
+            Exact Online hasn't sent anything since — last three days are missing.
+          </span>
+          <a href="#" onclick="return false">Refresh now</a>
+          <a href="#" onclick="return false" style="color:var(--muted)">Details</a>
+        </div>
+
+        <p class="note" style="margin-top:16px">
+          <b>Design decision — the operational truth stays, its framing changes.</b> This one line
+          replaces the health ring, the four sub-score tiles and the attention feed. It says what the
+          staleness <em>costs the reader</em> ("the last three days are missing") instead of scoring us
+          ("Freshness 0/100"), and it sits at the bottom because it qualifies the numbers above rather
+          than competing with them. Curator chores — the 28 AI suggestions, the unrefreshed products —
+          move to a badge on Sources and Build, where the work actually happens.
+        </p>
+
+      </main>
+    </div>
+  </div>
+</div>
+
+<script>
+(function () {
+  'use strict';
+
+  // ── Prototype state switching ────────────────────────────────────────
+  var LEADS = {
+    moved: {
+      head: 'Revenue is <em>€38k behind</em> where you’d normally be by the 7th — and almost all of it is one customer.',
+      sub: ['Checked 6 things at 06:00', '3 worth your time', 'Data through Fri 5 Sept'],
+      show: ['sec-moves', 'sec-board', 'sec-watch', 'sec-recent'],
+      hide: ['sec-quiet', 'sec-cold']
+    },
+    quiet: {
+      head: '<em>Nothing needs you this morning.</em> Everything you watch is where it should be.',
+      sub: ['Checked 6 things at 06:00', 'Nothing outside its normal range', 'Data through Sun 6 Sept'],
+      show: ['sec-quiet', 'sec-board', 'sec-watch', 'sec-recent'],
+      hide: ['sec-moves', 'sec-cold']
+    },
+    cold: {
+      head: 'Ask me something about your business — and by tomorrow morning I’ll have <em>noticed things for you</em>.',
+      sub: ['Exact Online connected 20 minutes ago', 'First reading tonight at 06:00'],
+      show: ['sec-cold', 'sec-watch'],
+      hide: ['sec-moves', 'sec-quiet', 'sec-board', 'sec-recent']
+    }
+  };
+
+  var head = document.getElementById('lead-head');
+  var sub = document.getElementById('lead-sub');
+
+  function render(key) {
+    var s = LEADS[key];
+    if (!s) return;
+    head.innerHTML = s.head;
+
+    // Rebuild the sub-line with separator dots between items.
+    sub.textContent = '';
+    s.sub.forEach(function (t, i) {
+      if (i > 0) {
+        var d = document.createElement('span');
+        d.className = 'dot';
+        sub.appendChild(d);
+      }
+      var span = document.createElement('span');
+      span.textContent = t;
+      sub.appendChild(span);
+    });
+
+    s.show.forEach(function (id) {
+      var el = document.getElementById(id);
+      if (el) el.classList.remove('hidden');
+    });
+    s.hide.forEach(function (id) {
+      var el = document.getElementById(id);
+      if (el) el.classList.add('hidden');
+    });
+
+    // The ops strip is a fact about the data, not about the state — but on
+    // day one there is nothing stale yet.
+    var ops = document.querySelector('.ops');
+    if (ops) ops.classList.toggle('hidden', key === 'cold');
+
+    // Starter chips are generic on day one, personal afterwards.
+    var chips = document.getElementById('chips').children;
+    if (key === 'cold') {
+      chips[0].textContent = 'What did we sell last month?';
+      chips[1].textContent = 'Who are my ten biggest customers?';
+      chips[2].textContent = 'How much is outstanding right now?';
+    } else {
+      chips[0].textContent = 'Which customers stopped ordering?';
+      chips[1].textContent = 'Show me overdue invoices over €10k';
+      chips[2].textContent = 'Margin by supplier, this year vs last';
+    }
+  }
+
+  Array.prototype.forEach.call(document.querySelectorAll('.switcher button'), function (b) {
+    b.addEventListener('click', function () {
+      Array.prototype.forEach.call(document.querySelectorAll('.switcher button'), function (o) {
+        o.classList.remove('on');
+      });
+      b.classList.add('on');
+      render(b.getAttribute('data-state'));
+      document.querySelector('.scroll').scrollTo({ top: 0, behavior: 'smooth' });
+    });
+  });
+
+  // ── The pre-computed investigation trail ─────────────────────────────
+  Array.prototype.forEach.call(document.querySelectorAll('[data-trail]'), function (btn) {
+    btn.addEventListener('click', function () {
+      var t = document.getElementById(btn.getAttribute('data-trail'));
+      if (!t) return;
+      var open = t.classList.toggle('open');
+      btn.textContent = open ? 'Hide the working' : 'Why? — already worked out';
+      btn.setAttribute('aria-expanded', String(open));
+    });
+    btn.setAttribute('aria-expanded', 'false');
+  });
+
+  // ── Promotion prompt ─────────────────────────────────────────────────
+  var promo = document.getElementById('promo');
+  var board = document.querySelector('.board');
+
+  document.getElementById('promo-yes').addEventListener('click', function () {
+    var tile = document.createElement('button');
+    tile.className = 'tile';
+    tile.innerHTML =
+      '<span class="lab">Margin by supplier</span>' +
+      '<span class="val">31.2%</span>' +
+      '<span class="dl d-up"><svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14M19 12l-7 7-7-7"/></svg> −2.1 pt on Beverages</span>' +
+      '<svg width="100%" height="24" viewBox="0 0 120 24" preserveAspectRatio="none" role="img" aria-label="Margin by supplier drifting down">' +
+      '<path d="M0 6 L20 8 L40 7 L60 11 L80 10 L100 14 L120 16" fill="none" stroke="#164e63" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke"/></svg>';
+    board.appendChild(tile);
+    promo.style.display = 'none';
+  });
+
+  document.getElementById('promo-no').addEventListener('click', function () {
+    promo.style.display = 'none';
+  });
+
+  // ── Watch input ──────────────────────────────────────────────────────
+  var wbox = document.getElementById('watchbox');
+  function addWatch() {
+    var v = wbox.value.trim();
+    if (!v) return;
+    var pill = document.createElement('span');
+    pill.className = 'wpill';
+    pill.appendChild(document.createTextNode(v + ' '));
+    var x = document.createElement('button');
+    x.setAttribute('aria-label', 'Stop watching ' + v);
+    x.innerHTML = '<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg>';
+    x.addEventListener('click', function () { pill.remove(); });
+    pill.appendChild(x);
+    document.getElementById('watching').appendChild(pill);
+    wbox.value = '';
+  }
+  wbox.addEventListener('keydown', function (e) { if (e.key === 'Enter') addWatch(); });
+  document.querySelector('#sec-watch .btn-s.primary').addEventListener('click', addWatch);
+
+  // Existing pill removers
+  Array.prototype.forEach.call(document.querySelectorAll('.wpill button'), function (b) {
+    b.addEventListener('click', function () { b.parentNode.remove(); });
+  });
+
+  // Chips fill the ask box
+  Array.prototype.forEach.call(document.querySelectorAll('.chip'), function (c) {
+    c.addEventListener('click', function () {
+      document.getElementById('askbox').value = c.textContent;
+      document.getElementById('askbox').focus();
+    });
+  });
+})();
+</script>
