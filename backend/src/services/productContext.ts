@@ -10,6 +10,10 @@
 import { semanticDb } from '../db/knex';
 import type { Knex } from 'knex';
 import { warehouseRoot, rollupViewName, gridViewName } from './warehouse';
+import type { QueryScope } from './queryScope';
+import { planRegistration, registeredNameFor, sourceSlug } from './warehouseRegistration';
+import { listProductTablesForScope } from './tableCatalog';
+import { getMatchAssertions } from './matchAssertions';
 
 interface ProductTableRow {
   id: number;
@@ -22,6 +26,9 @@ interface ProductTableRow {
   /** Set by `publishRollup` when this fact has a monthly pre-aggregation. */
   rollup_path: string | null;
   rollup_row_count: number | string | null;
+  /** Owning source. Drives naming and the per-source grouping below. */
+  connection_id: number | null;
+  connection_name: string | null;
 }
 
 interface ProductColumnRow {
@@ -111,15 +118,20 @@ export async function hasProductLayer(connectionId: number): Promise<boolean> {
  * caller.
  */
 export async function buildProductSemanticContext(
-  connectionId: number,
-  filterProductIds?: number[],
+  scope: QueryScope,
   trx?: Knex | Knex.Transaction,
 ): Promise<ProductSemanticContext | null> {
   const db = trx ?? semanticDb;
+  const connectionIds = scope.connectionIds;
+  const filterProductIds = scope.productIds;
+  const crossSource = connectionIds.length > 1;
 
-  // Find data products for this connection
+  // Find data products anywhere in scope. This `whereIn` — and the one in
+  // `tableCatalog.listProductTablesForScope` — are the two lines that used to
+  // read `.where('connection_id', connectionId)` and made a question spanning
+  // two systems inexpressible.
   let query = db('data_products')
-    .where({ connection_id: connectionId })
+    .whereIn('connection_id', connectionIds)
     .whereIn('status', ['approved', 'success']);
 
   // Optionally filter to specific product IDs
@@ -143,6 +155,8 @@ export async function buildProductSemanticContext(
   // Get all product tables with star schema info
   let tables: ProductTableRow[] = await db('product_tables')
     .join('star_schemas', 'product_tables.star_schema_id', 'star_schemas.id')
+    .join('data_products', 'star_schemas.data_product_id', 'data_products.id')
+    .leftJoin('connections', 'data_products.connection_id', 'connections.id')
     .whereIn('star_schemas.id', schemaIds)
     .where('product_tables.transformation_status', 'success')
     .select(
@@ -155,6 +169,8 @@ export async function buildProductSemanticContext(
       'product_tables.rollup_row_count',
       'star_schemas.name as star_schema_name',
       'star_schemas.grain',
+      'data_products.connection_id as connection_id',
+      'connections.name as connection_name',
     );
 
   // Include shared dimensions from OTHER products for the same connection.
@@ -163,7 +179,7 @@ export async function buildProductSemanticContext(
   // but no dimensions to join to and hallucinates column names.
   const existingTableNames = new Set(tables.map((t) => t.table_name));
   const allProductIds = (await db('data_products')
-    .where({ connection_id: connectionId })
+    .whereIn('connection_id', connectionIds)
     .whereIn('status', ['approved', 'success'])
     .select('id')).map((p: { id: number }) => p.id);
 
@@ -174,6 +190,8 @@ export async function buildProductSemanticContext(
 
     const sharedDims: ProductTableRow[] = await db('product_tables')
       .join('star_schemas', 'product_tables.star_schema_id', 'star_schemas.id')
+      .join('data_products', 'star_schemas.data_product_id', 'data_products.id')
+      .leftJoin('connections', 'data_products.connection_id', 'connections.id')
       .whereIn('star_schemas.id', allSchemaIds)
       .where('product_tables.transformation_status', 'success')
       .whereIn('product_tables.table_role', ['dimension', 'bridge'])
@@ -188,6 +206,8 @@ export async function buildProductSemanticContext(
         'product_tables.rollup_row_count',
         'star_schemas.name as star_schema_name',
         'star_schemas.grain',
+        'data_products.connection_id as connection_id',
+        'connections.name as connection_name',
       );
 
     // Deduplicate by table_name (pick the first match)
@@ -200,6 +220,33 @@ export async function buildProductSemanticContext(
   }
 
   if (tables.length === 0) return null;
+
+  // THE NAME THE CONTEXT USES MUST BE THE NAME THAT RESOLVES.
+  //
+  // In a cross-source scope the collision rule may have withheld a bare name
+  // (see `warehouseRegistration`), so `product_tables.table_name` is no longer
+  // necessarily what the session answers to. Describing the bare name there
+  // would hand the model a table it has been deliberately prevented from
+  // reaching — turning the safety rule into a guaranteed query failure.
+  //
+  // Single-source scopes skip this entirely: the plan is identity, and paying
+  // for a catalog read on every question to learn that would be waste.
+  const plan = crossSource
+    ? planRegistration(
+        (await listProductTablesForScope(scope)).map((t) => ({
+          tableName: t.tableName,
+          uri: t.uri,
+          productName: t.productName,
+          connectionId: t.connectionId ?? 0,
+          connectionName: t.connectionName,
+          rollupUri: t.rollupUri,
+        })),
+        { crossSource: true, rollupName: rollupViewName },
+      )
+    : null;
+
+  const nameOf = (t: ProductTableRow): string =>
+    plan ? registeredNameFor(plan, t.table_name, t.connection_id ?? 0) : t.table_name;
 
   const tableIds = tables.map((t) => t.id);
 
@@ -274,7 +321,11 @@ export async function buildProductSemanticContext(
 
     const grainNote = t.grain ? `, grain: ${t.grain}` : '';
     const descPart = t.description ? ` — ${t.description}` : '';
-    return `Table ${t.table_name} (${t.table_role}${grainNote})${descPart}\n  Columns:\n${cols}`;
+    // Naming the source on every table is what lets a reader — and the model —
+    // answer "which system is this number from?" without a second lookup. Only
+    // when there is more than one source; otherwise it is noise on every line.
+    const sourceNote = crossSource ? `, from ${t.connection_name ?? 'unknown source'}` : '';
+    return `Table ${nameOf(t)} (${t.table_role}${grainNote}${sourceNote})${descPart}\n  Columns:\n${cols}`;
   }).join('\n\n');
 
   // --- Format relationship context ---
@@ -358,8 +409,75 @@ export async function buildProductSemanticContext(
     });
   }
 
+  // --- Cross-source: what the model may and may not do across systems ---
+  //
+  // Everything above describes tables. This describes the SEAM between two
+  // source systems, and it is the half that decides whether a cross-source
+  // answer is right or merely plausible. Two systems share no foreign key —
+  // only an assertion that some rows describe the same real-world thing — so
+  // left unsaid, the model will invent a JOIN on whatever columns have
+  // similar names and produce a confident, wrong total.
+  //
+  // Empty string for a single-source scope: not one extra token for the
+  // customers who will never need it.
+  let crossSourceSection = '';
+  if (crossSource) {
+    const bySource = new Map<string, string[]>();
+    for (const t of tables) {
+      const src = t.connection_name ?? 'unknown source';
+      const list = bySource.get(src);
+      if (list) list.push(nameOf(t));
+      else bySource.set(src, [nameOf(t)]);
+    }
+
+    const sourceLines = [...bySource.entries()]
+      .map(([src, names]) => `- ${src}: ${names.sort().join(', ')}`)
+      .join('\n');
+
+    // A withheld bare name that the model is never told about is just a failed
+    // query. Naming the alternatives converts the safety rule into guidance.
+    const ambiguityLines = (plan?.ambiguous ?? []).map((a) => {
+      const alts = a.alternatives
+        .map((alt) => `${alt.name} (${alt.connectionName ?? 'source ' + alt.connectionId})`)
+        .join(' or ');
+      return `- "${a.bareName}" exists in more than one system and means something DIFFERENT in each.`
+        + ` There is no table called ${a.bareName}. Use ${alts}.`;
+    });
+    const ambiguitySection = ambiguityLines.length > 0
+      ? `\n\nNAMES THAT EXIST IN MORE THAN ONE SYSTEM — the bare name is deliberately not a table:\n`
+        + ambiguityLines.join('\n')
+      : '';
+
+    // Confirmed identity links. `getMatchAssertions` phrases them as identity
+    // rather than as joins on purpose — see that module's header.
+    let matchSection = '';
+    try {
+      const matches = await getMatchAssertions(db as never, scope.tenantId, connectionIds);
+      if (matches.length > 0) {
+        matchSection = `\n\nCONFIRMED LINKS BETWEEN SYSTEMS — the only sanctioned way to join across sources:\n`
+          + matches.map((m) => `- ${m.description}`).join('\n');
+      }
+    } catch {
+      // Best effort. A failure here must cost the reader the cross-source
+      // hint, never the whole answer.
+    }
+
+    const joinRule = matchSection
+      ? 'Join across systems ONLY on a confirmed link listed below, or through a table the user maintains ("YOUR TABLES") that links the two.'
+      : 'NO confirmed link between these systems exists yet. Do NOT invent a join between tables from different systems — '
+        + 'matching names or similar-looking ids are NOT evidence that two systems agree. '
+        + 'Answer each system separately and present the results side by side, and say plainly that the two cannot yet be joined.';
+
+    crossSourceSection = `\n\n## MORE THAN ONE SOURCE SYSTEM IS IN SCOPE\n`
+      + `The tables below come from ${bySource.size} different systems:\n${sourceLines}\n\n`
+      + `${joinRule}\n`
+      + `Tables within ONE system join normally on their foreign keys, exactly as described above.`
+      + ambiguitySection
+      + matchSection;
+  }
+
   return {
-    semanticContext: semanticContext + rollupSection + gridSection,
+    semanticContext: semanticContext + rollupSection + gridSection + crossSourceSection,
     relationshipContext,
     kpiFormulas,
     isProductLayer: true,

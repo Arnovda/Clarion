@@ -8,6 +8,8 @@ import { decryptCredentials, isEncrypted } from '../utils/crypto';
 import { assertSafeDbHost } from '../utils/netGuard';
 import { semanticDb } from '../db/knex';
 import { rollupViewName } from '../services/warehouse';
+import type { QueryScope } from '../services/queryScope';
+import { planRegistration } from '../services/warehouseRegistration';
 import { logger as rootLogger } from '../utils/logger';
 
 const log = rootLogger.child({ mod: 'ConnectorFactory' });
@@ -162,45 +164,41 @@ export function createSourceConnector(conn: ConnectionRow): BaseConnector {
  * Path + metadata resolution goes through `tableCatalog` so this surface
  * uses the same source-of-truth as /catalog, /quality, and the runner.
  */
-export async function createProductConnector(productWarehousePath: string, connectionId: number, tenantId?: number): Promise<BaseConnector> {
-  const { listProductTablesByConnection, listManagedGridTables } = await import('../services/tableCatalog');
-  const productTables = await listProductTablesByConnection(tenantId, connectionId);
+export async function createProductConnector(
+  productWarehousePath: string,
+  scope: QueryScope,
+): Promise<BaseConnector> {
+  const { listProductTablesForScope, listManagedGridTables } = await import('../services/tableCatalog');
+  const productTables = await listProductTablesForScope(scope);
 
-  // Build explicit table → path and table → schema mappings. The schema is the
-  // data product name, mirroring the notebook namespacing convention so SQL is
-  // copy-pasteable across surfaces (chat, dashboards, notebooks, quality).
-  const tablePaths = new Map<string, string>();
-  const tableSchemas = new Map<string, string>();
-  const tableNames: string[] = [];
-  for (const t of productTables) {
-    tablePaths.set(t.tableName, t.uri);
-    if (t.productName) tableSchemas.set(t.tableName, t.productName);
-    tableNames.push(t.tableName);
+  // Naming — including the rule that stops two sources' `dim_customer` from
+  // silently resolving to whichever registered first — lives in
+  // `warehouseRegistration` so it is pure and directly unit-testable. In a
+  // single-source scope it returns exactly what the inline loop here used to:
+  // bare names, schema = data product name.
+  const crossSource = scope.connectionIds.length > 1;
+  const plan = planRegistration(
+    productTables.map((t) => ({
+      tableName: t.tableName,
+      uri: t.uri,
+      productName: t.productName,
+      connectionId: t.connectionId ?? 0,
+      connectionName: t.connectionName,
+      rollupUri: t.rollupUri,
+    })),
+    { crossSource, rollupName: rollupViewName },
+  );
 
-    // Register the monthly pre-aggregation alongside its fact. `productContext`
-    // advertises `rollup_monthly_<table>` to the model and the dashboard prompt
-    // tells it to PREFER that table for time-series queries — so the view has to
-    // exist. It never did: rollups were written to disk but only ever registered
-    // by a filesystem fallback that this surface never reaches (tablePaths is
-    // always populated here). The advertisement was equally broken, which is the
-    // only reason it never surfaced as "table does not exist". Fix both or
-    // neither.
-    if (t.rollupUri) {
-      const rollupName = rollupViewName(t.tableName);
-      tablePaths.set(rollupName, t.rollupUri);
-      if (t.productName) tableSchemas.set(rollupName, t.productName);
-      tableNames.push(rollupName);
-    }
-  }
+  const { tableNames, tablePaths, tableSchemas } = plan;
 
   // Managed grids — the in-Clarion editable tables (budgets, mappings, lists).
-  // Tenant-level, deliberately registered in EVERY connection's product-layer
-  // session: their whole value is joining against whichever connection holds
-  // the actuals. Registration and advertisement (`productContext`'s "your
-  // tables" section) are the same fix-both-or-neither pair as rollups above.
-  // No schema entry on purpose — grids live in the default namespace so
-  // `grid_budget_2026` resolves unqualified.
-  const grids = await listManagedGridTables(tenantId);
+  // Tenant-level, deliberately registered in EVERY product-layer session:
+  // their whole value is joining against whichever connection holds the
+  // actuals. Registration and advertisement (`productContext`'s "your tables"
+  // section) are a fix-both-or-neither pair. No schema entry on purpose —
+  // grids live in the default namespace so `grid_budget_2026` resolves
+  // unqualified, and that is the same in a cross-source session.
+  const grids = await listManagedGridTables(scope.tenantId);
   for (const g of grids) {
     if (tablePaths.has(g.viewName)) continue; // never shadow a product table
     tablePaths.set(g.viewName, g.uri);
@@ -208,7 +206,14 @@ export async function createProductConnector(productWarehousePath: string, conne
   }
 
   const productCount = new Set(productTables.map((t) => t.productName)).size;
-  log.info(`createProductConnector: Connection ${connectionId}: ${tableNames.length} product tables from ${productCount} product(s): ${tableNames.join(', ')}`);
+  log.info(
+    `createProductConnector: ${crossSource ? `${scope.connectionIds.length} connections` : `connection ${scope.connectionIds[0]}`}: `
+    + `${tableNames.length} tables from ${productCount} product(s)`
+    + (plan.ambiguous.length > 0
+      ? `; ${plan.ambiguous.length} name(s) ambiguous across sources, bare name withheld: `
+        + plan.ambiguous.map((a) => a.bareName).join(', ')
+      : ''),
+  );
 
   return new DuckDBConnector(productWarehousePath, tableNames, tablePaths, tableSchemas);
 }

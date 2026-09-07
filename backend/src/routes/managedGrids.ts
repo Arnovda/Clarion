@@ -44,6 +44,7 @@ import {
 import { gridViewName, deleteWarehousePath } from '../services/warehouse';
 import { getProductWarehousePath } from '../services/productContext';
 import { createProductConnector } from '../connectors/ConnectorFactory';
+import { scopeOf } from '../services/queryScope';
 import { logger as rootLogger } from '../utils/logger';
 
 const log = rootLogger.child({ mod: 'routes-managed-grids' });
@@ -336,7 +337,7 @@ router.get('/link-values', requireAuth, requireRole('admin', 'analyst'), validat
       res.status(404).json({ ok: false, error: 'That topic has no data yet.' });
       return;
     }
-    const connector = await createProductConnector(productPath, target.connectionId, tenantId);
+    const connector = await createProductConnector(productPath, scopeOf(tenantId, target.connectionId));
     await connector.connect();
     try {
       if (columnName2 !== null) {
@@ -407,7 +408,7 @@ router.get('/:id/coverage', requireAuth, requireRole('admin', 'analyst'), valida
       }
       // One session holds both sides: createProductConnector registers the
       // grid view alongside the topic's tables.
-      const connector = await createProductConnector(productPath, target.connectionId, tenantId);
+      const connector = await createProductConnector(productPath, scopeOf(tenantId, target.connectionId));
       await connector.connect();
       try {
         const tcol = `"${target.columnName}"`;

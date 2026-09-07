@@ -28,6 +28,8 @@ interface Notebook {
   title: string;
   description: string | null;
   connection_id: number | null;
+  /** Let this notebook's cells read every source in the tenant, not just one. */
+  cross_source?: boolean | null;
   starred: boolean;
   cells: Cell[];
 }
@@ -115,7 +117,7 @@ export default function NotebookEditorPage() {
   const titleInputRef = useRef<HTMLInputElement>(null);
   /** Map of cell ID → insert callback (set by CellEditor via onReady) */
   const insertCallbacks = useRef<Map<number, (text: string) => void>>(new Map());
-  const { loading: pyLoading, ready: pyReady, runPython, setSqlResult, setConnectionId } = usePyodide();
+  const { loading: pyLoading, ready: pyReady, runPython, setSqlResult, setConnectionId, setCrossSource } = usePyodide();
 
   /** Insert text into the active cell's editor */
   const insertIntoActiveCell = useCallback((text: string) => {
@@ -168,7 +170,8 @@ export default function NotebookEditorPage() {
   // Keep Pyodide's connection ID in sync with the notebook's connection
   useEffect(() => {
     if (notebook?.connection_id) setConnectionId(notebook.connection_id);
-  }, [notebook?.connection_id, setConnectionId]);
+    setCrossSource(notebook?.cross_source === true);
+  }, [notebook?.connection_id, notebook?.cross_source, setConnectionId, setCrossSource]);
 
   // ── Title editing ──────────────────────────────────────────────────
   const saveTitle = async () => {
@@ -183,6 +186,16 @@ export default function NotebookEditorPage() {
   const changeConnection = async (connId: number) => {
     await api.patch(`/notebooks/${notebookId}`, { connectionId: connId });
     setNotebook((prev) => prev ? { ...prev, connection_id: connId } : prev);
+  };
+
+  // Persisted on the notebook rather than held in page state: a notebook is a
+  // durable artefact, and its cells' SQL is written against whatever tables
+  // were registered. If the setting did not survive a reload, reopening one
+  // would silently change what its own saved SQL means.
+  const toggleCrossSource = async () => {
+    const next = !(notebook?.cross_source === true);
+    await api.patch(`/notebooks/${notebookId}`, { crossSource: next });
+    setNotebook((prev) => prev ? { ...prev, cross_source: next } : prev);
   };
 
   // ── Cell CRUD ──────────────────────────────────────────────────────
@@ -579,6 +592,22 @@ export default function NotebookEditorPage() {
         </div>
 
         <div className="flex-1" />
+
+        {/* All sources — only offered when the workspace has more than one.
+            Sits beside Run All because it changes what a run can see. */}
+        {connections.length > 1 && (
+          <button
+            onClick={toggleCrossSource}
+            title="Register every connected system's tables in this notebook, not just one. Names that two systems disagree about are prefixed with the source."
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-label-md font-semibold transition-colors ${
+              notebook.cross_source
+                ? 'bg-ocean text-white'
+                : 'bg-surface-container-low text-on-surface-variant hover:bg-surface-container'
+            }`}
+          >
+            All sources
+          </button>
+        )}
 
         {/* Run All */}
         <button

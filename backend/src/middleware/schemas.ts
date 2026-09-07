@@ -288,6 +288,11 @@ export const thinkQuerySchema = z.object({
     parentMessageId: optionalPositiveInt,
     // Worksheet: bounded re-answer instruction (assumption flip / re-run).
     directive: z.string().max(600).optional(),
+    // Let the question reach every source the tenant has, not just the one
+    // the page happens to be pointed at. Opt-in per question so an existing
+    // single-source workspace is completely unaffected — and so widening is
+    // always a deliberate act with a visible cost (more tables in the prompt).
+    crossSource: z.boolean().optional(),
   }).passthrough(),
 });
 
@@ -310,6 +315,12 @@ export const repairQuerySchema = z.object({
     dataLayer: dataLayerEnum,
     conversationId: optionalPositiveInt,
     messageServerId: optionalPositiveInt,
+    // The repair MUST see the same data the answer was produced from.
+    // Double-checking a cross-source answer against a single-source context
+    // would report "that table does not exist" about a table that plainly
+    // does — the repair would then rewrite a correct query into a wrong one.
+    productId: optionalPositiveInt,
+    crossSource: z.boolean().optional(),
   }).passthrough(),
 });
 
@@ -319,6 +330,9 @@ export const forecastQuerySchema = z.object({
     connectionId: positiveInt,
     question: nonBlankString,
     domains: z.array(z.string()).optional(),
+    // Same reasoning as /repair: a forecast built from a narrower context than
+    // the question it follows is answering a different question.
+    crossSource: z.boolean().optional(),
   }).passthrough(),
 });
 
@@ -381,6 +395,8 @@ export const batchExecuteSchema = z.object({
 // older client (or a cached bundle) keeps working.
 export const generateDashboardSchema = z.object({
   body: z.object({
+    // Let this dashboard reach every source in the tenant.
+    crossSource: z.boolean().optional(),
     connectionId: nullableId,
     request: nonBlankString,
     answers: z.array(
@@ -399,6 +415,8 @@ export const generateDashboardSchema = z.object({
 // route with no request validation).
 export const refineSpecSchema = z.object({
   body: z.object({
+    // Let this dashboard reach every source in the tenant.
+    crossSource: z.boolean().optional(),
     connectionId: nullableId,
     refinement: nonBlankString,
     currentSpec: z.object({
@@ -418,6 +436,8 @@ export const refineSpecSchema = z.object({
 // Passthrough: the frontend also sends `domains` which the handler ignores.
 export const refineDashboardSchema = z.object({
   body: z.object({
+    // Let this dashboard reach every source in the tenant.
+    crossSource: z.boolean().optional(),
     connectionId: nullableId,
     request: nonBlankString,
     productIds: z.array(z.number().int()).optional(),
@@ -429,6 +449,8 @@ export const refineDashboardSchema = z.object({
 // handler still owns the "widgetId exists in spec" check (404, not 400).
 export const fixWidgetSchema = z.object({
   body: z.object({
+    // Let this dashboard reach every source in the tenant.
+    crossSource: z.boolean().optional(),
     connectionId: nullableId,
     spec: z.object({
       widgets: z.array(z.object({ id: z.string() }).passthrough()).min(1),
@@ -743,6 +765,8 @@ export const updateNotebookSchema = z.object({
     title: optionalString,
     description: optionalString,
     connectionId: z.number().int().nullable().optional(),
+    // Let this notebook's cells see every source in the tenant. Off unless set.
+    crossSource: z.boolean().optional(),
   }).passthrough(),
 });
 

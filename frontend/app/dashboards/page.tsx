@@ -169,6 +169,9 @@ export default function DashboardsPage() {
   const [dashboards, setDashboards] = useState<SavedDashboard[]>([]);
   const [activeId, setActiveId] = useState<number | null>(null);
   const [currentSpec, setCurrentSpec] = useState<DashboardSpec | null>(null);
+  // Spread into EVERY execution request. Derived from the spec rather than
+  // held as its own state so it cannot drift from the dashboard being shown.
+  const scopeBody = currentSpec?.crossSource ? { crossSource: true as const } : {};
   const [isUnsaved, setIsUnsaved] = useState(false);
   const [mode, setMode] = useState<'empty' | 'choosing' | 'refining' | 'creating' | 'viewing'>('empty');
   const [createInput, setCreateInput] = useState('');
@@ -224,6 +227,10 @@ export default function DashboardsPage() {
   // react-grid-layout needs a measured pixel width for the arrange grid
   const { width: rglWidth, containerRef: rglContainerRef, mounted: rglMounted } = useContainerWidth();
   const [connections,       setConnections]       = useState<{ id: number; name: string; domains: string[] }[]>([]);
+  // Build this dashboard across every source rather than one. Chosen at
+  // creation because it decides the SQL the model writes; persisted onto the
+  // spec so every later execution runs in the same scope.
+  const [createCrossSource, setCreateCrossSource] = useState(false);
   const [products, setProducts] = useState<{
     id: number;
     name: string;
@@ -458,6 +465,10 @@ export default function DashboardsPage() {
         connectionId: connId,
         widgets: widgetsPayload,
         ...(spec.dataLayer === 'source' ? { dataLayer: 'source' as const } : {}),
+        // Read off the SPEC being executed, not `scopeBody` — this runs during
+        // load, before `currentSpec` has been set, so the state would still be
+        // the previous dashboard's.
+        ...(spec.crossSource ? { crossSource: true as const } : {}),
         ...(xFilter
           ? { crossFilter: {
               sourceWidgetId: xFilter.widgetId,
@@ -532,6 +543,7 @@ export default function DashboardsPage() {
         .map(async (f) => {
           try {
             const res = await api.post('/dashboards/filter-options', {
+              ...scopeBody,
               connectionId: connId,
               table: f.table,
               column: f.column,
@@ -644,6 +656,7 @@ export default function DashboardsPage() {
         request: createInput.trim(),
         ...(selectedProductIds.length > 0 ? { productIds: selectedProductIds } : {}),
         ...(useSourceLayer ? { dataLayer: 'source' as const } : {}),
+        ...(createCrossSource ? { crossSource: true as const } : {}),
       });
       setRefinementQuestions(res.data.data.questions ?? []);
     } catch {
@@ -670,6 +683,7 @@ export default function DashboardsPage() {
         answers,
         ...(selectedProductIds.length > 0 ? { productIds: selectedProductIds } : {}),
         ...(useSourceLayer ? { dataLayer: 'source' as const } : {}),
+        ...(createCrossSource ? { crossSource: true as const } : {}),
       });
       const spec: DashboardSpec = res.data.data.spec;
       // Stamp the layer onto the spec so saves + re-executions stay consistent
@@ -892,6 +906,7 @@ export default function DashboardsPage() {
     setDrillModal({ title, loading: true, rows: [] });
     try {
       const res = await api.post('/dashboards/batch-execute', {
+        ...scopeBody,
         connectionId,
         widgets: [{ id: widget.id, sql: widget.drillDownSql, filterValues }],
         ...(currentSpec?.dataLayer === 'source' ? { dataLayer: 'source' as const } : {}),
@@ -921,6 +936,7 @@ export default function DashboardsPage() {
     if (widget.crossFilterKey) {
       try {
         const res = await api.post('/dashboards/drill-rows', {
+          ...scopeBody,
           connectionId,
           widgetSql: widget.sql,
           crossFilterKey: widget.crossFilterKey,
@@ -950,6 +966,7 @@ export default function DashboardsPage() {
     if (widget.drillDownSql) {
       try {
         const res = await api.post('/dashboards/batch-execute', {
+        ...scopeBody,
           connectionId,
           widgets: [{
             id: widget.id,
@@ -1224,6 +1241,10 @@ export default function DashboardsPage() {
             currentSpec,
             ...(scopeIds?.length ? { productIds: scopeIds } : {}),
             ...(currentSpec.dataLayer === 'source' ? { dataLayer: 'source' as const } : {}),
+            // A refinement inherits the dashboard's scope. Without this it
+            // would rewrite cross-source widgets against a single-source
+            // schema and break every one that reads the second system.
+            ...(currentSpec.crossSource ? { crossSource: true as const } : {}),
             ...(scopeWidget ? { scopeWidgetId: scopeWidget.id } : {}),
           },
           onEvent: (evt: {
@@ -1932,12 +1953,27 @@ export default function DashboardsPage() {
                     <div className="mb-6">
                       <p className="text-[10px] font-mono tracking-[0.12em] uppercase text-muted mb-2">Data domain</p>
                       <div className="flex flex-wrap gap-1.5">
+                        {/* Cross-source belongs in this row, not in a settings
+                            panel: it answers the same question the chips do —
+                            "which data is this dashboard about?" — and it is
+                            only offered when there is more than one answer. */}
+                        <button
+                          onClick={() => setCreateCrossSource((v) => !v)}
+                          title="Build this dashboard from every connected system. Use it when the question spans two of them."
+                          className={`px-3 py-1.5 text-[12px] rounded-md border transition-colors ${
+                            createCrossSource
+                              ? 'bg-ocean text-white border-ocean'
+                              : 'bg-raised text-ink-2 border-line hover:border-line-strong hover:bg-softer'
+                          }`}
+                        >
+                          All sources
+                        </button>
                         {chips.map((chip) => (
                           <button
                             key={`${chip.connId}-${chip.label}`}
-                            onClick={() => setConnectionId(chip.connId)}
+                            onClick={() => { setCreateCrossSource(false); setConnectionId(chip.connId); }}
                             className={`px-3 py-1.5 text-[12px] rounded-md border transition-colors capitalize ${
-                              connectionId === chip.connId
+                              connectionId === chip.connId && !createCrossSource
                                 ? 'bg-ocean text-white border-ocean'
                                 : 'bg-raised text-ink-2 border-line hover:border-line-strong hover:bg-softer'
                             }`}

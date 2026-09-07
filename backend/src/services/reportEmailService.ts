@@ -11,6 +11,7 @@
 
 import { tenantQuery } from './tenantQuery';
 import { createConnector, createProductConnector } from '../connectors/ConnectorFactory';
+import { scopeOf } from './queryScope';
 import { sendEmail } from './emailService';
 import { prepareUnattendedRead } from './readPolicy';
 import { generateReportNarrative, formatAnswer } from '../ai/AIService';
@@ -202,7 +203,7 @@ export async function sendScheduledReport(scheduleId: number, tenantId: number):
       logger.warn({ scheduleId }, '[report-email] Product warehouse not materialised');
       return;
     }
-    connector = await createProductConnector(warehousePath, product.connection_id as number, tenantId);
+    connector = await createProductConnector(warehousePath, scopeOf(tenantId, product.connection_id as number));
   } else {
     const connection = await tenantQuery(tenantId, (trx) =>
       trx('connections').where({ id: connectionId, tenant_id: tenantId }).first(),
@@ -337,7 +338,7 @@ async function sendScheduledQuestion(schedule: {
     if (sq.data_layer === 'product') {
       const warehousePath = await tenantQuery(tenantId, (trx) => getProductWarehousePath(sq.connection_id, trx));
       if (!warehousePath) throw new Error('product warehouse not materialised');
-      connector = await createProductConnector(warehousePath, sq.connection_id as number, sq.tenant_id as number);
+      connector = await createProductConnector(warehousePath, scopeOf(sq.tenant_id as number, sq.connection_id as number));
     } else {
       connector = await createConnector(connection);
     }

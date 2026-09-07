@@ -56,6 +56,12 @@ function QueryPageInner() {
   // Default = product layer (cleaner star schema).
   // Toggle visible to admin/analyst — viewers always stay on the product layer.
   const [useSourceLayer, setUseSourceLayer] = useState(false);
+  // Let the question reach every source, not just the one the page is pointed
+  // at. Off by default and only OFFERED when the workspace actually has more
+  // than one source — a toggle that cannot change the answer is noise, and on
+  // a single-source workspace this one never can.
+  const [crossSource, setCrossSource] = useState(false);
+  const [sourceCount, setSourceCount] = useState(0);
 
   // URL params (e.g. ?connectionId=5&productId=3&productName=Sales from Data Products)
   const searchParams = useSearchParams();
@@ -364,6 +370,7 @@ function QueryPageInner() {
     api.get('/connections').catch(() => ({ data: { data: [] } })).then((connRes) => {
       const conns = (connRes.data.data ?? []) as { id: number; name: string }[];
       const all: DataSource[] = conns.map((c) => ({ type: 'connection' as const, id: c.id, label: c.name }));
+      setSourceCount(all.length);
 
       // Priority: URL param > localStorage > first source
       if (urlConnectionId && all.some((s) => s.type === 'connection' && s.id === Number(urlConnectionId))) {
@@ -919,6 +926,9 @@ function QueryPageInner() {
           conversationId:      params.conversationId,
           messageServerId:     params.messageServerId,
           ...(useSourceLayer ? { dataLayer: 'source' as const } : {}),
+          // The repair must see the same data the answer came from, or it
+          // "corrects" a working query into a broken one.
+          ...(crossSource ? { crossSource: true } : {}),
         },
         signal: ctrl.signal,
         onEvent: (event) => handleEvent(event as Record<string, unknown>),
@@ -1271,6 +1281,7 @@ function QueryPageInner() {
             ...(opts?.directive ? { directive: opts.directive } : {}),
             ...(selectedDomains.length > 0 ? { domains: selectedDomains } : {}),
             ...(useSourceLayer ? { dataLayer: 'source' as const } : {}),
+            ...(crossSource ? { crossSource: true } : {}),
           },
           signal: ctrl.signal,
           onEvent: (raw) => {
@@ -1599,17 +1610,33 @@ function QueryPageInner() {
             <span>&nbsp;</span>
           )}
         </div>
-        {canSeeSql && (
-          <label className="inline-flex items-center gap-2 cursor-pointer select-none text-[11px] font-mono uppercase tracking-[0.08em] text-muted-2 hover:text-ink-3 transition-colors">
-            <input
-              type="checkbox"
-              checked={useSourceLayer}
-              onChange={(e) => setUseSourceLayer(e.target.checked)}
-              className="w-3 h-3 rounded-sm border border-line accent-ocean"
-            />
-            Query source data
-          </label>
-        )}
+        <div className="flex items-center gap-4">
+          {sourceCount > 1 && (
+            <label
+              className="inline-flex items-center gap-2 cursor-pointer select-none text-[11px] font-mono uppercase tracking-[0.08em] text-muted-2 hover:text-ink-3 transition-colors"
+              title="Look across every connected system instead of just this one. Slower, and only worth it when the question spans two systems."
+            >
+              <input
+                type="checkbox"
+                checked={crossSource}
+                onChange={(e) => setCrossSource(e.target.checked)}
+                className="w-3 h-3 rounded-sm border border-line accent-ocean"
+              />
+              All sources
+            </label>
+          )}
+          {canSeeSql && (
+            <label className="inline-flex items-center gap-2 cursor-pointer select-none text-[11px] font-mono uppercase tracking-[0.08em] text-muted-2 hover:text-ink-3 transition-colors">
+              <input
+                type="checkbox"
+                checked={useSourceLayer}
+                onChange={(e) => setUseSourceLayer(e.target.checked)}
+                className="w-3 h-3 rounded-sm border border-line accent-ocean"
+              />
+              Query source data
+            </label>
+          )}
+        </div>
       </div>
     </div>
   );

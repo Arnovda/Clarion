@@ -31,6 +31,7 @@ import { Database } from 'duckdb-async';
 import path from 'path';
 import { actorOf, prepareUserRead } from '../services/readPolicy';
 import { buildConnectionWarehouseSession } from '../services/productWarehouse';
+import { resolveScope } from '../services/queryScope';
 import { clientAbort } from '../utils/requestAbort';
 import { logger as rootLogger } from '../utils/logger';
 
@@ -47,7 +48,12 @@ router.post('/query', async (req: Request, res: Response, next: NextFunction) =>
   let db: Database | null = null;
   try {
     const pgDb = reqDb(req);
-    const { connectionId, sql: sqlText } = req.body as { connectionId: number; sql: string };
+    const { connectionId, sql: sqlText, crossSource } = req.body as {
+      connectionId: number; sql: string;
+      /** Mirrors the notebook's own `cross_source`, so an ad-hoc run sees the
+       *  same tables the notebook's cells do. */
+      crossSource?: boolean;
+    };
     if (!connectionId || !sqlText?.trim()) {
       res.status(400).json({ ok: false, error: 'connectionId and sql are required' });
       return;
@@ -60,7 +66,9 @@ router.post('/query', async (req: Request, res: Response, next: NextFunction) =>
     // Guard, then the acting user's row filters and column masks (P0-4):
     // a notebook is a read surface like any other.
     const safeSql = (await prepareUserRead(sqlText, actorOf(req))).sql;
-    db = await buildConnectionWarehouseSession(pgDb, connectionId, req.user!.tenantId);
+    db = await buildConnectionWarehouseSession(pgDb, await resolveScope({
+      tenantId: req.user!.tenantId, connectionId, crossSource,
+    }, pgDb));
     const rawRows = await db.all(safeSql) as Record<string, unknown>[];
     const rows = rawRows.slice(0, 500).map((row) => {
       const out: Record<string, unknown> = {};
@@ -500,16 +508,18 @@ router.get('/:id', async (req: Request, res: Response, next: NextFunction) => {
 router.patch('/:id', validate(updateNotebookSchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const pgDb = reqDb(req);
-    const { title, description, connectionId } = req.body as {
+    const { title, description, connectionId, crossSource } = req.body as {
       title?: string;
       description?: string;
       connectionId?: number | null;
+      crossSource?: boolean;
     };
 
     const updates: Record<string, unknown> = { updated_at: new Date().toISOString() };
     if (title !== undefined) updates.title = title.trim();
     if (description !== undefined) updates.description = description.trim() || null;
     if (connectionId !== undefined) updates.connection_id = connectionId;
+    if (crossSource !== undefined) updates.cross_source = crossSource;
 
     const count = await pgDb('notebooks')
       .where({ id: Number(req.params.id), user_id: req.user!.sub })
@@ -693,7 +703,7 @@ router.post('/cells/:cellId/execute', async (req: Request, res: Response, next: 
     const cell = await pgDb('notebook_cells as nc')
       .join('notebooks as n', 'n.id', 'nc.notebook_id')
       .where({ 'nc.id': cellId, 'n.user_id': req.user!.sub })
-      .select('nc.*', 'n.connection_id')
+      .select('nc.*', 'n.connection_id', 'n.cross_source')
       .first();
 
     if (!cell) { res.status(404).json({ ok: false, error: 'Cell not found' }); return; }
@@ -703,7 +713,11 @@ router.post('/cells/:cellId/execute', async (req: Request, res: Response, next: 
     if (!sqlText) { res.status(400).json({ ok: false, error: 'No SQL to execute' }); return; }
     if (!cell.connection_id) { res.status(400).json({ ok: false, error: 'No connection selected for this notebook' }); return; }
 
-    db = await buildConnectionWarehouseSession(pgDb, cell.connection_id, req.user!.tenantId);
+    db = await buildConnectionWarehouseSession(pgDb, await resolveScope({
+      tenantId: req.user!.tenantId,
+      connectionId: cell.connection_id,
+      crossSource: cell.cross_source === true,
+    }, pgDb));
 
     try {
       // Security guard: confine notebook SQL to safe read-only queries over the

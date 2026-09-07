@@ -129,8 +129,20 @@ describe('one warehouse session builder', () => {
   });
 
   it('tenantId is required, so the compiler names every caller', () => {
-    expect(shared).toMatch(/tenantId: number \| undefined,\s*\n\): Promise<Database>/);
+    // The mechanism moved when the session became scope-aware: the tenant used
+    // to be a positional argument, and is now a field on the QueryScope the
+    // builder takes. The GUARANTEE is unchanged and is what this pins — a
+    // caller cannot omit it, so the compiler still names every call site.
+    expect(shared).toMatch(/scope: QueryScope,\s*\n\): Promise<Database>/);
     expect(shared).not.toContain('listSourceTables(undefined');
-    expect(shared).not.toContain('listProductTablesByConnection(undefined');
+    expect(shared).not.toContain('listProductTablesForScope(undefined');
+
+    // And the field itself must stay REQUIRED. `tenantId?: number` would
+    // compile everywhere and silently reintroduce the D2 defect: no tenant
+    // context, an RLS predicate of `tenant_id = NULL`, and a session that
+    // registers zero views while looking perfectly healthy.
+    const scopeSrc = readFileSync(join(SRC, 'services', 'queryScope.ts'), 'utf8');
+    expect(scopeSrc).toContain('tenantId: number | undefined;');
+    expect(scopeSrc).not.toContain('tenantId?:');
   });
 });

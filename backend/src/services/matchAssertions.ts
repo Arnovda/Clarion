@@ -85,7 +85,7 @@ export function phraseAssertion(row: Row): MatchAssertion {
 export async function getMatchAssertions(
   db: Knex,
   tenantId: number | undefined,
-  connectionId: number,
+  connectionIds: number[],
 ): Promise<MatchAssertion[]> {
   if (!tenantId) return [];
   try {
@@ -99,8 +99,12 @@ export async function getMatchAssertions(
       .where('r.tenant_id', tenantId)
       .andWhere('r.kind', 'match')
       .andWhere('r.confirmed_by_user', true)
+      // Either endpoint in scope. A match is interesting to a single-source
+      // question too — it is how the model learns that the customer it is
+      // looking at also exists elsewhere — but it becomes load-bearing when
+      // BOTH ends are in scope, because then the join is actually runnable.
       .andWhere(function () {
-        this.where('ft.connection_id', connectionId).orWhere('tt.connection_id', connectionId);
+        this.whereIn('ft.connection_id', connectionIds).orWhereIn('tt.connection_id', connectionIds);
       })
       .select(
         'ft.table_name as from_table', 'fc.column_name as from_column',
@@ -112,7 +116,7 @@ export async function getMatchAssertions(
   } catch (err) {
     // Context enrichment must never be the reason a design run fails. Losing an
     // assertion degrades the answer; throwing loses the whole request.
-    log.warn({ err, connectionId }, 'could not load match assertions');
+    log.warn({ err, connectionIds }, 'could not load match assertions');
     return [];
   }
 }

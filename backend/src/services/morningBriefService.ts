@@ -21,6 +21,7 @@ import { prepareUnattendedRead } from './readPolicy';
 import { logger } from '../utils/logger';
 import { notify } from './notificationService';
 import { createProductConnector } from '../connectors/ConnectorFactory';
+import { scopeOf } from './queryScope';
 // Static, not `await import`: the dynamic-import ratchet's baseline only ever
 // goes down, and there is no cycle to break here — investigateService does
 // not reach back into this module.
@@ -259,7 +260,7 @@ async function snapshotPulseValues(tenantId: number): Promise<number> {
       // The path doesn't really matter — createProductConnector hangs
       // tablePaths off the catalog. Pass a sentinel root that
       // DuckDBConnector accepts.
-      connector = await createProductConnector('warehouse', connectionId, tenantId);
+      connector = await createProductConnector('warehouse', scopeOf(tenantId, connectionId));
       await connector.connect();
     } catch (err) {
       logger.warn({ err, connectionId }, 'morningBriefService: could not open connector — skipping snapshots');

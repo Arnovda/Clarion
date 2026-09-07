@@ -9,6 +9,7 @@ import { requireAuth, requireRole } from '../../middleware/auth';
 import { Database } from 'duckdb-async';
 import { reqDb } from '../../db/reqDb';
 import { buildConnectionWarehouseSession } from '../../services/productWarehouse';
+import { scopeOf } from '../../services/queryScope';
 import { assertSafeReadQuery } from '../../utils/sqlGuard';
 import { log } from './shared';
 
@@ -105,7 +106,7 @@ router.post('/refinements/:id/preview', requireAuth, requireRole('admin', 'analy
       return;
     }
 
-    duckDb = await buildConnectionWarehouseSession(reqDb(req), plan.connectionId, req.user!.tenantId);
+    duckDb = await buildConnectionWarehouseSession(reqDb(req), scopeOf(req.user!.tenantId, plan.connectionId));
     // GUARDED. `plan.sql` is AI-authored (the refinement proposal writes it)
     // and ran unguarded until 2026-09-07. The SELECT wrapper below already
     // stopped DDL, but nothing stopped `read_parquet('az://…')` pointed at

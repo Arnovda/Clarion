@@ -707,7 +707,7 @@ router.post('/relationships/re-suggest', requireAuth, requireRole('admin'), asyn
       // Cross-source identity links. Postgres-backed and NOT part of the Neo4j
       // relationship read above: `kind` lives only in Postgres, and a match
       // spans two connections while that read is scoped to one.
-      getMatchAssertions(reqDb(req), req.user?.tenantId, connectionId),
+      getMatchAssertions(reqDb(req), req.user?.tenantId, [connectionId]),
     ]);
 
     if (!tables.length) {
