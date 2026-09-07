@@ -31,7 +31,115 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-09-06 (§6.1 OF THE EVALUATION — "make the promise and
+**Last updated:** 2026-09-07 (CSV UPLOAD — §6.2 item A1 of the evaluation, "the
+cheapest second source"; owner: *"Do the CSV upload"*)
+
+**A CSV is now an ordinary source: upload it, it becomes a table Ask AI and
+dashboards query like any other.** Registry-driven, so no backend route, no
+migration and no wizard code was needed — implement `SourceConnector`, register
+it, and the tile appears.
+- **NEW `packages/connectors/src/spreadsheet/csvReader.ts` — this is where the
+  work is.** It returns an `XlsxSheet`, so column naming, dedupe, type
+  inference, the record shape and the truncation refusal are `tabular.ts`
+  applied UNCHANGED — the same rule the Excel and SharePoint connectors run,
+  not a second copy that drifts. What it adds is the one thing a worksheet
+  gets free from its file format and a CSV does not: **what each cell means.**
+  Four inferences, each of which fails silently when it is wrong:
+  **(1) The delimiter.** Excel writes `;` in Belgian, French and Dutch
+  locales, because `,` is the decimal separator there. Sniffing uses the REAL
+  parser on a 64 KB prefix and scores by how many rows agree on a width —
+  counting characters is fooled by a comma inside a quoted address, and that
+  file has more commas than semicolons.
+  **(2) The encoding.** Excel's plain "CSV (comma delimited)" export writes
+  Windows-1252. A BOM settles it; without one, UTF-8 is tried in FATAL mode,
+  because real UTF-8 is a strict enough shape that Western European bytes
+  almost never satisfy it by accident. cp1252 is a 32-entry table in the file
+  rather than a `TextDecoder` label, since the WHATWG set beyond UTF-8/16
+  depends on how Node was built with ICU and a connector must not decode
+  differently on two machines.
+  **(3) `1.234` is two different numbers.** No VALUE settles it, so the
+  decision is per COLUMN from unambiguous evidence in that column: both
+  separators present → the last one is decimal; a repeated separator → it is
+  grouping; a tail that is not three digits → decimal; `0.123` → decimal (no
+  one writes that for 123). A column whose values CONTRADICT each other stays
+  text — picking one reading would be wrong for the other half. With no
+  evidence at all, a lone three-digit group reads as thousands. Also handled:
+  accounting parentheses, a leading/trailing currency symbol, and NBSP/thin
+  space as grouping. **A trailing `%` is deliberately NOT handled** — `50%`
+  and `50` are different quantities, and guessing is how a column silently
+  becomes a hundred times wrong.
+  **(4) Some digits are not numbers.** A leading zero is an article code, an
+  IBAN, a GL code — converting drops the zero and nothing downstream can tell
+  it was there, so the column stays text. Past 15 digits a double rounds, so
+  the stored value would differ from the file. Both are refusals, not
+  conversions.
+  Dates: day-first by default (matching the locale this product is built for
+  and `app/grids/import.ts`), overridden by a value above 12 in either
+  position, refused when the two conflict or a date does not exist.
+  **Two-digit years are refused rather than assigned a century.** A NUL byte
+  refuses the file whole and names the likeliest cause (UTF-16 saved without
+  a BOM). The row cap is REPORTED, never obeyed — `assertSheetComplete` turns
+  it into the same refusal the Excel path uses.
+- **NEW `packages/connectors/src/csv/`** (`schema.ts`, `CsvConnector.ts`,
+  `index.ts`). Follows the Excel connector exactly, including the base64-in-
+  config decision (five decrypt sites already work; a file store would need a
+  hydration step added to each) and the ~15 MB cap. Three differences, each
+  following from the same rule — *an entity is named by what identifies it
+  within its source*: **one entity, because one file is one table**;
+  `tableName` can be PINNED so re-uploading `Sales v2.csv` does not rename the
+  table and orphan everything built on it; and **`testConnection` reports its
+  READING, not just success** — separator, encoding, columns, rows. Every one
+  of those was inferred, every one can be wrong, and the wizard is the only
+  place a user can correct it before the data lands. `delimiter` and
+  `encoding` are the overrides. `supportsIncremental: false` (a file has no
+  watermark and no business key; re-uploading is the refresh). Wrong-file
+  guards mirror Excel's ZIP check in reverse: a zip → "add it with the Excel
+  file source", an OLE header → old `.xls`, `%PDF` → not a data file.
+- **A wizard bug this surfaced, fixed for every connector**: re-selecting the
+  blank option on an `enum` dropdown sent `''`, which fails the connector's
+  schema with a message about an invalid enum value for a field the user meant
+  to leave alone. `setField` now deletes the key when the value is empty;
+  required fields are already blocked by `allRequiredFilled`.
+- **The mark is hand-drawn and finished** (`lib/connectorIcons.tsx`): a file
+  format has no brand and no logo, so unlike the Exact Online monogram there
+  is nothing to replace it with. An outlined document with delimited rows,
+  one path whose inner contour runs the opposite way so nonzero winding
+  punches the page out and leaves the folded corner solid. **Render-checked in
+  real Chromium at 20px beside the Excel mark**, per the standing rule for
+  source tiles.
+- `docs/SOURCE_ONBOARDING.md` gained the rule the two file connectors both
+  implement and the next one will get wrong: **a file source declares its
+  column NAMES and nothing else.** A heading is legitimately `declared`, but
+  it is a name, not documentation — so `displayName` yes, `description` never.
+  Passing a heading off as a description plants a fabricated fact at the
+  trusted rung, where nothing downstream questions it.
+- **Proven end to end against real DuckDB parquet, not just against the type
+  checker** (throwaway script, deleted after): a CRLF semicolon file with
+  `1.234,56`, `(900,00)`, `€ 2 500,00`, `07/09/2026`, `TRUE`, `0123` and
+  `12,5%` went through the real `LocalFileWarehouseWriter` and read back as
+  DOUBLE `1234.56 / -900 / 2500`, DATE `2026-09-07`, BOOLEAN, and VARCHAR
+  `'0123'` with its leading zero intact and `'12,5%'` untouched. Every rule
+  above held on the same file.
+- Validation: connectors **22 files / 308 passed** (51 new in
+  `csvReader.test.ts` — the European cases are the point: semicolons, cp1252,
+  `1.234,56` vs `1,234.56`, contradicting columns, leading zeros, percentages,
+  day-first evidence; 23 new in `CsvConnector.test.ts`), `tsc` clean, dist
+  rebuilt; `source-types-catalog.test.ts` now pins that csv is offered to a
+  brand-new tenant; backend `npm run check` clean and full vitest **80 files /
+  726 passed / 4 skipped**; ten ratchets green from the repo root; frontend
+  `tsc` clean, `next build` green,
+  touched files carry only the documented pre-existing lint findings.
+- **NOT done, deliberately**: no `.xls` (a different format — a clear refusal
+  naming the Excel connector beats a confusing parse failure), no Google
+  Sheets, no multi-file upload, no incremental sync, and no delimiter/encoding
+  PREVIEW in the wizard (testConnection's details answer the same question at
+  the moment it is asked; a live grid preview is its own slice). **And the
+  SharePoint connector still lists only workbooks** — now that the reader
+  exists, teaching it to pick up `.csv` files from a document library is a
+  small, obvious next slice, and it would come with automatic refresh, which
+  an upload cannot have.
+
+**Prior last updated:** 2026-09-06 (§6.1 OF THE EVALUATION — "make the promise and
 the product agree" — IS CLOSED; owner: *"Put it in main and production, then
 proceed"*. The seven defects went live in production first: deploy run #580,
 `main-540c351`, Go live health-checked and shifted traffic 19:52 UTC.)

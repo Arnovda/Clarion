@@ -47,6 +47,17 @@ export {
 
 // ─── Spreadsheet core (shared by every file-backed connector) ─────────────
 export {
+  readCsv,
+  decodeCsvBytes,
+  parseDelimited,
+  sniffDelimiter,
+  CSV_DELIMITERS,
+  type CsvDelimiter,
+  type CsvEncoding,
+  type CsvReadResult,
+  type ReadCsvOptions,
+} from './spreadsheet/csvReader';
+export {
   readXlsx,
   SpreadsheetReadError,
   XLSX_DEFAULT_MAX_COLS,
@@ -85,6 +96,7 @@ export {
 // ─── Self-register all connectors (side-effect imports) ───────────────────
 // Adding a new connector: add an `import './<vendor>';` line below.
 // Each connector subfolder's index.ts calls `registerConnector(...)` on import.
+import './csv';
 import './excel';
 import './exactonline';
 import './odoo';
