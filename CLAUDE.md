@@ -102,8 +102,8 @@ wrong company's data, on a dashboard that looks fine.
   guarantee did not, so it now pins the new shape AND that `tenantId?:` never
   appears in `queryScope.ts` — the optional form would compile everywhere and
   silently reintroduce D2. Verified red both ways.
-- Validation: backend `tsc` clean, full vitest **86 files / 797 passed / 4
-  skipped** (was 84/772 — +25 across two new suites); **all eleven ratchets
+- Validation: backend `tsc` clean, full vitest **86 files / 802 passed / 4
+  skipped** (was 84/772 — +30 across two new suites); **all eleven ratchets
   green from the repo root with per-ratchet exit codes**; migration 97
   down/up round-tripped; frontend `tsc` clean, vitest 6/52, `next build`
   green, touched files carry only PRE-EXISTING findings (`changeConnection`,
@@ -116,6 +116,23 @@ wrong company's data, on a dashboard that looks fine.
   returns the right numbers, the bare contested name REJECTS, both prefixed
   names serve their own source's rows, an uncontested name keeps its bare form,
   and a single-source scope still sees only its own tables under the old names.
+- **SELF-REVIEW PASS, same session, and it found a REAL DEFECT that falsified
+  a claim in this very entry.** "Every later execution runs in the scope its
+  SQL was written against" was true of the dashboard surface and FALSE of the
+  three replay paths: `sendScheduledReport` parsed the spec and then built its
+  connector from a hard `scopeOf(tenantId, connectionId)`, so a scheduled
+  cross-source dashboard would have **mailed out a report with every
+  second-system widget rendered as an error** — on a schedule, to recipients
+  who did not ask for it and could not see why. The Excel add-in, the
+  scheduled saved-question email and `/think`'s verified fast path had the
+  same shape. **Migration 97 therefore also adds `saved_questions.cross_source`**
+  (a saved question's SQL is replayed by three separate readers), the save
+  path records it, and all four readers resolve the stored scope. Five
+  source-level tests pin each one; **verified red** by restoring the old
+  single-source scope on the email path. Note the failure MODE was benign —
+  the SQL names a table the narrow session did not register, so it throws
+  rather than returning a partial total — but a scheduled email that always
+  errors is a feature nobody can use.
 - **NOT runtime-exercised against a live multi-source tenant**, because none
   exists yet — production has one connector per tenant today. Watch the first
   `'[/think] cross-source question'` log line, and the `createProductConnector`
@@ -9706,7 +9723,7 @@ clarion/                              ← on disk: databridge/
 20260906000094  legal_acceptances                 (P0-7: who accepted which versions, when, from where)
 20260906000095  ai_routing_mode_off               (4-3: tenants.ai_routing_mode may be 'off')
 20260906000096  query_log_duration                (time-to-answer, measured end to end)
-20260907000097  cross_source_scope                (notebooks.cross_source — the opt-in)
+20260907000097  cross_source_scope                (notebooks + saved_questions.cross_source)
 ```
 
 ---

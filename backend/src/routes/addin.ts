@@ -26,7 +26,7 @@ import { validate } from '../middleware/validate';
 import { runSavedQuestionSchema } from '../middleware/schemas';
 import { reqDb } from '../db/reqDb';
 import { createConnector, createProductConnector } from '../connectors/ConnectorFactory';
-import { scopeOf } from '../services/queryScope';
+import { resolveScope } from '../services/queryScope';
 import { getProductWarehousePath } from '../services/productContext';
 import { applyDataPolicies } from '../services/policyEngine';
 import { assertSafeReadQuery } from '../utils/sqlGuard';
@@ -114,7 +114,12 @@ router.post('/questions/:id/run', validate(runSavedQuestionSchema), async (req: 
         res.status(409).json({ ok: false, error: 'This data has not been prepared yet.' });
         return;
       }
-      connector = await createProductConnector(warehousePath, scopeOf(tenantId, sq.connection_id as number));
+      // The add-in replays a saved question's SQL, so it needs the scope that
+      // SQL was written against — same rule as the chat and the email.
+      connector = await createProductConnector(warehousePath, await resolveScope({
+        tenantId, connectionId: sq.connection_id as number,
+        crossSource: sq.cross_source === true,
+      }));
     } else {
       connector = await createConnector(connection);
     }

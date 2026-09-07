@@ -290,3 +290,51 @@ describe('the semantic context describes what the session actually serves', () =
     expect(ctx!.semanticContext).toContain('Table dim_customer');
   });
 });
+
+// ─── The replay paths ───────────────────────────────────────────────────────
+//
+// A cross-source answer is not one execution. Its SQL is re-run later by a
+// scheduled email, by the Excel add-in, and by the verified fast path in
+// /think — and each of those built its session from a hard single-source
+// scope until this was fixed. That is not a cosmetic gap: a cross-source
+// dashboard on a schedule would MAIL OUT a report with every widget reading
+// the second system rendered as an error, to recipients who did not ask for
+// it and cannot see why.
+//
+// Source-level assertions, because driving them needs an SMTP transport, an
+// Office host and a live model between them. They make the regression a red
+// build rather than a silent one — the same trick the overnight-investigation
+// wiring tests use.
+
+describe('every replay of a saved query honours the scope it was written in', () => {
+  const read = (rel: string) =>
+    fs.readFileSync(path.join(__dirname, '..', rel), 'utf8');
+
+  it('the scheduled dashboard email reads the spec, not a fixed connection', () => {
+    const src = read('services/reportEmailService.ts');
+    expect(src).toContain('crossSource: spec.crossSource === true');
+    // The old hard-coded single-source scope must not come back on this path.
+    expect(src).not.toContain('scopeOf(tenantId, product.connection_id as number)');
+  });
+
+  it('the scheduled saved-question email reads the stored scope', () => {
+    const src = read('services/reportEmailService.ts');
+    expect(src).toContain('crossSource: sq.cross_source === true');
+  });
+
+  it('the Excel add-in reads the stored scope', () => {
+    const src = read('routes/addin.ts');
+    expect(src).toContain('crossSource: sq.cross_source === true');
+  });
+
+  it('the verified fast path replays in the scope the SQL was written in', () => {
+    const src = read('routes/query.ts');
+    expect(src).toContain('crossSource: vq.cross_source === true');
+  });
+
+  it('saving a question records the scope', () => {
+    // Without this the three readers above have nothing to read, and the
+    // whole chain silently degrades to single-source.
+    expect(read('routes/savedQuestions.ts')).toContain('cross_source: crossSource === true');
+  });
+});

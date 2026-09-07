@@ -53,10 +53,10 @@ router.get('/', async (req: Request, res: Response, next: NextFunction) => {
 router.post('/', validate(createSavedQuestionSchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const db = reqDb(req);
-    const { question, sql, tablesUsed, visualization, connectionId, dataLayer, verified } = req.body as {
+    const { question, sql, tablesUsed, visualization, connectionId, dataLayer, verified, crossSource } = req.body as {
       question: string; sql: string; tablesUsed?: string[];
       visualization?: Record<string, unknown>; connectionId: number;
-      dataLayer?: 'product' | 'source'; verified?: boolean;
+      dataLayer?: 'product' | 'source'; verified?: boolean; crossSource?: boolean;
     };
 
     // Never store a query that isn't a safe read — a verified row bypasses
@@ -88,6 +88,9 @@ router.post('/', validate(createSavedQuestionSchema), async (req: Request, res: 
           visualization: visualization ? JSON.stringify(visualization) : null,
           connection_id: connectionId,
           data_layer: dataLayer === 'source' ? 'source' : 'product',
+          // The scope the SQL was written against. Replayed in a narrower one,
+          // a cross-source question names a table that is not registered.
+          cross_source: crossSource === true,
           verified: makeVerified,
           ...(makeVerified ? { verified_by: req.user!.sub, verified_at: new Date().toISOString() } : {}),
         })

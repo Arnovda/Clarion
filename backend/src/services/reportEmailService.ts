@@ -11,7 +11,7 @@
 
 import { tenantQuery } from './tenantQuery';
 import { createConnector, createProductConnector } from '../connectors/ConnectorFactory';
-import { scopeOf } from './queryScope';
+import { scopeOf, resolveScope } from './queryScope';
 import { sendEmail } from './emailService';
 import { prepareUnattendedRead } from './readPolicy';
 import { generateReportNarrative, formatAnswer } from '../ai/AIService';
@@ -203,7 +203,16 @@ export async function sendScheduledReport(scheduleId: number, tenantId: number):
       logger.warn({ scheduleId }, '[report-email] Product warehouse not materialised');
       return;
     }
-    connector = await createProductConnector(warehousePath, scopeOf(tenantId, product.connection_id as number));
+    // A scheduled email is just another execution of this dashboard's SQL, so
+    // it has to run in the scope that SQL was written against. Without this a
+    // cross-source dashboard would mail out a report with every widget that
+    // reads the second system rendered as an error — on a schedule, to
+    // recipients who did not ask for it.
+    connector = await createProductConnector(warehousePath, await resolveScope({
+      tenantId,
+      connectionId: product.connection_id as number,
+      crossSource: spec.crossSource === true,
+    }));
   } else {
     const connection = await tenantQuery(tenantId, (trx) =>
       trx('connections').where({ id: connectionId, tenant_id: tenantId }).first(),
@@ -338,7 +347,12 @@ async function sendScheduledQuestion(schedule: {
     if (sq.data_layer === 'product') {
       const warehousePath = await tenantQuery(tenantId, (trx) => getProductWarehousePath(sq.connection_id, trx));
       if (!warehousePath) throw new Error('product warehouse not materialised');
-      connector = await createProductConnector(warehousePath, scopeOf(sq.tenant_id as number, sq.connection_id as number));
+      // Same rule as the dashboard path: the saved SQL decides the scope.
+      connector = await createProductConnector(warehousePath, await resolveScope({
+        tenantId: sq.tenant_id as number,
+        connectionId: sq.connection_id as number,
+        crossSource: sq.cross_source === true,
+      }));
     } else {
       connector = await createConnector(connection);
     }

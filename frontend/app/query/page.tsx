@@ -1338,6 +1338,9 @@ function QueryPageInner() {
               ambiguities: d.ambiguities, mismatches: d.mismatches, debug: d.debug, rows: d.rows,
               reasoning: accumulatedThinking || undefined,
               queryLayer: d.queryLayer,
+              // The scope this answer was produced in, carried on the message
+              // so saving it stores the scope its SQL was written against.
+              crossSource,
               visualization: d.visualization,
               sources: d.sources,
               answeredInMs: d.answeredInMs,
