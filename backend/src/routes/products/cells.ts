@@ -11,6 +11,7 @@ import { listSourceTables, listProductTablesByConnection } from '../../services/
 import { Database } from 'duckdb-async';
 import { reqDb } from '../../db/reqDb';
 import { buildConnectionWarehouseSession } from '../../services/productWarehouse';
+import { scopeOf } from '../../services/queryScope';
 import { assertSafeReadQuery } from '../../utils/sqlGuard';
 
 const router = Router();
@@ -177,7 +178,7 @@ router.post('/tables/cells/:cellId/execute', requireAuth, requireRole('admin', '
     if (!connection) { res.status(400).json({ ok: false, error: 'Connection not found' }); return; }
 
     // Build DuckDB session with source + product tables registered.
-    duckDb = await buildConnectionWarehouseSession(pgDb, connectionId, req.user!.tenantId);
+    duckDb = await buildConnectionWarehouseSession(pgDb, scopeOf(req.user!.tenantId, connectionId));
 
     // Register preceding cells' outputs as views (cell chaining)
     const precedingCells = await pgDb('product_table_cells')

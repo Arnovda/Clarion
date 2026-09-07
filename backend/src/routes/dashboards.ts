@@ -5,6 +5,7 @@ import { validate } from '../middleware/validate';
 import { createDashboardSchema, updateDashboardSchema, batchExecuteSchema, refineDashboardSchema, fixWidgetSchema, generateDashboardSchema, refineSpecSchema, pinWidgetSchema, saveMyViewSchema, clearMyViewSchema } from '../middleware/schemas';
 import { semanticDb } from '../db/knex';
 import { createConnector, createProductConnector } from '../connectors/ConnectorFactory';
+import { scopeOf, resolveScope, type QueryScope } from '../services/queryScope';
 import { generateDashboardSpec, generateDashboardRefinement, refineDashboardSpec, validateAndFixDashboardSpec, checkWidgetSemantics, SqlDialect, explainWidget, generateDashboardInsights, planInvestigation, synthesizeInvestigation, narrateDashboard, planDashboardEdit, editWidgetSql, generateSingleWidget } from '../ai/AIService';
 import { DashboardSpec, WidgetSpec, RefinementOutput, WidgetExecutionResult } from '../ai/prompts/dashboardPrompt';
 import { buildSemanticContextForQuery } from '../db/semanticGraph';
@@ -143,6 +144,33 @@ function resolveWidgetFilters(sql: string, filterValues: Record<string, string>)
 // Helper — execute all widgets with default filters, return results for validation
 // ---------------------------------------------------------------------------
 
+/**
+ * The scope a dashboard's SQL must run in.
+ *
+ * Read from the SPEC, never from the request alone. A dashboard's scope is a
+ * property of the dashboard: the widget SQL was written against a particular
+ * set of tables, so every later execution — refresh, drill, filter dropdown,
+ * export, scheduled email — has to see the same ones. Resolve it differently
+ * anywhere and that surface fails "table does not exist" on a table the user
+ * can see in the catalog.
+ *
+ * Absent `crossSource` is the single-source scope every existing dashboard
+ * already has, so this is a no-op for them.
+ */
+async function dashboardScope(
+  tenantId: number | undefined,
+  connectionId: number,
+  spec: { productIds?: number[]; crossSource?: boolean } | undefined,
+  trx?: Knex | Knex.Transaction,
+): Promise<QueryScope> {
+  return resolveScope({
+    tenantId,
+    connectionId,
+    productIds: spec?.productIds,
+    crossSource: spec?.crossSource === true,
+  }, trx);
+}
+
 async function executeSpecForValidation(
   spec: DashboardSpec,
   connectionId: number,
@@ -161,7 +189,7 @@ async function executeSpecForValidation(
   if (!connection) return [];
 
   const connector = productPath
-    ? await createProductConnector(productPath, connection.id, tenantId)
+    ? await createProductConnector(productPath, await dashboardScope(tenantId, connection.id, spec))
     : await createConnector(connection);
   await connector.connect();
 
@@ -298,13 +326,15 @@ async function validateAndRepairSpec(
 router.post('/generate', requireAuth, validate(generateDashboardSchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const db = reqDb(req);
-    const { connectionId, request, answers, productIds, dataLayer } = req.body as {
+    const { connectionId, request, answers, productIds, dataLayer, crossSource } = req.body as {
       connectionId: number;
       request: string;
       /** {question, answer} pairs from the refinement step; legacy clients send bare strings. */
       answers?: Array<string | { question: string; answer: string }>;
       productIds?: number[];
       dataLayer?: 'product' | 'source';
+      /** Reach every source in the tenant, not just this connection. */
+      crossSource?: boolean;
     };
 
     // Append the refinement answers WITH their questions — an answer like
@@ -327,7 +357,7 @@ router.post('/generate', requireAuth, validate(generateDashboardSchema), async (
     // 'source' opt-in for users who want raw source-layer dashboards.
     const productCtx = dataLayer === 'source'
       ? null
-      : await buildProductSemanticContext(connectionId, productIds, db);
+      : await buildProductSemanticContext(await dashboardScope(req.user!.tenantId, connectionId, { productIds, crossSource }), db);
     const semanticCtx = productCtx
       ? { semanticContext: productCtx.semanticContext, relationshipContext: productCtx.relationshipContext }
       : await buildSemanticContext(connectionId, req.user!.tenantId);
@@ -351,6 +381,7 @@ router.post('/generate', requireAuth, validate(generateDashboardSchema), async (
     // approved product on the wrong connection).
     spec.dataLayer = dataLayer === 'source' ? 'source' : 'product';
     if (productIds?.length) spec.productIds = productIds;
+    if (crossSource) spec.crossSource = true;
 
     res.json({ ok: true, data: { spec } });
   } catch (err) {
@@ -365,14 +396,15 @@ router.post('/generate', requireAuth, validate(generateDashboardSchema), async (
 router.post('/refine', requireAuth, validate(refineDashboardSchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const db = reqDb(req);
-    const { connectionId, request, productIds, dataLayer } = req.body as {
+    const { connectionId, request, productIds, dataLayer, crossSource } = req.body as {
       connectionId: number; request: string; productIds?: number[];
       dataLayer?: 'product' | 'source';
+      crossSource?: boolean;
     };
 
     const productCtx = dataLayer === 'source'
       ? null
-      : await buildProductSemanticContext(connectionId, productIds, db);
+      : await buildProductSemanticContext(await dashboardScope(req.user!.tenantId, connectionId, { productIds, crossSource }), db);
     const semanticCtx = productCtx
       ? { semanticContext: productCtx.semanticContext, relationshipContext: productCtx.relationshipContext }
       : await buildSemanticContext(connectionId, req.user!.tenantId);
@@ -391,22 +423,29 @@ router.post('/refine', requireAuth, validate(refineDashboardSchema), async (req:
 router.post('/refine-spec', requireAuth, validate(refineSpecSchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const db = reqDb(req);
-    const { connectionId, refinement, currentSpec, productIds, dataLayer } = req.body as {
+    const { connectionId, refinement, currentSpec, productIds, dataLayer, crossSource } = req.body as {
       connectionId: number;
       refinement: string;
       currentSpec: DashboardSpec;
       productIds?: number[];
       dataLayer?: 'product' | 'source';
+      /** Reach every source in the tenant, not just this connection. */
+      crossSource?: boolean;
     };
 
     // Prefer the context stamped on the spec at generation time — a reopened
     // dashboard's client state may not carry the original product scope.
     const effectiveProductIds = productIds?.length ? productIds : currentSpec.productIds;
+    // Same precedence as productIds: an explicit request wins, otherwise the
+    // dashboard keeps the scope it was built with. Without this a refinement
+    // would quietly narrow a cross-source dashboard back to one system and
+    // rewrite its widgets against a schema that no longer matches.
+    const effectiveCrossSource = crossSource !== undefined ? crossSource : currentSpec.crossSource === true;
     const effectiveLayer = dataLayer ?? currentSpec.dataLayer;
 
     const productCtx = effectiveLayer === 'source'
       ? null
-      : await buildProductSemanticContext(connectionId, effectiveProductIds, db);
+      : await buildProductSemanticContext(await dashboardScope(req.user!.tenantId, connectionId, { productIds: effectiveProductIds, crossSource: effectiveCrossSource }), db);
     const semanticCtx = productCtx
       ? { semanticContext: productCtx.semanticContext, relationshipContext: productCtx.relationshipContext }
       : await buildSemanticContext(connectionId, req.user!.tenantId);
@@ -447,6 +486,7 @@ router.post('/refine-spec', requireAuth, validate(refineSpecSchema), async (req:
     // Stamp the context this refine actually ran against.
     spec.dataLayer = effectiveLayer === 'source' ? 'source' : 'product';
     if (effectiveProductIds?.length) spec.productIds = effectiveProductIds;
+    if (effectiveCrossSource) spec.crossSource = true;
 
     // Tell the client exactly what changed so it can say more than
     // "Dashboard updated" — and clear its caches for just those widgets.
@@ -526,7 +566,7 @@ function editOpLabel(op: DashboardEditOp, spec: DashboardSpec): string {
 router.post('/refine-spec-stream', requireAuth, validate(refineSpecSchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const db = reqDb(req);
-    const { connectionId, refinement, currentSpec, productIds, dataLayer, scopeWidgetId } = req.body as {
+    const { connectionId, refinement, currentSpec, productIds, dataLayer, scopeWidgetId, crossSource } = req.body as {
       connectionId: number;
       refinement: string;
       currentSpec: DashboardSpec;
@@ -534,6 +574,7 @@ router.post('/refine-spec-stream', requireAuth, validate(refineSpecSchema), asyn
       dataLayer?: 'product' | 'source';
       /** Set when the user is editing ONE card rather than the dashboard. */
       scopeWidgetId?: string;
+      crossSource?: boolean;
     };
     const tenantId = req.user!.tenantId;
 
@@ -550,13 +591,18 @@ router.post('/refine-spec-stream', requireAuth, validate(refineSpecSchema), asyn
     }
 
     const effectiveProductIds = productIds?.length ? productIds : currentSpec.productIds;
+    // Same precedence as productIds: an explicit request wins, otherwise the
+    // dashboard keeps the scope it was built with. Without this a refinement
+    // would quietly narrow a cross-source dashboard back to one system and
+    // rewrite its widgets against a schema that no longer matches.
+    const effectiveCrossSource = crossSource !== undefined ? crossSource : currentSpec.crossSource === true;
     const effectiveLayer = dataLayer ?? currentSpec.dataLayer;
 
     // Semantic context BEFORE the SSE handshake, so a context failure is a
     // normal JSON error, not a broken stream.
     const productCtx = effectiveLayer === 'source'
       ? null
-      : await buildProductSemanticContext(connectionId, effectiveProductIds, db);
+      : await buildProductSemanticContext(await dashboardScope(req.user!.tenantId, connectionId, { productIds: effectiveProductIds, crossSource: effectiveCrossSource }), db);
     const semanticCtx = productCtx
       ? { semanticContext: productCtx.semanticContext, relationshipContext: productCtx.relationshipContext }
       : await buildSemanticContext(connectionId, req.user!.tenantId);
@@ -566,6 +612,7 @@ router.post('/refine-spec-stream', requireAuth, validate(refineSpecSchema), asyn
       const out = preserveSpecCarryover(currentSpec, spec);
       out.dataLayer = effectiveLayer === 'source' ? 'source' : 'product';
       if (effectiveProductIds?.length) out.productIds = effectiveProductIds;
+      if (effectiveCrossSource) out.crossSource = true;
       return out;
     };
     const finish = (spec: DashboardSpec, notes: string[], refusals: string[]) => {
@@ -901,12 +948,14 @@ router.post('/refine-spec-stream', requireAuth, validate(refineSpecSchema), asyn
 router.post('/fix-widget', requireAuth, validate(fixWidgetSchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const db = reqDb(req);
-    const { connectionId, spec, widgetId, productIds, dataLayer } = req.body as {
+    const { connectionId, spec, widgetId, productIds, dataLayer, crossSource } = req.body as {
       connectionId: number;
       spec: DashboardSpec;
       widgetId: string;
       productIds?: number[];
       dataLayer?: 'product' | 'source';
+      /** Reach every source in the tenant, not just this connection. */
+      crossSource?: boolean;
     };
 
     if (!spec || !Array.isArray(spec.widgets)) {
@@ -921,7 +970,7 @@ router.post('/fix-widget', requireAuth, validate(fixWidgetSchema), async (req: R
 
     const productCtx = dataLayer === 'source'
       ? null
-      : await buildProductSemanticContext(connectionId, productIds, db);
+      : await buildProductSemanticContext(await dashboardScope(req.user!.tenantId, connectionId, { productIds, crossSource }), db);
     const semanticCtx = productCtx
       ? { semanticContext: productCtx.semanticContext, relationshipContext: productCtx.relationshipContext }
       : await buildSemanticContext(connectionId, req.user!.tenantId);
@@ -1009,7 +1058,7 @@ router.post('/execute', requireAuth, async (req: Request, res: Response, next: N
     }
 
     const connector = productPath
-      ? await createProductConnector(productPath, connection.id, tenantId)
+      ? await createProductConnector(productPath, await dashboardScope(tenantId, connection.id, { crossSource: (req.body as { crossSource?: boolean }).crossSource }))
       : await createConnector(connection);
     await connector.connect();
 
@@ -1068,7 +1117,7 @@ router.post('/batch-execute', requireAuth, validate(batchExecuteSchema), async (
     const reqStart = Date.now();
     const connectStart = Date.now();
     const connector = productPath
-      ? await createProductConnector(productPath, connection.id, tenantId)
+      ? await createProductConnector(productPath, await dashboardScope(tenantId, connection.id, { crossSource: (req.body as { crossSource?: boolean }).crossSource }))
       : await createConnector(connection);
     await connector.connect();
     const connectMs = Date.now() - connectStart;
@@ -1267,7 +1316,7 @@ router.post('/batch-execute-stream', requireAuth, validate(batchExecuteSchema), 
     }
 
     const connector = productPath
-      ? await createProductConnector(productPath, connection.id, tenantId)
+      ? await createProductConnector(productPath, await dashboardScope(tenantId, connection.id, { crossSource: (req.body as { crossSource?: boolean }).crossSource }))
       : await createConnector(connection);
     await connector.connect();
 
@@ -1516,7 +1565,7 @@ router.post('/drill-rows', requireAuth, async (req: Request, res: Response, next
     }
 
     const connector = productPath
-      ? await createProductConnector(productPath, connection.id, tenantId)
+      ? await createProductConnector(productPath, await dashboardScope(tenantId, connection.id, { crossSource: (req.body as { crossSource?: boolean }).crossSource }))
       : await createConnector(connection);
     await connector.connect();
 
@@ -1638,7 +1687,7 @@ router.post('/cube', requireAuth, async (req: Request, res: Response, next: Next
     }
 
     const connector = productPath
-      ? await createProductConnector(productPath, connection.id, tenantId)
+      ? await createProductConnector(productPath, await dashboardScope(tenantId, connection.id, { crossSource: (req.body as { crossSource?: boolean }).crossSource }))
       : await createConnector(connection);
     await connector.connect();
 
@@ -1750,7 +1799,7 @@ router.post('/filter-options', requireAuth, async (req: Request, res: Response, 
     }
 
     const connector = filterProductPath
-      ? await createProductConnector(filterProductPath, filterConn.id, filterTenantId)
+      ? await createProductConnector(filterProductPath, await dashboardScope(filterTenantId, filterConn.id, { crossSource: (req.body as { crossSource?: boolean }).crossSource }))
       : await createConnector(filterConn);
     await connector.connect();
 
@@ -2415,7 +2464,7 @@ async function executeWidgetSql(
   if (!connection) throw Object.assign(new Error('Connection not found'), { status: 404 });
 
   const connector = productPath
-    ? await createProductConnector(productPath, connection.id, tenantId)
+    ? await createProductConnector(productPath, await dashboardScope(tenantId, connection.id, spec))
     : await createConnector(connection);
   await connector.connect();
 
@@ -2529,7 +2578,7 @@ router.get('/:id/export/xlsx', requireAuth, async (req: Request, res: Response, 
     }
 
     const connector = productPath
-      ? await createProductConnector(productPath, connection.id, tenantId)
+      ? await createProductConnector(productPath, await dashboardScope(tenantId, connection.id, spec))
       : await createConnector(connection);
     await connector.connect();
 
@@ -2633,7 +2682,7 @@ router.post('/investigate', requireAuth, async (req: Request, res: Response, nex
       }
 
       const connector = productPath
-        ? await createProductConnector(productPath, connection.id, tenantId)
+        ? await createProductConnector(productPath, await dashboardScope(tenantId, connection.id, { crossSource: (req.body as { crossSource?: boolean }).crossSource }))
         : await createConnector(connection);
       await connector.connect();
 

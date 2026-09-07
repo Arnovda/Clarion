@@ -35,7 +35,9 @@
 import { Knex } from 'knex';
 import { Database } from 'duckdb-async';
 import { isAzurePath, setupDuckDBForWarehouse, createScanView, rollupViewName } from './warehouse';
-import { listSourceTables, listProductTablesByConnection, listManagedGridTables } from './tableCatalog';
+import { listSourceTables, listProductTablesForScope, listManagedGridTables } from './tableCatalog';
+import type { QueryScope } from './queryScope';
+import { planRegistration } from './warehouseRegistration';
 import { logger } from '../utils/logger';
 
 const log = logger.child({ mod: 'productWarehouse' });
@@ -58,22 +60,25 @@ const log = logger.child({ mod: 'productWarehouse' });
  */
 export async function buildConnectionWarehouseSession(
   pgDb: Knex | Knex.Transaction,
-  connectionId: number,
-  tenantId: number | undefined,
+  scope: QueryScope,
 ): Promise<Database> {
-  const connection = await pgDb('connections').where({ id: connectionId }).first();
-  if (!connection) throw new Error('Connection not found');
+  const tenantId = scope.tenantId;
+  const crossSource = scope.connectionIds.length > 1;
 
-  // Azure mode is needed if the connection warehouse OR any product delta_path
+  const connections = await pgDb('connections').whereIn('id', scope.connectionIds).select('id', 'name', 'warehouse_path');
+  if (connections.length === 0) throw new Error('Connection not found');
+
+  // Azure mode is needed if any connection warehouse OR any product delta_path
   // is an azure URI — product tables can live on Azure Blob even when the
   // source connection is local.
   const productDeltaPaths = await pgDb('product_tables')
     .join('star_schemas', 'product_tables.star_schema_id', 'star_schemas.id')
     .join('data_products', 'star_schemas.data_product_id', 'data_products.id')
-    .where('data_products.connection_id', connectionId)
+    .whereIn('data_products.connection_id', scope.connectionIds)
     .whereNotNull('product_tables.delta_path')
     .pluck<string[]>('product_tables.delta_path');
-  const needAzure = isAzurePath(connection.warehouse_path ?? '') || productDeltaPaths.some(isAzurePath);
+  const needAzure = connections.some((c: { warehouse_path: string | null }) => isAzurePath(c.warehouse_path ?? ''))
+    || productDeltaPaths.some(isAzurePath);
 
   const db = await Database.create(':memory:');
   await setupDuckDBForWarehouse(db, needAzure);
@@ -90,33 +95,56 @@ export async function buildConnectionWarehouseSession(
   };
 
   // ── Source tables — schema = connection name ─────────────────────────────
-  const sources = await listSourceTables(tenantId, connectionId);
-  for (const t of sources) {
-    try {
-      await createView(connection.name, t.tableName, t.uri);
-    } catch (err) {
-      log.warn({ err, table: t.tableName }, `failed to register source view ${connection.name}.${t.tableName}`);
+  // Connection names are already distinct per source, so the source layer
+  // needs no extra disambiguation: two systems' `Accounts` live in different
+  // schemas and both stay reachable.
+  for (const conn of connections) {
+    const sources = await listSourceTables(tenantId, conn.id);
+    for (const t of sources) {
+      try {
+        await createView(conn.name, t.tableName, t.uri);
+      } catch (err) {
+        log.warn({ err, table: t.tableName }, `failed to register source view ${conn.name}.${t.tableName}`);
+      }
     }
   }
 
-  // ── Product tables + their monthly rollups — schema = product name ───────
-  const productTables = await listProductTablesByConnection(tenantId, connectionId);
-  for (const t of productTables) {
+  // ── Product tables + their monthly rollups ──────────────────────────────
+  //
+  // Named by the SAME rule Ask AI uses (`warehouseRegistration`), and that is
+  // the point rather than tidiness: a notebook exists to verify an answer, so
+  // if the two surfaces disagreed about what a table is called, the check
+  // would fail on the one query the analyst most needs to run. It also brings
+  // the collision rule with it — a bare name two systems disagree about is
+  // withheld here too, so an unqualified reference cannot resolve to the
+  // wrong source's data.
+  const productTables = await listProductTablesForScope(scope);
+  const plan = planRegistration(
+    productTables.map((t) => ({
+      tableName: t.tableName,
+      uri: t.uri,
+      productName: t.productName,
+      connectionId: t.connectionId ?? 0,
+      connectionName: t.connectionName,
+      rollupUri: t.rollupUri,
+    })),
+    { crossSource, rollupName: rollupViewName },
+  );
+
+  for (const name of plan.tableNames) {
+    const uri = plan.tablePaths.get(name);
+    if (!uri) continue;
+    const schema = plan.tableSchemas.get(name);
     try {
-      await createView(t.productName, t.tableName, t.uri);
-    } catch (err) {
-      log.warn({ err, table: t.tableName }, `failed to register product view ${t.productName}.${t.tableName}`);
-    }
-    // The rollup is ADVERTISED to the model by productContext and preferred by
-    // the dashboard prompt, so the view has to exist wherever that SQL might
-    // be pasted. Registering it here is the same fix-both-or-neither pair.
-    if (t.rollupUri) {
-      const rollupName = rollupViewName(t.tableName);
-      try {
-        await createView(t.productName, rollupName, t.rollupUri);
-      } catch (err) {
-        log.warn({ err, table: rollupName }, `failed to register rollup view ${t.productName}.${rollupName}`);
+      if (schema) await createView(schema, name, uri);
+      else {
+        // Ambiguous names carry their source in the name itself and live in
+        // the default schema — the prefix already disambiguates.
+        await createScanView(db, name, uri);
+        registeredNames.add(name);
       }
+    } catch (err) {
+      log.warn({ err, table: name }, `failed to register product view ${schema ? `${schema}.` : ''}${name}`);
     }
   }
 
@@ -142,7 +170,7 @@ export async function buildConnectionWarehouseSession(
   // looked exactly like "registered everything". Say it once.
   if (registeredNames.size === 0) {
     log.warn(
-      { connectionId, tenantId },
+      { connectionIds: scope.connectionIds, tenantId },
       'warehouse session registered no views — every query against it will fail',
     );
   }

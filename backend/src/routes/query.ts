@@ -14,6 +14,7 @@ import { reqDb } from '../db/reqDb';
 import { startSSE } from '../services/sse';
 import { notifyAdmins } from '../services/notificationService';
 import { createConnector, createProductConnector } from '../connectors/ConnectorFactory';
+import { scopeOf, resolveScope, isCrossSource } from '../services/queryScope';
 import { buildProductSemanticContext, getProductWarehousePath } from '../services/productContext';
 import { applyDataPolicies } from '../services/policyEngine';
 import { buildSemanticContextForQuery, getDimensionColumns, getJoinPaths, getTableAndColumnNames, buildRelevantSubgraph } from '../db/semanticGraph';
@@ -415,7 +416,7 @@ router.post('/', requireAuth, validate(askQuestionSchema), async (req: Request, 
     //    'source' is honoured for users who want to query raw source data.
     const productCtx = requestedLayer === 'source'
       ? null
-      : await buildProductSemanticContext(connectionId, undefined, db);
+      : await buildProductSemanticContext(scopeOf(req.user!.tenantId, connectionId), db);
     const tenantId = req.user!.tenantId;
     const productWarehouse = productCtx
       ? await semanticDb.transaction(async (trx) => {
@@ -546,7 +547,7 @@ router.post('/', requireAuth, validate(askQuestionSchema), async (req: Request, 
       const productExecSql = productPolicyResult.sql;
 
       // Execute against product layer DuckDB
-      const connector = await createProductConnector(productWarehouse, connection.id, req.user!.tenantId);
+      const connector = await createProductConnector(productWarehouse, scopeOf(req.user!.tenantId, connection.id));
       await connector.connect();
       let execRows: Record<string, unknown>[];
       const execStart = Date.now();
@@ -1156,10 +1157,17 @@ router.post('/think', requireAuth, validate(thinkQuerySchema), async (req: Reque
 
   try {
     const db = reqDb(req);
-    const { connectionId, question, domains, conversationId, dataLayer: requestedLayerRaw, productId, parentMessageId, directive } = req.body as {
+    const {
+      connectionId, question, domains, conversationId, dataLayer: requestedLayerRaw,
+      productId, parentMessageId, directive, crossSource: crossSourceRequested,
+    } = req.body as {
       connectionId: number; question: string; domains?: string[]; conversationId?: number;
       dataLayer?: 'product' | 'source';
       productId?: number;
+      /** Let the question reach every source the tenant has. Opt-in per
+       *  question: widening costs prompt tokens and can withhold a bare table
+       *  name that two systems disagree about, so it must never be implicit. */
+      crossSource?: boolean;
       /** Worksheet: the step being asked FROM. Present → follow-up context is
        *  that step's ancestor path, never the conversation's linear tail
        *  (which after a branch belongs to a different line of questioning). */
@@ -1214,7 +1222,7 @@ router.post('/think', requireAuth, validate(thinkQuerySchema), async (req: Reque
             });
             if (!vWarehouse) throw new Error('product warehouse not materialised');
             const vConnection = await db('connections').where({ id: connectionId }).first();
-            const vConnector = await createProductConnector(vWarehouse, vConnection.id, vTenantId);
+            const vConnector = await createProductConnector(vWarehouse, scopeOf(vTenantId, vConnection.id));
             await vConnector.connect();
             try { vRows = (await vConnector.executeQuery(vPolicy.sql)).rows; }
             finally { vConnector.disconnect(); }
@@ -1265,11 +1273,31 @@ router.post('/think', requireAuth, validate(thinkQuerySchema), async (req: Reque
       }
     }
 
-    // ── 0. Resolve data layer (default = product when available) ───────────
+    // ── 0. Resolve scope, then data layer (default = product when available) ─
     emit({ type: 'phase', text: 'Loading context…' });
+
+    // The scope decides WHICH data the question may reach. Resolved once, here,
+    // and reused for the context, the warehouse session and the repair loop —
+    // if those three ever disagree, the model is shown tables the session did
+    // not register, which fails as "table does not exist" on a table the user
+    // can plainly see in the catalog.
+    const thinkScope = await resolveScope({
+      tenantId: req.user!.tenantId,
+      connectionId,
+      productIds: productId ? [productId] : undefined,
+      crossSource: crossSourceRequested,
+    }, db);
+
+    if (isCrossSource(thinkScope)) {
+      // The load-bearing production signal: this is the first time a question
+      // has been able to reach more than one system, so the first appearance
+      // of this line is what proves the path is live.
+      log.info({ connectionIds: thinkScope.connectionIds }, '[/think] cross-source question');
+    }
+
     const thinkProductCtx = requestedLayer === 'source'
       ? null
-      : await buildProductSemanticContext(connectionId, productId ? [productId] : undefined, db);
+      : await buildProductSemanticContext(thinkScope, db);
     const thinkTenantId = req.user!.tenantId;
     const thinkProductWarehouse = thinkProductCtx
       ? await semanticDb.transaction(async (trx) => {
@@ -1392,7 +1420,7 @@ router.post('/think', requireAuth, validate(thinkQuerySchema), async (req: Reque
       if (sse.closed) return;
 
       emit({ type: 'phase', text: 'Running your query…' });
-      const connector = await createProductConnector(thinkProductWarehouse, connection.id, req.user!.tenantId);
+      const connector = await createProductConnector(thinkProductWarehouse, thinkScope);
       await connector.connect();
       let healed: SelfHealOutcome;
       try {
@@ -1857,6 +1885,7 @@ router.post('/repair', requireAuth, validate(repairQuerySchema), async (req: Req
       conversationHistory, clarificationAnswer,
       dataLayer: requestedLayerRaw,
       conversationId, messageServerId,
+      productId: repairProductId, crossSource: repairCrossSource,
     } = req.body as {
       connectionId: number;
       question: string;
@@ -1871,6 +1900,9 @@ router.post('/repair', requireAuth, validate(repairQuerySchema), async (req: Req
        *  corrected answer instead of resurrecting the wrong one. */
       conversationId?: number;
       messageServerId?: number;
+      /** Scope of the answer being repaired — see `repairScope` below. */
+      productId?: number;
+      crossSource?: boolean;
     };
     const requestedLayer = layerForRole(req, requestedLayerRaw);
 
@@ -1879,9 +1911,20 @@ router.post('/repair', requireAuth, validate(repairQuerySchema), async (req: Req
     //    connector here, which silently dropped the user out of the product
     //    layer mid-investigation and produced inconsistent answers across
     //    follow-up turns.
+    // Same scope the answer was produced from. A repair that sees LESS than
+    // the original would report "that table does not exist" about a table that
+    // plainly does, then rewrite a correct query into a wrong one — the exact
+    // failure the coherence review flagged when /repair took no productId.
+    const repairScope = await resolveScope({
+      tenantId: req.user!.tenantId,
+      connectionId,
+      productIds: repairProductId ? [repairProductId] : undefined,
+      crossSource: repairCrossSource,
+    }, db);
+
     const repairProductCtx = requestedLayer === 'source'
       ? null
-      : await buildProductSemanticContext(connectionId, undefined, db);
+      : await buildProductSemanticContext(repairScope, db);
     const repairTenantId = req.user!.tenantId;
     const repairProductWarehouse = repairProductCtx
       ? await semanticDb.transaction(async (trx) => {
@@ -1949,7 +1992,7 @@ router.post('/repair', requireAuth, validate(repairQuerySchema), async (req: Req
     // ── Connection + connector for diagnostics — match the layer ──
     const connection = await db('connections').where({ id: connectionId }).first();
     sqliteConnector = repairLayer === 'product' && repairProductWarehouse
-      ? await createProductConnector(repairProductWarehouse, connection.id, repairTenantId)
+      ? await createProductConnector(repairProductWarehouse, repairScope)
       : await createConnector(connection);
     await sqliteConnector.connect();
 
@@ -2161,12 +2204,19 @@ router.post('/forecast', requireAuth, validate(forecastQuerySchema), async (req:
   const askedAt = Date.now();
   try {
     const db = reqDb(req);
-    const { connectionId, question, domains } = req.body as {
-      connectionId: number; question: string; domains?: string[];
+    const { connectionId, question, domains, crossSource: forecastCrossSource } = req.body as {
+      connectionId: number; question: string; domains?: string[]; crossSource?: boolean;
     };
 
     // 1. Build semantic context (same as the main query path)
-    const productCtx = await buildProductSemanticContext(connectionId, undefined, db);
+    // Same reasoning as /repair: a forecast built from a narrower context than
+    // the question that prompted it is answering a different question.
+    const forecastScope = await resolveScope({
+      tenantId: req.user!.tenantId,
+      connectionId,
+      crossSource: forecastCrossSource,
+    }, db);
+    const productCtx = await buildProductSemanticContext(forecastScope, db);
     const tenantId = req.user!.tenantId;
     const productWarehouse = productCtx
       ? await semanticDb.transaction(async (trx) => {
@@ -2248,7 +2298,7 @@ router.post('/forecast', requireAuth, validate(forecastQuerySchema), async (req:
 
     if (productCtx && productWarehouse) {
       const connection = await db('connections').where({ id: connectionId }).first();
-      const connector = await createProductConnector(productWarehouse, connection.id, req.user!.tenantId);
+      const connector = await createProductConnector(productWarehouse, forecastScope);
       await connector.connect();
       try {
         const result = await connector.executeQuery(fcPolicy.sql);

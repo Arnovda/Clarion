@@ -26,6 +26,7 @@ import { validate } from '../middleware/validate';
 import { runSavedQuestionSchema } from '../middleware/schemas';
 import { reqDb } from '../db/reqDb';
 import { createConnector, createProductConnector } from '../connectors/ConnectorFactory';
+import { scopeOf } from '../services/queryScope';
 import { getProductWarehousePath } from '../services/productContext';
 import { applyDataPolicies } from '../services/policyEngine';
 import { assertSafeReadQuery } from '../utils/sqlGuard';
@@ -113,7 +114,7 @@ router.post('/questions/:id/run', validate(runSavedQuestionSchema), async (req: 
         res.status(409).json({ ok: false, error: 'This data has not been prepared yet.' });
         return;
       }
-      connector = await createProductConnector(warehousePath, sq.connection_id as number, tenantId);
+      connector = await createProductConnector(warehousePath, scopeOf(tenantId, sq.connection_id as number));
     } else {
       connector = await createConnector(connection);
     }

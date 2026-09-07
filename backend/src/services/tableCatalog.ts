@@ -84,6 +84,19 @@ export interface ResolvedProductTable extends ResolvedTable {
    * failure.
    */
   rollupUri: string | null;
+  /**
+   * Which source this table came from. Free (it is `data_products.connection_id`,
+   * already joined) and load-bearing once a session can span sources: naming,
+   * the collision rule and the "which system is this number from?" line in the
+   * semantic context all key on it.
+   */
+  connectionId: number | null;
+  /**
+   * Display name of that source. Null unless the caller asked for a listing
+   * that joins `connections` — only the scope listing needs it, and paying for
+   * the join on every single-table resolve would be waste.
+   */
+  connectionName: string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -155,7 +168,7 @@ export async function resolveProductTableById(
         'pt.last_run_at', 'pt.transformation_status', 'pt.is_shared_dimension',
         'pt.table_role',
         'pt.rollup_path',
-        'dp.id as product_id', 'dp.name as product_name',
+        'dp.id as product_id', 'dp.name as product_name', 'dp.connection_id as connection_id',
       )
       .first(),
   );
@@ -184,7 +197,7 @@ export async function resolveProductTable(
         'pt.last_run_at', 'pt.transformation_status', 'pt.is_shared_dimension',
         'pt.table_role',
         'pt.rollup_path',
-        'dp.id as product_id', 'dp.name as product_name',
+        'dp.id as product_id', 'dp.name as product_name', 'dp.connection_id as connection_id',
       )
       .first(),
   );
@@ -253,7 +266,7 @@ export async function listProductTables(
         'pt.last_run_at', 'pt.transformation_status', 'pt.is_shared_dimension',
         'pt.table_role',
         'pt.rollup_path',
-        'dp.id as product_id', 'dp.name as product_name',
+        'dp.id as product_id', 'dp.name as product_name', 'dp.connection_id as connection_id',
       ),
   );
   return rows.map(mapProductRow);
@@ -263,24 +276,62 @@ export async function listProductTables(
  * List every ready product table across all products for a connection.
  * Used by `createProductConnector` to register one DuckDB session that
  * can JOIN across products (conformed dimensions etc.).
+ *
+ * Thin wrapper over `listProductTablesForScope` — kept because a great many
+ * surfaces legitimately are about one connection, and because it makes the
+ * single-source path obviously unchanged.
  */
 export async function listProductTablesByConnection(
   tenantId: number | undefined,
   connectionId: number,
 ): Promise<ResolvedProductTable[]> {
-  const rows = await tenantQuery(tenantId, (trx) =>
+  return listProductTablesForScope({ tenantId, connectionIds: [connectionId] });
+}
+
+/**
+ * List every ready product table reachable from a scope.
+ *
+ * The generalisation of the line that made cross-source impossible:
+ * `.where('dp.connection_id', connectionId)` becomes `whereIn`. Everything
+ * downstream — naming, context, the prompt — keys off the `connectionId` and
+ * `connectionName` this returns, so this is the one place that decides what
+ * a question may reach.
+ *
+ * `connections` is joined here and nowhere else in this module: only naming
+ * needs the source's display name, and it is what the collision rule uses to
+ * build a prefix a human can read.
+ */
+export async function listProductTablesForScope(
+  scope: { tenantId: number | undefined; connectionIds: number[]; productIds?: number[] },
+): Promise<ResolvedProductTable[]> {
+  if (scope.connectionIds.length === 0) return [];
+
+  const rows = await tenantQuery(scope.tenantId, (trx) =>
     trx('product_tables as pt')
       .join('star_schemas as ss', 'pt.star_schema_id', 'ss.id')
       .join('data_products as dp', 'ss.data_product_id', 'dp.id')
-      .where('dp.connection_id', connectionId)
+      .leftJoin('connections as c', 'dp.connection_id', 'c.id')
+      .whereIn('dp.connection_id', scope.connectionIds)
       .where('pt.transformation_status', 'success')
       .whereNotNull('pt.delta_path')
+      .modify((q) => {
+        // Narrowing to specific products is a filter ON TOP of the connection
+        // scope, never a replacement for it: a product id from another tenant
+        // must not widen what this returns.
+        if (scope.productIds && scope.productIds.length > 0) {
+          q.whereIn('dp.id', scope.productIds);
+        }
+        // Explicit tenant predicate beside RLS — `tenantQuery` sets the context,
+        // but an authorisation decision never rides the session variable alone.
+        if (scope.tenantId != null) q.where('dp.tenant_id', scope.tenantId);
+      })
       .select(
         'pt.id', 'pt.table_name', 'pt.delta_path', 'pt.row_count',
         'pt.last_run_at', 'pt.transformation_status', 'pt.is_shared_dimension',
         'pt.table_role',
         'pt.rollup_path',
-        'dp.id as product_id', 'dp.name as product_name',
+        'dp.id as product_id', 'dp.name as product_name', 'dp.connection_id as connection_id',
+        'c.name as connection_name',
       ),
   );
   return rows.map(mapProductRow);
@@ -513,6 +564,8 @@ function mapProductRow(row: Record<string, unknown>): ResolvedProductTable {
     tableRole: String(row.table_role ?? 'unknown'),
     isStub: row.is_shared_dimension === true,
     rollupUri: row.rollup_path ? String(row.rollup_path) : null,
+    connectionId: row.connection_id != null ? Number(row.connection_id) : null,
+    connectionName: row.connection_name != null ? String(row.connection_name) : null,
   };
 }
 

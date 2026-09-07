@@ -168,6 +168,17 @@ export interface DashboardSpec {
    */
   productIds?: number[];
   /**
+   * Let this dashboard's widgets reach every source the tenant has, not just
+   * the connection it was created on. Persisted with the spec because it is a
+   * property of the DASHBOARD, not of a request: every later execution — a
+   * widget refresh, a drill, an export, a scheduled email — has to run in the
+   * same scope the SQL was written against, or a widget that queries the
+   * second source fails "table does not exist" on a table plainly in the
+   * catalog. Absent/false = the single-source behaviour every existing
+   * dashboard already has.
+   */
+  crossSource?: boolean;
+  /**
    * The AI summary strip ("things to notice"). Generated once when the
    * dashboard is created and again ONLY on an explicit user trigger — never
    * automatically on open, so viewing a saved dashboard costs zero AI calls.

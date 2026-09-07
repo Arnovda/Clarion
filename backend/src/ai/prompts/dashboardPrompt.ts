@@ -293,7 +293,13 @@ Write titles that state the INSIGHT, not the description:
 - Use the most granular table for measures (order_lines for revenue, not orders header)
 - stacked_bar_chart: ORDER BY label, series — required for correct rendering
 - kpi_card delta: compute inline with a subquery or CTE comparing current vs prior period
-- Use NULLIF in division to avoid divide-by-zero: / NULLIF(prev_value, 0)`;
+- Use NULLIF in division to avoid divide-by-zero: / NULLIF(prev_value, 0)
+- ACROSS SOURCE SYSTEMS: if the schema says more than one source system is in scope, tables from
+  DIFFERENT systems share no foreign key. Join them ONLY on a link the schema explicitly states
+  (a confirmed identity link, or a table the user maintains that maps one to the other). Matching
+  column names or similar-looking ids are NOT evidence that two systems agree. With no stated link,
+  build SEPARATE widgets per system and put them side by side — never one joined widget. A wrong
+  cross-system join renders as a perfectly plausible number that nobody can catch by eye.`;
 
 const DASHBOARD_SQL_SQLITE = `
 - Monthly labels: strftime('%Y-%m', date_column)

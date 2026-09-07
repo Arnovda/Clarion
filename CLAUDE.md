@@ -31,7 +31,104 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-09-07 (HOME IS A BRIEFING NOW — R1 + R2 of
+**Last updated:** 2026-09-07 (CROSS-SOURCE QUESTIONS WORK — the one line that
+forbade them is gone, and the collision it was hiding is closed by construction;
+owner: *"Cross-source questions don't work, make it work for questions,
+dashboards, notebooks, generally in the platform"*)
+
+**THE BLOCKER WAS ONE LINE AND THE FIX IS NOT.** `tableCatalog.ts` filtered
+every product read with `.where('dp.connection_id', connectionId)`, so a
+question spanning two systems was not unsupported — it was INEXPRESSIBLE. But
+deleting that filter alone would have shipped the worst defect this platform
+can produce, which is why it had sat unfixed: **two sources both have a
+`dim_customer`.** Views register as `"<schema>"."<table>"` under a
+`search_path`, and DuckDB resolves an unqualified name against that path IN
+ORDER — so a bare `dim_customer` in a two-source session returns whichever
+source registered first. Not an error. A plausible total, computed from the
+wrong company's data, on a dashboard that looks fine.
+- **NEW `services/queryScope.ts` — the unit of work is a SCOPE now**, resolved
+  once at the request boundary and passed down: `{ tenantId, connectionIds[],
+  productIds? }`. `tenantId` rides INSIDE it deliberately — catalog reads open
+  their own root-pool transaction and do not inherit request context, and a
+  forgotten tenant makes the RLS predicate `tenant_id = NULL` and registers
+  ZERO views (D2, twice already). `resolveScope` widens only on an explicit
+  ask and **always includes the requested connection**, so a source
+  mid-first-build never vanishes from its own question.
+- **NEW `services/warehouseRegistration.ts` — pure, 13 tests, and the whole
+  safety story.** THE RULE: *a bare name is registered only when every table
+  claiming it points at the SAME uri; otherwise it is not registered at all
+  and each claimant gets a source-prefixed name.* **Keying on URI, not on
+  connection, is what makes it correct in both directions** — within one
+  connection a shared dim is stubbed into several products and
+  `publishStubFromUpstream` mirrors the OWNER's uri, so those agree and keep
+  the bare name every existing dashboard already uses; across connections the
+  uris differ, the bare name disappears, and a query naming it **fails
+  loudly**. A missing table is a bug report; a wrong number is a lost customer.
+- **SINGLE-SOURCE IS BYTE-IDENTICAL, and that is the load-bearing constraint.**
+  Same schema names, same bare names, same DuckDB pool key. Everything that
+  exists today runs in that scope; the collision rule leaking into it would
+  break every saved dashboard on a two-source tenant at once. Pinned by test
+  in both directions.
+- **Cross-source is OPT-IN on every surface**, because widening costs prompt
+  tokens and can withhold a name: Ask AI an "All sources" toggle (all roles —
+  unlike "Query source data" it exposes no raw tables, and a viewer is exactly
+  who benefits), dashboards an "All sources" chip in the Data domain row
+  **persisted onto `spec.crossSource`** (a property of the DASHBOARD: every
+  later refresh, drill, filter dropdown, export and scheduled email must run
+  in the scope its SQL was written against), notebooks a toolbar toggle on
+  **`notebooks.cross_source` (migration 97)** — durable, because a notebook's
+  saved SQL would otherwise change meaning on reload. Each toggle renders only
+  when the workspace HAS more than one source.
+- **THE MODEL IS TOLD WHAT IT MAY NOT DO, in two places.** Two systems share
+  no foreign key — only an assertion that some rows describe the same
+  real-world thing — so left unsaid the model invents a join on similar-looking
+  names and returns a confident wrong total. The context gains a per-question
+  section (which tables come from which system, the withheld names and their
+  alternatives, confirmed identity links via the existing `getMatchAssertions`,
+  now taking a LIST of connections); and both `nlToSqlPromptDuckDB` and
+  `dashboardPrompt` gain a standing rule: **with no stated link, answer each
+  system separately and say they cannot be joined.**
+- **`/repair` and `/forecast` now take the scope too** — the coherence review
+  flagged that they took no `productId`, so a double-check ran against a
+  different context than the answer it was checking and would "correct" a
+  working query into a broken one.
+- **The notebook uses the SAME names as Ask AI, by construction** —
+  `buildConnectionWarehouseSession` runs the same `planRegistration`. A
+  notebook exists to verify an answer; if the two disagreed about what a table
+  is called, the check would fail on the one query the analyst most needs.
+- **THE GUARD TEST THAT HAD TO CHANGE, and was strengthened rather than
+  weakened**: `authoring-surface-guard` pinned `tenantId` as a positional
+  argument. The mechanism moved (it is a required FIELD on the scope) but the
+  guarantee did not, so it now pins the new shape AND that `tenantId?:` never
+  appears in `queryScope.ts` — the optional form would compile everywhere and
+  silently reintroduce D2. Verified red both ways.
+- Validation: backend `tsc` clean, full vitest **86 files / 797 passed / 4
+  skipped** (was 84/772 — +25 across two new suites); **all eleven ratchets
+  green from the repo root with per-ratchet exit codes**; migration 97
+  down/up round-tripped; frontend `tsc` clean, vitest 6/52, `next build`
+  green, touched files carry only PRE-EXISTING findings (`changeConnection`,
+  `connName`, `setOpen` each appear exactly once at HEAD — already dead).
+  **The collision rule was verified RED**: treating a disagreement as
+  agreement turns 4 of 13 unit tests red.
+- **PROVEN AGAINST REAL DUCKDB, not just the type checker** — new
+  `cross-source-query.test.ts` (12) writes real parquet for two connections
+  with a deliberate `dim_customer` collision and asserts: a JOIN across the two
+  returns the right numbers, the bare contested name REJECTS, both prefixed
+  names serve their own source's rows, an uncontested name keeps its bare form,
+  and a single-source scope still sees only its own tables under the old names.
+- **NOT runtime-exercised against a live multi-source tenant**, because none
+  exists yet — production has one connector per tenant today. Watch the first
+  `'[/think] cross-source question'` log line, and the `createProductConnector`
+  line that reports `N name(s) ambiguous across sources, bare name withheld`.
+- **NOT built, deliberately**: the per-row identity crosswalk (§2.2 of the
+  multi-source strategy — "Shopify customer 4471 IS Exact's VAN DAMME BVBA" is
+  a stored assertion per row, not a scope question, and is the larger piece);
+  automatic cross-source scope (opt-in on purpose); and cross-source at the
+  SOURCE layer for Ask AI (notebooks register every source's raw tables under
+  their connection-name schemas, which is already unambiguous; Ask AI's source
+  layer stays single-connection).
+
+**Prior last updated:** 2026-09-07 (HOME IS A BRIEFING NOW — R1 + R2 of
 `docs/backlog/home-experience.md`; owner: *"Let's implement your proposals"*,
 having settled board = per-user and the ops line = visible to viewers without
 the Refresh action. **IN MAIN AND PRODUCTION** — owner: *"Pls put in main and
@@ -9373,6 +9470,8 @@ clarion/                              ← on disk: databridge/
 │       │   ├── legal.ts                    ← in-force flag, acceptance status + record (P0-7)
 │       │   ├── tenantExport.ts             ← the streamed ZIP export (P0-7)
 │       │   ├── notificationService.ts      ← notify(), notifyTenant()
+│       │   ├── queryScope.ts              ← WHICH data a question may reach (tenant + connections + products)
+│       │   ├── warehouseRegistration.ts   ← view naming + the cross-source collision rule (pure)
 │       │   ├── productContext.ts           ← build star schema semantic context for NL→SQL; detects rollup tables
 │       │   ├── transformationRunner.ts     ← DuckDB transformation materialization (Parquet) + monthly rollup generation
 │       │   ├── transformationChecks.ts     ← BK uniqueness + fan-out quality gates
@@ -9565,7 +9664,7 @@ clarion/                              ← on disk: databridge/
             └── useDebounce.ts       ← custom debounce hook
 ```
 
-### Database Migrations (95 files on disk)
+### Database Migrations (98 files on disk)
 
 ```
 20260328000001  create_connections
@@ -9606,6 +9705,8 @@ clarion/                              ← on disk: databridge/
 20260905000093  ops_correlation_and_announcements (6-1 source_sync_runs.request_id; 6-4 announcements)
 20260906000094  legal_acceptances                 (P0-7: who accepted which versions, when, from where)
 20260906000095  ai_routing_mode_off               (4-3: tenants.ai_routing_mode may be 'off')
+20260906000096  query_log_duration                (time-to-answer, measured end to end)
+20260907000097  cross_source_scope                (notebooks.cross_source — the opt-in)
 ```
 
 ---

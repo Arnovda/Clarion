@@ -28,6 +28,7 @@ import { semanticDb } from '../db/knex';
 import { tenantQuery } from './tenantQuery';
 import { logger } from '../utils/logger';
 import { createProductConnector } from '../connectors/ConnectorFactory';
+import { scopeOf } from './queryScope';
 import { prepareUserRead } from './readPolicy';
 import {
   type InvestigateAgentContext,
@@ -173,7 +174,7 @@ async function runAgentLoop(
 
   // Open a DuckDB connector for this product. One connector for the
   // whole loop — every step's query runs through it.
-  const connector = await createProductConnector('warehouse', ctxBase.connectionId, tenantId);
+  const connector = await createProductConnector('warehouse', scopeOf(tenantId, ctxBase.connectionId));
   await connector.connect();
 
   const priorSteps: InvestigateAgentContext['priorSteps'] = [];

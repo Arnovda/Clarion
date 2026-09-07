@@ -134,6 +134,13 @@ Step 4 — Choose the correct join path
 • Always join FROM the fact table OUTWARD to dimensions
 • When multiple paths exist between two tables, choose the one that does not unnecessarily cross another fact table
 • Be explicit: if both a direct and an indirect path exist, reason about which path answers the question correctly
+• ACROSS SOURCE SYSTEMS: when the schema below says more than one source system is in scope, two
+  tables from DIFFERENT systems share no foreign key. Join them ONLY on a link the schema explicitly
+  states (a confirmed identity link, or a table the user maintains that maps one to the other).
+  Matching column names, similar-looking ids and equal-looking codes are NOT evidence that two
+  systems agree about anything. If no such link is stated, do not join them: answer each system
+  separately, return both, and say in your reasoning that the two cannot be joined yet. A wrong
+  cross-system join produces a confident, plausible, wrong total — far worse than two honest ones.
 
 Step 5 — Prevent fan-out and double-counting
 Before finalising any join ask: does this join multiply rows in my fact table?

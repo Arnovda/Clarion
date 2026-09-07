@@ -56,8 +56,16 @@ export function usePyodide() {
   const [loading, setLoading] = useState(false);
   const [ready, setReady] = useState(false);
   const connectionIdRef = useRef<number | null>(null);
+  // Mirrors the notebook's own `cross_source`. A ref, like the connection, so
+  // the bridge closure below always reads the current value — a Python cell
+  // that saw fewer tables than the SQL cell beside it would be baffling.
+  const crossSourceRef = useRef<boolean>(false);
 
   /** Set the connection ID used by Python's sql() function */
+  const setCrossSource = useCallback((on: boolean) => {
+    crossSourceRef.current = on;
+  }, []);
+
   const setConnectionId = useCallback((id: number | null) => {
     connectionIdRef.current = id;
   }, []);
@@ -84,7 +92,10 @@ export function usePyodide() {
           const connId = connectionIdRef.current;
           if (!connId) return JSON.stringify({ error: 'No connection selected' });
           try {
-            const res = await api.post('/notebooks/query', { connectionId: connId, sql: query });
+            const res = await api.post('/notebooks/query', {
+              connectionId: connId, sql: query,
+              ...(crossSourceRef.current ? { crossSource: true } : {}),
+            });
             if (res.data.ok) {
               return JSON.stringify(res.data.data);
             }
@@ -254,5 +265,5 @@ sys.stderr = sys.__stderr__
     }
   }, [loadPyodide]);
 
-  return { loading, ready, runPython, setSqlResult, setConnectionId };
+  return { loading, ready, runPython, setSqlResult, setConnectionId, setCrossSource };
 }
