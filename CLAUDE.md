@@ -31,7 +31,92 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-09-07 (CSV UPLOAD — §6.2 item A1 of the evaluation, "the
+**Last updated:** 2026-09-07 (PLATFORM COHERENCE REVIEW — doc only, no product
+code changed; owner: *"check if the functionality of all the parts below is
+logical, best practice, if there are better options to make it 1 coherent
+platform... see what we have and if we have to modify things, delete things or
+add things"*)
+
+**NEW DOC: `docs/backlog/platform-coherence-review.md`. Artifact: "Nine
+Surfaces, One Product?" ([link](https://claude.ai/code/artifact/a3232d38-e4a0-49b4-a1e7-64b75e4dd3ba)).**
+The nine surfaces the owner named — Ask AI, Dashboards, Notebooks, Home,
+Subjects, cross-source questions, building subjects, adapting subjects, and
+the "question needs a field the subject lacks" case — each read end to end
+(page → route → service → prompt) and traced to the thing it actually
+queries. Every claim `file:line`, verified by reading that code.
+- **THE FINDING: the product renamed its central noun to Subject and never
+  moved its plumbing.** The unit of work in Ask AI, Dashboards, Notebooks and
+  Build is still a CONNECTION, and in Ask AI that connection is invisible —
+  `selectedSource` is declared at `query/page.tsx:70` and never rendered
+  (the comment at :69 says so), restored from localStorage, falling back to
+  the literal `1` at :912. **Four different DuckDB session builders** with
+  four capability sets serve one job (`createProductConnector` /
+  `buildNamespacedDuckDB` / `buildConnectionWarehouseSession` /
+  `buildTwoSourceConnector`); only the last can hold two sources, and it
+  exists solely to compute a match percentage for a panel.
+- **THREE USER-VISIBLE DEFECTS, all one-line fixes.** (D1) **Seven frontend
+  call sites double the `/api` prefix against 374 that do not** —
+  `EmailSchedulePanel.tsx:51,78,101,111,120` and `AskAIPanel.tsx:139,142,189`
+  vs `lib/api.ts:6`. **Dashboard email schedules and the "Ask AI to change
+  this subject" panel 404 on every request**, while the same email feature
+  works from Ask AI's empty state, which uses the bare path
+  (`query/EmptyState.tsx:139`). (D2) **Six warehouse-catalog reads pass
+  `tenantId: undefined`** (`notebooks.ts:78,95`, `productWarehouse.ts:39,43`,
+  `cells.ts:299,300` → `tenantQuery.ts:26-28`), so notebooks, the refinement
+  preview and the per-table SQL cells register ZERO tables under the
+  production RLS role — RACY rather than deterministic, because the
+  session-level `SET` at `middleware/auth.ts:176` may rescue it. Fails
+  closed, not a leak. **The one production check: open a notebook and expand
+  the schema tree; an empty tree is the signature.** (D3) **Topic → Ask AI
+  passes `productId` without `connectionId`** (`TopicLayer.tsx:36-47` vs
+  `query/page.tsx:369-380`), so `buildProductSemanticContext` filters
+  `connection_id = X AND id IN (N)`, gets nothing, returns null, and the user
+  lands on the SOURCE layer of an unrelated connection.
+- **Cross-source is forbidden by one line** — `.where('dp.connection_id',
+  connectionId)` at `tableCatalog.ts:275` — **while three half-mechanisms
+  advertise it**: grids join tenant-wide (`ConnectorFactory.ts:203-208`), the
+  CSV connector that shipped in the previous commit creates a CONNECTION so
+  it cannot join anything (two doors for "bring a spreadsheet in", opposite
+  capabilities, nothing on either screen explaining the difference), and
+  confirmed Relations matches reach only `getMatchAssertions` →
+  `semantic.ts:710`, the source-layer prompt, which is connection-scoped too.
+  `productContext.ts` has no match concept at all.
+- **Adapting a subject has EIGHT doors: three dead, two broken, none column-
+  aware.** `propose`/`propose-single`/`propose-stream`/`build-proposed`,
+  `design`/`design-stream`, `bus-matrix-stream`/`build-bus-matrix`,
+  `tables/:id/approve`, `load-mode` and `columns/:columnId` have **zero
+  frontend callers**. Two work reliably (Build chat, RefineChat approve) and
+  they sit in different places with different vocabularies.
+- **THE OWNER'S NINTH QUESTION HAS NO MECHANISM, and it is a missing MODEL
+  not a missing screen**: `buildChatContext.ts:131-136` — the context behind
+  the only conversation about what a subject contains — is built from TABLE
+  names and row counts with **no columns at all**. So nothing can detect "the
+  field you need is in the source but not in this subject". The only escape
+  is the unexplained admin-only `Query source data` checkbox
+  (`query/page.tsx:1602-1611`) with no path back and nothing captured; a
+  viewer just gets a worse answer. §10 of the doc designs the five-step loop
+  (coverage → detect → answer honestly → one-button extend → learn) whose
+  every piece already exists and none of which is connected.
+- Also found: rebuild has no impact check though `saved_questions.tables_used`
+  and the dashboards `widget-context` tables already exist (D9); column
+  descriptions are absent from `snapshotProductEdits` (D10); notebooks see
+  neither grids nor rollups (D6); `morning_briefs.emailed_at` is still
+  written nowhere, so with D1 **the platform has no working outbound channel
+  at all** (D8).
+- **Ranked plan**: Tier 0 the five one-liners (hours) · Tier 1 make the
+  Subject the unit of work (Subject picker in Ask AI, one session builder,
+  delete the dead paths, merge Build chat + RefineChat) · Tier 2 the
+  column-coverage loop · Tier 3 make it arrive (send the brief, thresholds,
+  share link) · Tier 4 un-scope the query layer. **Do NOT** add a sixth AI
+  assistant panel (five exist), build cross-source before Tier 0, delete
+  Notebooks, or rebuild the answer card.
+- Validation: doc only — `git status` clean apart from the two new files.
+  Nothing run against a live tenant; D2's severity depends on pool behaviour
+  at runtime and D1's DIRECTION depends on the `PROD_API_URL` secret (if it
+  does not end in `/api`, the 374 are the broken ones instead — a much larger
+  incident). Endpoints classed dead by grepping `frontend/` only.
+
+**Prior last updated:** 2026-09-07 (CSV UPLOAD — §6.2 item A1 of the evaluation, "the
 cheapest second source"; owner: *"Do the CSV upload"*)
 
 **A CSV is now an ordinary source: upload it, it becomes a table Ask AI and
