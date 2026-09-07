@@ -1662,6 +1662,9 @@ function SaveQuestionButton({ msg, connectionId }: { msg: Message; connectionId:
         visualization: msg.visualization ?? undefined,
         connectionId,
         dataLayer: msg.queryLayer,
+        // Store the scope this answer's SQL was written in. Replayed in a
+        // narrower one, a cross-source query names a table that is not there.
+        ...(msg.crossSource ? { crossSource: true } : {}),
       });
       setState('saved');
     } catch (err: unknown) {

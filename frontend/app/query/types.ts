@@ -155,6 +155,8 @@ export interface Message {
   verified?:           boolean;
   reasoning?:          string;             // Claude's extended thinking, stored for replay
   queryLayer?:         'product' | 'source'; // which data layer was queried
+  /** True when this answer was produced with every source in scope. */
+  crossSource?: boolean;
   feedback?:           'up' | 'down' | null;
   feedbackComment?:    string;
   serverId?:           number;             // DB id from conversation_messages table

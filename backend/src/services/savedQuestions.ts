@@ -24,6 +24,8 @@ export interface SavedQuestionRow {
   visualization: Record<string, unknown> | null;
   connection_id: number;
   data_layer: 'product' | 'source';
+  /** The scope the stored SQL was written against. Null = single-source. */
+  cross_source: boolean | null;
   verified: boolean;
   verified_by: number | null;
   verified_at: string | null;

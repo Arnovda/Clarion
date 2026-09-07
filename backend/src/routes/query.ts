@@ -1222,7 +1222,15 @@ router.post('/think', requireAuth, validate(thinkQuerySchema), async (req: Reque
             });
             if (!vWarehouse) throw new Error('product warehouse not materialised');
             const vConnection = await db('connections').where({ id: connectionId }).first();
-            const vConnector = await createProductConnector(vWarehouse, scopeOf(vTenantId, vConnection.id));
+            // Replay the approved SQL in the scope it was WRITTEN in. A
+            // cross-source question's SQL names tables that only a
+            // cross-source session registers, so a narrower replay would
+            // throw and this fast path would silently never fire for exactly
+            // the questions somebody took the trouble to verify.
+            const vConnector = await createProductConnector(vWarehouse, await resolveScope({
+              tenantId: vTenantId, connectionId: vConnection.id,
+              crossSource: vq.cross_source === true,
+            }, db));
             await vConnector.connect();
             try { vRows = (await vConnector.executeQuery(vPolicy.sql)).rows; }
             finally { vConnector.disconnect(); }

@@ -547,6 +547,8 @@ export const createSavedQuestionSchema = z.object({
     dataLayer: dataLayerEnum,
     // Honoured only for admin/analyst callers; forced false otherwise.
     verified: z.boolean().optional(),
+    // The scope the SQL was written against — replayed verbatim later.
+    crossSource: z.boolean().optional(),
   }).passthrough(),
 });
 
