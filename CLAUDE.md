@@ -31,7 +31,79 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-09-07 (PLATFORM COHERENCE REVIEW — doc only, no product
+**Last updated:** 2026-09-07 (TIER 0 OF THE COHERENCE REVIEW — the three live
+defects fixed, same branch/PR as the doc; owner: *"Let's start"*)
+
+**D1, D2 and D3 of `docs/backlog/platform-coherence-review.md` are closed.**
+Each was one line of cause; together they turn two shipped features back on,
+stop three surfaces failing racily, and stop the headline flow answering from
+the wrong source.
+- **(D1) THE DOUBLED `/api` PREFIX — 8 call sites, 2 files.** `lib/api.ts`'s
+  baseURL already ends in `/api`, so `/api/foo` resolved to `…/api/api/foo`
+  and 404'd. **Dashboard email schedules (5 calls in `EmailSchedulePanel`)
+  and the "Ask AI to change this subject" panel (3 in `AskAIPanel`) were dead
+  on EVERY request** — while the same email feature worked from Ask AI's
+  empty state, which used the bare path. 374 sites right, 7 wrong. Nothing
+  type-checks a URL string and neither surface had a test, which is how it
+  shipped twice months apart. **NEW ELEVENTH RATCHET
+  `scripts/lint-api-base-path.ts`** in lint.yml — verified RED on the real
+  bug, and it REFUSES AN EMPTY SCAN (<100 call sites inspected = broken
+  matcher, not a clean tree), per the `.ops/prod-logs` lesson.
+- **(D2) SIX CATALOG READS WITH `tenantId: undefined`.**
+  `listSourceTables`/`listProductTablesByConnection` go through
+  `tenantQuery`, which opens its OWN root-pool transaction and sets context
+  only when given a tenant — so `undefined` made the RLS predicate
+  `tenant_id = NULL`, the first read (`connections WHERE id = …`) matched
+  nothing, and the DuckDB session came up with **ZERO views**. Notebooks
+  (`notebooks.ts:78,95`), the refinement preview + per-table SQL cells
+  (`productWarehouse.ts:39,43`) and the AI's own schema context
+  (`cells.ts:299,300`) all failed "table does not exist" — **racily**,
+  because `middleware/auth.ts:176` still does a session-level SET that a
+  reused pooled connection may happen to carry, which is exactly why it went
+  unnoticed. The `cells.ts` pair meant **the model wrote SQL against tables
+  it had imagined**. `tenantId` is now a **REQUIRED** parameter on both
+  session builders (the compiler names every call site — the same rule the
+  graph tenant-scoping work used: an authorisation input must be visible at
+  the call site), and `buildConnectionWarehouseSession` **warns when it
+  registers no views** — the per-view catches meant "registered nothing"
+  looked exactly like "registered everything". NEW
+  `tests/table-catalog-tenant.test.ts` (6), modelled on
+  `services-under-app-role`: flips `DATABASE_URL` to `databridge_app` BEFORE
+  importing the catalog and pins BOTH directions — populated with the
+  tenant, empty without it, empty for a different tenant naming the same
+  connection id. **The `undefined` cases are the defect pinned in place.**
+- **(D3) SUBJECT LINKS THAT DID NOT CARRY THEIR CONNECTION.** Ask AI renders
+  no source picker and resolves the connection URL-param → localStorage →
+  first connection, so a link with `productId` but no `connectionId` aimed
+  the question at whichever source was used last; when that connection does
+  not own the product, `buildProductSemanticContext` matches nothing,
+  returns null, and the answer comes from the SOURCE layer of an unrelated
+  connection. **Four surfaces built this URL four ways and three were
+  wrong** — the catalog's `ProductFullView` and `ProductPreviewPanel` passed
+  NO ids at all. **NEW `frontend/lib/askLink.ts`** (`askAboutSubject`) is now
+  the one builder, used by all four **including the one that was already
+  correct** (`/products`), so they cannot drift apart again.
+- Validation: backend `npm run check` clean; full backend vitest **81 files /
+  732 passed / 4 skipped** (was 80/726); **all ELEVEN ratchets green from the
+  repo root**; frontend `tsc` clean, vitest 5 files / 27 passed, `next build`
+  green; touched frontend files lint-clean — the findings in
+  `products/page.tsx` (24) and `AskAIPanel.tsx` (1) are PRE-EXISTING on
+  untouched lines, verified by re-running the linter against `HEAD`.
+- **NOT runtime-exercised against a live tenant.** Watch two things after
+  deploy: the first production **notebook open** (an empty schema tree was
+  the D2 signature — it should now populate) and the first **dashboard email
+  schedule saved from the panel** (it should no longer 404).
+- **Tier 1–4 of the review are NOT started** (Subject picker in Ask AI, one
+  warehouse session builder, delete the four dead authoring paths, merge the
+  Build chat + RefineChat, the column-coverage loop, send the brief,
+  un-scope the query layer). SANDBOX NOTE: backend + frontend `npm install`
+  both completed here in minutes and DuckDB did NOT need a native build;
+  `packages/connectors` was installed `--ignore-scripts` with the backend's
+  `duckdb.node` copied across (both 1.4.2) per the hook recipe, and its
+  `dist` must be built or backend `npm run check` reports 13 phantom
+  `@databridge/connectors` module-not-found errors.
+
+**Prior last updated:** 2026-09-07 (PLATFORM COHERENCE REVIEW — doc only, no product
 code changed; owner: *"check if the functionality of all the parts below is
 logical, best practice, if there are better options to make it 1 coherent
 platform... see what we have and if we have to modify things, delete things or
