@@ -252,12 +252,71 @@ counts; the promotion prompt; nightly materialisation with as-of + honest failur
 
 ---
 
-## 6. Open questions for the owner
+## 6. Owner decisions — settled 2026-09-07
 
-1. **How aggressive should overnight AI spend be?** One investigation per user per
-   night is ~1 Sonnet loop (~6 calls). At 10 users that is real money. Cap per
-   tenant, per user, or only run when a delta breaches sensitivity?
-2. **Should the board be per-user or per-tenant?** Per-user is more personal;
-   per-tenant means a new colleague lands on a useful page on day one.
-3. **Does the ops line survive for viewers?** It is honest but not theirs to fix.
-   Recommendation: yes, without the Refresh action (matches today's `ViewerHome`).
+1. **The board is PER-USER.** Each person's board is assembled from their own
+   repeat questions and reopened dashboards. Consequence to build for: a brand-new
+   colleague has an empty board on day one, so §3.6's cold-start copy carries them
+   until they have asked enough to promote anything. (A tenant-level fallback —
+   seed a new user's board from the tenant's most-asked questions — is a later
+   option, not this slice.)
+2. **The ops line stays for viewers, without the Refresh action.** Matches today's
+   `ViewerHome`, which already states freshness honestly and offers nothing to
+   click: the refresh is not a viewer's to trigger, and a dead button is worse than
+   a plain sentence. Curators get the same line plus **Refresh now**.
+3. **Overnight AI spend — costed, see §7.** One investigation per user per night.
+
+---
+
+## 7. What a night actually costs
+
+Computed from Clarion's own rate table (`backend/src/utils/aiPricing.ts`, which
+matches Anthropic's current published rates) so the estimate lands where
+`ai_call_log` will. Models are the ones the code already uses:
+`MODEL = claude-sonnet-4-6` ($3/$15 per MTok) and
+`MODEL_HAIKU = claude-haiku-4-5` ($1/$5).
+
+**What is free.** The pulse snapshot (Phase 1 of `morningBriefService`) is plain
+SQL against DuckDB — no AI, and it already runs. Board tiles are the same: they
+re-execute `saved_questions.sql` / `product_kpis.formula_sql`, so a four-tile
+board costs **zero tokens**. This is why §3.4 insists the board is built from
+*stored SQL*, not regenerated nightly — regenerating it would be the single
+largest avoidable line on this page.
+
+**What costs.** Per user, per night:
+
+| Call | Model | ~Cost |
+|---|---|---|
+| Morning brief (existing) | Haiku | $0.0028 |
+| Investigation — 4 × (`plan_next` + `summarise`) + `conclude` | Sonnet + Haiku | $0.0647 |
+| Lead sentence | Haiku | $0.0007 |
+| **Total, typical** | | **$0.068** |
+| **Total, worst case** (agent hits the 6-step `MAX_STEPS` cap) | | **$0.099** |
+
+≈ **7 eurocents per user per night**, ≈ **$2.04 per user per month**. Ten users on
+weekdays only ≈ **$15/month**. For scale: the platform's measured AI cost today is
+~$0.75–2/month per tenant, so this roughly triples it — from a very low base, and
+it buys the one feature the product is actually differentiated on.
+
+**The investigation is ~95% of it.** Without it a night is $0.0034 (5¢/user/month);
+with it, $0.068. Every lever that matters is therefore about how often the agent
+runs, not how the brief is written:
+
+- **One investigation per user per night, hard cap.** Not per movement.
+- **Only run it when a delta actually breached its sensitivity threshold.** On a
+  quiet morning §3.5 renders "nothing needs you" and the agent never fires — so
+  quiet days cost $0.0034, and the cap is self-limiting in exactly the right way.
+- **Investigate the top mover only**, chosen by sensitivity-weighted delta (the
+  rule `morningBriefPrompt` already applies when picking its three bullets).
+- `MAX_STEPS` is already 6 in `investigateService`; leave it.
+
+**A finding while costing this: `cacheSystem: true` is a no-op on the investigate
+calls.** `AIService` sets `cache_control: {type:'ephemeral'}` on the system prompt,
+but `AGENT_PLAN_NEXT_SYSTEM` is 417 tokens and `AGENT_CONCLUDE_SYSTEM` 377 — both
+below the 1024-token minimum cacheable prefix, so nothing caches and the flag
+silently does nothing. The table above is priced at full input rate accordingly.
+The real caching opportunity is the **product schema block** (~2,000 tokens,
+identical across all 5–7 calls of one investigation and across every user on the
+same topic): moving it behind a cache breakpoint would cut the Sonnet input on
+steps 2..n by ~90% and take a typical night from $0.068 to roughly $0.035. Worth
+doing when the overnight job is built, not before.
