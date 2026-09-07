@@ -17,7 +17,6 @@
  *   buildOverview.ts — GET /build-overview (the Build page's read model)
  *   core.ts       — POST /, dependency-graph, by-source-table,
  *                   GET/PUT/DELETE /:id, GET /:id/sources
- *   design.ts     — /:id/design-stream, /:id/design, /:id/run
  *   tables.ts     — /tables/:tableId run/patch/sql/approve/checks/
  *                   refresh-history, POST /:id/tables, PUT /columns/:columnId
  *   refine.ts     — /refine, /:id/refine, /:id/refine/apply
@@ -35,7 +34,6 @@ import catalogRouter from './catalog';
 import topicRouter from './topic';
 import buildOverviewRouter from './buildOverview';
 import coreRouter from './core';
-import designRouter from './design';
 import tablesRouter from './tables';
 import refineRouter from './refine';
 import kpisRouter from './kpis';
@@ -55,7 +53,6 @@ router.use(topicRouter);
 // New addition (2026-08-18), not part of the original single-file order.
 router.use(buildOverviewRouter);
 router.use(coreRouter);
-router.use(designRouter);
 router.use(tablesRouter);
 router.use(refineRouter);
 router.use(kpisRouter);

@@ -473,7 +473,7 @@ sequenceDiagram
     participant DBT as dbt-duckdb CLI
     participant PG as Postgres
 
-    A->>API: POST /products/:id/run
+    A->>API: POST /products/:id/run  %% removed 2026-09-07 — legacy dbt path; live path is /products/:id/run-full
     API->>PG: Fetch product, tables, columns
     API->>BLD: Generate dbt project
     BLD->>FS: Write dbt_project.yml, profiles.yml, models/*.sql, test macros

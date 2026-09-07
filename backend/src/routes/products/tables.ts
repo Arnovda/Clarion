@@ -9,7 +9,7 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { requireAuth, requireRole } from '../../middleware/auth';
 import { validate } from '../../middleware/validate';
-import { updateProductTableSchema, updateProductTableSqlSchema, updateProductColumnSchema } from '../../middleware/schemas';
+import { updateProductTableSchema, updateProductTableSqlSchema } from '../../middleware/schemas';
 import { syncProductToNeo4j } from '../../services/productGraphSync';
 import { reqDb } from '../../db/reqDb';
 
@@ -148,22 +148,6 @@ router.put('/tables/:tableId/sql', requireAuth, requireRole('admin'), validate(u
   } catch (err) { next(err); }
 });
 
-// ---------------------------------------------------------------------------
-// PUT /api/products/tables/:tableId/approve — Approve transformation
-// ---------------------------------------------------------------------------
-
-router.put('/tables/:tableId/approve', requireAuth, requireRole('admin'), async (req: Request, res: Response, next: NextFunction) => {
-  try {
-    const db = reqDb(req);
-    await db('product_tables')
-      .where({ id: req.params.tableId })
-      .update({
-        transformation_status: 'approved',
-        updated_at: new Date().toISOString(),
-      });
-    res.json({ ok: true });
-  } catch (err) { next(err); }
-});
 
 // ---------------------------------------------------------------------------
 // GET /api/products/tables/:tableId/checks — Get quality check results
@@ -225,28 +209,6 @@ router.get('/tables/:tableId/refresh-history', requireAuth, async (req: Request,
 
     // Return chronological order (oldest → newest) for direct charting.
     res.json({ ok: true, data: rows.reverse() });
-  } catch (err) { next(err); }
-});
-
-// ---------------------------------------------------------------------------
-// PUT /api/products/columns/:columnId — Update a product column
-// ---------------------------------------------------------------------------
-
-router.put('/columns/:columnId', requireAuth, requireRole('admin'), validate(updateProductColumnSchema), async (req: Request, res: Response, next: NextFunction) => {
-  try {
-    const db = reqDb(req);
-    const allowed = [
-      'column_name', 'data_type', 'display_name', 'description',
-      'column_role', 'fk_target_table', 'fk_target_column',
-      'transformation_expression', 'additivity', 'scd_type', 'sort_order',
-    ];
-    const updates: Record<string, unknown> = { updated_at: new Date().toISOString() };
-    for (const key of allowed) {
-      if (req.body[key] !== undefined) updates[key] = req.body[key];
-    }
-
-    await db('product_columns').where({ id: req.params.columnId }).update(updates);
-    res.json({ ok: true });
   } catch (err) { next(err); }
 });
 

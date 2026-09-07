@@ -625,24 +625,6 @@ export const updateProductTableSqlSchema = z.object({
   }).passthrough(),
 });
 
-// PUT /products/columns/:columnId — the handler applies a fixed allow-list;
-// this validates the types of those allowed fields.
-export const updateProductColumnSchema = z.object({
-  body: z.object({
-    column_name: nullableOptionalString,
-    data_type: nullableOptionalString,
-    display_name: nullableOptionalString,
-    description: nullableOptionalString,
-    column_role: nullableOptionalString,
-    fk_target_table: nullableOptionalString,
-    fk_target_column: nullableOptionalString,
-    transformation_expression: nullableOptionalString,
-    additivity: nullableOptionalString,
-    scd_type: nullableOptionalString,
-    sort_order: z.number().int().nullable().optional(),
-  }).passthrough(),
-});
-
 // POST /products/:id/kpis (product-layer KPI create — camelCase contract)
 export const createProductKpiSchema = z.object({
   body: z.object({

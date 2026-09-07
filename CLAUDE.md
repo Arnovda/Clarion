@@ -9399,7 +9399,7 @@ All output stored with `ai_draft: true` until a human confirms.
 | Review / confirm definitions (source layer)     | YES   | YES     | NO     | `PATCH /semantic/tables|columns|relationships/:id`, `/review` page |
 | Edit product-layer definitions & summaries      | YES   | YES     | NO     | `PATCH /semantic/product-tables|product-columns/:id`, `PATCH /products/tables/:id` |
 | Create, design, extend, rebuild subjects        | YES   | YES     | NO     | `POST/PUT /products`, every `/products/bus-matrix*` and `/build-*` route, `/build` page |
-| Per-product workshop actions (run-full, refresh-start, propose) | YES | NO | NO | `routes/products/build.ts` (`/:id/run-full`, `/:id/refresh-start`, `/propose*`, `/build-proposed`) |
+| Per-product workshop actions (run-full, refresh-start) | YES | NO | NO | `routes/products/build.ts` (`/:id/run-full`, `/:id/refresh-start`) — the `/propose*`, `/build-proposed` and `design.ts` routes were deleted 2026-09-07 (no callers) |
 | Pipelines / Refresh                             | YES   | YES     | NO     | `routes/pipelines.ts`, `/pipelines` page |
 | Relationships canvas (measure, flag, confirm)   | YES   | YES     | NO     | `routes/relationships.ts`, `/relationships` page |
 | Your tables (managed grids)                     | YES   | YES     | NO     | `routes/managedGrids.ts` (no viewer read yet) |

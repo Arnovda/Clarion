@@ -40,6 +40,20 @@
 <h1><span>Prepare my data</span> — Full Flow Diagram</h1>
 <p class="subtitle">Everything that happens when a user clicks the button — from UI to disk.</p>
 
+<div style="margin:20px 0;padding:16px 18px;border-left:4px solid #a06a1c;background:#f1e4c8;
+            border-radius:6px;color:#3a2c10;font-size:14px;line-height:1.55">
+  <strong>Superseded — this diagram documents a flow that no longer exists.</strong><br>
+  The <code>propose</code> → <code>build-proposed</code> → <code>design-stream</code> sequence below was
+  replaced by the <strong>bus-matrix job flow</strong>, and those endpoints were deleted on 2026-09-07
+  (they had no caller left). The live path is
+  <code>POST /products/bus-matrix/start</code> → <code>GET /products/bus-matrix/:jobId/stream</code>
+  (SSE progress) → <code>POST /products/bus-matrix/:jobId/cancel</code>, driven from the
+  <strong>Build</strong> page. Additive single-subject extension is
+  <code>POST /products/bus-matrix/extend-start</code>.
+  The <code>run-full</code> steps near the end are still accurate.
+  Kept for historical reference; do not use it to understand the current product.
+</div>
+
 <div class="toc">
   <h3>Contents</h3>
   <ol>

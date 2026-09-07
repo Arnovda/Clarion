@@ -79,9 +79,6 @@ import {
 } from './prompts/dashboardEditPlanPrompt';
 import { REQUIRED_WIDGET_COLUMNS } from '../shared/widgetContracts';
 import {
-  STAR_SCHEMA_DESIGN_SYSTEM,
-  buildStarSchemaDesignUser,
-  StarSchemaDesignOutput,
   COLUMN_EDIT_SYSTEM,
   buildColumnEditUser,
 } from './prompts/starSchemaPrompt';
@@ -1771,80 +1768,6 @@ export async function checkWidgetSemantics(
   } catch {
     return null;
   }
-}
-
-// ---------------------------------------------------------------------------
-// Star Schema Design — AI designs a Kimball star schema from source tables
-// ---------------------------------------------------------------------------
-
-export async function generateStarSchemaDesign(
-  dataProductName: string,
-  dataProductDescription: string,
-  sourceTablesContext: string,
-): Promise<StarSchemaDesignOutput> {
-  const raw = await callClaudeStreaming(
-    STAR_SCHEMA_DESIGN_SYSTEM(sourceTablesContext, currentDateStr()),
-    buildStarSchemaDesignUser(dataProductName, dataProductDescription, sourceTablesContext),
-    64000,
-    'star_schema_design',
-    true,
-    0, // temperature 0: deterministic schema design.
-  );
-  return parseJson<StarSchemaDesignOutput>(raw, AI_OUTPUT_SCHEMAS.starSchemaDesign);
-}
-
-/**
- * Streaming version of star schema design — fires thinking + text deltas
- * so the frontend can show live AI reasoning and skeleton previews.
- */
-export async function generateStarSchemaDesignStreaming(
-  dataProductName: string,
-  dataProductDescription: string,
-  sourceTablesContext: string,
-  onEvent: (type: 'thinking' | 'text', delta: string) => void,
-): Promise<StarSchemaDesignOutput> {
-  const tenantId = await enforceAiBudget('star_schema_streaming');
-  const streamCallLabel = 'star_schema_streaming';
-  const streamStart = Date.now();
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const params: any = {
-    model: MODEL,
-    max_tokens: 64000,
-    thinking: { type: 'enabled', budget_tokens: 4000 },
-    system: [{
-      type: 'text',
-      text: STAR_SCHEMA_DESIGN_SYSTEM(sourceTablesContext, currentDateStr()),
-      cache_control: { type: 'ephemeral' },
-    }],
-    messages: [{ role: 'user', content: buildStarSchemaDesignUser(dataProductName, dataProductDescription, sourceTablesContext) }],
-  };
-
-  const opened = await openStreamWithRetry(() => getClient().messages.stream(params), { callLabel: 'star_schema_design_streaming' });
-  const stream = opened.stream as ReturnType<ReturnType<typeof getClient>['messages']['stream']>;
-  let fullText = '';
-
-  for await (const event of opened.events) {
-    if (event.type === 'content_block_delta') {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const delta = (event as any).delta as Record<string, unknown>;
-      if (delta?.type === 'thinking_delta' && typeof delta.thinking === 'string') {
-        onEvent('thinking', delta.thinking);
-      } else if (delta?.type === 'text_delta' && typeof delta.text === 'string') {
-        fullText += delta.text;
-        onEvent('text', delta.text);
-      }
-    }
-  }
-
-  if (tenantId) {
-    try {
-      const final = await stream.finalMessage();
-      recordTenantAiUsage(tenantId, final.usage?.input_tokens ?? 0, final.usage?.output_tokens ?? 0)
-        .catch(() => { /* logged inside */ });
-    } catch { /* best-effort */ }
-  }
-
-  return parseJson<StarSchemaDesignOutput>(fullText, AI_OUTPUT_SCHEMAS.starSchemaDesign);
 }
 
 // ---------------------------------------------------------------------------

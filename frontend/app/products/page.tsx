@@ -2,8 +2,7 @@
 
 import { useState, useEffect, useCallback, useRef, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { Database, X, ChevronRight, Plus, RefreshCw, ChevronDown, Wrench } from 'lucide-react';
-import SourceBadge, { productSourceGroupKey, productSourceGroupLabel } from '@/components/SourceBadge';
+import { Plus, Wrench } from 'lucide-react';
 import api from '@/lib/api';
 import { streamSSE, SSEHttpError } from '@/lib/sse';
 import { getItem, setItem, removeItem, storageKeys } from '@/lib/storage';
@@ -14,18 +13,15 @@ import type {
   Connection,
   DataProduct,
   StarSchema,
-  QualityCheck,
   ProductTable,
   ProductColumn,
-  ProductRelationship,
   FullDataProduct,
   ProductKpi,
   ActiveTab,
 } from './types';
-import { StatusDot, StatusBadge, RoleBadge, ColumnRoleBadge, Spinner, ProductIcon } from './badges';
-import { statusBorderColor, cleanTopicName } from './helpers';
+import { StatusDot, RoleBadge, Spinner, ProductIcon } from './badges';
+import { cleanTopicName } from './helpers';
 import BuildDashboard from '@/components/build/BuildDashboard';
-import { askAboutSubject } from '@/lib/askLink';
 
 const AskAIPanel = dynamic(() => import('./AskAIPanel'), { ssr: false });
 
@@ -55,14 +51,12 @@ function ProductsPageInner() {
   const [details, setDetails] = useState<Map<number, FullDataProduct>>(new Map());
 
   // Card click -> slide-over detail panel
-  const [selectedProductId, setSelectedProductId] = useState<number | null>(null);
 
   // Ask AI panel state — { open, productId? } where productId === null means general/cross-product
   const [askOpen, setAskOpen] = useState(false);
   const [askProductId, setAskProductId] = useState<number | null>(null);
 
   // Accordion state (used inside slide-over)
-  const [expandedTableId, setExpandedTableId] = useState<number | null>(null);
 
   // New empty-product modal (replaces the old browser prompt()).
   const [newProductOpen, setNewProductOpen] = useState(false);
@@ -84,10 +78,6 @@ function ProductsPageInner() {
   const buildAbortRef = useRef<AbortController | null>(null);
 
   // Table action state
-  const [runningTableId, setRunningTableId] = useState<number | null>(null);
-  const [runningProductId, setRunningProductId] = useState<number | null>(null);
-  const [editingSql, setEditingSql] = useState<{ tableId: number; sql: string } | null>(null);
-  const [savingSql, setSavingSql] = useState(false);
 
   // KPI state
   const [kpis, setKpis] = useState<Map<number, ProductKpi[]>>(new Map());
@@ -95,7 +85,6 @@ function ProductsPageInner() {
   // Source filter chip — null means "All sources" (grouped sections render).
   // String keys mirror `productSourceGroupKey` so URL/persistence is shared
   // with /catalog and any future surface that filters by source.
-  const [sourceFilter, setSourceFilter] = useState<string | null>(null);
 
   // ----------- Data loading -----------
 
@@ -146,10 +135,6 @@ function ProductsPageInner() {
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [products.length, loadFullProduct, loadKpis]);
-
-  const openProduct = useCallback((id: number) => {
-    router.push(`/products/${id}`);
-  }, [router]);
 
   // ----------- Bus Matrix Auto-Build (SSE) -----------
 
@@ -405,56 +390,7 @@ function ProductsPageInner() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // ----------- Table actions -----------
-
-  const handleRunTable = async (tableId: number, productId: number) => {
-    setRunningTableId(tableId);
-    try {
-      await api.post(`/products/tables/${tableId}/run`);
-      await loadFullProduct(productId);
-    } catch { /* ignore */ }
-    setRunningTableId(null);
-  };
-
-  const handleRunProduct = async (productId: number) => {
-    setRunningProductId(productId);
-    try {
-      await api.post(`/products/${productId}/run`);
-      await loadFullProduct(productId);
-    } catch { /* ignore */ }
-    setRunningProductId(null);
-  };
-
-  const handleSaveSql = async () => {
-    if (!editingSql) return;
-    setSavingSql(true);
-    try {
-      await api.put(`/products/tables/${editingSql.tableId}/sql`, { sql: editingSql.sql });
-      setEditingSql(null);
-      if (selectedProductId) await loadFullProduct(selectedProductId);
-    } catch { /* ignore */ }
-    setSavingSql(false);
-  };
-
-  const handleDelete = async (id: number) => {
-    if (!confirm('Delete this data product and all its tables?')) return;
-    try {
-      await api.delete(`/products/${id}`);
-      if (selectedProductId === id) { setSelectedProductId(null); setExpandedTableId(null); }
-      setDetails((prev) => { const next = new Map(prev); next.delete(id); return next; });
-      await loadProducts();
-    } catch { /* ignore */ }
-  };
-
   // ----------- Helpers -----------
-
-  const getAllTables = (product: FullDataProduct): (ProductTable & { columns: ProductColumn[] })[] =>
-    product.star_schemas
-      .flatMap((s) => s.tables)
-      .sort((a, b) => a.dag_order - b.dag_order || a.table_name.localeCompare(b.table_name));
-
-  const totalRows = (product: FullDataProduct): number =>
-    getAllTables(product).reduce((sum, t) => sum + (t.row_count ?? 0), 0);
 
   // Tab bar items
   const tabs: { key: ActiveTab; label: string }[] = [
@@ -715,322 +651,6 @@ function ProductsPageInner() {
   );
 }
 
-// ---------------------------------------------------------------------------
-// Slide-over detail panel (appears when a product card is clicked)
-// ---------------------------------------------------------------------------
-
-function TopicSlideOver({
-  product, detail, productKpis, expandedTableId, onToggleTable,
-  runningTableId, runningProductId, editingSql, savingSql,
-  onRunTable, onRunProduct, onEditSql, onSaveSql, onCancelEditSql,
-  onDelete, onClose, getAllTables, totalRows,
-}: {
-  product: DataProduct;
-  detail: FullDataProduct | undefined;
-  productKpis: ProductKpi[];
-  expandedTableId: number | null;
-  onToggleTable: (id: number) => void;
-  runningTableId: number | null;
-  runningProductId: number | null;
-  editingSql: { tableId: number; sql: string } | null;
-  savingSql: boolean;
-  onRunTable: (tableId: number, productId: number) => void;
-  onRunProduct: (productId: number) => void;
-  onEditSql: (v: { tableId: number; sql: string }) => void;
-  onSaveSql: () => void;
-  onCancelEditSql: () => void;
-  onDelete: (id: number) => void;
-  onClose: () => void;
-  getAllTables: (p: FullDataProduct) => (ProductTable & { columns: ProductColumn[] })[];
-  totalRows: (p: FullDataProduct) => number;
-}) {
-  const tables = detail ? getAllTables(detail) : [];
-  const name = cleanTopicName(product.name);
-  const isRunning = runningProductId === product.id;
-  const [showSqlModal, setShowSqlModal] = useState(false);
-
-  return (
-    <>
-      {/* Backdrop */}
-      <div className="fixed inset-0 bg-black/30 backdrop-blur-sm z-40" onClick={onClose} />
-
-      {/* Panel */}
-      <div className="fixed top-0 right-0 h-full w-full max-w-[480px] bg-surface-container-lowest/95 backdrop-blur-xl shadow-ambient-lg z-50 flex flex-col animate-slide-in-right">
-        {/* Header */}
-        <div className="px-6 py-5 border-b border-line flex items-start gap-4 flex-shrink-0">
-          <div className="w-12 h-12 rounded-xl bg-ocean-softer flex items-center justify-center flex-shrink-0 text-ocean">
-            <ProductIcon product={product} className="w-7 h-7" />
-          </div>
-          <div className="flex-1 min-w-0">
-            <div className="flex items-center gap-2">
-              <h2 className="text-lg font-bold text-on-surface truncate">{name}</h2>
-              <StatusBadge status={product.status} />
-            </div>
-            {product.description && (
-              <p className="text-sm text-on-surface-variant mt-0.5 line-clamp-2">{product.description}</p>
-            )}
-            {detail && (
-              <p className="text-xs text-on-surface-variant/50 mt-1">
-                {tables.length} tables{totalRows(detail) > 0 ? ` · ${totalRows(detail).toLocaleString()} rows` : ''}
-              </p>
-            )}
-          </div>
-          <button onClick={onClose} className="text-on-surface-variant/50 hover:text-on-surface transition-colors flex-shrink-0 mt-1">
-            <X className="w-5 h-5" strokeWidth={2} />
-          </button>
-        </div>
-
-        {/* Scrollable content */}
-        <div className="flex-1 overflow-y-auto">
-          {/* KPIs section */}
-          {productKpis.length > 0 && (
-            <div className="px-6 py-4 border-b border-line">
-              <p className="text-[10px] font-semibold text-on-surface-variant/50 uppercase tracking-wider mb-2">What you can ask</p>
-              <div className="space-y-1.5">
-                {productKpis.map((kpi) => (
-                  <div key={kpi.id} className="flex items-start gap-2 text-sm">
-                    <span className="text-on-surface-variant/30 mt-0.5">-</span>
-                    <div className="min-w-0">
-                      <span className="font-medium text-on-surface">{kpi.name}</span>
-                      {kpi.description && <span className="text-on-surface-variant ml-1.5 text-xs">{kpi.description}</span>}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {/* Tables list */}
-          {!detail ? (
-            <div className="px-6 py-10 text-center">
-              <Spinner className="mx-auto mb-2" />
-              <p className="text-sm text-muted-2">Loading tables...</p>
-            </div>
-          ) : tables.length === 0 ? (
-            <div className="px-6 py-10 text-center text-sm text-muted-2">No tables designed yet.</div>
-          ) : (
-            <div className="divide-y divide-slate-200/20">
-              {tables.map((table) => {
-                const isTableExpanded = expandedTableId === table.id;
-                const isTableRunning = runningTableId === table.id;
-
-                return (
-                  <div key={table.id}>
-                    <button
-                      onClick={() => onToggleTable(table.id)}
-                      className="w-full text-left px-6 py-3 flex items-center gap-3 hover:bg-surface-container-low/50 transition-colors"
-                    >
-                      <ChevronRight
-                        className={`w-3.5 h-3.5 text-on-surface-variant/30 transition-transform flex-shrink-0 ${isTableExpanded ? 'rotate-90' : ''}`}
-                        strokeWidth={2}
-                      />
-                      <RoleBadge role={table.table_role} />
-                      <div className="flex-1 min-w-0">
-                        <span className="text-sm font-medium text-on-surface">{table.display_name ?? table.table_name}</span>
-                        {table.description && (
-                          <span className="text-xs text-on-surface-variant ml-2 hidden sm:inline">{table.description}</span>
-                        )}
-                      </div>
-                      <div className="flex items-center gap-3 flex-shrink-0">
-                        {table.row_count !== null && (
-                          <span className="text-xs text-on-surface-variant/50">{table.row_count.toLocaleString()} rows</span>
-                        )}
-                        <StatusDot status={table.transformation_status} />
-                        {isTableRunning && <Spinner className="w-3.5 h-3.5" />}
-                      </div>
-                    </button>
-
-                    {isTableExpanded && (
-                      <div className="px-6 pb-4 bg-surface-container-low/20 panel-enter">
-                        {/* Columns */}
-                        <div className="bg-raised border border-line rounded-md overflow-hidden mb-3">
-                          <div className="px-4 py-2.5 border-b border-line">
-                            <span className="text-[10px] font-semibold text-on-surface-variant/50 uppercase tracking-wider">
-                              Columns ({table.columns.length})
-                            </span>
-                          </div>
-                          <div className="max-h-56 overflow-y-auto">
-                            {table.columns.map((col) => (
-                              <div key={col.id} className="px-4 py-1.5 flex items-center gap-2 text-xs hover:bg-white/40 border-b border-slate-200/20 last:border-0 transition-colors">
-                                <ColumnRoleBadge role={col.column_role} />
-                                <span className="font-medium text-on-surface">{col.column_name}</span>
-                                <span className="text-on-surface-variant/40">{col.data_type}</span>
-                                {col.description && <span className="text-on-surface-variant truncate ml-auto">{col.description}</span>}
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-
-                        {/* SQL */}
-                        <div className="bg-raised border border-line rounded-md overflow-hidden mb-3">
-                          <div className="px-4 py-2.5 border-b border-line flex items-center justify-between">
-                            <span className="text-[10px] font-semibold text-on-surface-variant/50 uppercase tracking-wider">SQL</span>
-                            <div className="flex gap-2">
-                              {editingSql?.tableId !== table.id && table.transformation_sql && (
-                                <button onClick={() => onEditSql({ tableId: table.id, sql: table.transformation_sql! })}
-                                  className="text-[11px] text-ocean hover:text-ocean-hover font-semibold transition-colors">Edit</button>
-                              )}
-                              <button
-                                onClick={() => onRunTable(table.id, product.id)}
-                                disabled={isTableRunning || !table.transformation_sql}
-                                className="text-[11px] text-ok hover:text-ok/80 font-semibold disabled:opacity-50 flex items-center gap-1 transition-colors"
-                              >
-                                {isTableRunning && <Spinner className="w-3 h-3" />}
-                                {isTableRunning ? 'Running...' : 'Run'}
-                              </button>
-                            </div>
-                          </div>
-                          {editingSql?.tableId === table.id ? (
-                            <div className="p-3">
-                              <textarea
-                                value={editingSql.sql}
-                                onChange={(e) => onEditSql({ ...editingSql, sql: e.target.value })}
-                                rows={Math.max(8, editingSql.sql.split('\n').length + 2)}
-                                className="w-full font-mono text-xs bg-white/60 border border-white/80 rounded-xl p-3 resize-y focus:ring-2 focus:ring-cyan-400/30 focus:border-cyan-300 transition-all"
-                              />
-                              <div className="flex gap-2 mt-2">
-                                <button onClick={onSaveSql} disabled={savingSql}
-                                  className="px-3 py-1.5 text-xs bg-ocean text-white rounded-md hover:bg-ocean-hover disabled:opacity-50 font-medium">
-                                  {savingSql ? 'Saving...' : 'Save'}
-                                </button>
-                                <button onClick={onCancelEditSql}
-                                  className="px-3 py-1.5 text-xs text-on-surface-variant bg-white/60 border border-white/80 rounded-lg hover:bg-white/80 transition-all">Cancel</button>
-                              </div>
-                            </div>
-                          ) : (
-                            <pre className="p-3 text-xs font-mono text-on-surface-variant bg-surface-container-low/30 overflow-x-auto whitespace-pre-wrap max-h-48 overflow-y-auto">
-                              {table.transformation_sql || 'No SQL generated yet'}
-                            </pre>
-                          )}
-                        </div>
-
-                        {/* Run info + quality checks */}
-                        {(table.last_run_at || table.last_run_error) && (
-                          <div className="text-xs text-muted px-1 mb-2">
-                            {table.last_run_at && <span>Last run: {new Date(table.last_run_at).toLocaleString()}</span>}
-                            {table.last_run_error && <span className="text-err ml-3">{table.last_run_error}</span>}
-                          </div>
-                        )}
-                        {table.quality_checks && table.quality_checks.length > 0 && (
-                          <div className="space-y-1">
-                            {table.quality_checks.map((chk) => (
-                              <div key={chk.id} className="flex items-center gap-2 text-xs">
-                                <StatusDot status={chk.status === 'pass' ? 'success' : chk.status === 'fail' ? 'error' : 'draft'} />
-                                <span className={chk.status === 'pass' ? 'text-ok' : chk.status === 'fail' ? 'text-err' : 'text-muted'}>
-                                  {chk.check_type === 'bk_uniqueness' ? 'Key uniqueness' : 'Fan-out'}: {chk.message}
-                                </span>
-                              </div>
-                            ))}
-                          </div>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </div>
-
-        {/* Footer */}
-        <div className="px-6 py-4 border-b border-line flex items-center justify-between flex-shrink-0 bg-white/60 backdrop-blur-xl border-t border-white/60">
-          <div className="flex gap-2">
-            <a href={askAboutSubject({
-              productId: product.id,
-              productName: cleanTopicName(product.name),
-              connectionId: product.connection_id,
-            })} className="px-4 py-2 text-[13px] font-medium text-ocean bg-ocean-softer border border-line rounded-md hover:bg-ocean-soft transition-colors">
-              Ask questions &rarr;
-            </a>
-            {tables.length > 0 && (
-              <button
-                onClick={() => setShowSqlModal(true)}
-                className="px-4 py-2 text-sm font-medium text-on-surface-variant bg-white/60 border border-white/80 rounded-xl hover:bg-white/80 transition-colors"
-              >
-                View all SQL
-              </button>
-            )}
-          </div>
-          <div className="flex gap-2">
-            <button
-              onClick={() => onRunProduct(product.id)}
-              disabled={isRunning || tables.length === 0}
-              className="px-4 py-2 text-sm font-medium bg-ocean text-white rounded-md hover:bg-ocean-hover disabled:opacity-50 flex items-center gap-1.5 transition-all"
-            >
-              {isRunning && <Spinner className="w-3 h-3" />}
-              {isRunning ? 'Running...' : 'Rebuild'}
-            </button>
-            <button
-              onClick={() => onDelete(product.id)}
-              className="px-4 py-2 text-sm font-medium text-err bg-err/10 border border-red-500/20 rounded-xl hover:bg-err/20 transition-colors"
-            >
-              Delete
-            </button>
-          </div>
-        </div>
-      </div>
-
-      {/* SQL Modal */}
-      {showSqlModal && detail && (
-        <TopicSqlModal tables={tables} productName={name} onClose={() => setShowSqlModal(false)} />
-      )}
-    </>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Full SQL modal (shows all transformation SQL for a product)
-// ---------------------------------------------------------------------------
-
-function TopicSqlModal({
-  tables, productName, onClose,
-}: {
-  tables: (ProductTable & { columns: ProductColumn[] })[];
-  productName: string;
-  onClose: () => void;
-}) {
-  const [copied, setCopied] = useState<number | null>(null);
-
-  const handleCopy = (sql: string, id: number) => {
-    navigator.clipboard.writeText(sql);
-    setCopied(id);
-    setTimeout(() => setCopied(null), 1500);
-  };
-
-  return (
-    <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-[60] flex items-center justify-center p-4">
-      <div className="bg-raised border border-line rounded-lg shadow-ambient-lg w-full max-w-4xl max-h-[80vh] flex flex-col">
-        <div className="px-6 py-4 border-b border-line flex items-center justify-between flex-shrink-0">
-          <h3 className="text-lg font-bold text-on-surface">All SQL — {productName}</h3>
-          <button onClick={onClose} className="text-muted hover:text-ink-2 transition-colors">
-            <X className="w-5 h-5" strokeWidth={2} />
-          </button>
-        </div>
-        <div className="flex-1 overflow-y-auto p-6 space-y-4">
-          {tables.filter((t) => t.transformation_sql).map((table) => (
-            <div key={table.id} className="preview-terminal rounded-xl overflow-hidden">
-              <div className="px-4 py-2.5 flex items-center justify-between border-b border-white/10">
-                <div className="flex items-center gap-2">
-                  <RoleBadge role={table.table_role} />
-                  <span className="text-sm font-medium text-white/90">{table.display_name ?? table.table_name}</span>
-                </div>
-                <button
-                  onClick={() => handleCopy(table.transformation_sql!, table.id)}
-                  className="text-xs text-white/70 hover:text-white/90 font-medium transition-colors"
-                >
-                  {copied === table.id ? 'Copied!' : 'Copy'}
-                </button>
-              </div>
-              <pre className="p-4 text-xs font-mono text-white/80 overflow-x-auto whitespace-pre-wrap">
-                {table.transformation_sql}
-              </pre>
-            </div>
-          ))}
-        </div>
-      </div>
-    </div>
-  );
-}
 
 // ---------------------------------------------------------------------------
 // Bus Matrix Tab — all facts & dimensions across products
