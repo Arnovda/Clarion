@@ -217,15 +217,20 @@ export function clearPulseSuggestCache(tenantId?: number, userId?: number): void
 export async function suggestPulse(
   tenantId: number,
   userId: number,
-  opts: { force?: boolean } = {},
+  opts: { force?: boolean; intent?: string | null } = {},
 ): Promise<PulseSuggestResult> {
+  const intent = opts.intent?.trim() || null;
   const cacheKey = suggestCacheKey(tenantId, userId);
-  if (!opts.force) {
+  // An intent-driven ask is a DIFFERENT question, so it neither reads nor
+  // writes the shared 24h cache — caching it would serve one user's answer
+  // to "watch overdue receivables" as the generic suggestion list for the
+  // next 24 hours.
+  if (!opts.force && !intent) {
     const hit = SUGGEST_CACHE.get(cacheKey);
     if (hit && hit.expiresAt > Date.now()) return hit.result;
   }
 
-  const context = await buildSuggestContext(tenantId, userId);
+  const context = { ...(await buildSuggestContext(tenantId, userId)), intent };
 
   // Empty fast-path — no AI call needed. Don't cache (see header note).
   if (context.products.length === 0) {
@@ -246,7 +251,7 @@ export async function suggestPulse(
   // module-load time for routes that never need it.
   const { suggestPulseEntries } = await import('../ai/AIService');
   const result = await suggestPulseEntries(context);
-  SUGGEST_CACHE.set(cacheKey, { result, expiresAt: Date.now() + SUGGEST_TTL_MS });
+  if (!intent) SUGGEST_CACHE.set(cacheKey, { result, expiresAt: Date.now() + SUGGEST_TTL_MS });
   return result;
 }
 

@@ -1,6 +1,8 @@
 # Home experience — from report card to standing brief
 
-> **Status: proposal. No product code changed.** Doc + interactive prototype only.
+> **Status: R1 + R2 SHIPPED 2026-09-07.** R3 (board promotion) and R4 (absence
+> detection) remain — see §5. The findings and the argument below are unchanged;
+> §5 marks what landed.
 > Owner asked (2026-09-07): *"Make the home page feel a bit less like 'this is your
 > data health, this is what you must do to fix it' and more like a helper and
 > personal assistant… Clarion should be your helper assistant with your business
@@ -236,13 +238,21 @@ on Sources / Build — `IconRail` already renders exactly these badges.
 
 ## 5. Sequencing
 
-**R1 — Reframe (no new backend).** New lead line computed from existing
-`pulse_observations` deltas; ask box to the top; health ring + attention feed →
-one ops line; `PulsePanel` → "Edit" behind the board. Ships against today's data.
+**R1 — Reframe. ✅ SHIPPED.** Lead sentence from the brief's top bullet; ask box
+under it; health ring + attention feed → one consequence-framed ops line;
+`PulsePanel` behind "Edit" on the board; `ViewerHome` deleted (one page, all
+roles). Composed from `/home/summary`, `/briefs/today`, `/pulse/state` and
+`/query/starters` in parallel — no new route. The lead lives in a pure
+`app/home/lead.ts` so all four tones (cold / waiting / quiet / moved) are pinned
+by test.
 
-**R2 — The assistant speaks first.** Overnight `investigateService` run for the
-top mover, stored on the brief; `Why?` renders the pre-computed trail. This is the
-release that changes how the product feels.
+**R2 — The assistant speaks first. ✅ SHIPPED.** `runOvernightInvestigation` fires
+one agent run for the top mover after the brief is written and attaches it via
+the `brief_id` that already existed on `investigations` — **no migration**. The
+card reads "Why? — already worked out" and replays the stored trail with no model
+call; when the run concluded, its conclusion becomes the lead sentence. The gate
+is `pickInvestigationTarget`, pure and tested: nothing triggered → nothing runs,
+so a quiet morning costs $0.0034.
 
 **R3 — The board.** Promotion signal from `query_log` + `saved_questions` repeat
 counts; the promotion prompt; nightly materialisation with as-of + honest failure.

@@ -106,7 +106,11 @@ router.post('/suggest', requireAuth, async (req: Request, res: Response, next: N
     // "Refresh" button on the Pulse panel. Default (no param) returns
     // the cached result so a normal Home page load doesn't burn tokens.
     const force = req.query.force === '1' || req.query.force === 'true';
-    const result = await suggestPulse(tenantId, userId, { force });
+    // Free text from the Home watch panel ("tell me if any customer stops
+    // ordering"). Bounded here rather than trusted — it lands in a prompt.
+    const rawIntent = (req.body as { intent?: unknown } | undefined)?.intent;
+    const intent = typeof rawIntent === 'string' ? rawIntent.slice(0, 300) : null;
+    const result = await suggestPulse(tenantId, userId, { force, intent });
     res.json({ ok: true, data: result });
   } catch (err) { next(err); }
 });

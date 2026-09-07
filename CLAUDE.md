@@ -31,7 +31,120 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-09-07 (TIER 1, THREE ITEMS — the authoring surfaces are
+**Last updated:** 2026-09-07 (HOME IS A BRIEFING NOW — R1 + R2 of
+`docs/backlog/home-experience.md`; owner: *"Let's implement your proposals"*,
+having settled board = per-user and the ops line = visible to viewers without
+the Refresh action)
+
+**THE GOVERNING RULE, AND IT IS THE WHOLE CHANGE: the assistant speaks first.**
+`/home` led with the number **73** and four sub-scores. Every number above the
+fold was about Clarion, not about the customer's business. It is now a
+**sentence about their company** in 31px serif, an ask box, and the things that
+moved — with the operational truth kept, re-framed, and moved to one line at
+the bottom.
+- **WHAT WAS DELETED AND WHY.** The health ring + four sub-score tiles
+  (`HealthSection`, `ScoreRing`, `SubScoreTile`), the "worth your attention"
+  feed (`AttentionSection`), and `PulsePanel`'s permanent place in the daily
+  view. **`FRESHNESS 0/100` is the NORMAL reading for a monthly-close
+  accounting dataset** (`home.ts:36`, `FRESH_WINDOW_HOURS = 24`) — a score that
+  reads catastrophic during correct operation teaches people to ignore every
+  other signal on the page. `QUALITY 100/100` had the opposite defect: it
+  cannot go down, so it carried no information either. The 28 pending AI
+  suggestions were curator chores that serve OUR accuracy, framed as the
+  user's failures; they belong on Sources/Build, where `IconRail` already
+  badges them.
+- **`ViewerHome.tsx` IS DELETED — the two shapes collapsed into one page.**
+  The only role-conditional thing left is the Refresh action on the ops line
+  (owner's call: viewers see the sentence, not the button — a refresh is not
+  theirs to trigger and a dead button is worse than a plain fact).
+- **NEW `frontend/app/home/lead.ts` — PURE, and the heart of the page.**
+  `deriveLead()` returns one of four tones: **cold** (no source — sell the
+  mechanism, don't render an empty dashboard), **waiting** (data but no
+  reading yet; distinguishes "waiting on tonight" from "waiting on YOU"),
+  **quiet**, **moved**. `deriveOpsLine()` phrases staleness as what it costs
+  the READER. Pure so every state is pinned by test rather than only the happy
+  path being clicked through.
+- **THE QUIET STATE IS THE ONE THAT MATTERS.** "Nothing needs you this
+  morning" is a SUCCESS state, not an empty one — a briefing that always finds
+  three things is a briefing nobody believes, and it is the direct mitigation
+  for the alert fatigue that kills features like this. `QuietCard` shows the
+  steady bullets as reassurance and **never promotes them into cards**; the
+  absence of cards IS the message. Pinned by test.
+- **R2 — THE ANSWER IS ALREADY WAITING, and it needed NO migration.**
+  `investigations.brief_id` and `.pulse_entry_id` have existed since migration
+  49; `investigateService` was built to be triggered from a brief and never
+  was. `morningBriefService.runOvernightInvestigation` now fires ONE agent run
+  for the top mover after the brief is written, and Home's card reads
+  **"Why? — already worked out"**, replaying the stored trail through
+  `InvestigationPanel`'s existing `existingId` path — **no model call on
+  click**. The bullet's label rides in `focus` so the frontend knows which
+  card it explains (no schema change). When it concluded, its conclusion
+  BECOMES the lead sentence — that is the sentence that names a driver.
+- **THE COST LEVER IS `pickInvestigationTarget`, and it is pure + tested.**
+  The investigation is ~95% of a night ($0.065 of $0.068/user — §7 of the
+  doc). Rule 1: **nothing triggered → nothing runs**, so a quiet morning
+  costs $0.0034 and the cap is self-limiting. Rule 2: investigate the entry
+  behind the brief's OWN headline bullet (the model already ranked "most
+  worth mentioning"; re-ranking would explain a different thing than the
+  headline). ONE per user per night, never one per movement. Entries whose
+  snapshot failed or that have no comparison are refused — investigating a
+  number we could not read wastes a whole agent loop.
+- **Free-text watching now works end to end**: `PulseSuggestContext.intent`
+  (bounded 300 chars at the route) steers the suggestion prompt to ≤3
+  proposals from REAL kpi_ids, and an intent-driven ask neither reads nor
+  writes the 24h shared cache — caching it would serve one user's "watch
+  overdue receivables" as the generic list for every user for a day.
+  Proposals land as chips the user accepts one at a time; nothing is added on
+  the model's say-so.
+- **Composed from endpoints that already existed** — `/home/summary`,
+  `/briefs/today`, `/pulse/state`, `/query/starters`, in parallel, each with
+  its own catch so a failing starters call cannot cost the reader their brief.
+  No new route, and the only backend additions are on the brief read model.
+- **The board is the pulse tiles for now** (per-user by construction). R3
+  changes only where entries come FROM — promotion on repeat questions rather
+  than a manual pick — and `Board.tsx` does not have to change for it. A tile
+  whose snapshot failed SAYS SO rather than showing a stale number as current.
+- **Files**: NEW `lead.ts`, `Sparkline.tsx`, `MovementCards.tsx`, `Board.tsx`,
+  `pieces.tsx` (AskBox/WatchPanel/OpsLine), `states.tsx` (QuietCard/
+  ColdStartCard), `FreshnessDetail.tsx` (extracted from the old page,
+  unchanged); REWRITTEN `page.tsx` (678 → 300 lines) and `types.ts`; DELETED
+  `ViewerHome.tsx`. Backend: `morningBriefService.ts` (+`loadBriefInvestigation`,
+  `pickInvestigationTarget`, `runOvernightInvestigation`), `pulseService.ts`,
+  `pulseSuggestPrompt.ts`, `routes/pulse.ts`.
+- **`startInvestigation` is a STATIC import on purpose** — the
+  dynamic-import ratchet's baseline only ever goes down, and there is no cycle
+  to break (investigateService does not reach back into the brief service).
+- Validation: backend `tsc` clean, full vitest **84 files / 763 passed / 4
+  skipped** (was 83/753 — 10 new in `overnight-investigation.test.ts`); **all
+  ELEVEN ratchets green from the repo root with per-ratchet exit codes**;
+  frontend `tsc` clean, vitest **6 files / 46 passed** (was 5/27 — 18 new in
+  `home-lead.test.ts`, plus `errorPages.test.tsx` retargeted from the deleted
+  ViewerHome onto the real page with a viewer's token), touched files
+  lint-clean, `next build` green **46/46** (`/home` 14.7 kB). **Both new
+  suites verified RED first**: removing the `triggered` gate turns the
+  cost-lever test red, and un-filtering the bullets or ignoring the
+  investigation turns three lead tests red. Render-checked in real Chromium
+  via a throwaway `/dev/home-preview` harness (deleted after), which caught
+  two things `tsc` could not — the ops line reading "data through 1d ago"
+  instead of a date, and a phantom "flat" arrow on a card whose bullet has no
+  matching pulse entry.
+- **NOT runtime-exercised against a live tenant.** The overnight investigation
+  has never run on real data — watch the first 06:00 job after deploy for
+  `'morningBriefService: overnight investigation complete'`, and the first
+  Home open for a card reading "Why? — already worked out". A run of
+  `'overnight investigation failed'` warnings means the picked entry's product
+  is not queryable, which degrades to the pre-R2 behaviour (a fresh run on
+  click), not to a broken page.
+- **NOT built (R3/R4, sequenced in the doc)**: promotion of board entries from
+  `query_log` repeat counts, nightly materialisation of board tiles, and
+  absence detection ("you'd normally be at €40k by now"). **Also not done**: a
+  cache breakpoint on the ~2,000-token product schema block repeated across
+  every call of one investigation — it would roughly halve a night ($0.068 →
+  ~$0.035) and is the obvious next cost win. Noted in §7 of the doc; today
+  `cacheSystem: true` on the investigate prompts is a silent no-op because
+  both system prompts are under the 1024-token minimum cacheable prefix.
+
+**Prior last updated:** 2026-09-07 (TIER 1, THREE ITEMS — the authoring surfaces are
 guarded, there is ONE warehouse session builder, and the two subject chats are
 one conversation; owner: *"Do all of these"*)
 

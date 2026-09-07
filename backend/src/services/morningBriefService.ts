@@ -21,6 +21,10 @@ import { prepareUnattendedRead } from './readPolicy';
 import { logger } from '../utils/logger';
 import { notify } from './notificationService';
 import { createProductConnector } from '../connectors/ConnectorFactory';
+// Static, not `await import`: the dynamic-import ratchet's baseline only ever
+// goes down, and there is no cycle to break here — investigateService does
+// not reach back into this module.
+import { startInvestigation } from './investigateService';
 import { withTenantAiContext } from './aiBudget';
 import {
   type MorningBriefContext,
@@ -40,6 +44,25 @@ export interface MorningBrief {
   opened_at: string | null;
   emailed_at: string | null;
   created_at: string;
+  /**
+   * The overnight investigation for this brief's top mover, when one ran.
+   *
+   * Null on a quiet night (nothing breached its sensitivity threshold, so
+   * the agent never fired — that is the cost lever, see below), on a tenant
+   * whose pulse entry has no product to investigate, and on every brief
+   * written before this shipped. Every consumer treats it as optional.
+   */
+  investigation: BriefInvestigation | null;
+}
+
+export interface BriefInvestigation {
+  id: number;
+  question: string;
+  pulseEntryId: number | null;
+  status: 'running' | 'concluded' | 'failed' | 'cancelled';
+  conclusion: string | null;
+  conclusionConfidence: 'high' | 'medium' | 'low' | null;
+  stepCount: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -56,7 +79,54 @@ export async function getTodaysBrief(
       .where({ user_id: userId, brief_date: today })
       .first(),
   );
-  return rows ? mapBrief(rows) : null;
+  if (!rows) return null;
+  const brief = mapBrief(rows);
+  brief.investigation = await loadBriefInvestigation(tenantId, userId, brief.id);
+  return brief;
+}
+
+/**
+ * The investigation attached to a brief, if the overnight job ran one.
+ *
+ * Explicit user_id filter beside the tenant scope: an investigation is
+ * per-user, and RLS only isolates tenants — nothing stops a colleague's row
+ * being read without this. Best-effort by contract: a failure here degrades
+ * the "Why? — already worked out" button back to starting a fresh run, and
+ * must never cost the reader their brief.
+ */
+export async function loadBriefInvestigation(
+  tenantId: number,
+  userId: number,
+  briefId: number,
+): Promise<BriefInvestigation | null> {
+  try {
+    const row = await tenantQuery(tenantId, (trx) =>
+      trx('investigations')
+        .where({ brief_id: briefId, user_id: userId, tenant_id: tenantId })
+        .orderBy('created_at', 'desc')
+        .first(),
+    );
+    if (!row) return null;
+    const [{ count }] = await tenantQuery(tenantId, (trx) =>
+      trx('investigation_steps')
+        .where({ investigation_id: Number(row.id) })
+        .count<[{ count: string }]>('* as count'),
+    );
+    return {
+      id: Number(row.id),
+      question: String(row.question),
+      pulseEntryId: row.pulse_entry_id != null ? Number(row.pulse_entry_id) : null,
+      status: String(row.status) as BriefInvestigation['status'],
+      conclusion: row.conclusion ? String(row.conclusion) : null,
+      conclusionConfidence: row.conclusion_confidence
+        ? String(row.conclusion_confidence) as 'high' | 'medium' | 'low'
+        : null,
+      stepCount: Number(count ?? 0),
+    };
+  } catch (err) {
+    logger.warn({ err, tenantId, userId, briefId }, 'morningBriefService: could not load brief investigation');
+    return null;
+  }
 }
 
 export async function listBriefs(
@@ -394,7 +464,132 @@ export async function generateBriefForUser(
     logger.warn({ err, userId }, 'morningBriefService: notify failed');
   }
 
+  // The overnight investigation — the reason the page is worth opening.
+  // Best-effort by contract: a failure must never cost the reader their
+  // brief, which is already persisted above.
+  try {
+    await runOvernightInvestigation(tenantId, userId, id, brief, deltas);
+  } catch (err) {
+    logger.warn({ err, tenantId, userId, briefId: id }, 'morningBriefService: overnight investigation failed');
+  }
+
   return getTodaysBrief(tenantId, userId);
+}
+
+// ---------------------------------------------------------------------------
+// Phase 3 — the overnight investigation
+// ---------------------------------------------------------------------------
+
+/**
+ * Which entry, if any, tonight's investigation should be about.
+ *
+ * PURE, and exported, because this is the cost lever. The investigation is
+ * ~95% of what a night costs (measured: $0.065 of $0.068 per user), so the
+ * rules that decide whether it runs at all are the rules that decide the
+ * bill — and they are pinned by test rather than left to a reading of the
+ * call site.
+ *
+ * The rules, in order:
+ *   1. NOTHING TRIGGERED → null. A quiet morning costs nothing, and the
+ *      page renders "nothing needs you" instead. This is what stops the
+ *      feature becoming a standing charge.
+ *   2. Prefer the entry behind the brief's FIRST movement/warn bullet —
+ *      the model already ranked "most worth mentioning", so re-ranking here
+ *      would put the investigation on a different thing than the headline.
+ *   3. Otherwise the biggest relative move among triggered entries.
+ *
+ * ONE per user per night. Never one per movement.
+ */
+export function pickInvestigationTarget(
+  brief: MorningBriefOutput,
+  deltas: BriefEntryDelta[],
+): BriefEntryDelta | null {
+  const candidates = deltas.filter(
+    (d) => d.triggered && d.current_value != null && d.delta_pct != null,
+  );
+  if (candidates.length === 0) return null;
+
+  const norm = (v: string) => v.toLowerCase().replace(/\s+/g, ' ').trim();
+  const headline = (brief.bullets ?? []).find((b) => b.kind === 'movement' || b.kind === 'warn');
+  if (headline) {
+    const want = norm(headline.label);
+    const matched = candidates.find((d) => norm(d.label) === want)
+      ?? candidates.find((d) => norm(d.label).includes(want) || want.includes(norm(d.label)));
+    if (matched) return matched;
+  }
+
+  return candidates.reduce((best, d) =>
+    Math.abs(d.delta_pct!) > Math.abs(best.delta_pct!) ? d : best);
+}
+
+/**
+ * Run one investigation for tonight's top mover and attach it to the brief.
+ *
+ * The agent loop, the persistence and the step trail all already exist —
+ * `investigateService` was built with `brief_id` and `pulse_entry_id` on its
+ * table from the start, so this is the wiring that was always intended and
+ * never connected. The user's "Why?" button then REPLAYS the stored trail
+ * instead of starting a run, which is what makes the answer feel like it
+ * was waiting for them.
+ *
+ * The bullet's label goes into `focus` so the frontend can tell which card
+ * this investigation explains without a schema change.
+ */
+export async function runOvernightInvestigation(
+  tenantId: number,
+  userId: number,
+  briefId: number,
+  brief: MorningBriefOutput,
+  deltas: BriefEntryDelta[],
+): Promise<number | null> {
+  const target = pickInvestigationTarget(brief, deltas);
+  if (!target) return null;   // quiet night — spend nothing
+
+  // The pulse entry has to hang off a product for the agent to have a
+  // warehouse to query. A theme entry with no product cannot be investigated.
+  const entry = await tenantQuery(tenantId, (trx) =>
+    trx('user_pulse_entries')
+      .where({ id: target.pulse_entry_id, user_id: userId })
+      .first(),
+  );
+  const productId = entry?.data_product_id != null ? Number(entry.data_product_id) : null;
+  if (!productId) {
+    logger.info(
+      { tenantId, userId, pulseEntryId: target.pulse_entry_id },
+      'morningBriefService: top mover has no product — skipping overnight investigation',
+    );
+    return null;
+  }
+
+  // The role the policies are applied under. An unattended run has no
+  // request, so we read the owner's actual role rather than assuming one:
+  // the investigation is FOR this user and must see exactly what they would.
+  const user = await tenantQuery(tenantId, (trx) =>
+    trx('users').where({ id: userId }).first(),
+  );
+  const userRole = String(user?.role ?? 'viewer');
+
+  const investigation = await startInvestigation(
+    {
+      tenantId,
+      userId,
+      userRole,
+      dataProductId: productId,
+      question: `Why did ${target.label} change?`,
+      focus: target.label,
+      pulseEntryId: target.pulse_entry_id,
+      briefId,
+    },
+    // Nobody is watching at 06:00 — the trail is read from the database
+    // when the user opens Home, so the event stream goes nowhere.
+    () => {},
+  );
+
+  logger.info(
+    { tenantId, userId, briefId, investigationId: investigation.id, label: target.label },
+    'morningBriefService: overnight investigation complete',
+  );
+  return investigation.id;
 }
 
 // ---------------------------------------------------------------------------
@@ -420,5 +615,7 @@ function mapBrief(row: Record<string, unknown>): MorningBrief {
     opened_at: row.opened_at ? String(row.opened_at) : null,
     emailed_at: row.emailed_at ? String(row.emailed_at) : null,
     created_at: String(row.created_at),
+    // Filled in by getTodaysBrief / listBriefs' callers, not by the row.
+    investigation: null,
   };
 }

@@ -32,6 +32,16 @@ export interface PulseSuggestContext {
       description: string | null;
     }>;
   }>;
+  /**
+   * What the user asked us, in their own words ("tell me if any customer
+   * stops ordering"). Optional: the panel also works as a plain "what
+   * should I watch?" with nothing typed.
+   *
+   * It STEERS the proposal, it does not become one — every suggestion must
+   * still name a real kpi_id from the catalogue below, so a request we have
+   * no metric for comes back as a hint rather than an invented entry.
+   */
+  intent?: string | null;
 }
 
 export interface PulseSuggestion {
@@ -117,12 +127,17 @@ export function buildPulseSuggestUser(context: PulseSuggestContext): string {
     ].filter(Boolean).join('\n');
   }).join('\n\n');
 
+  const intent = context.intent?.trim();
   return [
     `USER: ${context.userDisplayName ?? 'a business user'}`,
+    intent ? `\nWHAT THEY ASKED FOR, IN THEIR WORDS:\n  "${intent.slice(0, 300)}"` : '',
     '',
     'PRODUCTS:',
     productLines,
     '',
-    'Propose 5-7 pulse suggestions. Return JSON only.',
-  ].join('\n');
+    intent
+      ? 'Propose up to 3 pulse suggestions that serve what they asked for, using ONLY the kpi_ids above. If nothing here can answer it, return an empty suggestions array and a hint saying plainly which metric would be needed.'
+      : 'Propose 5-7 pulse suggestions. Return JSON only.',
+    'Return JSON only.',
+  ].filter(Boolean).join('\n');
 }

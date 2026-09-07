@@ -1,94 +1,113 @@
 'use client';
 
 /**
- * /home — the daily driver.
+ * /home — the standing brief.
  *
- * One page that answers "what should I look at right now?" without forcing
- * the user to translate their job into our vocabulary. Three layers,
- * stacked top-to-bottom:
+ * ONE page for every role. It answers "what should I know this morning?"
+ * with a sentence about the user's BUSINESS, then offers the ask box, then
+ * the things that moved, then the numbers they watch.
  *
- *   1. HEALTH (gamified)  — single big 0–100 ring + sub-scores. Drives
- *      a sense of "is the platform healthy?" at a glance and creates a
- *      pull to fix the lowest sub-score (definitions / freshness / runs).
- *   2. ATTENTION           — alerts, stale data, failed runs, pending
- *      review. The "what's broken" feed that motivates a return visit.
- *   3. ACT                 — pinned/recent dashboards + recent questions
- *      with one-click replay, plus quick links to ask a new question /
- *      open the catalog.
+ * WHAT THIS REPLACED, AND WHY (docs/backlog/home-experience.md):
+ *   • A 0–100 health ring with four sub-score tiles. Every number on it was
+ *     about Clarion, not about the company — and `FRESHNESS 0/100` is the
+ *     NORMAL reading for a monthly-close accounting dataset, so the page
+ *     taught people to ignore its own signals.
+ *   • A "worth your attention" feed of curator chores (pending AI reviews,
+ *     unrefreshed subjects) framed as the user's failures. Those moved to
+ *     badges on Sources and Build, where the work actually happens.
+ *   • `PulsePanel`, a setup wizard rendered in the daily view every single
+ *     day. Picking metrics is now behind "Edit" on the board.
+ *   • A separate `ViewerHome`. The two shapes have collapsed: this page is
+ *     the viewer's page, and the only role-conditional thing on it is the
+ *     Refresh action in the operational line.
  *
- * Everything reads from a single GET /api/home/summary so the page is
- * snappy and refreshes on focus.
+ * THE GOVERNING RULE: the assistant speaks first. An ask box alone is a
+ * PULL interface — it hands the burden of curiosity back to the user every
+ * morning, and the premise of this product is that most owners don't know
+ * what to ask. So: "here's what I noticed, also ask me anything." If a
+ * future change leaves the box alone on the page, that change is wrong.
  *
- * TWO SHAPES (assessment 9-3). The three layers above are an OPERATOR's
- * home: a health ring built from definitions and pipeline runs, a
- * "Freshness" tile that jumps to /pipelines, an AI review count — every
- * one of them a door a viewer cannot open ("not authorized" card) and a
- * vocabulary a viewer never chose. Viewers — the ten colleagues, the
- * people every login is for — get `ViewerHome`: the brief, a question box,
- * their dashboards and questions, the subjects, and one honest line on how
- * current the data is. Same endpoint, different page.
+ * Four fetches, all in parallel, all already tenant-scoped:
+ *   /home/summary   freshness + dashboards + recent questions
+ *   /briefs/today   the brief, and (R2) the investigation already run for it
+ *   /pulse/state    the watched metrics, with deltas and 30 days of history
+ *   /query/starters cached 24h per tenant — costs nothing on a page load
  */
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import {
-  AlertTriangle, CheckCircle2, Clock, Database, Boxes,
-  RefreshCw, Sparkles, ShieldCheck, ChevronRight, BarChart3,
-  Loader2, X, Gauge,
-} from 'lucide-react';
 import dynamic from 'next/dynamic';
+import { Layers, Loader2, RefreshCw, X } from 'lucide-react';
 import api from '@/lib/api';
-import { OBSERVATORY } from '@/lib/observatory';
-import { formatRelative } from '@/lib/dates';
-import { compactNarrative } from '@/lib/qualityNarrative';
 import { cn } from '@/lib/cn';
-import { getRole, type Role } from '@/lib/role';
-import type { HomeSummary } from './types';
+import { canCurate, getRole, type Role } from '@/lib/role';
+import { deriveLead, deriveOpsLine } from './lead';
+import { AskBox, OpsLine, WatchPanel } from './pieces';
+import { MovementCards } from './MovementCards';
+import { Board } from './Board';
+import { FreshnessDetail } from './FreshnessDetail';
 import { DashboardsSection, RecentQuestionsSection } from './sections';
-import { ViewerHome } from './ViewerHome';
+import { QuietCard, ColdStartCard } from './states';
+import type { Brief, HomeSummary, PulseTile, QueryStarter } from './types';
 
-// Dynamic imports — these aren't critical for first paint and pull
-// in their own state machinery, so let them stream in after.
+// The metric picker. It used to render on the page every single day, with a
+// greyed-out "Save 0 entries" button — a setup wizard squatting in the daily
+// view. It is the same component, now reached from "Edit" on the board.
 const PulsePanel = dynamic(() => import('@/components/pulse/PulsePanel'), { ssr: false });
-const MorningBriefCard = dynamic(() => import('@/components/briefs/MorningBriefCard'), { ssr: false });
 
+interface Suggestion {
+  key: string;
+  label: string;
+  rationale: string | null;
+  raw: Record<string, unknown>;
+}
 
 export default function HomePage() {
   const router = useRouter();
+  const jump = useCallback((path: string) => router.push(path), [router]);
+
   const [summary, setSummary] = useState<HomeSummary | null>(null);
+  const [brief, setBrief] = useState<Brief | null>(null);
+  const [tiles, setTiles] = useState<PulseTile[]>([]);
+  const [starters, setStarters] = useState<QueryStarter[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [userName, setUserName] = useState<string>('');
-  const [freshnessOpen, setFreshnessOpen] = useState(false);
-  // Read once on mount (the JWT is in storage, not available during SSR).
-  // Null until read so neither shape flashes before the other.
+  const [userName, setUserName] = useState('');
   const [role, setRole] = useState<Role | null>(null);
+  const [freshnessOpen, setFreshnessOpen] = useState(false);
+  const [pulseOpen, setPulseOpen] = useState(false);
+
+  const [watchBusy, setWatchBusy] = useState(false);
+  const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
+
   useEffect(() => { setRole(getRole()); }, []);
 
   const load = useCallback(async (silent = false) => {
     if (!silent) setLoading(true);
-    try {
-      const res = await api.get('/home/summary');
-      setSummary(res.data.data as HomeSummary);
-    } catch (err) {
-      // eslint-disable-next-line no-console
-      console.warn('home/summary failed', err);
-    } finally {
-      setLoading(false);
-      setRefreshing(false);
-    }
+    // Each of the four degrades on its own: a failing starters call must not
+    // cost the user the brief. `catch` per promise, never one big try.
+    const [s, b, p, st] = await Promise.all([
+      api.get('/home/summary').then((r) => r.data?.data as HomeSummary).catch(() => null),
+      api.get('/briefs/today').then((r) => r.data?.data as Brief | null).catch(() => null),
+      api.get('/pulse/state').then((r) => (r.data?.data ?? []) as PulseTile[]).catch(() => [] as PulseTile[]),
+      api.get('/query/starters').then((r) => (r.data?.data?.starters ?? []) as QueryStarter[]).catch(() => [] as QueryStarter[]),
+    ]);
+    if (s) setSummary(s);
+    setBrief(b);
+    setTiles(p);
+    setStarters(st);
+    setLoading(false);
+    setRefreshing(false);
   }, []);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => { void load(); }, [load]);
 
-  // Refresh on tab focus so the user always sees current state
   useEffect(() => {
     const onFocus = () => { setRefreshing(true); void load(true); };
     window.addEventListener('focus', onFocus);
     return () => window.removeEventListener('focus', onFocus);
   }, [load]);
 
-  // Greet by display name (cached on the auth profile)
   useEffect(() => {
     api.get('/users/profile')
       .then((r) => {
@@ -103,6 +122,46 @@ export default function HomePage() {
     weekday: 'long', month: 'long', day: 'numeric',
   }), []);
 
+  const ask = useCallback((q: string) => {
+    const trimmed = q.trim();
+    jump(trimmed ? `/query?q=${encodeURIComponent(trimmed)}&autoSubmit=1` : '/query');
+  }, [jump]);
+
+  // ── Watch: plain English in, proposals back, nothing added silently ──────
+  const onWatch = useCallback(async (intent: string) => {
+    setWatchBusy(true);
+    try {
+      const res = await api.post('/pulse/suggest?force=1', { intent });
+      const raw = (res.data?.data?.suggestions ?? []) as Array<Record<string, unknown>>;
+      setSuggestions(raw.map((s, i) => ({
+        key: `${i}-${String(s.label ?? '')}`,
+        label: String(s.label ?? 'Untitled'),
+        rationale: s.rationale ? String(s.rationale) : null,
+        raw: s,
+      })));
+    } catch {
+      setSuggestions([]);
+    } finally {
+      setWatchBusy(false);
+    }
+  }, []);
+
+  const onAccept = useCallback(async (key: string) => {
+    const s = suggestions.find((x) => x.key === key);
+    if (!s) return;
+    setSuggestions((prev) => prev.filter((x) => x.key !== key));
+    try {
+      await api.post('/pulse/apply-suggest', { suggestions: [s.raw] });
+      const p = await api.get('/pulse/state').then((r) => (r.data?.data ?? []) as PulseTile[]);
+      setTiles(p);
+    } catch { /* the chip is already gone; a failed add is visible as its absence */ }
+  }, [suggestions]);
+
+  const onRemoveWatch = useCallback(async (id: number) => {
+    setTiles((prev) => prev.filter((t) => t.id !== id));
+    try { await api.delete(`/pulse/${id}`); } catch { void load(true); }
+  }, [load]);
+
   if (loading || role === null) {
     return (
       <div className="flex-1 flex items-center justify-center">
@@ -113,566 +172,192 @@ export default function HomePage() {
   if (!summary) {
     return (
       <div className="flex-1 flex items-center justify-center text-muted">
-        Could not load home page.
+        Could not load your home page.
       </div>
     );
   }
 
-  if (role === 'viewer') {
-    return <ViewerHome summary={summary} userName={userName} today={today} onJump={(p) => router.push(p)} />;
-  }
+  const curator = canCurate(role);
+  const newestSyncAt = summary.freshness.allSources
+    .map((s) => s.lastSyncedAt)
+    .filter((d): d is string => !!d)
+    .sort()
+    .pop() ?? null;
+
+  const lead = deriveLead({
+    brief,
+    tiles,
+    sourceCount: summary.freshness.allSources.length,
+    newestSyncAt,
+  });
+
+  const ops = deriveOpsLine({
+    newestSyncAt,
+    staleSources: summary.freshness.stale,
+    staleProductCount: summary.freshness.staleProducts.length,
+    sourceCount: summary.freshness.allSources.length,
+  });
 
   return (
-    <div className="flex-1 overflow-auto bg-bg">
-      <div className="max-w-6xl mx-auto px-6 pt-10 pb-12">
-        {/* Header */}
-        <div className="flex items-end justify-between mb-8">
-          <div>
-            <p className="text-[11px] font-mono tracking-[0.14em] uppercase text-muted mb-1">{today}</p>
-            <h1 className="font-display text-[32px] text-ink leading-tight tracking-[-0.02em]">
-              {userName ? `Welcome back, ${userName}` : 'Welcome back'}
-            </h1>
+    <div className="flex-1 overflow-auto bg-bg" data-testid="home">
+      {/* Reading width, not dashboard width — a briefing is read. */}
+      <div className="max-w-[780px] mx-auto px-6 pt-9 pb-16">
+
+        {/* ── THE LEAD ───────────────────────────────────────────────────
+            The largest type on the page is a sentence about the business.
+            The page this replaced led with the number 73. */}
+        <div className="mb-6">
+          <div className="flex items-start justify-between gap-4 mb-2">
+            <p className="font-mono text-[11px] tracking-[0.14em] uppercase text-muted">
+              {today}{userName ? ` · ${userName}` : ''}
+            </p>
+            <button
+              type="button"
+              onClick={() => { setRefreshing(true); void load(true); }}
+              disabled={refreshing}
+              aria-label="Refresh"
+              className="shrink-0 inline-flex items-center gap-1.5 px-2 py-1 text-[11.5px] text-muted border border-line rounded-md hover:bg-softer hover:text-ink-2 disabled:opacity-50 transition-colors"
+            >
+              <RefreshCw className={cn('w-3 h-3', refreshing && 'animate-spin')} strokeWidth={2} />
+            </button>
           </div>
-          <button
-            onClick={() => { setRefreshing(true); void load(true); }}
-            disabled={refreshing}
-            className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-[12px] text-ink-2 border border-line rounded-md hover:bg-softer disabled:opacity-50 transition-colors"
-          >
-            <RefreshCw className={cn('w-3.5 h-3.5', refreshing && 'animate-spin')} strokeWidth={2} />
-            Refresh
-          </button>
+
+          <h1 className="font-display text-[31px] font-normal text-ink leading-[1.28] tracking-[-0.015em] text-balance">
+            {lead.emphasis && lead.headline.includes(lead.emphasis) ? (
+              <>
+                {lead.headline.slice(0, lead.headline.indexOf(lead.emphasis))}
+                <em className="not-italic shadow-[inset_0_-0.44em_0_var(--warn-soft)]">{lead.emphasis}</em>
+                {lead.headline.slice(lead.headline.indexOf(lead.emphasis) + lead.emphasis.length)}
+              </>
+            ) : lead.headline}
+          </h1>
+
+          {lead.sub.length > 0 && (
+            <p className="mt-2.5 flex items-center gap-1.5 flex-wrap text-[13px] text-muted">
+              {lead.sub.map((s, i) => (
+                <span key={s} className="flex items-center gap-1.5">
+                  {i > 0 && <span className="w-[3px] h-[3px] rounded-full bg-muted-2" aria-hidden />}
+                  {s}
+                </span>
+              ))}
+            </p>
+          )}
         </div>
 
-        {/* MORNING BRIEF — the new top-of-page beat. Renders nothing
-            unless a brief was generated for today, so the previous
-            visual weight stays the same on days the user has no pulse
-            entries or hasn't reached the 06:00 UTC cron yet. */}
-        <section className="mb-6">
-          <MorningBriefCard />
+        {/* ── ASK ────────────────────────────────────────────────────── */}
+        <AskBox starters={starters} onAsk={ask} />
+
+        {/* ── WHAT MOVED / QUIET / COLD ──────────────────────────────── */}
+        {lead.tone === 'moved' && (
+          <section className="mb-8">
+            <div className="flex items-baseline justify-between gap-3 mb-3">
+              <p className="font-mono text-[10px] tracking-[0.15em] uppercase text-muted">What moved</p>
+              {tiles.length > lead.cards.length && (
+                <span className="font-mono text-[10.5px] tracking-[0.06em] uppercase text-muted-2">
+                  {tiles.length} watched
+                </span>
+              )}
+            </div>
+            <MovementCards
+              bullets={lead.cards}
+              tiles={tiles}
+              investigation={brief?.investigation}
+              onAsk={ask}
+            />
+          </section>
+        )}
+
+        {lead.tone === 'quiet' && (
+          <section className="mb-8">
+            <QuietCard bullets={brief?.content.bullets ?? []} />
+          </section>
+        )}
+
+        {(lead.tone === 'cold' || lead.tone === 'waiting') && (
+          <section className="mb-8">
+            <ColdStartCard tone={lead.tone} curator={curator} onJump={jump} />
+          </section>
+        )}
+
+        {/* ── BOARD ──────────────────────────────────────────────────── */}
+        <Board tiles={tiles} onAsk={ask} onEdit={() => setPulseOpen(true)} />
+
+        {/* ── WATCH ──────────────────────────────────────────────────── */}
+        <WatchPanel
+          watching={tiles}
+          onWatch={onWatch}
+          onRemove={onRemoveWatch}
+          busy={watchBusy}
+          suggestions={suggestions.map(({ key, label, rationale }) => ({ key, label, rationale }))}
+          onAccept={onAccept}
+          onDismissSuggestion={(k) => setSuggestions((prev) => prev.filter((x) => x.key !== k))}
+        />
+
+        {/* ── PICK UP WHERE YOU LEFT OFF ─────────────────────────────── */}
+        <section className="grid grid-cols-1 lg:grid-cols-2 gap-5 mb-8">
+          <DashboardsSection dashboards={summary.dashboards} onJump={jump} />
+          <RecentQuestionsSection questions={summary.recentQuestions} onJump={jump} />
         </section>
 
-        {/* HEALTH section */}
-        <section className="mb-10">
-          <HealthSection
-            summary={summary}
-            onJump={(path) => router.push(path)}
-            onOpenFreshnessDetail={() => setFreshnessOpen(true)}
+        <button
+          type="button"
+          onClick={() => jump('/subjects')}
+          className="group w-full flex items-center gap-3 rounded-[10px] border border-line bg-raised px-4 py-3 text-left transition-colors hover:border-ocean mb-6"
+        >
+          <Layers className="h-4 w-4 shrink-0 text-muted-2" strokeWidth={1.7} aria-hidden />
+          <span className="flex-1">
+            <span className="block text-[13.5px] text-ink">Subjects</span>
+            <span className="block text-[12px] text-muted">Everything your team can ask about, in one place.</span>
+          </span>
+        </button>
+
+        {/* ── THE ONE OPERATIONAL LINE ───────────────────────────────── */}
+        {ops && (
+          <OpsLine
+            asOf={ops.asOf}
+            problem={ops.problem}
+            canRefresh={curator}
+            onRefresh={() => jump('/pipelines')}
+            onDetails={() => setFreshnessOpen(true)}
           />
-        </section>
-
-        {/* ATTENTION section */}
-        <section className="mb-10">
-          <AttentionSection summary={summary} onJump={(path) => router.push(path)} />
-        </section>
-
-        {/* PULSE — your watchlist that powers morning briefs + alerts.
-            Sits between Attention (today's issues) and Act (today's
-            tools) because it's the bridge: declaring what should
-            generate tomorrow's attention items. */}
-        <section className="mb-10">
-          <PulsePanel />
-        </section>
-
-        {/* ACT section */}
-        <section className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          <DashboardsSection dashboards={summary.dashboards} onJump={(p) => router.push(p)} />
-          <RecentQuestionsSection
-            questions={summary.recentQuestions}
-            onJump={(p) => router.push(p)}
-          />
-        </section>
+        )}
       </div>
+
+      {pulseOpen && (
+        <div className="fixed inset-0 z-50 flex justify-end" role="dialog" aria-modal="true" aria-label="Edit your board">
+          <button
+            type="button"
+            aria-label="Close"
+            className="absolute inset-0 bg-ink/20"
+            onClick={() => { setPulseOpen(false); void load(true); }}
+          />
+          <div className="relative h-full w-full max-w-[540px] overflow-auto bg-bg border-l border-line shadow-3">
+            <div className="sticky top-0 z-10 flex items-center justify-between gap-3 border-b border-line bg-surface px-5 py-3">
+              <p className="font-mono text-[10px] tracking-[0.15em] uppercase text-muted">Edit your board</p>
+              <button
+                type="button"
+                onClick={() => { setPulseOpen(false); void load(true); }}
+                aria-label="Close"
+                className="rounded p-1 text-muted hover:bg-softer hover:text-ink"
+              >
+                <X className="h-4 w-4" strokeWidth={2} />
+              </button>
+            </div>
+            <div className="p-5">
+              <PulsePanel />
+            </div>
+          </div>
+        </div>
+      )}
 
       {freshnessOpen && (
         <FreshnessDetail
           sources={summary.freshness.allSources}
           products={summary.freshness.allProducts}
           onClose={() => setFreshnessOpen(false)}
-          onJumpToPipelines={() => { setFreshnessOpen(false); router.push('/pipelines'); }}
+          onJumpToPipelines={() => { setFreshnessOpen(false); jump('/pipelines'); }}
         />
       )}
     </div>
-  );
-}
-
-// ─── Health section ─────────────────────────────────────────────────────────
-
-function HealthSection({ summary, onJump, onOpenFreshnessDetail }: { summary: HomeSummary; onJump: (path: string) => void; onOpenFreshnessDetail: () => void }) {
-  const overall = summary.health.overall;
-  const ringColor = overall == null ? OBSERVATORY.muted2
-    : overall >= 80 ? OBSERVATORY.ok
-    : overall >= 50 ? OBSERVATORY.warn
-    : OBSERVATORY.err;
-  const tone = overall == null ? 'No data yet' : overall >= 90 ? 'Excellent'
-    : overall >= 75 ? 'Healthy' : overall >= 50 ? 'OK' : overall >= 25 ? 'Needs work' : 'Critical';
-
-  return (
-    <div className="bg-raised border border-line rounded-lg p-6">
-      <div className="flex items-baseline gap-2 mb-4">
-        <p className="text-[10px] font-mono tracking-[0.14em] uppercase text-muted">Data health</p>
-        <p className="text-[11px] text-muted-2">— fresh data + curated definitions + correct values + clean pipeline runs</p>
-      </div>
-      <div className="flex flex-col lg:flex-row items-stretch gap-6">
-        {/* Big ring */}
-        <div className="flex items-center gap-5 lg:min-w-[220px]">
-          <ScoreRing value={overall} color={ringColor} />
-          <div>
-            <p className="font-display text-[28px] text-ink leading-none tracking-[-0.02em]">{tone}</p>
-            <p className="text-[12px] text-muted mt-1">
-              {overall == null
-                ? 'Connect a source to start scoring.'
-                : overall >= 80
-                  ? "You're in a good spot. Keep schedules running."
-                  : 'Tackle the lowest sub-score first.'}
-            </p>
-          </div>
-        </div>
-
-        {/* Sub-score tiles — 2×2 on tablet, 1×4 on wide screens. Quality
-            sits next to Definitions because they answer the same shape
-            of question (is the data correct?) at different layers:
-            metadata vs values. */}
-        <div className="flex-1 grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3">
-          <SubScoreTile
-            label="Freshness"
-            score={summary.health.freshness}
-            description={`${summary.freshness.sources.fresh}/${summary.freshness.sources.total} sources synced today, ${summary.freshness.products.fresh}/${summary.freshness.products.total} products refreshed`}
-            icon={<RefreshCw className="w-3.5 h-3.5" strokeWidth={2} />}
-            // Open the freshness detail panel instead of jumping straight
-            // to /pipelines. Users want to SEE which items are stale and
-            // when they were last refreshed before deciding what to act on.
-            onClick={onOpenFreshnessDetail}
-          />
-          <SubScoreTile
-            label="Definitions"
-            score={summary.health.definitions}
-            description={`${summary.definitions.tables.defined}/${summary.definitions.tables.total} tables · ${summary.definitions.columns.defined}/${summary.definitions.columns.total} columns · ${summary.definitions.relationships.approved}/${summary.definitions.relationships.total} relationships`}
-            icon={<ShieldCheck className="w-3.5 h-3.5" strokeWidth={2} />}
-            onClick={() => onJump('/review')}
-          />
-          <SubScoreTile
-            label="Quality"
-            score={summary.health.quality}
-            description={
-              summary.quality.profiledTables.total === 0 && summary.quality.activeRules.total === 0
-                ? 'No tables profiled yet · add a quality rule or run a profile'
-                : [
-                    summary.quality.profiledTables.total > 0
-                      ? `${summary.quality.profiledTables.passing}/${summary.quality.profiledTables.total} tables passing`
-                      : null,
-                    summary.quality.activeRules.total > 0
-                      ? `${summary.quality.activeRules.passing}/${summary.quality.activeRules.total} rules passing`
-                      : null,
-                  ].filter(Boolean).join(' · ')
-            }
-            icon={<Gauge className="w-3.5 h-3.5" strokeWidth={2} />}
-            onClick={() => onJump('/products?tab=quality')}
-          />
-          <SubScoreTile
-            label="Pipelines"
-            score={summary.health.pipelines}
-            description={`${summary.pipelines.successCount}/${summary.pipelines.runsThisWeek} successful this week${summary.pipelines.activeNow > 0 ? ` · ${summary.pipelines.activeNow} running now` : ''}`}
-            icon={<BarChart3 className="w-3.5 h-3.5" strokeWidth={2} />}
-            onClick={() => onJump('/pipelines')}
-          />
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function ScoreRing({ value, color }: { value: number | null; color: string }) {
-  const v = value ?? 0;
-  const r = 42;
-  const c = 2 * Math.PI * r;
-  const offset = c - (v / 100) * c;
-  return (
-    <svg width={104} height={104} className="shrink-0">
-      <circle cx={52} cy={52} r={r} stroke={OBSERVATORY.softer} strokeWidth={8} fill="none" />
-      {value != null && (
-        <circle
-          cx={52} cy={52} r={r}
-          stroke={color} strokeWidth={8} fill="none"
-          strokeDasharray={c} strokeDashoffset={offset}
-          strokeLinecap="round"
-          transform="rotate(-90 52 52)"
-          style={{ transition: 'stroke-dashoffset 600ms cubic-bezier(0.22, 1, 0.36, 1)' }}
-        />
-      )}
-      <text
-        x={52} y={56}
-        textAnchor="middle"
-        className="font-display tabular-nums"
-        style={{ fontSize: 26, fill: OBSERVATORY.ink, letterSpacing: '-0.02em' }}
-      >
-        {value == null ? '—' : value}
-      </text>
-    </svg>
-  );
-}
-
-function SubScoreTile({
-  label, score, description, icon, onClick,
-}: {
-  label: string;
-  score: number | null;
-  description: string;
-  icon: React.ReactNode;
-  onClick: () => void;
-}) {
-  const color = score == null ? OBSERVATORY.muted2
-    : score >= 80 ? OBSERVATORY.ok
-    : score >= 50 ? OBSERVATORY.warn
-    : OBSERVATORY.err;
-  return (
-    <button
-      onClick={onClick}
-      className="bg-soft border border-line rounded-md px-3.5 py-3 text-left hover:border-line-strong hover:bg-softer transition-colors group"
-    >
-      <div className="flex items-center justify-between mb-2">
-        <p className="text-[10px] font-mono tracking-[0.12em] uppercase text-muted inline-flex items-center gap-1.5">
-          <span style={{ color }}>{icon}</span>
-          {label}
-        </p>
-        <ChevronRight className="w-3 h-3 text-muted-2 group-hover:text-ink-2" strokeWidth={2} />
-      </div>
-      <div className="flex items-baseline gap-2 mb-1">
-        <p className="font-display tabular-nums text-[22px] leading-none tracking-[-0.02em]" style={{ color: OBSERVATORY.ink }}>
-          {score == null ? '—' : score}
-        </p>
-        {score != null && <span className="text-[11px] text-muted-2">/ 100</span>}
-        <div className="ml-auto h-1.5 w-16 bg-softer rounded-full overflow-hidden">
-          <div
-            className="h-full transition-[width]"
-            style={{ width: `${score ?? 0}%`, background: color, transitionDuration: '600ms' }}
-          />
-        </div>
-      </div>
-      <p className="text-[11px] text-muted leading-relaxed">{description}</p>
-    </button>
-  );
-}
-
-// ─── Attention section ──────────────────────────────────────────────────────
-
-function AttentionSection({ summary, onJump }: { summary: HomeSummary; onJump: (path: string) => void }) {
-  type Item = {
-    key: string;
-    icon: React.ReactNode;
-    color: string;
-    title: string;
-    description: string;
-    /** Optional plain-English narrative under the description. Used by
-     *  quality alerts to surface Claude's `ai_context` ("...likely a
-     *  unit-of-measure mismatch") that's been written into the column
-     *  forever but never rendered on Home. The signature use case from
-     *  the marketing journey doc. */
-    narrative?: string | null;
-    action?: { label: string; path: string };
-  };
-
-  const items: Item[] = [];
-
-  // Failed pipeline runs (last week)
-  if (summary.pipelines.failureCount > 0) {
-    items.push({
-      key: 'failed-runs',
-      icon: <AlertTriangle className="w-4 h-4" strokeWidth={1.75} />,
-      color: OBSERVATORY.err,
-      title: `${summary.pipelines.failureCount} pipeline run${summary.pipelines.failureCount === 1 ? '' : 's'} failed this week`,
-      description: 'Investigate which products / tables had errors and re-run.',
-      action: { label: 'Open pipelines', path: '/pipelines' },
-    });
-  }
-
-  // Active runs in progress
-  if (summary.pipelines.activeNow > 0) {
-    items.push({
-      key: 'active-runs',
-      icon: <Loader2 className="w-4 h-4 animate-spin" />,
-      color: OBSERVATORY.ocean,
-      title: `${summary.pipelines.activeNow} pipeline run${summary.pipelines.activeNow === 1 ? '' : 's'} in progress`,
-      description: 'Watch live progress on the canvas.',
-      action: { label: 'Open pipelines', path: '/pipelines' },
-    });
-  }
-
-  // Stale sources + products combined into one item — same action ("refresh
-  // these"), and the user's mental model is "stale data" not "stale source
-  // vs stale product". Click-through to /pipelines is the same destination.
-  const stalePieces: string[] = [];
-  if (summary.freshness.stale.length > 0) {
-    stalePieces.push(`${summary.freshness.stale.length} source${summary.freshness.stale.length === 1 ? '' : 's'}`);
-  }
-  if (summary.freshness.staleProducts.length > 0) {
-    stalePieces.push(`${summary.freshness.staleProducts.length} product${summary.freshness.staleProducts.length === 1 ? '' : 's'}`);
-  }
-  if (stalePieces.length > 0) {
-    const names = [
-      ...summary.freshness.stale.map((s) => s.name),
-      ...summary.freshness.staleProducts.map((p) => p.name),
-    ];
-    items.push({
-      key: 'stale-data',
-      icon: <Clock className="w-4 h-4" strokeWidth={1.75} />,
-      color: OBSERVATORY.warn,
-      title: `${stalePieces.join(' and ')} not refreshed in 24h`,
-      description: names.slice(0, 3).join(', ')
-        + (names.length > 3 ? ` + ${names.length - 3} more` : ''),
-      action: { label: 'Refresh now', path: '/pipelines' },
-    });
-  }
-
-  // Pending AI review
-  if (summary.definitions.pendingReview.total > 0) {
-    items.push({
-      key: 'pending-review',
-      icon: <Sparkles className="w-4 h-4" strokeWidth={1.75} />,
-      color: OBSERVATORY.ai,
-      title: `${summary.definitions.pendingReview.total} AI suggestion${summary.definitions.pendingReview.total === 1 ? '' : 's'} pending review`,
-      description: `${summary.definitions.pendingReview.tables} tables · ${summary.definitions.pendingReview.columns} columns · ${summary.definitions.pendingReview.relationships} relationships. Confirm or flag to improve query accuracy.`,
-      action: { label: 'Review queue', path: '/review' },
-    });
-  }
-
-  // Quality alerts (sorted critical first)
-  for (const a of summary.alerts.slice(0, 5)) {
-    const color = a.severity === 'critical' ? OBSERVATORY.err
-      : a.severity === 'warning' ? OBSERVATORY.warn
-      : OBSERVATORY.muted2;
-    items.push({
-      key: `alert-${a.id}`,
-      icon: <AlertTriangle className="w-4 h-4" strokeWidth={1.75} />,
-      color,
-      title: a.message,
-      description: a.createdAt ? `Detected ${formatRelative(a.createdAt)}` : '',
-      // Compact at the render boundary so older alerts (paragraphs +
-      // markdown labels) display as tightly as new ones (one short sentence).
-      narrative: compactNarrative(a.aiContext),
-    });
-  }
-
-  if (items.length === 0) {
-    return (
-      <div className="bg-raised border border-line rounded-lg p-6 flex items-center gap-3">
-        <CheckCircle2 className="w-5 h-5 shrink-0" style={{ color: OBSERVATORY.ok }} strokeWidth={1.75} />
-        <div>
-          <p className="font-display text-[16px] text-ink leading-tight">All clear.</p>
-          <p className="text-[12px] text-muted">No alerts, no failed runs, nothing pending review. Keep going.</p>
-        </div>
-      </div>
-    );
-  }
-
-  return (
-    <div className="bg-raised border border-line rounded-lg overflow-hidden">
-      <header className="px-5 py-3 border-b border-line bg-softer/40">
-        <p className="text-[10px] font-mono tracking-[0.14em] uppercase text-muted">Worth your attention</p>
-      </header>
-      <div className="divide-y divide-line">
-        {items.map((item) => (
-          <div key={item.key} className="px-5 py-3 flex items-start gap-3">
-            <span className="mt-0.5 shrink-0" style={{ color: item.color }}>{item.icon}</span>
-            <div className="flex-1 min-w-0">
-              <p className="text-[13px] text-ink leading-tight">{item.title}</p>
-              {item.narrative && (
-                <p className="text-[12px] italic text-ink-3 mt-1 leading-relaxed font-display">
-                  {item.narrative}
-                </p>
-              )}
-              {item.description && (
-                <p className="text-[11.5px] text-muted mt-0.5 leading-relaxed">{item.description}</p>
-              )}
-            </div>
-            {item.action && (
-              <button
-                onClick={() => onJump(item.action!.path)}
-                className="shrink-0 inline-flex items-center gap-1 px-2.5 py-1 text-[11.5px] font-medium text-ocean border border-ocean/30 rounded-md hover:bg-ocean-softer transition-colors"
-              >
-                {item.action.label} <ChevronRight className="w-3 h-3" />
-              </button>
-            )}
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-// ─── Freshness detail slide-over ───────────────────────────────────────────
-//
-// Click the Freshness tile → see every source + product with its last
-// refresh timestamp BEFORE deciding whether to jump to /pipelines.
-// Stale items at top, fresh items below, same row template for both.
-// "Refresh now" button at the bottom takes the user to /pipelines (where
-// they pick the right scope) — we don't try to one-click refresh from here
-// because that would bypass the pipeline-scope decision the user is here
-// to make.
-
-function FreshnessDetail({
-  sources, products, onClose, onJumpToPipelines,
-}: {
-  sources: HomeSummary['freshness']['allSources'];
-  products: HomeSummary['freshness']['allProducts'];
-  onClose: () => void;
-  onJumpToPipelines: () => void;
-}) {
-  // Stale first within each kind, then by oldest refresh
-  const orderRows = <T extends { isStale: boolean; lastSyncedAt?: string | null; lastRefreshedAt?: string | null }>(rows: T[]): T[] => {
-    return [...rows].sort((a, b) => {
-      if (a.isStale !== b.isStale) return a.isStale ? -1 : 1;
-      const aAt = (a.lastSyncedAt ?? a.lastRefreshedAt) ?? '';
-      const bAt = (b.lastSyncedAt ?? b.lastRefreshedAt) ?? '';
-      return aAt.localeCompare(bAt);
-    });
-  };
-  const orderedSources = orderRows(sources);
-  const orderedProducts = orderRows(products);
-
-  // ESC closes
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [onClose]);
-
-  const sourceCount = sources.length;
-  const productCount = products.length;
-  const staleSourceCount = sources.filter((s) => s.isStale).length;
-  const staleProductCount = products.filter((p) => p.isStale).length;
-
-  return (
-    <div className="fixed inset-0 z-40 bg-ink/40 flex items-stretch justify-end" onClick={onClose}>
-      <div
-        className="bg-raised w-full max-w-[560px] h-full overflow-y-auto shadow-xl"
-        onClick={(e) => e.stopPropagation()}
-        role="dialog"
-        aria-modal="true"
-      >
-        {/* Header */}
-        <div className="sticky top-0 z-10 bg-raised border-b border-line px-5 py-3 flex items-start gap-2">
-          <Clock className="w-4 h-4 mt-0.5 shrink-0" style={{ color: OBSERVATORY.ocean }} strokeWidth={1.75} />
-          <div className="flex-1 min-w-0">
-            <p className="text-[10px] font-mono tracking-[0.14em] uppercase text-muted">Freshness</p>
-            <h2 className="font-display text-[18px] tracking-[-0.01em] text-ink">
-              When was each thing last refreshed?
-            </h2>
-            <p className="text-[11.5px] text-muted-2 mt-0.5">
-              {staleSourceCount + staleProductCount > 0
-                ? `${staleSourceCount + staleProductCount} item${staleSourceCount + staleProductCount === 1 ? '' : 's'} not refreshed in the last 24 hours.`
-                : 'Everything has been refreshed in the last 24 hours.'}
-            </p>
-          </div>
-          <button
-            onClick={onClose}
-            className="p-1 rounded hover:bg-soft text-muted-2 hover:text-ink-2"
-            aria-label="Close"
-          >
-            <X className="w-4 h-4" />
-          </button>
-        </div>
-
-        {/* Body */}
-        <div className="px-5 py-5 space-y-6">
-          {/* Sources */}
-          <section>
-            <p className="text-[10px] font-mono tracking-[0.14em] uppercase text-muted mb-2">
-              Sources <span className="text-muted-2 normal-case ml-1">{sourceCount} total · {staleSourceCount} stale</span>
-            </p>
-            {sourceCount === 0 ? (
-              <p className="text-[12px] text-muted italic">No sources connected yet.</p>
-            ) : (
-              <ul className="divide-y divide-line border border-line rounded-md overflow-hidden">
-                {orderedSources.map((s) => (
-                  <FreshnessRow
-                    key={`s-${s.id}`}
-                    name={s.name}
-                    kind="source"
-                    sub={s.connectorType ?? 'source'}
-                    lastAt={s.lastSyncedAt}
-                    isStale={s.isStale}
-                    extra={s.lastSyncStatus}
-                  />
-                ))}
-              </ul>
-            )}
-          </section>
-
-          {/* Products */}
-          <section>
-            <p className="text-[10px] font-mono tracking-[0.14em] uppercase text-muted mb-2">
-              Datasets <span className="text-muted-2 normal-case ml-1">{productCount} total · {staleProductCount} stale</span>
-            </p>
-            {productCount === 0 ? (
-              <p className="text-[12px] text-muted italic">No datasets yet.</p>
-            ) : (
-              <ul className="divide-y divide-line border border-line rounded-md overflow-hidden">
-                {orderedProducts.map((p) => (
-                  <FreshnessRow
-                    key={`p-${p.id}`}
-                    name={p.name}
-                    kind="product"
-                    sub={p.status}
-                    lastAt={p.lastRefreshedAt}
-                    isStale={p.isStale}
-                  />
-                ))}
-              </ul>
-            )}
-          </section>
-
-          {/* Action */}
-          <button
-            onClick={onJumpToPipelines}
-            className="w-full inline-flex items-center justify-center gap-2 px-3 py-2 text-[12.5px] font-medium bg-ocean text-white rounded-md hover:bg-ocean-hover transition-colors"
-          >
-            <RefreshCw className="w-3.5 h-3.5" strokeWidth={2} />
-            Open Refresh
-          </button>
-          <p className="text-[10.5px] text-muted-2 text-center -mt-2">
-            Pick the scope (everything / one source / one dataset) and click <span className="font-medium">Run now</span>.
-          </p>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function FreshnessRow({
-  name, kind, sub, lastAt, isStale, extra,
-}: {
-  name: string;
-  kind: 'source' | 'product';
-  sub: string;
-  lastAt: string | null;
-  isStale: boolean;
-  extra?: string | null;
-}) {
-  const Icon = kind === 'source' ? Database : Boxes;
-  const accent = kind === 'source' ? OBSERVATORY.ocean : OBSERVATORY.ai;
-  return (
-    <li className="px-3 py-2.5">
-      <div className="flex items-center gap-2 mb-0.5">
-        <Icon className="w-3.5 h-3.5 shrink-0" style={{ color: accent }} strokeWidth={1.75} />
-        <span className="text-[12.5px] font-medium text-ink truncate">{name}</span>
-        <span className={cn(
-          'text-[10px] font-mono uppercase tracking-[0.08em] px-1.5 py-0.5 rounded border border-line',
-          kind === 'source' ? 'text-ocean bg-ocean-softer' : 'text-ai bg-ai-soft',
-        )}>
-          {sub}
-        </span>
-        <span
-          className="ml-auto inline-flex items-center gap-1 text-[10.5px] font-mono shrink-0"
-          style={{ color: isStale ? OBSERVATORY.warn : OBSERVATORY.muted2 }}
-        >
-          <Clock className="w-3 h-3" strokeWidth={1.5} />
-          {lastAt ? formatRelative(lastAt) : 'never refreshed'}
-          {isStale && lastAt && <span className="font-medium">· stale</span>}
-        </span>
-      </div>
-      {extra && (
-        <p className="text-[11px] text-muted-2 ml-6">{extra}</p>
-      )}
-    </li>
   );
 }
