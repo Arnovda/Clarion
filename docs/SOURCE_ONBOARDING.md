@@ -40,6 +40,14 @@ Rules that follow from the tier:
 - **Tier 3:** the AI pipeline runs as today. Do not fake curation —
   guessing docs for an undocumented source and marking them trusted is
   worse than an honest AI draft.
+- **A file source declares its column NAMES and nothing else.** A header
+  row is the file's own metadata about itself, so it is legitimately
+  `declared` — but it is a NAME, not documentation. The Excel and CSV
+  connectors therefore emit `displayName` from the heading and no
+  `description` at all, leaving meaning to the AI pass. Passing a heading
+  off as a description would plant a fabricated fact at the trusted rung,
+  where nothing downstream will ever question it. Same reasoning as
+  Tier 3's "do not fake curation", one rung up.
 - **Never scrape vendor doc sites at runtime.** Curation happens at
   build time, in the repo, under review and tests. Runtime fetching of
   HTML docs is fragile, unversioned, rate-limited, and licensing-murky.

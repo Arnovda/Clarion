@@ -588,7 +588,14 @@ function Configure(props: {
   }, [props.config, required]);
 
   function setField(key: string, value: unknown) {
-    props.setConfig({ ...props.config, [key]: value });
+    const next = { ...props.config, [key]: value };
+    // An empty string is never a meaningful config value, and one optional
+    // field can actually produce it: re-selecting the blank option on a
+    // `enum` dropdown. Sent through, it fails the connector's schema with a
+    // message about an invalid enum value, for a field the user meant to
+    // leave alone. Required fields are already blocked by allRequiredFilled.
+    if (value === '') delete next[key];
+    props.setConfig(next);
   }
 
   return (

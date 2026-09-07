@@ -17,6 +17,10 @@
  *     reproductions. That is the normal, defensible choice: naming and
  *     identifying a product you integrate with is nominative use; copying its
  *     logo asset is not.
+ *   · csv — DRAWN BY HAND, and unlike Exact Online this one is finished: a
+ *     file format has no brand and no logo, so there is nothing to reproduce.
+ *     An outlined document with delimited rows, in the same weight as the
+ *     marks beside it.
  *   · exactonline — DRAWN BY HAND, and the one to replace. Exact publishes no
  *     open icon and both sources for it are blocked from this environment, so
  *     the mark below is a monogram in Exact's red rather than their logo. Drop
@@ -36,6 +40,19 @@ export interface ConnectorMark {
 }
 
 export const CONNECTOR_MARKS: Record<string, ConnectorMark> = {
+  csv: {
+    // Hand-drawn — see the note above. The outline is one path whose inner
+    // contour runs the opposite way, so nonzero winding punches the page out
+    // and leaves the folded corner solid.
+    color: '#546E7A',
+    viewBox: '0 0 24 24',
+    art: (
+      <>
+        <path d="M5.6 2.6H13.4L19 8.2V21.4H5.6ZM7.2 4.2v15.6h10.2V9.4h-4.8V4.2Z" />
+        <path d="M8.8 11.4h2.9v1.4H8.8Zm4.1 0h2.9v1.4h-2.9ZM8.8 14.2h2.9v1.4H8.8Zm4.1 0h2.9v1.4h-2.9ZM8.8 17h2.9v1.4H8.8Zm4.1 0h2.9v1.4h-2.9Z" />
+      </>
+    ),
+  },
   exactonline: {
     // Hand-drawn stand-in — see the note above. An outlined tile with an E, so
     // it carries the same visual weight as the nine real marks beside it; the
@@ -156,6 +173,7 @@ export const CONNECTOR_MARKS: Record<string, ConnectorMark> = {
  * connector is PRESENTED — and having a second copy is how the two drift.
  */
 export const CONNECTOR_LABELS: Record<string, string> = {
+  csv: 'CSV',
   exactonline: 'Exact Online',
   odoo: 'Odoo',
   excel: 'Excel',

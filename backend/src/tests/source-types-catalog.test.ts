@@ -30,9 +30,13 @@ describe('source-types catalog', () => {
     return (res.body.data as { type: string }[]).map((t) => t.type);
   }
 
-  it('offers the spreadsheet connectors to a brand-new tenant', async () => {
+  it('offers the file connectors to a brand-new tenant', async () => {
     // A tenant that has just registered, with nothing switched on for it.
+    // These three are the ones a customer can use on day one, without an
+    // OAuth app registration or a database credential — so if any of them
+    // stops being offered, the first fifteen minutes get worse.
     const listed = await types();
+    expect(listed).toContain('csv');
     expect(listed).toContain('excel');
     expect(listed).toContain('sharepoint');
   });
@@ -48,8 +52,8 @@ describe('source-types catalog', () => {
     // from this catalog, which is why removing a type from it was never safe
     // while a tenant might already be using it.
     const res = await agent.get('/api/source-types').set('Authorization', `Bearer ${user.token}`);
-    const excel = (res.body.data as Array<{ type: string; configSchema?: unknown }>)
-      .find((t) => t.type === 'excel');
-    expect(excel?.configSchema).toBeTruthy();
+    const listed = res.body.data as Array<{ type: string; configSchema?: unknown }>;
+    expect(listed.find((t) => t.type === 'excel')?.configSchema).toBeTruthy();
+    expect(listed.find((t) => t.type === 'csv')?.configSchema).toBeTruthy();
   });
 });
