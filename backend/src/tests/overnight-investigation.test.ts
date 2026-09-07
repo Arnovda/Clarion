@@ -12,8 +12,12 @@
  * for a page that says "nothing needs you".
  */
 
-import { describe, it, expect } from 'vitest';
-import { pickInvestigationTarget } from '../services/morningBriefService';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import fs from 'fs';
+import path from 'path';
+import { hasOpenedRecently, pickInvestigationTarget } from '../services/morningBriefService';
+import { registerUser } from './helpers';
+import { cleanTestDb, closeTestDb, getTestDb } from './db-helpers';
 import type { BriefEntryDelta, MorningBriefOutput } from '../ai/prompts/morningBriefPrompt';
 
 const delta = (over: Partial<BriefEntryDelta> = {}): BriefEntryDelta => ({
@@ -147,5 +151,139 @@ describe('pickInvestigationTarget — the cost lever', () => {
     );
     expect(target).not.toBeNull();
     expect(target?.label).toBe('A');
+  });
+});
+
+// ─── The wiring ─────────────────────────────────────────────────────────────
+//
+// `pickInvestigationTarget` being correct is worth nothing if nobody calls
+// it. Every test above would still pass with the overnight run deleted from
+// `generateBriefForUser` — the feature would simply stop existing, silently.
+//
+// A SOURCE-level assertion is the cheap way to close that: driving the real
+// thing would need a warehouse, an AI client and a full agent loop, which is
+// a live-tenant check (see the doc), not a unit test. This at least makes
+// removing the call a red build rather than a quiet regression. It is the
+// same trick `authoring-surface-guard.test.ts` uses for the SQL guard.
+
+describe('the overnight investigation is actually wired in', () => {
+  const src = fs.readFileSync(
+    path.join(__dirname, '..', 'services', 'morningBriefService.ts'),
+    'utf8',
+  );
+
+  /**
+   * The BODY of generateBriefForUser, bounded at the next top-level export.
+   *
+   * Bounding matters: slicing to end-of-file also swallows the definition of
+   * `runOvernightInvestigation` itself, so every assertion below would match
+   * the declaration instead of the call and could never fail. The first
+   * version of this file did exactly that — three of these four tests passed
+   * with the call deleted.
+   */
+  const body = (() => {
+    const start = src.indexOf('export async function generateBriefForUser');
+    expect(start).toBeGreaterThan(-1);
+    const next = src.indexOf('\nexport ', start + 1);
+    return src.slice(start, next > -1 ? next : undefined);
+  })();
+
+  it('generateBriefForUser calls runOvernightInvestigation', () => {
+    expect(body).toContain('runOvernightInvestigation(');
+  });
+
+  it('the brief is persisted BEFORE the investigation runs', () => {
+    // Order matters: the agent loop can take a minute and can throw. If it
+    // ran first, a failure would cost the user their brief entirely.
+    const insertAt = body.indexOf("trx('morning_briefs').insert");
+    const investigateAt = body.indexOf('runOvernightInvestigation(');
+    expect(insertAt).toBeGreaterThan(-1);
+    expect(investigateAt).toBeGreaterThan(insertAt);
+  });
+
+  it('the call is wrapped so a failure cannot take the brief down with it', () => {
+    const around = body.slice(
+      Math.max(0, body.indexOf('runOvernightInvestigation(') - 200),
+      body.indexOf('runOvernightInvestigation(') + 300,
+    );
+    expect(around).toContain('try {');
+    expect(around).toContain('catch');
+  });
+
+  it('both cost gates are present in the runner and neither can be dropped silently', () => {
+    const start = src.indexOf('export async function runOvernightInvestigation');
+    const next = src.indexOf('\nexport ', start + 1);
+    const fn = src.slice(start, next > -1 ? next : undefined);
+    expect(fn).toContain('pickInvestigationTarget(');   // quiet night → no run
+    expect(fn).toContain('hasOpenedRecently(');          // dormant reader → no run
+  });
+});
+
+// ─── The second cost gate: is anyone reading? ───────────────────────────────
+//
+// `triggered` stops us paying on a quiet morning. This gate stops us paying
+// every morning for a dormant account, which would otherwise accrue
+// ~$2/user/month for an answer nobody opens — the "standing charge" failure
+// the whole design is trying to avoid.
+
+describe('hasOpenedRecently — the dormancy gate', () => {
+  let tenantId: number;
+  let userId: number;
+
+  beforeAll(async () => {
+    await cleanTestDb();
+    const admin = await registerUser({ email: 'overnight@test.com', companyName: 'OvernightCo' });
+    tenantId = admin.user.tenantId;
+    userId = admin.user.id;
+  });
+
+  afterAll(async () => { await closeTestDb(); });
+
+  const seed = async (rows: Array<{ daysAgo: number; opened: boolean }>) => {
+    const db = getTestDb();
+    await db('morning_briefs').where({ tenant_id: tenantId, user_id: userId }).del();
+    for (const r of rows) {
+      const d = new Date(Date.now() - r.daysAgo * 86_400_000);
+      await db('morning_briefs').insert({
+        tenant_id: tenantId, user_id: userId,
+        brief_date: d.toISOString().slice(0, 10),
+        content: JSON.stringify({ summary: '', bullets: [], suggested_focus: '', confidence: 'low' }),
+        opened_at: r.opened ? d : null,
+        created_at: d,
+      });
+    }
+  };
+
+  it('a brand-new user with no history counts as active', async () => {
+    await seed([]);
+    // Their first morning is the one that decides whether they come back.
+    // Withholding the good version of it to save four cents is the wrong
+    // trade, so no history means investigate.
+    expect(await hasOpenedRecently(tenantId, userId, 7)).toBe(true);
+  });
+
+  it('someone who opened a brief inside the window is active', async () => {
+    await seed([{ daysAgo: 2, opened: true }, { daysAgo: 1, opened: false }]);
+    expect(await hasOpenedRecently(tenantId, userId, 7)).toBe(true);
+  });
+
+  it('someone whose last open is outside the window is dormant', async () => {
+    await seed([{ daysAgo: 30, opened: true }, { daysAgo: 1, opened: false }]);
+    expect(await hasOpenedRecently(tenantId, userId, 7)).toBe(false);
+  });
+
+  it('gives a user who has never opened one the window’s worth of chances', async () => {
+    // Three briefs, never opened — still inside the grace period.
+    await seed([{ daysAgo: 3, opened: false }, { daysAgo: 2, opened: false }, { daysAgo: 1, opened: false }]);
+    expect(await hasOpenedRecently(tenantId, userId, 7)).toBe(true);
+
+    // Ten briefs, never opened once. Stop paying.
+    await seed(Array.from({ length: 10 }, (_, i) => ({ daysAgo: i + 1, opened: false })));
+    expect(await hasOpenedRecently(tenantId, userId, 7)).toBe(false);
+  });
+
+  it('days = 0 disables the gate entirely', async () => {
+    await seed([{ daysAgo: 90, opened: true }]);
+    expect(await hasOpenedRecently(tenantId, userId, 0)).toBe(true);
   });
 });

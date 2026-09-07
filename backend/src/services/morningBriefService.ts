@@ -523,6 +523,45 @@ export function pickInvestigationTarget(
 }
 
 /**
+ * Has this user opened a brief in the recent past?
+ *
+ * Window is `BRIEF_INVESTIGATE_ACTIVE_DAYS` (default 7). Deliberately
+ * FAIL-OPEN: an unreadable table means we investigate, because the cost of
+ * a wasted agent run is a few cents and the cost of silently switching the
+ * feature off for everybody is the product.
+ */
+export async function hasOpenedRecently(
+  tenantId: number,
+  userId: number,
+  days: number = Number(process.env.BRIEF_INVESTIGATE_ACTIVE_DAYS ?? 7),
+): Promise<boolean> {
+  if (days <= 0) return true;   // 0 disables the gate
+  try {
+    const rows = await tenantQuery(tenantId, (trx) =>
+      trx('morning_briefs')
+        .where({ user_id: userId })
+        .orderBy('brief_date', 'desc')
+        .limit(30)
+        .select<Array<{ opened_at: Date | string | null }>>('opened_at'),
+    );
+    // No history yet — a brand-new user. Treat as active: their first
+    // morning is the one that decides whether they come back.
+    if (rows.length === 0) return true;
+    const cutoff = Date.now() - days * 86_400_000;
+    const everOpened = rows.some((r) => r.opened_at != null);
+    if (!everOpened) {
+      // They have briefs but have never opened one. Give them the window's
+      // worth of chances, then stop paying for an answer nobody reads.
+      return rows.length <= days;
+    }
+    return rows.some((r) => r.opened_at != null && new Date(r.opened_at).getTime() >= cutoff);
+  } catch (err) {
+    logger.warn({ err, tenantId, userId }, 'morningBriefService: activity check failed — investigating anyway');
+    return true;
+  }
+}
+
+/**
  * Run one investigation for tonight's top mover and attach it to the brief.
  *
  * The agent loop, the persistence and the step trail all already exist —
@@ -544,6 +583,26 @@ export async function runOvernightInvestigation(
 ): Promise<number | null> {
   const target = pickInvestigationTarget(brief, deltas);
   if (!target) return null;   // quiet night — spend nothing
+
+  // SECOND COST GATE: don't investigate for somebody who isn't reading.
+  //
+  // The first gate (`triggered`) stops us paying on a quiet morning. This
+  // one stops us paying every morning for a dormant user — an account that
+  // has not opened a brief in weeks would otherwise accrue ~$2/month for
+  // an answer nobody looks at, which is exactly the "standing charge"
+  // failure this feature has to avoid.
+  //
+  // `morning_briefs.opened_at` is the honest signal: it is stamped when the
+  // user actually opens their brief on Home. A user with NO history at all
+  // is treated as active — a new user must get the good first morning, and
+  // that is the one impression that decides adoption.
+  if (!(await hasOpenedRecently(tenantId, userId))) {
+    logger.info(
+      { tenantId, userId },
+      'morningBriefService: user has not opened a brief recently — skipping overnight investigation',
+    );
+    return null;
+  }
 
   // The pulse entry has to hang off a product for the agent to have a
   // warehouse to query. A theme entry with no product cannot be investigated.

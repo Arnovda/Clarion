@@ -226,6 +226,8 @@ on Sources / Build — `IconRail` already renders exactly these badges.
 | **Auto-built SQL breaks** (product rebuilt, column renamed) | The tile must *say so*, not vanish — `pulseStateService` already models `snapshot_failed` with `consecutiveFailures`; reuse it |
 | **Policy leakage** in unattended materialisation | `prepareUnattendedRead` is already the rule for briefs — same path, no exception |
 | **Curators lose their operational cockpit** | They didn't have one worth keeping; Sources / Build / Pipelines are the real work surfaces and already exist |
+| **Quality alerts silently disappear with the attention feed** | Caught on review — they are back as movement cards, and `deriveLead` counts them, so a morning with a live critical alert can never render "nothing needs you" |
+| **Pre-computing spends on users who never look** | The dormancy gate above. Still a real trade — see "the open question" below |
 
 ### Deliberately NOT proposed
 - No gamification, streaks or badges anywhere.
@@ -259,6 +261,31 @@ counts; the promotion prompt; nightly materialisation with as-of + honest failur
 
 **R4 — Absence detection.** "Normally by the 7th you'd be at €40k" from
 `pulse_observations` history. Highest "how did it know" per unit of work.
+
+---
+
+## 5b. The open question: pre-compute vs. lazy
+
+Worth stating plainly, because it is the one design choice here that is a
+genuine judgement call rather than a defect fix.
+
+**Pre-computing** (what shipped) costs ~$0.065 on every night something moved,
+for an active user. **Running it lazily on the first "Why?" click** would cost
+the same per run but only when someone actually asks — and on a month where a
+user opens Home 20 times and clicks Why? three times, that is roughly $1.30
+against $0.20.
+
+Pre-computing still wins, for one reason that is easy to miss: the conclusion
+is not only behind the button, it **becomes the lead sentence**. That is the
+difference between "Revenue is down 4%" and "…and almost all of it is one
+customer", every morning, not just on the mornings someone clicks. A lazy
+version would leave the headline weaker on all twenty days to save money on
+seventeen.
+
+The two gates are what make that trade defensible rather than open-ended: a
+quiet morning is free, and a dormant reader is free. If the bill still looks
+wrong once there is real usage, the next lever is the schema-block cache
+breakpoint below (roughly halves a night) — and only after that, lazy.
 
 ---
 
@@ -307,6 +334,15 @@ largest avoidable line on this page.
 weekdays only ≈ **$15/month**. For scale: the platform's measured AI cost today is
 ~$0.75–2/month per tenant, so this roughly triples it — from a very low base, and
 it buys the one feature the product is actually differentiated on.
+
+**Two gates, not one (added on review, 2026-09-07).** The first stops us
+paying on a quiet morning; the second stops us paying every morning for a
+**dormant account**. Without it a user who stopped opening Clarion three weeks
+ago still accrues ~$2/month for an answer nobody reads — the standing charge
+this whole section exists to avoid. `morning_briefs.opened_at` is the honest
+signal, the window is `BRIEF_INVESTIGATE_ACTIVE_DAYS` (default 7), and a
+brand-new user with no history counts as ACTIVE: their first morning is the one
+that decides whether they come back.
 
 **The investigation is ~95% of it.** Without it a night is $0.0034 (5¢/user/month);
 with it, $0.068. Every lever that matters is therefore about how often the agent

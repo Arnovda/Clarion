@@ -22,16 +22,12 @@ vi.mock('next/dynamic', () => ({ default: () => () => null }));
 vi.mock('../lib/auth', () => ({ getTokenPayload: () => ({ role: 'viewer', sub: 1 }) }));
 
 const summary = {
-  health: { overall: 12, freshness: 0, definitions: 0, quality: 0, pipelines: 0 },
-  quality: { profiledTables: { passing: 0, total: 0 }, activeRules: { passing: 0, total: 0 } },
   freshness: {
     sources: { fresh: 1, total: 1 }, products: { fresh: 0, total: 1 },
     stale: [], staleProducts: [{ id: 1, name: 'Sales', status: 'success', lastRefreshedAt: null, isStale: true }],
     allSources: [{ id: 1, name: 'Exact', connectorType: 'exactonline', lastSyncedAt: '2026-09-05T10:00:00Z', lastSyncStatus: 'succeeded', isStale: false }],
     allProducts: [],
   },
-  definitions: { tables: { defined: 12, total: 40 }, columns: { defined: 0, total: 0 }, relationships: { approved: 0, total: 0 }, pendingReview: { tables: 3, columns: 0, relationships: 0, total: 3 } },
-  pipelines: { runsThisWeek: 4, successCount: 2, failureCount: 2, activeNow: 0, successRate: 0.5 },
   dashboards: [{ id: 7, title: 'Cash', starred: true, updatedAt: null }],
   recentQuestions: [],
   alerts: [],

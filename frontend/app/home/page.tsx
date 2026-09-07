@@ -108,6 +108,17 @@ export default function HomePage() {
     return () => window.removeEventListener('focus', onFocus);
   }, [load]);
 
+  // Escape closes the board editor — parity with FreshnessDetail, which has
+  // had this since it was written. Registered only while open.
+  useEffect(() => {
+    if (!pulseOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') { setPulseOpen(false); void load(true); }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [pulseOpen, load]);
+
   useEffect(() => {
     api.get('/users/profile')
       .then((r) => {
@@ -187,6 +198,7 @@ export default function HomePage() {
   const lead = deriveLead({
     brief,
     tiles,
+    alerts: summary.alerts,
     sourceCount: summary.freshness.allSources.length,
     newestSyncAt,
   });
@@ -259,10 +271,11 @@ export default function HomePage() {
               )}
             </div>
             <MovementCards
-              bullets={lead.cards}
+              cards={lead.cards}
               tiles={tiles}
               investigation={brief?.investigation}
               onAsk={ask}
+              onJump={jump}
             />
           </section>
         )}
