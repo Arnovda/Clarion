@@ -48,7 +48,7 @@ export function EmailSchedulePanel({ dashboardId }: Props) {
 
   const load = useCallback(async () => {
     try {
-      const res = await api.get(`/api/email-schedules?dashboardId=${dashboardId}`);
+      const res = await api.get(`/email-schedules?dashboardId=${dashboardId}`);
       setSchedules(res.data.data ?? []);
     } catch {
       // silently ignore
@@ -75,7 +75,7 @@ export function EmailSchedulePanel({ dashboardId }: Props) {
     if (!recipients.length) { toast.error('Add at least one recipient'); return; }
     setSaving(true);
     try {
-      await api.post('/api/email-schedules', {
+      await api.post('/email-schedules', {
         dashboard_id: dashboardId,
         name,
         recipients,
@@ -98,7 +98,7 @@ export function EmailSchedulePanel({ dashboardId }: Props) {
 
   async function deleteSchedule(id: number) {
     try {
-      await api.delete(`/api/email-schedules/${id}`);
+      await api.delete(`/email-schedules/${id}`);
       setSchedules((s) => s.filter((x) => x.id !== id));
       toast.success('Schedule deleted');
     } catch {
@@ -108,7 +108,7 @@ export function EmailSchedulePanel({ dashboardId }: Props) {
 
   async function sendNow(id: number) {
     try {
-      await api.post(`/api/email-schedules/${id}/send-now`);
+      await api.post(`/email-schedules/${id}/send-now`);
       toast.success('Report queued — check your inbox shortly');
     } catch {
       toast.error('Failed to trigger send');
@@ -117,7 +117,7 @@ export function EmailSchedulePanel({ dashboardId }: Props) {
 
   async function toggleEnabled(s: EmailSchedule) {
     try {
-      await api.put(`/api/email-schedules/${s.id}`, { enabled: !s.enabled });
+      await api.put(`/email-schedules/${s.id}`, { enabled: !s.enabled });
       setSchedules((list) => list.map((x) => x.id === s.id ? { ...x, enabled: !s.enabled } : x));
     } catch {
       toast.error('Failed to update schedule');

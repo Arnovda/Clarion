@@ -34,6 +34,7 @@ import { formatRelative } from '@/lib/dates';
 import { useRole, canCurate } from '@/lib/role';
 import { paletteForSource, type SourcePalette } from './sourcePalette';
 import { PreviewTable } from '@/components/semantic/shared';
+import { askAboutSubject } from '@/lib/askLink';
 
 // ───────────────────────────────────────────────────────────────────────────
 // Data shapes — mirrors the backend product detail + KPIs response
@@ -288,7 +289,10 @@ function OverviewTab({
               <button
                 key={i}
                 type="button"
-                onClick={() => router.push(`/query?q=${encodeURIComponent(q)}`)}
+                onClick={() => router.push(askAboutSubject({
+                  productId: data.id, productName: data.name,
+                  connectionId: data.source?.id, question: q,
+                }))}
                 className="group/q flex items-center gap-3 text-left px-4 py-3 bg-raised border border-line rounded-md hover:border-ocean/40 hover:bg-soft transition-colors"
               >
                 <span className="text-[13.5px] text-ink-2 group-hover/q:text-ink leading-snug flex-1">{q}</span>

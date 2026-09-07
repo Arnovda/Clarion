@@ -104,7 +104,7 @@ router.post('/refinements/:id/preview', requireAuth, requireRole('admin', 'analy
       return;
     }
 
-    duckDb = await buildConnectionWarehouseSession(reqDb(req), plan.connectionId);
+    duckDb = await buildConnectionWarehouseSession(reqDb(req), plan.connectionId, req.user!.tenantId);
     const inner = plan.sql.trim().replace(/;\s*$/, '');
     const rawRows = await duckDb.all(`SELECT * FROM (\n${inner}\n) AS _preview LIMIT 12`) as Record<string, unknown>[];
     const rows = rawRows.map((row) => {

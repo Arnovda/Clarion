@@ -71,3 +71,11 @@ jobs:
       # from different tenants concurrently on one pool).
       - name: no-session-tenant-set
         run: npx --yes tsx@4.22 backend/scripts/lint-no-session-tenant-set.ts
+
+      # The axios client's baseURL already ends in `/api`, so a call site that
+      # writes `/api/…` resolves to `…/api/api/…` and 404s on every request.
+      # Nothing type-checks a URL string, so this shipped twice (dashboard
+      # email schedules, the product refine panel) and was invisible until
+      # someone tried the feature. 2026-09-07 coherence review, D1.
+      - name: api-base-path
+        run: npx --yes tsx@4.22 backend/scripts/lint-api-base-path.ts

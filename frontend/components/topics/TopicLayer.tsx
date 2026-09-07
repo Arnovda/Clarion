@@ -23,6 +23,7 @@ import { iconForAnalytics } from '@/components/catalog/entityIcons';
 import { formatRelativeLong } from '@/lib/dates';
 import { cn } from '@/lib/cn';
 import type { Topic } from '@/app/topics/types';
+import { askAboutSubject } from '@/lib/askLink';
 
 interface Props {
   topic: Topic;
@@ -32,19 +33,16 @@ interface Props {
   onManage: (tab?: 'quality') => void;
 }
 
-/** Ask AI, scoped to this topic, optionally with the question pre-filled. */
+/** Ask AI, scoped to this topic, optionally with the question pre-filled.
+ *  Goes through the shared helper so the connection id rides along — without
+ *  it Ask AI aims the question at whichever source was used last. */
 function askHref(topic: Topic, question?: string): string {
-  const params = new URLSearchParams({
-    productId: String(topic.id),
+  return askAboutSubject({
+    productId: topic.id,
     productName: topic.name,
+    connectionId: topic.source?.id,
+    question,
   });
-  if (question) {
-    params.set('q', question);
-    // The topic page's whole promise is that clicking a question answers it.
-    // Landing on a pre-filled box the user still has to submit breaks that.
-    params.set('autoSubmit', '1');
-  }
-  return `/query?${params.toString()}`;
 }
 
 /**

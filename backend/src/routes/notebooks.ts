@@ -48,7 +48,11 @@ router.use(requireRole('admin', 'analyst'));
 // ─── Helper: build a namespaced DuckDB instance for a connection ──────────────
 // Creates schemas for source tables (schema = connection name) and product tables
 // (schema = product name), so queries like `SELECT * FROM wholesale_erp.artikelgroepen` work.
-async function buildNamespacedDuckDB(pgDb: Knex | Knex.Transaction, connectionId: number): Promise<Database> {
+async function buildNamespacedDuckDB(
+  pgDb: Knex | Knex.Transaction,
+  connectionId: number,
+  tenantId: number | undefined,
+): Promise<Database> {
   const connection = await pgDb('connections').where({ id: connectionId }).first();
   if (!connection) throw new Error('Connection not found');
 
@@ -75,7 +79,11 @@ async function buildNamespacedDuckDB(pgDb: Knex | Knex.Transaction, connectionId
   // Source tables — schema = connection name. Catalog returns
   // host-usable URIs covering both legacy ETL (`ingested_tables`) and
   // source-connector flows (`selected_entities`) without us caring.
-  const sources = await listSourceTables(undefined, connectionId);
+  // The tenant is passed explicitly: these catalog reads open their OWN
+  // root-pool transaction and do not inherit this request's tenant context,
+  // so `undefined` made the RLS predicate `tenant_id = NULL` and the whole
+  // notebook came up with an empty schema (2026-09-07 coherence review, D2).
+  const sources = await listSourceTables(tenantId, connectionId);
   for (const t of sources) {
     try {
       await createView(connection.name, t.tableName, t.uri);
@@ -92,7 +100,7 @@ async function buildNamespacedDuckDB(pgDb: Knex | Knex.Transaction, connectionId
     .whereIn('status', ['approved', 'success'])
     .select('id');
   if (products.length > 0) {
-    const productTables = await listProductTablesByConnection(undefined, connectionId);
+    const productTables = await listProductTablesByConnection(tenantId, connectionId);
     for (const t of productTables) {
       try {
         await createView(t.productName, t.tableName, t.uri);
@@ -139,7 +147,7 @@ router.post('/query', async (req: Request, res: Response, next: NextFunction) =>
     // Guard, then the acting user's row filters and column masks (P0-4):
     // a notebook is a read surface like any other.
     const safeSql = (await prepareUserRead(sqlText, actorOf(req))).sql;
-    db = await buildNamespacedDuckDB(pgDb, connectionId);
+    db = await buildNamespacedDuckDB(pgDb, connectionId, req.user!.tenantId);
     const rawRows = await db.all(safeSql) as Record<string, unknown>[];
     const rows = rawRows.slice(0, 500).map((row) => {
       const out: Record<string, unknown> = {};
@@ -782,7 +790,7 @@ router.post('/cells/:cellId/execute', async (req: Request, res: Response, next: 
     if (!sqlText) { res.status(400).json({ ok: false, error: 'No SQL to execute' }); return; }
     if (!cell.connection_id) { res.status(400).json({ ok: false, error: 'No connection selected for this notebook' }); return; }
 
-    db = await buildNamespacedDuckDB(pgDb, cell.connection_id);
+    db = await buildNamespacedDuckDB(pgDb, cell.connection_id, req.user!.tenantId);
 
     try {
       // Security guard: confine notebook SQL to safe read-only queries over the

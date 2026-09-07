@@ -25,6 +25,7 @@ import type {
 import { StatusDot, StatusBadge, RoleBadge, ColumnRoleBadge, Spinner, ProductIcon } from './badges';
 import { statusBorderColor, cleanTopicName } from './helpers';
 import BuildDashboard from '@/components/build/BuildDashboard';
+import { askAboutSubject } from '@/lib/askLink';
 
 const AskAIPanel = dynamic(() => import('./AskAIPanel'), { ssr: false });
 
@@ -934,7 +935,11 @@ function TopicSlideOver({
         {/* Footer */}
         <div className="px-6 py-4 border-b border-line flex items-center justify-between flex-shrink-0 bg-white/60 backdrop-blur-xl border-t border-white/60">
           <div className="flex gap-2">
-            <a href={`/query?connectionId=${product.connection_id}&productId=${product.id}&productName=${encodeURIComponent(cleanTopicName(product.name))}`} className="px-4 py-2 text-[13px] font-medium text-ocean bg-ocean-softer border border-line rounded-md hover:bg-ocean-soft transition-colors">
+            <a href={askAboutSubject({
+              productId: product.id,
+              productName: cleanTopicName(product.name),
+              connectionId: product.connection_id,
+            })} className="px-4 py-2 text-[13px] font-medium text-ocean bg-ocean-softer border border-line rounded-md hover:bg-ocean-soft transition-colors">
               Ask questions &rarr;
             </a>
             {tables.length > 0 && (

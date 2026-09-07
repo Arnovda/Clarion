@@ -27,6 +27,7 @@ import { ArrowRight, Sparkles, BarChart3, Database, X, Boxes } from 'lucide-reac
 import api from '@/lib/api';
 import { formatRelative } from '@/lib/dates';
 import { cn } from '@/lib/cn';
+import { askAboutSubject } from '@/lib/askLink';
 import { paletteForSource, type SourcePalette } from './sourcePalette';
 
 /**
@@ -246,7 +247,10 @@ export default function ProductPreviewPanel({ productId, hint, onOpenFullView, o
               <button
                 key={i}
                 type="button"
-                onClick={() => router.push(`/query?q=${encodeURIComponent(q)}`)}
+                onClick={() => router.push(askAboutSubject({
+                  productId, productName: data?.name ?? hint?.name ?? '',
+                  connectionId: sourceMeta?.id, question: q,
+                }))}
                 className={cn(
                   'group/q flex items-center gap-3 w-full text-left px-4 py-3 bg-raised border border-line rounded-md',
                   'hover:border-ocean/40 hover:bg-soft transition-colors',

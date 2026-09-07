@@ -136,10 +136,10 @@ export default function AskAIPanel({
       let data: { ok: boolean; data: RefineProposal; error?: string };
 
       if (product) {
-        const resp = await api.post<typeof data>(`/api/products/${product.id}/refine`, { instruction: q });
+        const resp = await api.post<typeof data>(`/products/${product.id}/refine`, { instruction: q });
         data = resp.data;
       } else {
-        const resp = await api.post<typeof data>('/api/products/refine', { instruction: q });
+        const resp = await api.post<typeof data>('/products/refine', { instruction: q });
         data = resp.data;
       }
 
@@ -186,7 +186,7 @@ export default function AskAIPanel({
         ok: boolean;
         data?: { applied: number; skipped: { change: RefineChange; reason: string }[]; notes: string[] };
         error?: string;
-      }>(`/api/products/${targetId}/refine/apply`, { changes: proposal.changes });
+      }>(`/products/${targetId}/refine/apply`, { changes: proposal.changes });
 
       if (!data.ok || !data.data) {
         setMessages((prev) => [...prev, {

@@ -176,7 +176,7 @@ router.post('/tables/cells/:cellId/execute', requireAuth, requireRole('admin', '
     if (!connection) { res.status(400).json({ ok: false, error: 'Connection not found' }); return; }
 
     // Build DuckDB session with source + product tables registered.
-    duckDb = await buildConnectionWarehouseSession(pgDb, connectionId);
+    duckDb = await buildConnectionWarehouseSession(pgDb, connectionId, req.user!.tenantId);
 
     // Register preceding cells' outputs as views (cell chaining)
     const precedingCells = await pgDb('product_table_cells')
@@ -295,9 +295,13 @@ router.post('/tables/cells/:cellId/generate', requireAuth, requireRole('admin', 
     const connectionId = product.connection_id;
     const connection = await pgDb('connections').where({ id: connectionId }).first();
 
-    // Get source + product table schemas for context
-    const sourceTables = await listSourceTables(undefined, connectionId);
-    const productTablesList = await listProductTablesByConnection(undefined, connectionId);
+    // Get source + product table schemas for context. The tenant is passed
+    // explicitly: these catalog reads open their own root-pool transaction
+    // and do NOT inherit this request's tenant context, so `undefined` here
+    // meant an empty schema and the model writing SQL against tables it had
+    // imagined (2026-09-07 coherence review, D2).
+    const sourceTables = await listSourceTables(req.user!.tenantId, connectionId);
+    const productTablesList = await listProductTablesByConnection(req.user!.tenantId, connectionId);
 
     const schemaLines: string[] = [];
     for (const t of sourceTables) {
