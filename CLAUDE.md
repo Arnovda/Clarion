@@ -31,7 +31,76 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-09-07 (TIER 0 OF THE COHERENCE REVIEW — the three live
+**Last updated:** 2026-09-07 (TIER 1 / D5 — the unreachable product-authoring
+surface is DELETED, 2,712 lines; owner: *"stop the workflow and just take the
+deletions on the evidence so far"*. Tier 0 is in main and PRODUCTION: deploy run
+#584, `main-e28ed58`, Go live health-checked all six components and shifted
+backend + frontend to 100% at 13:30 UTC.)
+
+**Twelve endpoints with no caller anywhere are gone**, plus everything that died
+with them. The `propose → build-proposed → design-stream` flow they implement was
+superseded by the bus-matrix JOB flow (`bus-matrix/start` → `:jobId/stream` →
+`cancel`); two of them labelled themselves LEGACY in their own comments.
+- **Deleted**: `/propose`, `/propose-single`, `/propose-stream`,
+  `/build-proposed`, `/:id/design`, `/:id/design-stream`, `/:id/run`,
+  `/bus-matrix-stream`, `/build-bus-matrix`, `/tables/:id/approve`,
+  `/tables/:id/load-mode`, `/columns/:columnId` — and with them
+  **`routes/products/design.ts` and `ai/prompts/dataProductProposalPrompt.ts`
+  WHOLE**, `generateStarSchemaDesign(+Streaming)`,
+  `STAR_SCHEMA_DESIGN_SYSTEM`, `buildStarSchemaDesignUser`,
+  `updateProductColumnSchema`. build.ts 1,534 → 557 lines.
+- **THE TWO FINDINGS THAT CHANGED THE PLAN, both from checking rather than
+  grepping.** (a) `propose-stream`, `build-proposed` and `design-stream` DO
+  appear outside `backend/` — but only in **`docs/prepare-my-data-flow.html`,
+  which presents the deleted sequence as the CURRENT "Prepare my data" path**.
+  A doc is not a caller; that file now carries a banner marking it superseded
+  and naming the live path, because a wrong diagram standing is worse than a
+  labelled one. (b) **`/:id/run` is only TRANSITIVELY dead**: it has a real
+  caller in source — `handleRunProduct` at `products/page.tsx:419` — reached
+  only from `TopicSlideOver`, a component with no JSX site anywhere. Deleting
+  the route alone would have turned inert code into a **live 404** the moment
+  anyone re-wired it, so the frontend half ships in the same commit.
+- **The frontend cascade**: removing `TopicSlideOver` + `TopicSqlModal` (used
+  only inside it) + four handlers orphaned their setters, and `getAllTables`
+  lost its only consumer. `products/page.tsx` 1,295 → 916 lines, **24 lint
+  findings → 2** — the survivors are pre-existing half-used `useState` pairs
+  whose setters are still live, so removing them is a behaviour question, not
+  cleanup.
+- **NOT swept in, deliberately**: `editColumnExpression` and its
+  `COLUMN_EDIT_*` prompts are ALREADY dead today independent of these routes
+  (~45 lines) — deleting them here would conflate two findings.
+  `outputSchemas.ts` keeps `starSchemaDesignSchema` (the interface survives in
+  `starSchemaPrompt.ts`, so it compiles); removing it is optional follow-up.
+- **validate-coverage baseline LOWERED 150 → 139**, measured not estimated
+  (route total 236 → 224 — the deleted routes were unvalidated). The Roles &
+  Permissions row was corrected in the same commit, per the covenant that the
+  table is regenerated from the gates.
+- Validation: backend `npm run check` clean; full backend vitest **81 files /
+  732 passed / 4 skipped** — UNCHANGED, because no test exercised any of the
+  twelve; **all ELEVEN ratchets green** from the repo root with per-ratchet
+  exit codes; frontend `tsc` clean, vitest 5/27, `next build` green.
+  Re-verified after the cut that every `/products` path the frontend calls
+  still resolves to a surviving route and that none reaches a deleted one.
+- **TIER 1 IS NOT FINISHED — the other three items are mapped but NOT built,
+  and all three came back `needs-a-decision`, not `safe-to-do-now`**:
+  (1) **Subject picker in Ask AI** — `thinkQuerySchema` accepts `productId`
+  (`schemas.ts:286`) and `/think` forwards it (`query.ts:1272`) but **the
+  frontend has NEVER sent it**, so the picker switches on a path that has
+  never run in production; two coupled hazards must be fixed in the same
+  change or answers get WORSE — shared-dimension stubs sit at
+  `transformation_status:'draft'` (`busMatrixBuilder.ts:759`) while
+  `buildProductSemanticContext` reads only `'success'`
+  (`productContext.ts:147`), so scoping to one product can drop every shared
+  dimension from the prompt on pre-2026-08-24 tenants; and `/repair` +
+  `/forecast` take no `productId`, so the double-check would answer from a
+  wider context than the answer it checks. (2) **One session builder** —
+  and a finding the review missed: **`products/cells.ts` and the refinement
+  preview run AI-authored SQL with DDL allowed and NO guard**, unlike
+  notebooks. (3) **Chat merge** — refine is single-turn at temperature 0
+  today; making it multi-turn is a real change, and whether the anchored
+  assistant may ADD a subject is an owner call.
+
+**Prior last updated:** 2026-09-07 (TIER 0 OF THE COHERENCE REVIEW — the three live
 defects fixed, same branch/PR as the doc; owner: *"Let's start"*)
 
 **D1, D2 and D3 of `docs/backlog/platform-coherence-review.md` are closed.**
