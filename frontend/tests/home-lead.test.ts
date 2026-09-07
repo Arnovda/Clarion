@@ -16,8 +16,8 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { deriveLead, deriveOpsLine, firstSentence, isWorthACard } from '../app/home/lead';
-import type { Brief, BriefBullet, PulseTile } from '../app/home/types';
+import { alertsWorthACard, deriveLead, deriveOpsLine, firstSentence, isWorthACard } from '../app/home/lead';
+import type { Brief, BriefBullet, HomeAlert, PulseTile } from '../app/home/types';
 
 const bullet = (over: Partial<BriefBullet> = {}): BriefBullet => ({
   kind: 'movement', label: 'Open receivables', delta: '+29%',
@@ -98,7 +98,7 @@ describe('deriveLead', () => {
       tiles: [],
     });
     expect(lead.tone).toBe('moved');
-    expect(lead.cards.map((c) => c.label)).toEqual(['Cash']);
+    expect(lead.cards.map((c) => (c.source === 'brief' ? c.bullet.label : null))).toEqual(['Cash']);
   });
 
   it('cold start sells the mechanism rather than rendering an empty page', () => {
@@ -192,5 +192,89 @@ describe('deriveOpsLine', () => {
       staleProductCount: 0, sourceCount: 2,
     });
     expect(ops?.problem).toBe("2 sources haven't sent anything in over a day.");
+  });
+});
+
+// ─── Quality alerts ─────────────────────────────────────────────────────────
+//
+// These were dropped by the first cut of the redesign and restored on review.
+// The first test is the one that matters: without it, a morning with no
+// metric movement but a LIVE CRITICAL ALERT renders "Nothing needs you this
+// morning" — a statement the user can only discover is false by going and
+// looking somewhere else.
+
+const alert = (over: Partial<HomeAlert> = {}): HomeAlert => ({
+  id: 1, severity: 'critical', kind: 'freshness',
+  message: 'Gross margin on SKU-4471 dropped 14%',
+  aiContext: 'Likely a unit-of-measure mismatch on the supplier import — the cost side doubled while volume held.',
+  createdAt: '2026-09-07T05:00:00Z',
+  ...over,
+});
+
+describe('quality alerts on the lead', () => {
+  it('a live critical alert means the morning is NOT quiet', () => {
+    const lead = deriveLead({
+      ...CONNECTED,
+      brief: briefWith([bullet({ kind: 'steady', delta: '—' })]),
+      tiles: [tile()],
+      alerts: [alert()],
+    });
+    expect(lead.tone).toBe('moved');
+    expect(lead.headline).not.toMatch(/Nothing needs you/);
+  });
+
+  it('leads with the alert’s plain-English context, not its raw message', () => {
+    const lead = deriveLead({
+      ...CONNECTED,
+      brief: briefWith([bullet({ kind: 'steady' })]),
+      tiles: [],
+      alerts: [alert()],
+    });
+    // aiContext is the sentence a person can act on — the whole reason the
+    // column is written. The raw metric line is the title, not the lead.
+    expect(lead.headline).toMatch(/unit-of-measure mismatch/);
+  });
+
+  it('falls back to the message when no context was written', () => {
+    const lead = deriveLead({
+      ...CONNECTED,
+      brief: briefWith([bullet({ kind: 'steady' })]),
+      tiles: [],
+      alerts: [alert({ aiContext: null })],
+    });
+    expect(lead.headline).toBe('Gross margin on SKU-4471 dropped 14%');
+  });
+
+  it('brief bullets lead, alerts follow', () => {
+    const lead = deriveLead({
+      ...CONNECTED,
+      brief: briefWith([bullet()]),
+      tiles: [tile()],
+      alerts: [alert()],
+    });
+    expect(lead.cards.map((c) => c.source)).toEqual(['brief', 'alert']);
+    expect(lead.headline).toBe('Overdue receivables rose €19k in nine days.');
+  });
+
+  it('a quiet morning with only informational alerts stays quiet', () => {
+    const lead = deriveLead({
+      ...CONNECTED,
+      brief: briefWith([bullet({ kind: 'steady' })]),
+      tiles: [tile()],
+      alerts: [alert({ severity: 'info' }), alert({ id: 2, severity: 'low' })],
+    });
+    // Otherwise this rebuilds the "worth your attention" feed the redesign
+    // deleted, one card at a time.
+    expect(lead.tone).toBe('quiet');
+    expect(lead.cards).toHaveLength(0);
+  });
+
+  it('alertsWorthACard admits only the loud ones', () => {
+    const picked = alertsWorthACard([
+      alert({ id: 1, severity: 'critical' }), alert({ id: 2, severity: 'high' }),
+      alert({ id: 3, severity: 'error' }), alert({ id: 4, severity: 'info' }),
+      alert({ id: 5, severity: 'low' }), alert({ id: 6, severity: 'medium' }),
+    ]);
+    expect(picked.map((a) => a.id)).toEqual([1, 2, 3]);
   });
 });

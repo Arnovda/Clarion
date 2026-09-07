@@ -128,6 +128,51 @@ the bottom.
   two things `tsc` could not — the ops line reading "data through 1d ago"
   instead of a date, and a phantom "flat" arrow on a card whose bullet has no
   matching pulse entry.
+- **SELF-REVIEW PASS, same day (owner: *"re-check for best practices and
+  functionality... costs vs benefits"*). Six findings, all fixed:**
+  (1) **A FUNCTIONALITY REGRESSION I INTRODUCED — quality alerts vanished
+  with the attention feed.** `quality_alerts.ai_context` is Claude's
+  plain-English explanation and CLAUDE.md calls it the differentiator; the
+  first cut of the redesign dropped it. Alerts are back as movement cards,
+  and — the load-bearing half — **`deriveLead` now counts them**, so a
+  morning with no metric movement but a LIVE CRITICAL ALERT can never render
+  "nothing needs you". Only critical/high/error earn a card, or this rebuilds
+  the attention feed one row at a time. `HomeCard` is a union
+  (`{source:'brief'|'alert'}`) rather than coercing an alert into a
+  BriefBullet, which would throw away `aiContext`.
+  (2) **A SECOND COST GATE: `hasOpenedRecently`.** `triggered` stops us
+  paying on a quiet morning; nothing stopped us paying every morning for a
+  DORMANT account (~$2/month for an answer nobody opens). Gate reads
+  `morning_briefs.opened_at`, window `BRIEF_INVESTIGATE_ACTIVE_DAYS` (7),
+  **fails OPEN**, and treats a brand-new user as active — their first morning
+  is the one that decides adoption.
+  (3) **`/home/summary` was still computing a UI that no longer exists** —
+  the health score, definition counts, two window functions over
+  `dataset_profiles`/`rule_executions`, and a week of `pipeline_runs`: ~10
+  queries per load AND per window focus, for a page that reads seven fields.
+  Deleted (one consumer, git has it). 374 → 186 lines.
+  (4) **THREE WIRING TESTS THAT COULD NOT FAIL.** The first version sliced
+  `generateBriefForUser` to end-of-file, which swallows
+  `runOvernightInvestigation`'s own definition — so they matched the
+  declaration, not the call, and passed with the call deleted. Bounded at the
+  next top-level export; **all four now verified red**. Same trap as the
+  2026-09-02 chart-cap test; check the bound whenever a test greps source.
+  (5) Escape now closes the board editor (`FreshnessDetail` has had it all
+  along — the new slide-over was keyboard-trappable).
+  (6) A comment claimed the investigation is matched on `focus`; the code
+  matches on `question`, which contains the label by construction. `focus` is
+  stored but deliberately not on the wire.
+  **NOT changed, and it is the honest trade** — §5b of the doc: pre-computing
+  costs ~$1.30/user/month against ~$0.20 for a lazy run on first click, and
+  it wins anyway because the conclusion is not just behind the button, it
+  **becomes the lead sentence** every morning. The two gates are what keep
+  that bounded. **Known scaling limit, not fixed:** `runDailyBriefs` is
+  serial with `concurrency: 1`, so the nightly job is now O(users) × (brief +
+  agent loop). Fine at today's scale; revisit past ~20 active users per
+  tenant by enqueuing investigations as their own jobs.
+  Re-validated: backend **84 files / 772 passed / 4 skipped**, eleven
+  ratchets green, frontend **6 files / 52 passed**, lint clean, build 46/46
+  (`/home` 15.1 kB).
 - **NOT runtime-exercised against a live tenant.** The overnight investigation
   has never run on real data — watch the first 06:00 job after deploy for
   `'morningBriefService: overnight investigation complete'`, and the first

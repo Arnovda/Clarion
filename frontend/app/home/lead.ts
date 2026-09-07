@@ -23,9 +23,31 @@
  *   moved    a brief exists with something worth saying.
  */
 
-import type { Brief, BriefBullet, PulseTile } from './types';
+import type { Brief, BriefBullet, HomeAlert, PulseTile } from './types';
 
 export type LeadTone = 'cold' | 'waiting' | 'quiet' | 'moved';
+
+/**
+ * A card on Home comes from one of two places: the brief's own bullets, or
+ * an active quality alert. A union rather than coercing an alert into a
+ * BriefBullet — that would throw away `aiContext`, which is the whole value
+ * of an alert, and the id needed to dismiss it.
+ */
+export type HomeCard =
+  | { source: 'brief'; bullet: BriefBullet }
+  | { source: 'alert'; alert: HomeAlert };
+
+/**
+ * Which alerts earn a card. Only the loud ones: `quality_alerts` also holds
+ * informational rows, and a card per row would rebuild the "worth your
+ * attention" feed this redesign deleted.
+ */
+export function alertsWorthACard(alerts: HomeAlert[]): HomeAlert[] {
+  return alerts.filter((a) => {
+    const s = (a.severity ?? '').toLowerCase();
+    return s === 'critical' || s === 'high' || s === 'error';
+  });
+}
 
 export interface Lead {
   tone: LeadTone;
@@ -40,15 +62,22 @@ export interface Lead {
   /** Facts under the headline. The page joins them with separator dots. */
   sub: string[];
   /**
-   * The bullets to render as "what moved" cards, already filtered to the
-   * ones worth a card and ordered as the brief ordered them.
+   * The cards to render under "what moved" — brief bullets first, in the
+   * order the brief ranked them, then any loud quality alert.
    */
-  cards: BriefBullet[];
+  cards: HomeCard[];
 }
 
 export interface LeadInput {
   brief: Brief | null;
   tiles: PulseTile[];
+  /**
+   * Undismissed quality alerts. LOAD-BEARING for the quiet state: a morning
+   * with no metric movement but a live critical alert is NOT quiet, and
+   * saying "nothing needs you" over the top of one would be a lie the user
+   * could only discover by going and looking somewhere else.
+   */
+  alerts?: HomeAlert[];
   /** Sources the tenant has connected, from /home/summary. */
   sourceCount: number;
   /** Newest successful sync across every source, ISO. Null when none. */
@@ -75,7 +104,8 @@ export function firstSentence(text: string): string {
 }
 
 export function deriveLead(input: LeadInput): Lead {
-  const { brief, tiles, sourceCount, newestSyncAt } = input;
+  const { brief, tiles, sourceCount, newestSyncAt, alerts = [] } = input;
+  const loudAlerts = alertsWorthACard(alerts);
 
   // ── cold ────────────────────────────────────────────────────────────────
   // No source at all. Nothing has ever arrived, so there is nothing honest
@@ -92,13 +122,17 @@ export function deriveLead(input: LeadInput): Lead {
     };
   }
 
-  const cards = brief ? brief.content.bullets.filter(isWorthACard) : [];
+  const alertCards: HomeCard[] = loudAlerts.map((alert) => ({ source: 'alert', alert }));
+  const bulletCards: HomeCard[] = brief
+    ? brief.content.bullets.filter(isWorthACard).map((bullet) => ({ source: 'brief', bullet }))
+    : [];
+  const cards: HomeCard[] = [...bulletCards, ...alertCards];
 
   // ── waiting ─────────────────────────────────────────────────────────────
   // Data is here but no brief has been written for today. Two sub-cases,
   // and they must not be conflated: a user who has told us what to watch is
   // waiting for tonight's job; a user who has not is waiting for THEMSELVES.
-  if (!brief) {
+  if (!brief && cards.length === 0) {
     const watching = tiles.length;
     const anyReading = tiles.some((t) => t.currentValue != null);
     return {
@@ -125,7 +159,7 @@ export function deriveLead(input: LeadInput): Lead {
   // "improve" this by surfacing the steady bullets as cards — the absence
   // of cards IS the message.
   if (cards.length === 0) {
-    const watched = tiles.length || brief.content.bullets.length;
+    const watched = tiles.length || brief!.content.bullets.length;
     return {
       tone: 'quiet',
       headline: 'Nothing needs you this morning. Everything you watch is where it should be.',
@@ -151,7 +185,8 @@ export function deriveLead(input: LeadInput): Lead {
   // The brief's own `summary` is deliberately NOT used: the prompt asks for
   // 2-3 sentences of scene-setting, which is a paragraph, not a headline.
   const top = cards[0];
-  const investigated = brief.investigation;
+  const topBullet = top.source === 'brief' ? top.bullet : null;
+  const investigated = brief?.investigation;
   const useConclusion =
     investigated?.status === 'concluded' &&
     !!investigated.conclusion &&
@@ -159,14 +194,18 @@ export function deriveLead(input: LeadInput): Lead {
 
   const headline = useConclusion
     ? firstSentence(investigated!.conclusion!)
-    : firstSentence(top.detail);
+    : topBullet
+      ? firstSentence(topBullet.detail)
+      // No brief movement, so an alert is leading. Its aiContext is the
+      // sentence a person can act on; the raw message is the fallback.
+      : firstSentence(top.source === 'alert' ? (top.alert.aiContext ?? top.alert.message) : '');
 
   return {
     tone: 'moved',
     headline,
     // Emphasise the movement itself ("−€19k", "+29%") when the brief gave
     // us one — never a whole clause, which would underline half the line.
-    emphasis: top.delta && top.delta !== '—' ? top.delta : null,
+    emphasis: topBullet && topBullet.delta && topBullet.delta !== '—' ? topBullet.delta : null,
     sub: [
       `${cards.length} worth your time`,
       ...(useConclusion ? ['Already looked into'] : []),
