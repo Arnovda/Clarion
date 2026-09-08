@@ -31,7 +31,42 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-09-07 (CROSS-SOURCE QUESTIONS WORK — the one line that
+**Last updated:** 2026-09-08 (THE LOG READER COULD NOT READ THE ONE SIGNAL IT
+WAS DOCUMENTED TO READ — `.ops/prod-logs` fixed; the overnight investigation's
+first real run is STILL UNREAD)
+
+**The R2 entry below says "watch for `'morningBriefService: overnight
+investigation complete'` (`.ops/prod-logs` is the reader)". It was not the
+reader.** That file queried six signatures — grant-missing, rls-write-denied,
+ownership-refused, runner-active, runner-degraded, server-error — and none of
+them was the overnight investigation. The sentence was an intention wearing an
+observation's clothes, which is the exact failure this control was built to end.
+**Second time in this same file**: `server-error` originally matched `'request
+error'` while `requestLogger` emits `'request failed'` at >=500, so it came back
+clean on its first run and that was read as good news. A check that cannot fire
+reports exactly what a healthy system reports.
+- **Four signatures added, each string verified against the emitting line
+  rather than recalled** (the file now carries that rule in words):
+  `brief-run` (`morningBriefJob.ts:55`, `'morning brief run done'`),
+  `overnight-ok` (`morningBriefService.ts:650`), `overnight-skipped` (`:603`,
+  `:619`), `overnight-failed` (`:474`).
+- **`brief-run` is the load-bearing one.** Without the denominator, the absence
+  of the other three means "the nightly job never ran", not "it ran and
+  declined" — different problems, different fixes, identical-looking report.
+- **THE RESULT IS STILL UNREAD, and that is owed.** Deploy #588 went live
+  18:47 UTC 2026-09-07, so the 06:00 UTC job on 2026-09-08 was the first real
+  execution. It could not be read from here: `workflow_dispatch` is **403** for
+  the integration token (re-confirmed), the only other trigger is a push to
+  `.ops/prod-logs` on **main**, and the sandbox has no `az` binary and no Azure
+  credentials. The last prod-logs run was 2026-09-05, three days before the
+  deploy, so no existing output holds the answer either.
+- **To read it**: Actions → **Production logs** → Run workflow, and **select
+  the branch carrying this fix** — main still has the old six signatures and
+  would come back silent about the investigation while looking healthy. Window
+  is `24h`. Do NOT read a silent report as success until `brief-run` is
+  present; absence of evidence is not evidence.
+
+**Prior last updated:** 2026-09-07 (CROSS-SOURCE QUESTIONS WORK — the one line that
 forbade them is gone, and the collision it was hiding is closed by construction;
 owner: *"Cross-source questions don't work, make it work for questions,
 dashboards, notebooks, generally in the platform"*)
@@ -294,7 +329,8 @@ the bottom.
   this is the one thing owed.** The overnight investigation has never run on
   real data; the deploy above means **the next 06:00 job is its first real
   execution**. Watch for `'morningBriefService: overnight investigation
-  complete'` in that run (`.ops/prod-logs` is the reader), and the first Home
+  complete'` in that run (`.ops/prod-logs` is the reader — IT WAS NOT, see
+  the 2026-09-08 entry at the top; fixed there), and the first Home
   open after it for a card reading "Why? — already worked out". A run of
   `'overnight investigation failed'` warnings means the picked entry's product
   is not queryable, which degrades to the pre-R2 behaviour (a fresh run on
