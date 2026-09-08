@@ -31,7 +31,83 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-09-08 (THE LOG READER COULD NOT READ THE ONE SIGNAL IT
+**Last updated:** 2026-09-08 (ODOO-VIA-RAW-TABLES READINESS — doc only, no product
+code changed; owner: first prospect (Neopaul) runs Odoo and wants to hand over
+the RAW TABLES rather than connect our Odoo connector)
+
+**NEW DOC: `docs/backlog/odoo-raw-tables-readiness.md`. Artifact: "Odoo-export
+Neopaul" ([link](https://claude.ai/code/artifact/d7ad13c8-2cb0-4c53-b0e9-9457ac28e041)) —
+the client-facing export request.** The prospect's ask is a CFO pack: cash-flow
+statement split operating/investing/financing, working-capital evolution with
+DSO/DIO/DPO, a rolling 13-week cash plan, management reporting on five KPIs,
+and margin analysis. Verdict: **yes, with one hard limit and two real gaps.**
+- **THE NON-OBVIOUS FINDING: it must be ONE EXCEL WORKBOOK, not loose CSVs.**
+  The CSV connector is one file = one table = one CONNECTION
+  (`csv/CsvConnector.ts:11`), Excel is one workbook = one connection with a
+  table per sheet (`excel/ExcelConnector.ts:10`), and the bus-matrix designer
+  loads source tables **per connection** (`busMatrixOrchestrator.ts:238`). So
+  ten CSVs become ten separate sources the designer sees one table at a time —
+  ten single-table topics, zero joins. Sheet names become table names
+  (`spreadsheet/tabular.ts:272`), column headers become column names (`:84`).
+- **The binding constraint is 15 MB per file** (`excel/schema.ts:36`,
+  `csv/schema.ts:20`; 32 MB body limit at `index.ts:140`), NOT the row cap —
+  that is 250 000 rows / 256 cols (`xlsxReader.ts:65-66`). Over the limit is a
+  **hard refusal, nothing written** (`assertSheetComplete`, `tabular.ts:244`).
+  `account_move_line` over three years is what breaks it (~75k rows as flat
+  CSV). **The escape hatch is NOT splitting the file** (that re-creates the
+  per-connection problem) — it is the live Postgres source tile
+  (`sources/page.tsx:144`, `ConnectorFactory.ts:56`), since Odoo runs on
+  Postgres. Honest caveat recorded: that route goes through the older ETL
+  ingestion path (`routes/ingestion.ts`), less exercised than the connector
+  sync — **test it end to end once before promising it.**
+- **THE SHIPPED ODOO TEMPLATE WILL NOT BE USED, for two independent reasons.**
+  `tryBuildBusMatrixFromTemplate` selects on **`connectorType`**
+  (`starSchemaTemplates.ts:117-131`), so a file source is `excel`/`csv` and the
+  hand-authored, DuckDB-tested Odoo template (9 dims, 6 facts, 5 KPIs, 33
+  relationships) never comes into play — even though the tables are literally
+  Odoo tables with Odoo names. And `.ops/star-schema-design` has been on **`ai`**
+  since 2026-08-18, which disables templates everywhere anyway. **The small,
+  concrete fix if this becomes the first customer**: let a file source BORROW a
+  template (a wizard field "these tables come from Odoo" passing an explicit
+  connectorType), plus setting `.ops/star-schema-design` back to `templates`.
+  One parameter and one field, and it would pay off immediately here.
+- **The two real gaps, both to be said out loud before the demo.** (a) The
+  **13-week cash plan does not exist**: `/query/forecast` is linear regression /
+  moving average (`forecastEngine.ts:196-200`) — it extrapolates history, while
+  a cash plan is a deterministic roll-forward of open items by due date. Build
+  work, not configuration. (b) **Margin needs COGS and the invoice fact has
+  none** — three possible sources ranked in the doc (`stock.valuation.layer`,
+  `sale_order_line.purchase_price`, `product_template.standard_price`), the
+  first absent on Odoo 19 and without automated valuation.
+- **The structural recommendation: a MONTHLY BALANCE SNAPSHOT as the first
+  product.** Four of the six asks are balance-driven, and Clarion's facts are
+  transaction facts. `fact_journal_items` carries debit/credit/balance and joins
+  `dim_account.account_type` (`odoo/starSchemaTemplate.ts:311,150`), so a
+  balance as of a date is expressible — but as a running-sum the model must
+  re-derive on every question, which is exactly where a wrong answer looks
+  plausible. One snapshot table makes all four trivial.
+- **Already built and directly load-bearing here**: managed grids are the
+  GL-account → cash-flow-category mapping primitive, registered as `grid_<slug>`
+  views in every product session (`ConnectorFactory.ts:201`) with the join hint
+  in the prompt (`productContext.ts:391`); cross-source questions; dashboards +
+  pulse + morning brief cover the management-reporting ask outright.
+- **THE EXPORT GOTCHA that silently destroys the data**: Odoo's UI export writes
+  many2one fields as the DISPLAY NAME, not the id — `account_id` becomes
+  `"400000 Handelsdebiteuren"` instead of `42`, every join breaks, and it breaks
+  without an error (just fewer rows). Either tick "import-compatible export" or
+  export from the database. Stated in both the doc and the artifact.
+- The doc carries the full 17-table / per-column export list in three priority
+  tiers, the export filters, and seven questions for the prospect — of which
+  **question 1 (`SELECT count(*) FROM account_move_line WHERE date >= '2023-01-01'`)
+  should be asked first**, because that one number decides Excel vs Postgres and
+  therefore everything else.
+- Validation: doc + artifact only; `git status` otherwise clean. Nothing run
+  against a live Odoo instance — the column lists are authored from the
+  connector's own catalog (`odoo/entities.ts`, `odoo/docs.ts`) and the template,
+  not from this prospect's database, so **field availability must be confirmed
+  against their actual Odoo version**.
+
+**Prior last updated:** 2026-09-08 (THE LOG READER COULD NOT READ THE ONE SIGNAL IT
 WAS DOCUMENTED TO READ — `.ops/prod-logs` fixed; the overnight investigation's
 first real run is STILL UNREAD)
 
