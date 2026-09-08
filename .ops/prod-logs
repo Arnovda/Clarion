@@ -53,6 +53,32 @@
 #                     to `child`, means it silently fell back in-process.
 #   runner-degraded   the runner saying so explicitly.
 #
+#   brief-run         POSITIVE. `'morning brief run done'` — the 06:00 nightly
+#                     job finished at all. This is the DENOMINATOR for the four
+#                     lines below: without it, their absence means "the job
+#                     never ran", not "it ran and found nothing to do", and
+#                     those are completely different problems.
+#   overnight-ok      POSITIVE. The overnight investigation concluded, so the
+#                     answer to "why did this move?" was waiting on /home
+#                     before anyone opened it. Shipped 2026-09-07 and, until
+#                     the first of these lines appears, NEVER RUN ON REAL DATA.
+#   overnight-skipped it ran and declined — either nothing breached a
+#                     sensitivity threshold (the cost gate working: a quiet
+#                     morning is meant to be free) or the reader is dormant.
+#                     Not a fault. The log line says which.
+#   overnight-failed  the picked entry's product was not queryable. Degrades to
+#                     the pre-R2 behaviour — a fresh investigation when the user
+#                     clicks — not to a broken page. A RUN of these is the
+#                     signal; one is a bad night.
+#
+# The four above were added 2026-09-08 because CLAUDE.md had been telling the
+# next person to "watch .ops/prod-logs for 'overnight investigation complete'"
+# while this file queried six signatures, none of them that one. A reader that
+# does not read the signal it is documented to read is the exact failure this
+# control exists to end — and it is the second time the same mistake has been
+# made here (see server-error, which matched 'request error' and so could never
+# have fired). VERIFY THE STRING AGAINST THE SOURCE BEFORE ADDING A SIGNATURE.
+#
 # A clean report is only as good as the traffic behind it: no `grant-missing`
 # in a window where nobody used the product proves nothing. The report prints
 # the total log volume for exactly that reason — read it first.
