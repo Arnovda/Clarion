@@ -36,7 +36,7 @@ BUILT — owner: *"put in main and production and then proceed"*. PR #130
 rebase-merged to main (`94768c5`); deploy run #590 built all four images,
 `migrate-sql` skipped correctly (phase 0 adds no migration), Go live
 health-checked the new backend and shifted traffic at 21:25 UTC. Phase 1 is on
-the same branch name, restarted from main, as a NEW PR.)
+the same branch name, restarted from main, as a NEW PR — **#131** (draft).)
 
 **Phase 1 of §7 of `docs/backlog/ingestion-chain-assessment.md` — "keys and
 policy" — is built: one migration, four items, each with a test that was red
