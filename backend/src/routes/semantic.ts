@@ -1,3 +1,4 @@
+import { provenanceOf, type ProvenanceRung } from '../shared/provenance';
 import { Router, Request, Response, NextFunction } from 'express';
 import type { Knex } from 'knex';
 import { requireAuth, requireRole } from '../middleware/auth';
@@ -2146,18 +2147,22 @@ router.get('/product-tables/:id/sql', requireAuth, requireRole('admin'), async (
 router.get('/pending-approvals', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const db = reqDb(req);
-    const items: Array<{ id: number; type: string; name: string; description: string; status: string; updated_at: string }> = [];
+    const items: Array<{ id: number; type: string; name: string; description: string; status: string; updated_at: string; provenance: ProvenanceRung }> = [];
 
     // Tables with ai_draft=true or approval_status='pending'
     const tables = await db('source_tables')
       .where(function() {
         this.where('ai_draft', true).orWhere('approval_status', 'pending');
       })
-      .select('id', 'table_name', 'display_name', 'description', 'approval_status', 'ai_draft', 'updated_at')
+      .select('id', 'table_name', 'display_name', 'description', 'approval_status', 'ai_draft', 'updated_at', 'semantic_source', 'edited_by_user')
       .orderBy('updated_at', 'desc')
       .limit(50);
     for (const t of tables) {
-      items.push({ id: t.id, type: 'table', name: t.display_name || t.table_name, description: t.description ?? '', status: t.ai_draft ? 'ai_draft' : (t.approval_status ?? 'pending'), updated_at: t.updated_at });
+      items.push({
+        id: t.id, type: 'table', name: t.display_name || t.table_name, description: t.description ?? '',
+        status: t.ai_draft ? 'ai_draft' : (t.approval_status ?? 'pending'), updated_at: t.updated_at,
+        provenance: provenanceOf({ semanticSource: t.semantic_source, editedByUser: t.edited_by_user, aiDraft: t.ai_draft, approvalStatus: t.approval_status }),
+      });
     }
 
     // Columns with ai_draft=true or approval_status='pending'
@@ -2166,11 +2171,15 @@ router.get('/pending-approvals', requireAuth, async (req: Request, res: Response
       .where(function() {
         this.where('c.ai_draft', true).orWhere('c.approval_status', 'pending');
       })
-      .select('c.id', 'c.column_name', 'c.display_name', 'c.description', 'c.approval_status', 'c.ai_draft', 'c.updated_at', 't.table_name as parent_table')
+      .select('c.id', 'c.column_name', 'c.display_name', 'c.description', 'c.approval_status', 'c.ai_draft', 'c.updated_at', 't.table_name as parent_table', 'c.semantic_source', 'c.edited_by_user')
       .orderBy('c.updated_at', 'desc')
       .limit(100);
     for (const c of columns) {
-      items.push({ id: c.id, type: 'column', name: `${c.parent_table}.${c.display_name || c.column_name}`, description: c.description ?? '', status: c.ai_draft ? 'ai_draft' : (c.approval_status ?? 'pending'), updated_at: c.updated_at });
+      items.push({
+        id: c.id, type: 'column', name: `${c.parent_table}.${c.display_name || c.column_name}`, description: c.description ?? '',
+        status: c.ai_draft ? 'ai_draft' : (c.approval_status ?? 'pending'), updated_at: c.updated_at,
+        provenance: provenanceOf({ semanticSource: c.semantic_source, editedByUser: c.edited_by_user, aiDraft: c.ai_draft, approvalStatus: c.approval_status }),
+      });
     }
 
     // Relationships with ai_draft=true. Different shape: no approval_status,
@@ -2189,6 +2198,9 @@ router.get('/pending-approvals', requireAuth, async (req: Request, res: Response
         'r.id',
         'r.relationship_type',
         'r.description',
+        'r.semantic_source',
+        'r.confirmed_by_user',
+        'r.measured',
         'ft.table_name as from_table',
         'fc.column_name as from_column',
         'tt.table_name as to_table',
@@ -2206,6 +2218,10 @@ router.get('/pending-approvals', requireAuth, async (req: Request, res: Response
         name: `${fromText} → ${toText}${typeText}`,
         description: r.description ?? '',
         status: 'ai_draft',
+        provenance: provenanceOf({
+          semanticSource: r.semantic_source, confirmedByUser: r.confirmed_by_user, aiDraft: true,
+          measured: r.measured && typeof r.measured === 'object' ? (r.measured as { verdict?: string }) : null,
+        }),
         // Synthesise a sort timestamp from the id so the cross-type sort
         // below still works (newer id = more recent). Using a fixed
         // future epoch offset ensures relationships group at the end of

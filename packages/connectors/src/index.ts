@@ -29,6 +29,9 @@ export type {
 
 export { CancellationError } from './types';
 
+// ─── Column types (the platform's rule for "could these be one key?") ─────
+export { typeClass, typesJoinable, type TypeClass } from './columnTypes';
+
 // ─── Business keys (declared by the source, not guessed from the data) ────
 export { businessKeysFromCatalog, type EntityBusinessKey } from './businessKeys';
 

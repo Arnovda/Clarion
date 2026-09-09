@@ -72,6 +72,10 @@ export function explain(m: Measurement): string {
       return 'The check took too long to finish. The data may be large, or the source may still be syncing.';
     case 'query-failed':
       return "We couldn't read those columns — the source may not have finished syncing.";
+    case 'type-mismatch':
+      return `These two columns cannot be one key: the source declares one as ${m.types?.from ?? 'one type'} `
+        + `and the other as ${m.types?.to ?? 'another'} — a GUID and a code look alike once they land, `
+        + 'but they never identify the same rows. No data was read; this is decided from the types alone.';
   }
 }
 
@@ -152,12 +156,18 @@ export function outcomeOf(
   const measured = rawOutcome(m);
   // Only a check that RAN can say the data is thin. A link nobody has measured
   // is `unknown` whoever laid it — "not enough data to check fully" would be a
-  // claim about a check that never happened.
+  // claim about a check that never happened. A type mismatch is not thin data
+  // either: it is evidence about the COLUMNS, and stays broken.
+  if (m?.reason === 'type-mismatch') return measured;
   if (laid === 'source' && (measured === 'broken' || measured === 'partial')) return 'unverified';
   return measured;
 }
 
 function rawOutcome(m: Measurement | null | undefined): Outcome {
+  // Decided from the declared types before any data was read, so it has no
+  // containment to show — and it is the one broken outcome a sync can never
+  // fix, whoever laid the line.
+  if (m?.reason === 'type-mismatch') return 'broken';
   if (!m || m.verdict === 'unmeasurable' || !m.containment) return 'unknown';
   if (m.verdict === 'strong') return 'holds';
   // Structurally impossible, in both of its forms.
@@ -235,6 +245,14 @@ export function shortFinding(
   const pct = (n: number) => `${Math.round(n * 100)}%`;
 
   const raw = rawOutcome(m);
+  if (m.reason === 'type-mismatch') {
+    return {
+      label: 'wrong column', group: 'wrong column',
+      detail: explain(m),
+      color: OUTCOME.broken.color,
+      tone: 'broken',
+    };
+  }
   if (laid === 'source' && (raw === 'broken' || raw === 'partial')) {
     return {
       label: 'not fully checked', group: 'not fully checked',
@@ -668,7 +686,12 @@ export function MeasurePanel({
         <button
           type="button"
           onClick={onKeep}
-          disabled={saving || (!m && !draw.error)}
+          // A weak or broken measurement never blocks Keep — a half-synced
+          // source looks exactly like low containment. A type mismatch is
+          // different: it is decided from the declared types, and no sync
+          // will ever make a GUID identify a code's rows.
+          disabled={saving || (!m && !draw.error) || m?.reason === 'type-mismatch'}
+          title={m?.reason === 'type-mismatch' ? 'These columns cannot be one key' : undefined}
           className="rounded-lg bg-ocean px-3 py-1.5 text-[12.5px] font-medium text-white hover:bg-oceanHover disabled:opacity-50"
         >
           {saving ? <Loader2 size={12} className="mr-1 inline animate-spin" /> : <Check size={12} className="mr-1 inline" />}

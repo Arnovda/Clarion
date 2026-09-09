@@ -1,3 +1,5 @@
+import type { ProvenanceRung } from '@/lib/provenance';
+
 /**
  * Wire types for the relationship canvas.
  *
@@ -51,6 +53,8 @@ export interface GraphColumn {
   table_id: number;
   column_name: string;
   data_type: string | null;
+  /** What the SOURCE declares (Edm.Guid, many2one, …); null when it publishes no types. */
+  source_data_type?: string | null;
   display_name: string | null;
   is_dimension: boolean;
   is_measure: boolean;
@@ -58,6 +62,8 @@ export interface GraphColumn {
 
 export interface GraphRelationship {
   id: number;
+  /** The one provenance ladder (lib/provenance.ts), derived server-side. */
+  rung: ProvenanceRung;
   kind: EdgeKind;
   fromTableId: number;
   fromColumnId: number | null;
@@ -101,7 +107,9 @@ export type MeasureReason =
   | 'low-containment'
   | 'no-values'
   | 'timeout'
-  | 'query-failed';
+  | 'query-failed'
+  /** The two columns' declared source types cannot be one key (a GUID and a code). Decided before any SQL runs. */
+  | 'type-mismatch';
 
 export type Cardinality = 'one_to_one' | 'one_to_many' | 'many_to_one' | 'many_to_many';
 
@@ -124,6 +132,8 @@ export interface Measurement {
   orphans: { rows: number; basis: 'full' } | null;
   /** Real values from both columns, so a percentage can be understood. */
   examples: { matched: string[]; unmatched: string[]; target: string[] } | null;
+  /** The declared source types, present only for `type-mismatch`. */
+  types?: { from: string | null; to: string | null };
   thresholds: {
     sampleSize: number;
     minDistinct: number;

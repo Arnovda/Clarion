@@ -25,6 +25,7 @@
  * not depend on which side of that race it lands.
  */
 
+import { provenanceOf, type ProvenanceRung } from '../shared/provenance';
 import { logger as rootLogger } from '../utils/logger';
 
 const log = rootLogger.child({ mod: 'relationshipGraph' });
@@ -69,6 +70,8 @@ export interface TableRow {
 
 export interface GraphRelationship {
   id: number;
+  /** The one provenance ladder (shared/provenance.ts) — derived, never stored. */
+  rung: ProvenanceRung;
   kind: 'join' | 'match';
   fromTableId: number;
   fromColumnId: number | null;
@@ -263,6 +266,12 @@ export function buildGraph(
       relationshipType: r.relationship_type,
       description: r.description,
       provenance: deriveProvenance(r),
+      rung: provenanceOf({
+        semanticSource: r.semantic_source,
+        confirmedByUser: r.confirmed_by_user,
+        aiDraft: r.ai_draft,
+        measured: (r.measured && typeof r.measured === 'object') ? (r.measured as { verdict?: string }) : null,
+      }),
       isCrossSource: fromConn !== toConn,
       measured: r.measured ?? null,
       flagged: r.flagged_at != null,

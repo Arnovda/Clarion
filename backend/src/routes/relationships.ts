@@ -26,7 +26,9 @@ import {
 import { reqDb } from '../db/reqDb';
 import { owns } from '../db/tenantOwnership';
 import { createConnector } from '../connectors/ConnectorFactory';
-import { measureRelationship } from '../services/relationshipMeasure';
+import { measureRelationship, typeMismatch } from '../services/relationshipMeasure';
+import { typesJoinable } from '@databridge/connectors';
+import { provenanceOf } from '../shared/provenance';
 import { compareColumnValues } from '../services/columnValues';
 import { buildGraph, neighbourhood } from '../services/relationshipGraph';
 import { measureMatch, type Normalisation } from '../services/matchMeasure';
@@ -57,7 +59,7 @@ async function denyUnlessOwned(
   return false;
 }
 
-interface ColumnRow { id: number; table_id: number; column_name: string }
+interface ColumnRow { id: number; table_id: number; column_name: string; source_data_type?: string | null }
 interface TableRow  { id: number; connection_id: number; table_name: string }
 
 // ---------------------------------------------------------------------------
@@ -134,7 +136,7 @@ router.get('/graph', requireAuth, requireRole('admin', 'analyst'),
         columns = await db('source_columns')
           .where({ tenant_id: tenantId })
           .whereIn('table_id', graph.tables.map((t) => t.id))
-          .select('id', 'table_id', 'column_name', 'data_type', 'display_name', 'is_dimension', 'is_measure');
+          .select('id', 'table_id', 'column_name', 'data_type', 'source_data_type', 'display_name', 'is_dimension', 'is_measure');
       }
 
       res.json({
@@ -185,7 +187,7 @@ router.post('/measure', requireAuth, requireRole('admin', 'analyst'),
         .select('id', 'connection_id', 'table_name');
       const columns: ColumnRow[] = await db('source_columns')
         .whereIn('id', [fromColumnId, toColumnId])
-        .select('id', 'table_id', 'column_name');
+        .select('id', 'table_id', 'column_name', 'source_data_type');
 
       const fromTable = tables.find((t) => t.id === Number(fromTableId));
       const toTable   = tables.find((t) => t.id === Number(toTableId));
@@ -215,6 +217,14 @@ router.post('/measure', requireAuth, requireRole('admin', 'analyst'),
           error: 'Measuring a relationship between two different sources is not available yet.',
           code: 'cross_source_unsupported',
         });
+        return;
+      }
+
+      // The declared types settle some links before any data is read (E6):
+      // a GUID cannot be a code however alike they look once both land as
+      // VARCHAR. Refuses only on positive evidence — an unknown type passes.
+      if (!typesJoinable(fromCol.source_data_type, toCol.source_data_type)) {
+        res.json({ ok: true, data: typeMismatch(fromCol.source_data_type ?? null, toCol.source_data_type ?? null) });
         return;
       }
 
@@ -410,7 +420,7 @@ router.post('/:id/check', requireAuth, requireRole('admin', 'analyst'),
         .select('id', 'connection_id', 'table_name');
       const columns: ColumnRow[] = await db('source_columns')
         .whereIn('id', [rel.from_column_id, rel.to_column_id])
-        .select('id', 'table_id', 'column_name');
+        .select('id', 'table_id', 'column_name', 'source_data_type');
 
       const fromTable = tables.find((t) => t.id === rel.from_table_id);
       const toTable   = tables.find((t) => t.id === rel.to_table_id);
@@ -435,8 +445,13 @@ router.post('/:id/check', requireAuth, requireRole('admin', 'analyst'),
         return;
       }
 
-      const connector = await createConnector(connRow as unknown as Parameters<typeof createConnector>[0]);
       let measurement;
+      // Same declared-type gate as the draw path; the cached result then
+      // says WHY the link cannot hold, which a 0% containment never could.
+      if (!typesJoinable(fromCol.source_data_type, toCol.source_data_type)) {
+        measurement = typeMismatch(fromCol.source_data_type ?? null, toCol.source_data_type ?? null);
+      } else {
+      const connector = await createConnector(connRow as unknown as Parameters<typeof createConnector>[0]);
       try {
         await connector.connect();
         measurement = await measureRelationship(
@@ -447,6 +462,7 @@ router.post('/:id/check', requireAuth, requireRole('admin', 'analyst'),
         );
       } finally {
         try { connector.disconnect(); } catch { /* already closed */ }
+      }
       }
 
       await db('table_relationships').where({ id })
@@ -667,9 +683,10 @@ router.get('/topics-graph', requireAuth, requireRole('admin', 'analyst'),
         ? ((await db('product_relationships')
             .whereIn('from_table_id', tableIds)
             .whereIn('to_table_id', tableIds)
-            .select('id', 'from_table_id', 'from_column_name', 'to_table_id', 'to_column_name', 'relationship_type')) as Array<{
+            .select('id', 'from_table_id', 'from_column_name', 'to_table_id', 'to_column_name', 'relationship_type', 'provenance')) as Array<{
               id: number; from_table_id: number; from_column_name: string;
               to_table_id: number; to_column_name: string; relationship_type: string | null;
+              provenance: string | null;
             }>)
         : [];
 
@@ -790,10 +807,12 @@ router.get('/topics-graph', requireAuth, requireRole('admin', 'analyst'),
               toTable: idToName.get(r.to_table_id) ?? '',
               toColumn: r.to_column_name,
               type: r.relationship_type ?? 'fact_to_dim',
+              provenance: r.provenance ?? 'unknown',
             })),
             // Derived joins get negative ids: unique, and visibly not a row.
             ...synthesized.map((s, i) => ({
               id: -(i + 1),
+              provenance: 'derived',
               fromTable: s.fromTable,
               fromColumn: s.fromColumn,
               toTable: s.toTable,

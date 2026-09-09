@@ -20,6 +20,7 @@
  * read the transformations; click again (or elsewhere) to release.
  */
 
+import { PROVENANCE_LABEL, type ProvenanceRung } from '@/lib/provenance';
 import { useEffect, useMemo, useState } from 'react';
 import { ArrowRight, GitBranch, Loader2 } from 'lucide-react';
 import api from '@/lib/api';
@@ -50,6 +51,8 @@ interface LineageEdge {
   productTableId: number;
   productColumnId: number;
   transformation: string | null;
+  /** Who asserted this thread — the one ladder in lib/provenance.ts. Absent on older rows. */
+  provenance?: ProvenanceRung;
 }
 
 interface LineageResponse {
@@ -345,6 +348,14 @@ export default function LineageGraph({ layer, tableId }: { layer: 'source' | 'pr
                 <ArrowRight className="h-3 w-3 shrink-0 self-center text-muted-2" strokeWidth={2} aria-hidden />
                 <span className="text-ink">{productColLabel(e.productColumnId)}</span>
                 {e.transformation && <span className="text-muted">— {e.transformation}</span>}
+                {e.provenance && e.provenance !== 'unknown' && (
+                  <span
+                    className="rounded-full border border-line px-1.5 py-px font-mono text-[9.5px] uppercase tracking-[0.08em] text-muted-2"
+                    title={PROVENANCE_LABEL[e.provenance].hint}
+                  >
+                    {PROVENANCE_LABEL[e.provenance].label}
+                  </span>
+                )}
               </li>
             ))}
           </ul>

@@ -12,6 +12,7 @@ import { deleteProductGraph } from '../db/semanticGraph';
 import { parseAliasMap, deriveColumnLineage, DerivedLineage } from './lineageDerivation';
 import { logger as rootLogger } from '../utils/logger';
 import type { BusMatrixOutput, BusMatrixRelationship, BusMatrixDimension } from '../ai/prompts/busMatrixPrompt';
+import type { ProvenanceRung } from '../shared/provenance';
 
 /** The slice of a designed table `synthesizeFkRelationships` reads. */
 export interface SynthesizableTable {
@@ -331,6 +332,48 @@ export function recoverIncompleteBusMatrix(busMatrix: BusMatrixOutput): {
 }
 
 /**
+ * Expressions that mint a DIFFERENT key on every run. A key built from one
+ * of these breaks every saved dashboard, drill-through, incremental load and
+ * history table the moment the table refreshes — and does so silently, since
+ * every run is internally consistent. Phase 1 of the ingestion assessment
+ * (C1) makes the rule enforceable rather than a prompt hope: the templates
+ * carry the natural key as the key, and the AI path now must too.
+ */
+const UNSTABLE_KEY_RE = /\b(ROW_NUMBER|UUID|GEN_RANDOM_UUID|RANDOM|NEXTVAL)\s*\(/i;
+
+/**
+ * Does this table's design mint an unstable key? Checks BOTH places the key
+ * expression can live: the column's own `transformation_expression`, and
+ * the `transformation_sql` (where `ROW_NUMBER() OVER (…) AS x_key` is what
+ * the model actually emitted — the column expression is often a paraphrase).
+ * A `ROW_NUMBER()` used for dedupe in a CTE (`WHERE rn = 1`) is legitimate
+ * and passes: only an alias onto a key column is refused.
+ */
+export function unstableKeyViolations(
+  table: { table_name: string; transformation_sql?: string | null; columns?: Array<{ column_name: string; column_role?: string | null; transformation_expression?: string | null }> | null },
+): string[] {
+  const out: string[] = [];
+  const sql = table.transformation_sql ?? '';
+  for (const col of table.columns ?? []) {
+    if (col.column_role !== 'surrogate_key' && col.column_role !== 'foreign_key') continue;
+    if (UNSTABLE_KEY_RE.test(col.transformation_expression ?? '')) {
+      out.push(`${table.table_name}.${col.column_name}: key is minted per run (${(col.transformation_expression ?? '').slice(0, 60)}) — use the natural key`);
+      continue;
+    }
+    // `<unstable>( … ) [OVER ( … )] AS <col>` in the SQL. Non-greedy across
+    // one OVER clause is enough: the model writes the alias right after it.
+    const aliased = new RegExp(
+      `\\b(ROW_NUMBER|UUID|GEN_RANDOM_UUID|RANDOM|NEXTVAL)\\s*\\([^)]*\\)(\\s*OVER\\s*\\([^)]*\\))?\\s*(AS\\s+)?"?${col.column_name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}"?\\b`,
+      'i',
+    );
+    if (aliased.test(sql)) {
+      out.push(`${table.table_name}.${col.column_name}: key is minted per run in the SQL — use the natural key`);
+    }
+  }
+  return out;
+}
+
+/**
  * Validate the AI-output shape. Returns an array of human-readable errors;
  * empty array means the spec is good enough to attempt persistence.
  */
@@ -365,6 +408,7 @@ export function validateBusMatrix(busMatrix: BusMatrixOutput): string[] {
     else if (!looksLikeSql(d.transformation_sql)) {
       errors.push(`conformed_dimensions[${i}] "${d.table_name}": transformation_sql is not SQL (must start with SELECT or WITH)`);
     }
+    errors.push(...unstableKeyViolations(d));
   });
   (busMatrix.fact_tables ?? []).forEach((f, i) => {
     if (!f.table_name) errors.push(`fact_tables[${i}].table_name missing`);
@@ -375,6 +419,7 @@ export function validateBusMatrix(busMatrix: BusMatrixOutput): string[] {
     else if (!looksLikeSql(f.transformation_sql)) {
       errors.push(`fact_tables[${i}] "${f.table_name}": transformation_sql is not SQL (must start with SELECT or WITH)`);
     }
+    errors.push(...unstableKeyViolations(f));
   });
   return errors;
 }
@@ -454,6 +499,11 @@ export async function snapshotProductEdits(
 export async function buildBusMatrix(opts: BuildBusMatrixOptions): Promise<BuildBusMatrixResult> {
   const { connectionId, tenantId, userEmail, busMatrix, templateVersion } = opts;
   const { DIM_DATE_SQL, DIM_DATE_COLUMNS } = await import('../ai/prompts/starSchemaPrompt');
+  // The provenance ladder carried past the product boundary (E5): what the
+  // design ASSERTED is curated when a connector template shipped it and a
+  // model's draft otherwise; what Clarion DERIVED (lineage read off the SQL,
+  // fact→dim joins synthesised from FK metadata) is `derived` either way.
+  const designRung: ProvenanceRung = templateVersion ? 'curated' : 'ai_draft';
 
   // Product ids retired by the retire-and-replace sweep below — their Neo4j
   // product graphs are cleaned up after the transaction commits.
@@ -645,12 +695,14 @@ export async function buildBusMatrix(opts: BuildBusMatrixOptions): Promise<Build
           const colId = typeof colRow === 'object' ? (colRow as { id: number }).id : (colRow as number);
 
           let validLineage: DerivedLineage[] = (col.lineage ?? []).filter((l) => l.source_table_name && l.source_column_name);
+          let lineageRung: ProvenanceRung = designRung;
           if (validLineage.length === 0) {
             // The prompt tells the model to omit lineage for trivial columns
             // (a sound token rule) — but a passthrough's lineage is exactly
             // derivable from its expression. Derive it instead of leaving
             // "Where it comes from" empty for most of an AI-built topic.
             validLineage = deriveColumnLineage(col.transformation_expression, colAliasMap, colAllowed, colSole);
+            lineageRung = 'derived';
           }
           if (validLineage.length) {
             await trx('column_lineage').insert(
@@ -659,6 +711,7 @@ export async function buildBusMatrix(opts: BuildBusMatrixOptions): Promise<Build
                 source_table_name: l.source_table_name,
                 source_column_name: l.source_column_name,
                 transformation_description: l.transformation_description ?? null,
+                provenance: lineageRung,
               })),
             );
           }
@@ -722,12 +775,14 @@ export async function buildBusMatrix(opts: BuildBusMatrixOptions): Promise<Build
           const colId = typeof colRow === 'object' ? (colRow as { id: number }).id : (colRow as number);
 
           let validLineage: DerivedLineage[] = (col.lineage ?? []).filter((l) => l.source_table_name && l.source_column_name);
+          let lineageRung: ProvenanceRung = designRung;
           if (validLineage.length === 0) {
             // The prompt tells the model to omit lineage for trivial columns
             // (a sound token rule) — but a passthrough's lineage is exactly
             // derivable from its expression. Derive it instead of leaving
             // "Where it comes from" empty for most of an AI-built topic.
             validLineage = deriveColumnLineage(col.transformation_expression, colAliasMap, colAllowed, colSole);
+            lineageRung = 'derived';
           }
           if (validLineage.length) {
             await trx('column_lineage').insert(
@@ -736,6 +791,7 @@ export async function buildBusMatrix(opts: BuildBusMatrixOptions): Promise<Build
                 source_table_name: l.source_table_name,
                 source_column_name: l.source_column_name,
                 transformation_description: l.transformation_description ?? null,
+                provenance: lineageRung,
               })),
             );
           }
@@ -854,6 +910,7 @@ export async function buildBusMatrix(opts: BuildBusMatrixOptions): Promise<Build
         new Set(tableNameToId.keys()),
       );
 
+      const asserted = new Set<BusMatrixRelationship>(busMatrix.relationships);
       for (const rel of [...busMatrix.relationships, ...synthesized]) {
         const fromId = tableNameToId.get(rel.from_table_name);
         const toId = tableNameToId.get(rel.to_table_name);
@@ -865,6 +922,7 @@ export async function buildBusMatrix(opts: BuildBusMatrixOptions): Promise<Build
             to_table_id: toId,
             to_column_name: rel.to_column_name,
             relationship_type: rel.relationship_type,
+            provenance: asserted.has(rel) ? designRung : 'derived',
           });
         }
       }

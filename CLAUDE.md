@@ -31,7 +31,142 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-09-09 (INGESTION-CHAIN PHASE 0 SHIPPED — the four live
+**Last updated:** 2026-09-09 (INGESTION-CHAIN PHASE 0 IN PRODUCTION + PHASE 1
+BUILT — owner: *"put in main and production and then proceed"*. PR #130
+rebase-merged to main (`94768c5`); deploy run #590 built all four images,
+`migrate-sql` skipped correctly (phase 0 adds no migration), Go live
+health-checked the new backend and shifted traffic at 21:25 UTC. Phase 1 is on
+the same branch name, restarted from main, as a NEW PR.)
+
+**Phase 1 of §7 of `docs/backlog/ingestion-chain-assessment.md` — "keys and
+policy" — is built: one migration, four items, each with a test that was red
+before it.**
+- **(C1) A KEY THAT RENUMBERS PER RUN IS REFUSED, and the rule is the templates'
+  rule.** The AI design prompt asked for `{entity}_key … via ROW_NUMBER()`, so
+  every AI-built dim was renumbered on every refresh — a key no saved
+  dashboard, drill-through, incremental load, SCD2 row or crosswalk could
+  ever hold onto — while the two connector templates carried the NATURAL key
+  as the key. **The natural key is now the rule on both paths** (hash was
+  considered and rejected: DuckDB's `hash()` is not guaranteed stable across
+  versions, and the templates already prove natural keys end to end).
+  `busMatrixPrompt.ts` (design + extend), the repair prompt and the
+  from-scratch prompt in `AIService.ts` all say so; a fact's FK is the same
+  value computed from the fact's own source column (NULL when missing —
+  `COALESCE(…, -1)` survives only for `dim_date`); and NEW exported
+  `unstableKeyViolations()` in `busMatrixBuilder.ts`, wired into
+  `validateBusMatrix`, REFUSES a `surrogate_key`/`foreign_key` whose
+  expression OR whose SQL alias is `ROW_NUMBER`/`UUID`/`GEN_RANDOM_UUID`/
+  `RANDOM`/`NEXTVAL` — a `ROW_NUMBER` used to dedupe in a CTE still passes.
+  Both build paths (design and extend) run the validator, so a model that
+  ignores the instruction fails the build with the table and column named
+  instead of shipping a key that lies. Existing AI-built topics keep their
+  ROW_NUMBER keys until their next rebuild; nothing rewrites them.
+- **(D3-half) AN AI REPAIR OF A VANISHED SOURCE COLUMN NO LONGER PERSISTS.**
+  NEW pure `services/schemaLoss.ts`: `missingColumnFromError` reads the
+  column off five DuckDB message shapes (the fifth — *"Column "X" referenced
+  that exists in the SELECT clause"* — was met on the core-loop test's first
+  real run, not recalled), and `classifyBindFailure` calls it **schema loss
+  only when BOTH hold**: the SQL had published before (`delta_path` set — a
+  query that ran last refresh and fails to bind today did not change, its
+  inputs did) AND the column exists on none of the relations the SQL actually
+  READS (`columnExistsInReferencedTables`, scoped through `parseAliasMap` —
+  the whole session would be wrong, because a sibling product table or an
+  upstream dim carries same-named passthroughs). Otherwise it is a design
+  slip and the repair persists as before. On schema loss the repair runs
+  **for that build only**, `transformation_sql` is untouched, and
+  **`product_tables.degraded_reason` + `degraded_at` (migration 98)** carry
+  the column by name until a person decides; a later clean run clears them.
+  `transformation_status` deliberately STAYS `'success'` — thirty-odd
+  readers filter on it and a degraded table still answers questions,
+  narrower and visibly so. Admins get ONE `quality_alert` notification on
+  the transition (link `/topics/:id?manage=1`), never one per nightly run.
+  Surfaced on the topic page (trust line: *"dim_account is missing a column
+  Exact Online stopped providing"*, tone `warn`; `freshness.degradedTables`),
+  Manage → Tables (amber dot + line), the pipelines dock (its own `degraded`
+  state, amber, not red) and every orchestrator run path (one `⚠` log line
+  per degraded table via `emitDegraded`).
+- **(E5) ONE PROVENANCE LADDER, AS CODE.** NEW lint-locked pair
+  `backend/src/shared/provenance.ts` ↔ `frontend/lib/provenance.ts`
+  (`lint-contract-sync` PAIRS gained it): rungs `human · declared · curated ·
+  derived · ai_verified · ai_draft · unknown`, labels, and ONE pure
+  `provenanceOf()` deriving a rung from the stored fields. **Storage keeps
+  the CHANNEL** (`semantic_source` — the deliberately finer relationship
+  vocabulary from migration 79 stays); the rung is what readers ask for, so
+  a column a person rewrote no longer reads as `'ai'`, and an AI relationship
+  that passed a measurement (`measured.verdict === 'strong'`) or an approval
+  is `ai_verified`, distinguishable from a draft at last. `human` needs an
+  EDIT or a CONFIRM; an approval alone (the auto-approve job makes them) is
+  `ai_verified`, which is the honest reading. **Carried past the product
+  boundary**: `product_relationships.provenance` + `column_lineage.provenance`
+  (migration 98), stamped by `buildBusMatrix` — `curated` for a template
+  build, `ai_draft` for a model's design, `derived` for what Clarion computed
+  (lineage read off the SQL, fact→dim_date joins synthesised from FK
+  metadata). Shipped as `rung` on `/relationships/graph`, `provenance` on
+  `/relationships/topics-graph` (negative-id derived edges say `derived`),
+  on `/lineage/table` edges (the catalog's "How it flows" strip shows the
+  label as a chip) and on every `/semantic/pending-approvals` item.
+- **(E6) THE SOURCE'S OWN TYPE IS KEPT, AND IT SETTLES A LINK BEFORE ANY DATA
+  IS READ.** `source_columns.source_data_type` (migration 98) is the vendor's
+  word verbatim — `Edm.Guid`, `many2one`, `char` — beside `data_type`, which
+  is what the column became in DuckDB (where a GUID and a code are both
+  VARCHAR). The profiler persists it from `ColumnDoc.dataType`; **Odoo's
+  `buildEntityDocs` now emits it** (`fields_get` type was discarded before)
+  and `columnTypes.ts` learned Odoo's words (`many2one` → number, `selection`/
+  `html` → string). `typeClass`/`typesJoinable` are exported from the
+  connectors package and used in the backend at three places: the profiler
+  drops heuristic FK candidates whose declared types cannot be one key
+  BEFORE measuring them; `POST /relationships/measure` and `/:id/check` answer
+  **`verdict: 'broken', reason: 'type-mismatch', types: {from, to}`** without
+  running SQL — a GUID→code link measures 0% exactly like an unfinished sync
+  does, and the two call for opposite actions. The canvas renders it as
+  *wrong column*, keeps it `broken` even on a source-laid line (it is
+  evidence about the COLUMNS, not the data), and **disables Keep** — the one
+  refusal on that panel, because no sync ever makes a GUID identify a code's
+  rows. Rejects on positive evidence only: an untyped column passes.
+  `/relationships/graph?withColumns=1` ships `source_data_type`.
+- **NOT done, deliberately**: enum values / units / currency on columns (E6's
+  second half — no connector publishes them yet); the schema registry, the
+  per-change-type policy and the impact analysis BEFORE the run (D1/D2/the
+  other D3 half — phase 3); rewriting existing ROW_NUMBER keys in place
+  (a rebuild does it; an in-place rewrite would change every key under
+  saved artefacts at once); `ai_verified` via the profiler writing
+  `measured` on verified AI relationships (today only `/check` and the
+  canvas write it — the rung reads it when present).
+- Validation: backend `npm run check` clean; NEW `tests/ingestion-phase1
+  .test.ts` (17: unstable-key matrix incl. dedupe-CTE and composite-key
+  passes; validator carries it for dims and fact FKs; prompts no longer
+  recommend ROW_NUMBER (source-level); the five error shapes; the
+  both-facts rule; the rung matrix incl. `ai_verified` three ways and
+  `unknown` never dressed up; builder stamps asserted vs derived on
+  relationships and lineage, `curated` on a template build; review queue +
+  canvas graph carry the rung and the source type; measure route
+  `type-mismatch` with both types named, untyped column not refused;
+  profiler persist + gate at source level); **`core-loop.test.ts` +2 on real
+  DuckDB** — Exact "stops providing" `Country`, the dim publishes with the
+  repair, the stored SQL is byte-identical, `degraded_reason` names the
+  column, ONE notification, the topic endpoint says `warn` with the table
+  named; the column comes back → cleared, still one notification. **The
+  persist guard verified RED** (restoring `if (aiRepaired)` fails the
+  schema-loss test). Connectors **22 files / 310 passed** (+2: Odoo type
+  words, `dataType` on every Odoo column), `tsc` clean, dist rebuilt; worker
+  `tsc` clean; migration 98 down/up round-tripped (0 → 5 columns); all
+  eleven ratchets green from the repo root (contract-sync now three pairs);
+  frontend `tsc` clean, touched files lint-clean except the two PRE-EXISTING
+  findings in `pipelines/page.tsx` (lines 128, 1551), `next build` green
+  46/46; full backend vitest **88 files / 842 passed / 4 skipped** (was
+  87/824). SANDBOX: Postgres died again between commands (restarted);
+  `ECONNREFUSED` on a passing suite is that.
+- **NOT runtime-exercised against a live tenant.** Watch after deploy: the
+  first AI-designed topic (or rebuild) landing with natural-key dims — a
+  `Bus matrix validation failed: … minted per run` error means the model
+  ignored the rule and the validator did its job (re-run "Create my
+  topics"); the first `'source column vanished — repairing for this run
+  only'` WARN and the amber topic line that follows; and, after the next
+  Re-analyse of the Exact tenant, `source_data_type` filled and any
+  `rejected on declared types` lines in the profiler log. Existing
+  `source_columns` rows carry NULL until re-analysed.
+
+**Prior last updated:** 2026-09-09 (INGESTION-CHAIN PHASE 0 SHIPPED — the four live
 defects, the three dual-write leaks and the worker memory guard from the
 assessment below; owner: *"Please follow your plan and implement"*. Same
 branch and PR #130 as the doc.)
@@ -9770,6 +9905,7 @@ clarion/                              ← on disk: databridge/
 │       │   ├── legal.ts                    ← in-force flag, acceptance status + record (P0-7)
 │       │   ├── tenantExport.ts             ← the streamed ZIP export (P0-7)
 │       │   ├── notificationService.ts      ← notify(), notifyTenant()
+│       │   ├── schemaLoss.ts               ← pure: is a bind failure the source losing a column, or a slip? (D3)
 │       │   ├── queryScope.ts              ← WHICH data a question may reach (tenant + connections + products)
 │       │   ├── warehouseRegistration.ts   ← view naming + the cross-source collision rule (pure)
 │       │   ├── productContext.ts           ← build star schema semantic context for NL→SQL; detects rollup tables
@@ -9798,6 +9934,7 @@ clarion/                              ← on disk: databridge/
 │       │
 │       ├── shared/
 │       │   ├── legalVersions.ts      ← LEGAL_IN_FORCE + versions; lint-locked with frontend/lib/legal/versions.ts
+│       │   ├── provenance.ts         ← the ONE provenance ladder + provenanceOf(); lint-locked with frontend/lib/provenance.ts
 │       │   └── types.ts              ← backend-internal shared types
 │       │
 │       └── tests/
@@ -9964,7 +10101,7 @@ clarion/                              ← on disk: databridge/
             └── useDebounce.ts       ← custom debounce hook
 ```
 
-### Database Migrations (98 files on disk)
+### Database Migrations (99 files on disk)
 
 ```
 20260328000001  create_connections
@@ -10007,6 +10144,7 @@ clarion/                              ← on disk: databridge/
 20260906000095  ai_routing_mode_off               (4-3: tenants.ai_routing_mode may be 'off')
 20260906000096  query_log_duration                (time-to-answer, measured end to end)
 20260907000097  cross_source_scope                (notebooks + saved_questions.cross_source)
+20260909000098  ingestion_phase1                  (source_columns.source_data_type; product_tables.degraded_reason/_at; provenance on product_relationships + column_lineage)
 ```
 
 ---

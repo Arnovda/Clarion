@@ -15,6 +15,7 @@ import * as graph from '../db/semanticGraph';
 import {
   createAdapterLogger,
   getConnector as getSourceConnector,
+  typesJoinable,
   type ColumnDoc,
   type EntityDocs,
 } from '@databridge/connectors';
@@ -400,9 +401,22 @@ async function runSchemaProfilerBody(
 
   // De-duplicate: heuristic FKs that match a known one are dropped.
   const knownKeys = new Set(knownFks.map((k) => `${k.fromTable}.${k.fromColumn}→${k.toTable}.${k.toColumn}`));
-  const heuristicMinusKnown = heuristicFks.filter(
-    (fk) => !knownKeys.has(`${fk.fromTable}.${fk.fromColumn}→${fk.toTable}.${fk.toColumn}`),
-  );
+  // And the declared source types settle some of the rest before any value
+  // is compared (E6): a name pattern that pairs a GUID with a code cannot be
+  // a key however well a small sample happens to overlap. Rejects only on
+  // positive evidence — a source that publishes no types is untouched.
+  const declaredType = (t: string, c: string) => colDocByKey.get(`${t}.${c}`)?.dataType;
+  let typeRejected = 0;
+  const heuristicMinusKnown = heuristicFks.filter((fk) => {
+    if (knownKeys.has(`${fk.fromTable}.${fk.fromColumn}→${fk.toTable}.${fk.toColumn}`)) return false;
+    if (!typesJoinable(declaredType(fk.fromTable, fk.fromColumn), declaredType(fk.toTable, fk.toColumn))) {
+      typeRejected++;
+      log.info(`[FK ${fk.source}] rejected on declared types: ${fk.fromTable}.${fk.fromColumn} → ${fk.toTable}.${fk.toColumn}`);
+      return false;
+    }
+    return true;
+  });
+  if (typeRejected > 0) log.info(`${typeRejected} heuristic relationship(s) rejected on declared source types`);
 
   const vendorCount = knownFks.filter((fk) => fk.source === 'vendor_docs').length;
   const curatedCount = knownFks.filter((fk) => fk.source === 'curated').length;
@@ -781,7 +795,7 @@ async function runSchemaProfilerBody(
   // description came from the connector lands approved (ai_draft=false) with
   // its provenance recorded in semantic_source.
   type TablePersist = { displayName: string; description: string | null; vendorDescription: string | null; aiDraft: boolean; approvalStatus: 'draft' | 'approved'; semanticSource: string | null; editedByUser: boolean };
-  type ColPersist = { displayName: string; description: string | null; vendorDescription: string | null; isDimension: boolean; isMeasure: boolean; aiDraft: boolean; approvalStatus: 'draft' | 'approved'; semanticSource: string | null; editedByUser: boolean };
+  type ColPersist = { displayName: string; description: string | null; vendorDescription: string | null; isDimension: boolean; isMeasure: boolean; aiDraft: boolean; approvalStatus: 'draft' | 'approved'; semanticSource: string | null; editedByUser: boolean; sourceDataType: string | null };
   const tablePersistByName = new Map<string, TablePersist>();
   const colPersistByKey = new Map<string, ColPersist>();
   for (const table of schema.tables) {
@@ -819,6 +833,10 @@ async function runSchemaProfilerBody(
         approvalStatus: colDocumented ? 'approved' : 'draft',
         semanticSource: colDocumented ? (tDoc?.provenance ?? 'declared') : (structural ? null : 'ai'),
         editedByUser:   false,
+        // The vendor's declared type, verbatim (E6) — `data_type` above is
+        // what the column became in DuckDB, where a GUID and a code are both
+        // VARCHAR. Independent of whether the column has a description.
+        sourceDataType: cDoc?.dataType ?? null,
       });
     }
   }
@@ -1066,6 +1084,7 @@ async function runSchemaProfilerBody(
             approval_status: cp.approvalStatus,
             vendor_description: cp.vendorDescription,
             edited_by_user:  cp.editedByUser,
+            source_data_type: cp.sourceDataType,
           })
           .returning('id');
 

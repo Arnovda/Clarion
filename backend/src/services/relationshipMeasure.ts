@@ -64,7 +64,16 @@ export type MeasureReason =
   | 'low-containment'
   | 'no-values'
   | 'timeout'
-  | 'query-failed';
+  | 'query-failed'
+  /**
+   * The two columns' DECLARED source types cannot be one key — a GUID and a
+   * code, a number and a text (E6). Decided from `source_columns.
+   * source_data_type` before any SQL runs, because after landing both sides
+   * are VARCHAR and no measurement can tell them apart: a GUID→code link
+   * measures 0% exactly like an unfinished sync does, and the two call for
+   * opposite actions. Positive evidence only — an unknown type never fires.
+   */
+  | 'type-mismatch';
 
 export interface RelationshipMeasurement {
   verdict: MeasureVerdict;
@@ -114,6 +123,8 @@ export interface RelationshipMeasurement {
     /** A few values from the target column, for shape comparison. */
     target: string[];
   } | null;
+  /** The declared source types when the verdict is `type-mismatch`; absent otherwise. */
+  types?: { from: string | null; to: string | null };
   /** Echoed so the UI can say "min 85%" without hardcoding a threshold. */
   thresholds: {
     sampleSize: number;
@@ -279,6 +290,26 @@ function emptyThresholds(): RelationshipMeasurement['thresholds'] {
     minDistinct: Number(process.env.FK_MIN_DISTINCT) || 8,
     targetUniqueness: Number(process.env.FK_TARGET_UNIQUENESS) || 0.99,
     minContainment: Number(process.env.FK_MIN_CONTAINMENT) || 0.85,
+  };
+}
+
+/**
+ * The refusal a type-class mismatch produces — `broken`, not `unmeasurable`,
+ * because it IS a finding about the link and the canvas colours it as one.
+ * Exported so the two routes that measure (draw + check) share it.
+ */
+export function typeMismatch(from: string | null, to: string | null): RelationshipMeasurement {
+  return {
+    verdict: 'broken',
+    reason: 'type-mismatch',
+    containment: null,
+    target: null,
+    cardinality: null,
+    orphans: null,
+    examples: null,
+    types: { from, to },
+    thresholds: emptyThresholds(),
+    elapsedMs: 0,
   };
 }
 

@@ -152,7 +152,14 @@ The bus matrix identifies:
 ━━━ KIMBALL METHODOLOGY ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 **Dimensions:**
-- Surrogate keys: every dim gets {entity}_key as INTEGER via ROW_NUMBER(). Keep natural key too.
+- Keys are STABLE: every dim gets {entity}_key = its NATURAL key, carried through
+  unchanged (the source's own id / GUID / code; keep the natural key column too,
+  role natural_key). A composite natural key becomes CONCAT_WS('|', a, b) as VARCHAR.
+  The key's data_type is the natural key's type (VARCHAR for GUIDs and codes,
+  INTEGER/BIGINT for numeric ids). NEVER ROW_NUMBER(), UUID(), RANDOM() or any
+  expression that renumbers on the next run — a key that changes per run breaks
+  every saved dashboard, drill-through, incremental load and history table built
+  on it, and the build REFUSES such a design.
 - Denormalize lookups: fold classification/lookup tables INTO their parent dimension
   (customer_groups → dim_customer, product_categories → dim_product, btw_tarieven → dim_article).
   Only separate if the lookup has its own independent facts.
@@ -165,7 +172,10 @@ The bus matrix identifies:
 - Fact table types: transaction, periodic_snapshot, accumulating_snapshot, factless.
 - Measures: classify as additive, semi-additive, or non-additive.
   For ratios: store numerator + denominator as additive columns.
-- FKs in facts: named to match target dim's surrogate key. Use COALESCE(dim_key, -1) for unknowns.
+- FKs in facts: named to match target dim's key and computed the SAME way from the
+  fact's own source column (e.g. TRY_CAST(l.Account AS VARCHAR) AS account_key), so
+  the fact's FK equals the dim's key without joining the dim. A missing FK is NULL —
+  except date keys, which use COALESCE(..., -1) (dim_date is INTEGER YYYYMMDD).
 - Degenerate dims: transaction/document numbers stay in the fact as plain columns.
 - Never place text attributes in fact tables — move them to dimensions.
 - Role-playing dims: when one dim appears multiple times (order_date, ship_date),
@@ -191,7 +201,8 @@ The bus matrix identifies:
 Each table needs a standalone SELECT statement (no CREATE TABLE). Source tables are pre-loaded as views.
 
 - Dimensions execute FIRST; facts execute SECOND (after dims are materialized as views)
-- Fact SQL can JOIN to materialized dims to resolve natural keys → surrogate keys
+- Fact SQL may LEFT JOIN a materialized dim for descriptive lookups, never to mint
+  a key and never as an INNER JOIN that drops rows
 - ALWAYS use TRY_CAST (not CAST) for type conversions — source data has 'None', 'null', '', 'N/A'
 - Use NULLIF(TRIM(CAST(col AS VARCHAR)), '') before TRY_CAST for string→number conversions
 - strftime(value, format) — DuckDB arg order (not format, value)
@@ -244,19 +255,19 @@ casualty of a token-budget overrun. Budget aggressively:
       "table_name": "dim_article",
       "display_name": "Article",
       "description": "Conformed article dimension with product hierarchy and pricing",
-      "transformation_sql": "SELECT ROW_NUMBER() OVER (ORDER BY a.artikel_id) AS article_key, a.artikel_id, ... FROM artikelen a LEFT JOIN artikelgroepen ag ON ...",
+      "transformation_sql": "SELECT a.artikel_id AS article_key, a.artikel_id, ... FROM artikelen a LEFT JOIN artikelgroepen ag ON ...",
       "source_tables": ["artikelen", "artikelgroepen", "btw_tarieven"],
       "columns": [
         {
           "column_name": "article_key",
           "data_type": "INTEGER",
           "display_name": "Article Key",
-          "description": "Surrogate key",
+          "description": "Stable key — the article's own id",
           "column_role": "surrogate_key",
-          "transformation_expression": "ROW_NUMBER() OVER (ORDER BY a.artikel_id)",
+          "transformation_expression": "a.artikel_id",
           "scd_type": 1,
           "sort_order": 0,
-          "lineage": [{"source_table_name": "artikelen", "source_column_name": "artikel_id", "transformation_description": "Surrogate from natural key"}]
+          "lineage": [{"source_table_name": "artikelen", "source_column_name": "artikel_id", "transformation_description": "Natural key carried as the key"}]
         }
       ]
     }
@@ -268,7 +279,7 @@ casualty of a token-budget overrun. Budget aggressively:
       "description": "One row per sales order line item",
       "grain": "One row per sales order line",
       "fact_table_type": "transaction",
-      "transformation_sql": "SELECT COALESCE(da.article_key, -1) AS article_key, ... FROM verkooporder_regels r LEFT JOIN dim_article da ON ...",
+      "transformation_sql": "SELECT r.artikel_id AS article_key, ... FROM verkooporder_regels r JOIN verkooporders o ON ...",
       "source_tables": ["verkooporders", "verkooporder_regels"],
       "dimensions_used": ["dim_article", "dim_customer", "dim_date"],
       "columns": [...]
@@ -366,13 +377,15 @@ ${dimsText}
 
 ━━━ KIMBALL + DuckDB RULES (same as the original build) ━━━━━━━━━━━━━━━━━━
 
-- Grain: every fact declares "One row per ...". Surrogate keys via ROW_NUMBER()
-  for NEW dims only. ALWAYS TRY_CAST, never CAST. strftime(value, format).
+- Grain: every fact declares "One row per ...". Keys are STABLE: a NEW dim's
+  {entity}_key is its natural key carried unchanged (never ROW_NUMBER()/UUID()/
+  RANDOM() — the build refuses a key that renumbers per run). ALWAYS TRY_CAST,
+  never CAST. strftime(value, format).
 - Every column referenced through a dim alias in fact SQL MUST exist on that
   dim — for reused dims that means the column lists printed above, exactly.
-- Facts JOIN reused dims to resolve natural keys → surrogate keys, e.g.
-  LEFT JOIN dim_item di ON TRIM(CAST(s.Item AS VARCHAR)) = TRIM(CAST(di.item_id AS VARCHAR))
-  (adjust to the real key columns above).
+- A fact's FK to a reused dim is computed from the fact's OWN source column,
+  the same way the dim computes its key (read the dim's key column above), e.g.
+  TRY_CAST(s.Item AS VARCHAR) AS item_key — no JOIN is needed to obtain the key.
 
 ━━━ OUTPUT FORMAT — the SAME JSON shape as the original bus matrix ━━━━━━━
 

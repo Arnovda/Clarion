@@ -29,6 +29,7 @@
  * admin+analyst: transformation expressions are SQL-shaped, and the
  * lineage view lives on the catalog's curator tabs.
  */
+import type { ProvenanceRung } from '../shared/provenance';
 import { Router, Request, Response, NextFunction } from 'express';
 import { requireAuth, requireRole } from '../middleware/auth';
 import { reqDb } from '../db/reqDb';
@@ -63,6 +64,8 @@ interface LineageEdge {
   productTableId: number;
   productColumnId: number;
   transformation: string | null;
+  /** Who asserted this thread (shared/provenance.ts); 'unknown' on rows older than the column. */
+  provenance: ProvenanceRung;
 }
 
 const NOT_TECHNICAL = `(pc.is_technical = false OR pc.is_technical IS NULL)`;
@@ -116,13 +119,13 @@ router.get('/table', requireAuth, requireRole('admin', 'analyst'), async (req: R
               .select('dps.data_product_id'));
         })
         .select(
-          'cl.source_column_name', 'cl.transformation_description',
+          'cl.source_column_name', 'cl.transformation_description', 'cl.provenance',
           'pc.id as pc_id', 'pc.column_name as pc_name', 'pc.display_name as pc_display',
           'pc.transformation_expression',
           'pt.id as pt_id', 'pt.table_name as pt_name', 'pt.display_name as pt_display', 'pt.table_role',
           'dp.id as dp_id', 'dp.name as dp_name',
         )) as Array<{
-          source_column_name: string; transformation_description: string | null;
+          source_column_name: string; transformation_description: string | null; provenance: string | null;
           pc_id: number; pc_name: string; pc_display: string | null;
           transformation_expression: string | null;
           pt_id: number; pt_name: string; pt_display: string | null; table_role: string | null;
@@ -151,6 +154,7 @@ router.get('/table', requireAuth, requireRole('admin', 'analyst'), async (req: R
           productTableId: r.pt_id,
           productColumnId: r.pc_id,
           transformation,
+          provenance: (r.provenance ?? 'unknown') as ProvenanceRung,
         });
       }
 
@@ -216,9 +220,9 @@ router.get('/table', requireAuth, requireRole('admin', 'analyst'), async (req: R
       ? ((await db('column_lineage')
           .where('tenant_id', tenantId)
           .whereIn('product_column_id', cols.map((c) => c.id))
-          .select('product_column_id', 'source_table_name', 'source_column_name', 'transformation_description')) as Array<{
+          .select('product_column_id', 'source_table_name', 'source_column_name', 'transformation_description', 'provenance')) as Array<{
             product_column_id: number; source_table_name: string;
-            source_column_name: string; transformation_description: string | null;
+            source_column_name: string; transformation_description: string | null; provenance: string | null;
           }>)
       : [];
 
@@ -273,6 +277,7 @@ router.get('/table', requireAuth, requireRole('admin', 'analyst'), async (req: R
         productTableId: pt.id,
         productColumnId: l.product_column_id,
         transformation: l.transformation_description ?? pc?.transformation_expression ?? null,
+        provenance: (l.provenance ?? 'unknown') as ProvenanceRung,
       });
     }
 

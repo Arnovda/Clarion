@@ -30,6 +30,7 @@ import { createHash } from 'crypto';
 const PAIRS: Array<[string, string]> = [
   [join('backend', 'src', 'shared', 'contract.ts'), join('frontend', 'lib', 'contract.ts')],
   [join('backend', 'src', 'shared', 'legalVersions.ts'), join('frontend', 'lib', 'legal', 'versions.ts')],
+  [join('backend', 'src', 'shared', 'provenance.ts'), join('frontend', 'lib', 'provenance.ts')],
 ];
 
 function fail(message: string): never {

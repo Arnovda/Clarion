@@ -35,6 +35,8 @@ export interface Topic {
     lastBuiltAt: string | null;
     sourceSyncedAt: string | null;
     failedTables: number;
+    /** Tables that ran without a column the source stopped providing. */
+    degradedTables: Array<{ table: string; reason: string }>;
   };
   /** Counts only — a viewer may read these; failure detail stays in Manage mode. */
   quality: { checksPassing: number; checksTotal: number };

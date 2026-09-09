@@ -22,6 +22,21 @@ describe('typeClass', () => {
     expect(typeClass('Edm.DateTime')).toBe('datetime');
   });
 
+  it("reads Odoo's fields_get types the way they land (E6)", () => {
+    expect(typeClass('many2one')).toBe('number');
+    expect(typeClass('integer')).toBe('number');
+    expect(typeClass('monetary')).toBe('number');
+    expect(typeClass('char')).toBe('string');
+    expect(typeClass('selection')).toBe('string');
+    expect(typeClass('html')).toBe('string');
+    expect(typeClass('datetime')).toBe('datetime');
+    expect(typeClass('boolean')).toBe('bool');
+    // Never synced as a column; must not be forced into a class.
+    expect(typeClass('one2many')).toBe('unknown');
+    expect(typesJoinable('many2one', 'char')).toBe(false);
+    expect(typesJoinable('many2one', 'integer')).toBe(true);
+  });
+
   it('says unknown rather than guessing', () => {
     expect(typeClass(undefined)).toBe('unknown');
     expect(typeClass('')).toBe('unknown');
