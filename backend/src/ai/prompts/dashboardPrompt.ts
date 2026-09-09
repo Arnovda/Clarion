@@ -469,6 +469,14 @@ export interface WidgetExecutionResult {
   semanticIssue?: string;
   /** Deterministic column-contract violation (see shared/widgetContracts.ts). */
   contractIssue?: string;
+  /**
+   * Deterministic readability finding the query has to change to settle (see
+   * services/widgetReadability.ts): too many categories, too many series,
+   * raw timestamps as labels, a KPI returning many rows, … The message ends
+   * with the exact rewrite pattern. Fixes that need no SQL (a type or format
+   * change) are applied before the repair call and never reach here.
+   */
+  readabilityIssue?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -539,6 +547,14 @@ Return the complete fixed DashboardSpec as JSON only — no prose, no markdown f
 
 8. MISSING REQUIRED COLUMNS (contractIssue present) → The widget renders EMPTY when its SQL doesn't return the exact column names the widget type requires. Rewrite the SELECT so columns are aliased to the required names stated in the contractIssue (e.g. "AS label", "AS value", "AS series", "AS row_label"). Keep the widget type and intent unchanged.
 
+9. UNREADABLE (readabilityIssue present) → The query RUNS and returns the right columns, but the chart cannot be read: too many bars/slices/series for the space, labels that are raw timestamps or sentences, a KPI whose query returns many rows, a ranking out of order. The issue states the exact rewrite — apply it literally:
+   - "top N + Other": use the WITH src AS (…) / ROW_NUMBER() pattern given in the issue. src is the current query WITHOUT its final ORDER BY / LIMIT; every {{placeholder}} stays exactly as it is; 'Other' is ONE row (or ONE series) that sums everything past N.
+   - raw timestamps: format the period in SQL (strftime(col, '%Y-%m') for months, '%Y-%m-%d' for days, CAST(col AS DATE)), ORDER BY chronological.
+   - duplicate labels: the GROUP BY is missing a column or a join fans out — aggregate to exactly one row per label.
+   - a KPI with many rows: aggregate to ONE row.
+   - long labels: select a shorter identifying column (code / short name) as "label".
+   Keep the widget's type, title, format and filters unless the issue itself names a type change.
+
 PRESERVE: Keep all filter specs (including defaultPreset/defaultValue), widget order, colSpan,
 "layout" ({x,y,w,h} — the user's own arrangement, echo it VERBATIM), featured, titles, and
 drillDownSql unless broken. Only change what is broken. Do not invent new widgets or remove
@@ -565,5 +581,5 @@ ${semanticContext}
 ━━━ Relationships ━━━
 ${relationshipContext}
 
-Fix every widget that has an error or 0 rows. Return the corrected full DashboardSpec JSON.`;
+Fix every widget that has an error, 0 rows, a contractIssue or a readabilityIssue. Return the corrected full DashboardSpec JSON.`;
 }
