@@ -128,7 +128,19 @@ claims were re-read by hand. Nothing run against a live tenant.
   OpenAPI/LLM-assisted generation. **Do NOT**: build connector #6 in the old
   form before phase 5; SCD2 before stable keys; switch to Airbyte/dlt as
   runtime; Iceberg; persisting AI repairs of schema loss.
-- Validation: doc only — `git status` shows one new file. The four defects
+- **DRIVE-BY ON THE SAME PR: the dependency audit gate went red on PR #130's
+  first CI run** — `nodemailer <=9.1.0` (backend, runtime-exposed: the mail
+  transport) and `js-yaml 4.0.0–4.3.1` (frontend, dev-only via eslint), both
+  new advisories since main's last green run on 2026-09-08, neither touched
+  by this doc-only PR. Same shape as the 2026-09-05 `fast-uri` case and
+  handled the same way: FIXED, not allowlisted — `nodemailer` `^9.0.3` →
+  `^9.1.1` (same major; `createTransport`/`sendMail` surface unchanged,
+  `@types/nodemailer` stays 8.x), frontend override `js-yaml` `^4.3.1` →
+  `^4.3.2`, lockfiles regenerated with `npm install --package-lock-only`,
+  both gates exit 0 locally. Backend suite NOT run here (no node_modules in
+  this sandbox); CI's run on the push is the validation.
+- Validation: doc only apart from the two dependency bumps above — `git
+  status` shows one new file plus four package/lockfile lines. The four defects
   and three leaks are read-verified, not executed; the DuckLake recommendation
   is explicitly conditioned on a PoC. `airbyte.com`, `docs.airbyte.com`,
   `dlthub.com` and `fivetran.com` are egress-blocked here, so those references
