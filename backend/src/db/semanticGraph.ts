@@ -195,6 +195,38 @@ export async function getTablesByConnection(
   }
 }
 
+/**
+ * Build a Cypher SET clause covering ONLY the fields a patch actually carries.
+ *
+ * THE BUG THIS EXISTS TO PREVENT: `updateTable`/`updateColumn` used to SET
+ * every mirrored property unconditionally, coalescing a missing key to null.
+ * So confirming a definition from /review — which sends nothing but
+ * `{ ai_draft: false, approval_status: 'approved' }` — NULLED the graph's
+ * description, display name and owner. Neo4j is what the source-layer AI
+ * prompt reads, so the act of approving a description deleted it from the
+ * only copy the model sees, while Postgres kept it and every screen looked
+ * fine.
+ *
+ * Property names come from a fixed map in the callers below, never from
+ * caller input, so interpolating them into Cypher is safe.
+ */
+function buildPatchSet(
+  alias: string,
+  patch: Record<string, unknown>,
+  mapping: Array<{ key: string; prop: string; coerce?: (v: unknown) => unknown }>,
+): { clause: string; params: Record<string, unknown> } {
+  const parts: string[] = [];
+  const params: Record<string, unknown> = {};
+  for (const { key, prop, coerce } of mapping) {
+    // `undefined` means "the caller said nothing about this field". An
+    // explicit null means "clear it" and is honoured.
+    if (patch[key] === undefined) continue;
+    parts.push(`${alias}.${prop} = $${prop}`);
+    params[prop] = coerce ? coerce(patch[key]) : (patch[key] ?? null);
+  }
+  return { clause: parts.map((p) => `           ${p},`).join('\n'), params };
+}
+
 export async function updateTable(
   pgId: number,
   patch: {
@@ -203,29 +235,22 @@ export async function updateTable(
   },
   tenantId: number,
 ): Promise<void> {
+  const { clause, params } = buildPatchSet('t', patch as Record<string, unknown>, [
+    { key: 'display_name', prop: 'displayName' },
+    { key: 'description',  prop: 'description' },
+    { key: 'owner_name',   prop: 'ownerName' },
+    { key: 'is_active',    prop: 'isActive', coerce: (v) => Boolean(v) },
+    { key: 'domains',      prop: 'domains', coerce: (v) => (Array.isArray(v) ? v : parseDomains(v)) },
+    { key: 'grain',        prop: 'grain', coerce: (v) => (typeof v === 'string' ? v : null) },
+  ]);
   const session = getSession();
   try {
     await session.run(
       `MATCH (t:SourceTable {pgId: $pgId, tenantId: $tenantId})
-       SET t.displayName    = $displayName,
-           t.description    = $description,
-           t.ownerName      = $ownerName,
-           t.isActive       = $isActive,
-           t.domains        = $domains,
-           t.grain          = $grain,
+       SET ${clause}
            t.aiDraft        = false,
            t.updatedAt      = $now`,
-      {
-        pgId,
-        tenantId,
-        displayName: patch.display_name ?? null,
-        description: patch.description ?? null,
-        ownerName:   patch.owner_name  ?? null,
-        isActive:    patch.is_active   !== undefined ? Boolean(patch.is_active) : true,
-        domains:     Array.isArray(patch.domains) ? patch.domains : parseDomains(patch.domains),
-        grain:       typeof patch.grain === 'string' ? patch.grain : null,
-        now:         new Date().toISOString(),
-      },
+      { pgId, tenantId, now: new Date().toISOString(), ...params },
     );
   } finally {
     await session.close();
@@ -323,27 +348,21 @@ export async function updateColumn(
   },
   tenantId: number,
 ): Promise<void> {
+  const { clause, params } = buildPatchSet('c', patch as Record<string, unknown>, [
+    { key: 'display_name', prop: 'displayName' },
+    { key: 'description',  prop: 'description' },
+    { key: 'owner_name',   prop: 'ownerName' },
+    { key: 'is_dimension', prop: 'isDimension', coerce: (v) => Boolean(v) },
+    { key: 'is_measure',   prop: 'isMeasure', coerce: (v) => Boolean(v) },
+  ]);
   const session = getSession();
   try {
     await session.run(
       `MATCH (c:SourceColumn {pgId: $pgId, tenantId: $tenantId})
-       SET c.displayName  = $displayName,
-           c.description  = $description,
-           c.ownerName    = $ownerName,
-           c.isDimension  = $isDimension,
-           c.isMeasure    = $isMeasure,
+       SET ${clause}
            c.aiDraft      = false,
            c.updatedAt    = $now`,
-      {
-        pgId,
-        tenantId,
-        displayName: patch.display_name ?? null,
-        description: patch.description  ?? null,
-        ownerName:   patch.owner_name   ?? null,
-        isDimension: Boolean(patch.is_dimension),
-        isMeasure:   Boolean(patch.is_measure),
-        now:         new Date().toISOString(),
-      },
+      { pgId, tenantId, now: new Date().toISOString(), ...params },
     );
   } finally {
     await session.close();
@@ -2059,32 +2078,87 @@ export async function upsertConnectionGraph(
       );
     }
     for (const rel of relationships) {
-      await session.run(
-        `MATCH (ft:SourceTable {pgId: $fromTPgId, tenantId: $tenantId}), (tt:SourceTable {pgId: $toTPgId, tenantId: $tenantId})
-         CREATE (ft)-[r:RELATES_TO {
-           pgId:        $pgId,
-           tenantId:    $tenantId,
-           fromColPgId: $fromColPgId,
-           fromColName: $fromColName,
-           toColPgId:   $toColPgId,
-           toColName:   $toColName,
-           relType:     $relType,
-           description: $description,
-           aiDraft:     true
-         }]->(tt)`,
-        {
-          pgId:        rel.pgId,
-          tenantId,
-          fromTPgId:   rel.fromTablePgId,
-          toTPgId:     rel.toTablePgId,
-          fromColPgId: rel.fromColPgId ?? null,
-          fromColName: rel.fromColName ?? null,
-          toColPgId:   rel.toColPgId   ?? null,
-          toColName:   rel.toColName   ?? null,
-          relType:     rel.relType,
-          description: rel.description ?? null,
-        },
-      );
+      const params = {
+        pgId:        rel.pgId,
+        tenantId,
+        fromTPgId:   rel.fromTablePgId,
+        toTPgId:     rel.toTablePgId,
+        fromColPgId: rel.fromColPgId ?? null,
+        fromColName: rel.fromColName ?? null,
+        toColPgId:   rel.toColPgId   ?? null,
+        toColName:   rel.toColName   ?? null,
+        relType:     rel.relType,
+        description: rel.description ?? null,
+        now,
+      };
+
+      // MERGE on the join the edge ASSERTS, not on its Postgres id.
+      //
+      // THE DUPLICATE THIS FIXES: the delete above only removes edges still
+      // marked `aiDraft: true`, which is right — a confirmed relationship must
+      // survive a re-profile. But the loop then CREATEd unconditionally, so a
+      // relationship the profiler re-derives AND a human had already confirmed
+      // came back as a SECOND edge beside the first, marked draft again. Every
+      // re-profile added another copy: the review queue re-asked a question
+      // already answered, and `getRelationshipsForContext` — which filters out
+      // FLAGGED edges — handed the model the fresh unflagged twin of an edge
+      // someone had flagged as not holding.
+      //
+      // The identity is (from table, from column) → (to table, to column):
+      // `pgId` cannot serve, because the profiler wipes and re-inserts its
+      // Postgres rows on every run, so the id of the same real relationship
+      // changes each time.
+      const canMerge = rel.fromColName != null && rel.toColName != null;
+      if (canMerge) {
+        await session.run(
+          `MATCH (ft:SourceTable {pgId: $fromTPgId, tenantId: $tenantId}), (tt:SourceTable {pgId: $toTPgId, tenantId: $tenantId})
+           MERGE (ft)-[r:RELATES_TO {fromColName: $fromColName, toColName: $toColName}]->(tt)
+           ON CREATE SET
+             r.pgId        = $pgId,
+             r.tenantId    = $tenantId,
+             r.fromColPgId = $fromColPgId,
+             r.toColPgId   = $toColPgId,
+             r.relType     = $relType,
+             r.description = $description,
+             r.aiDraft     = true,
+             r.updatedAt   = $now
+           ON MATCH SET
+             r.pgId        = $pgId,
+             r.tenantId    = $tenantId,
+             r.fromColPgId = $fromColPgId,
+             r.toColPgId   = $toColPgId,
+             r.relType     = $relType,
+             // A confirmed edge stays confirmed, and keeps the description a
+             // human may have written. Re-deriving it is not a reason to ask
+             // again. \`flagged\` is deliberately never touched here: it is a
+             // statement about the data that a re-profile does not settle.
+             r.description = CASE WHEN r.aiDraft = false THEN r.description ELSE $description END,
+             r.aiDraft     = CASE WHEN r.aiDraft = false THEN false ELSE true END,
+             r.updatedAt   = $now`,
+          params,
+        );
+      } else {
+        // No column names on one side — nothing to identify the edge by, so
+        // it cannot be deduplicated. It is also a draft by construction (the
+        // profiler drops unresolvable endpoints), so the delete above will
+        // clear it on the next run.
+        await session.run(
+          `MATCH (ft:SourceTable {pgId: $fromTPgId, tenantId: $tenantId}), (tt:SourceTable {pgId: $toTPgId, tenantId: $tenantId})
+           CREATE (ft)-[r:RELATES_TO {
+             pgId:        $pgId,
+             tenantId:    $tenantId,
+             fromColPgId: $fromColPgId,
+             fromColName: $fromColName,
+             toColPgId:   $toColPgId,
+             toColName:   $toColName,
+             relType:     $relType,
+             description: $description,
+             aiDraft:     true,
+             updatedAt:   $now
+           }]->(tt)`,
+          params,
+        );
+      }
     }
   } finally {
     await session.close();

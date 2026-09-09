@@ -29,7 +29,7 @@
  * the temp file overhead is negligible.
  */
 
-import { Database } from 'duckdb-async';
+import { createGuardedDuckDb } from './duckdbGuardrails';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
@@ -181,7 +181,7 @@ async function convertNdjsonToParquet(
 ): Promise<void> {
   // In-memory DuckDB instance per write. Cheap (~10ms cold start) and avoids
   // sharing state between concurrent connector runs.
-  const db = await Database.create(':memory:');
+  const db = await createGuardedDuckDb();
   try {
     // read_json with format=newline_delimited handles NDJSON natively.
     // Explicit `columns` (when the connector knows its schema) gives stable
@@ -238,7 +238,7 @@ async function mergeNdjsonIntoExistingParquet(
 
   // Stage the merged output in os.tmpdir too — see same Windows note.
   const tmpOut = path.join(os.tmpdir(), `clarion-merge-${randomUUID()}.parquet`);
-  const db = await Database.create(':memory:');
+  const db = await createGuardedDuckDb();
   try {
     const escNd = ndjsonPath.replace(/'/g, "''");
     const escEx = existingCopy.replace(/'/g, "''");
@@ -346,7 +346,7 @@ async function mergeNdjsonIntoExistingParquet(
 }
 
 async function writeEmptyParquet(parquetPath: string): Promise<void> {
-  const db = await Database.create(':memory:');
+  const db = await createGuardedDuckDb();
   try {
     const esc = parquetPath.replace(/'/g, "''");
     await db.all(`
@@ -373,7 +373,7 @@ async function writeEmptyParquetWithSchema(
   parquetPath: string,
   schema: ReadonlyArray<{ name: string; sqlType: string }>,
 ): Promise<void> {
-  const db = await Database.create(':memory:');
+  const db = await createGuardedDuckDb();
   try {
     const esc = parquetPath.replace(/'/g, "''");
     const projections = schema.map((col, i) => {

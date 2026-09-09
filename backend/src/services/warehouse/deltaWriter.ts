@@ -51,6 +51,10 @@ export interface DeltaWriteResult {
   rowsInserted: number;
   rowsDeleted: number;
   rowsTotal: number;
+  /** The refresh produced zero rows over a table that already had some, so
+   *  the existing data was kept. Not an error — see the sidecar's write
+   *  step — but the caller must not report it as "refreshed to 0 rows". */
+  preservedExisting?: boolean;
 }
 
 interface SidecarConfig {
@@ -60,6 +64,10 @@ interface SidecarConfig {
   business_columns: string[];
   mode: 'scd1';
   storage_options?: Record<string, string>;
+  /** Explicit "this table really should end up empty". Without it a zero-row
+   *  result over a non-empty table preserves what is there, matching the
+   *  source writers' contract. */
+  allow_empty?: boolean;
 }
 
 interface SidecarResult {
@@ -71,6 +79,8 @@ interface SidecarResult {
   rows_inserted?: number;
   rows_deleted?: number;
   rows_total?: number;
+  /** Set when a zero-row refresh left the existing rows in place. */
+  preserved_existing?: boolean;
   /** Set when the sidecar removed a legacy `data.parquet` on first
    *  Delta commit. Logged for audit; not surfaced on the chart. */
   legacy_cleanup?: string;
@@ -115,6 +125,11 @@ export async function writeDeltaWithSidecar(opts: {
   /** All business columns (excluding technical `_row_hash`, etc.). Used
    *  to compute `_row_hash` over the same set on both sides of the diff. */
   businessColumns: string[];
+  /** Opt in to emptying the table when the transformation returns no rows.
+   *  Default (absent) preserves the existing rows — a source that answers
+   *  empty for one run must not wipe a topic. The deliberate-empty act is
+   *  the caller's to make, exactly as `replace: true` is on the source side. */
+  allowEmpty?: boolean;
 }): Promise<DeltaWriteResult> {
   const refreshStartedAt = new Date();
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'clarion-scd1-'));
@@ -133,6 +148,7 @@ export async function writeDeltaWithSidecar(opts: {
       business_key_columns: opts.businessKeyColumns,
       business_columns: opts.businessColumns,
       mode: 'scd1',
+      allow_empty: opts.allowEmpty === true,
     });
 
     if (sidecarResult.status !== 'ok') {
@@ -154,7 +170,14 @@ export async function writeDeltaWithSidecar(opts: {
         rowsInserted: sidecarResult.rows_inserted ?? 0,
         rowsDeleted: sidecarResult.rows_deleted ?? 0,
         rowsTotal: sidecarResult.rows_total ?? 0,
+        preservedExisting: sidecarResult.preserved_existing === true,
       };
+      if (result.preservedExisting) {
+        log.warn(
+          { productTableId: opts.productTableId, rowsKept: result.rowsTotal },
+          'transformation returned zero rows — kept the existing table instead of emptying it',
+        );
+      }
       if (sidecarResult.legacy_cleanup) {
         log.info(
           { productTableId: opts.productTableId, action: sidecarResult.legacy_cleanup },

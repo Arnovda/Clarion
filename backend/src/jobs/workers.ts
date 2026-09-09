@@ -170,16 +170,17 @@ async function processTransformationJob(job: Job<TransformationJobData>): Promis
   await job.updateProgress({ phase: 'starting', message: 'Running transformations…' });
 
   // Dynamic import to avoid circular deps
-  const { runProductTransformation } = await import('../services/transformationRunner');
+  const { runProductTransformation, loadTransformableTables } = await import('../services/transformationRunner');
 
-  // Load product + tables from DB
+  // Load product + tables from DB. The table load goes through the shared
+  // loader on purpose: this call site used to filter on `product_tables
+  // .product_id`, a column that has never existed, so every scheduled
+  // transformation failed with an undefined-column error.
   const product = await tenantQuery(tenantId, (trx) =>
     trx('data_products').where({ id: productId }).first(),
   );
   if (!product) throw new Error(`Product ${productId} not found`);
-  const tables = await tenantQuery(tenantId, (trx) =>
-    trx('product_tables').where({ product_id: productId }),
-  );
+  const tables = await loadTransformableTables(tenantId, productId);
 
   const results = await runProductTransformation(product, tables, tenantId);
 

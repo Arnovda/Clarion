@@ -344,6 +344,67 @@ async function sourcesForProducts(productIds: number[], tenantId: number): Promi
   return Array.from(new Set([...fromSources, ...pinned.map((r) => r.connection_id)]));
 }
 
+/**
+ * Per-product source connections — the map `sourcesForProducts` flattens away.
+ *
+ * The pipeline runner needs to answer "did the source THIS product reads from
+ * fail in this run?", which the union cannot answer: with two sources in scope
+ * and one of them down, the union says "a source failed" for every product,
+ * including the ones fed entirely by the healthy source.
+ *
+ * Same two channels as `sourcesForProducts`, in the same order of authority:
+ * `data_product_sources` rows first, `data_products.connection_id` as the
+ * fallback for products that have none yet.
+ */
+export async function sourceIdsByProduct(
+  productIds: number[],
+  tenantId: number,
+): Promise<Map<number, number[]>> {
+  const byProduct = new Map<number, Set<number>>();
+  if (productIds.length === 0) return new Map();
+  for (const id of productIds) byProduct.set(id, new Set<number>());
+
+  const rows = await tenantQuery(tenantId, (db) => db('data_product_sources as dps')
+    .join('source_tables as st', 'st.id', 'dps.source_table_id')
+    .whereIn('dps.data_product_id', productIds)
+    .whereNotNull('st.connection_id')
+    .distinct('dps.data_product_id', 'st.connection_id')
+    .select<{ data_product_id: number; connection_id: number }[]>('dps.data_product_id', 'st.connection_id'));
+  for (const r of rows) byProduct.get(r.data_product_id)?.add(r.connection_id);
+
+  const pinned = await tenantQuery(tenantId, (db) => db('data_products')
+    .whereIn('id', productIds)
+    .whereNotNull('connection_id')
+    .select<{ id: number; connection_id: number }[]>('id', 'connection_id'));
+  for (const r of pinned) byProduct.get(r.id)?.add(r.connection_id);
+
+  return new Map(Array.from(byProduct, ([id, set]) => [id, Array.from(set)]));
+}
+
+/**
+ * Upstream product edges within a given set, as `dependent → [sources]`.
+ * Used to propagate a skip: a fact whose dimension did not run this pass is
+ * in exactly the same position as one whose source sync failed.
+ */
+export async function upstreamProductsWithin(
+  productIds: number[],
+  tenantId: number,
+): Promise<Map<number, number[]>> {
+  const out = new Map<number, number[]>();
+  if (productIds.length === 0) return out;
+  const edges = await tenantQuery(tenantId, (db) => db('data_product_dependencies')
+    .whereIn('dependent_product_id', productIds)
+    .whereIn('source_product_id', productIds)
+    .select<{ dependent_product_id: number; source_product_id: number }[]>(
+      'dependent_product_id', 'source_product_id'));
+  for (const e of edges) {
+    const list = out.get(e.dependent_product_id) ?? [];
+    list.push(e.source_product_id);
+    out.set(e.dependent_product_id, list);
+  }
+  return out;
+}
+
 // ── Topo sort (used by the runner) ─────────────────────────────────────
 
 /**

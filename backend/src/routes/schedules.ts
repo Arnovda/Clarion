@@ -206,10 +206,9 @@ router.post('/product/:productId/run', requireAuth, requireRole('admin'), async 
       // the right SET LOCAL applied.
       (async () => {
         try {
-          const { runProductTransformation } = await import('../services/transformationRunner');
-          const tables = await tenantQuery(tenantId, (trx) =>
-            trx('product_tables').where({ product_id: productId }),
-          );
+          const { runProductTransformation, loadTransformableTables } =
+            await import('../services/transformationRunner');
+          const tables = await loadTransformableTables(tenantId, productId);
           const results = await runProductTransformation(product, tables, tenantId);
 
           await tenantQuery(tenantId, (trx) =>

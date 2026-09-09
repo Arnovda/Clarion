@@ -484,9 +484,8 @@ def test_zero_row_first_run_creates_empty_table(tmp_path, monkeypatch, capsys) -
     assert set(loaded.schema.names) == {"id", "v", "_row_hash"}
 
 
-def test_zero_row_refresh_deletes_existing_rows(tmp_path, monkeypatch, capsys) -> None:  # type: ignore[no-untyped-def]
+def _seed_two_rows(tmp_path, monkeypatch, capsys):  # type: ignore[no-untyped-def]
     delta = tmp_path / "delta_table"
-
     seed = tmp_path / "seed.parquet"
     _write_parquet(seed, [{"id": 1, "v": "a"}, {"id": 2, "v": "b"}])
     seeded = _run_main(monkeypatch, capsys, {
@@ -496,9 +495,22 @@ def test_zero_row_refresh_deletes_existing_rows(tmp_path, monkeypatch, capsys) -
         "business_columns": ["id", "v"],
     })
     assert seeded["rows_inserted"] == 2
-
     empty = tmp_path / "empty.parquet"
     _write_parquet(empty, [])
+    return delta, empty
+
+
+def test_zero_row_refresh_preserves_existing_rows(tmp_path, monkeypatch, capsys) -> None:  # type: ignore[no-untyped-def]
+    """A transformation that returns nothing must not empty a topic.
+
+    Until 2026-09-09 this branch was an unconditional delete, so a source that
+    answered empty for one run (or a WHERE narrowed by a column the AI repair
+    had cut out) wiped the table and every dashboard on it read zero. The
+    source writers have always preserved an existing file on a zero-row
+    batch; this makes the product writer keep the same contract.
+    """
+    delta, empty = _seed_two_rows(tmp_path, monkeypatch, capsys)
+
     result = _run_main(monkeypatch, capsys, {
         "delta_path": str(delta),
         "new_state_parquet": str(empty),
@@ -508,6 +520,31 @@ def test_zero_row_refresh_deletes_existing_rows(tmp_path, monkeypatch, capsys) -
 
     assert result["status"] == "ok"
     assert result["first_run"] is False
+    assert result["preserved_existing"] is True
+    # Counts describe what the table HOLDS, so the catalog stays truthful.
+    assert result["rows_total"] == 2
+    assert result["rows_unchanged"] == 2
+    assert result["rows_deleted"] == 0
+
+    dt = deltalake.DeltaTable(str(delta))
+    assert dt.to_pyarrow_table().num_rows == 2
+
+
+def test_zero_row_refresh_with_allow_empty_deletes_existing_rows(tmp_path, monkeypatch, capsys) -> None:  # type: ignore[no-untyped-def]
+    """Emptying on purpose stays possible — through an explicit flag, never
+    inferred from an empty result (the source writers' `replace: true`)."""
+    delta, empty = _seed_two_rows(tmp_path, monkeypatch, capsys)
+
+    result = _run_main(monkeypatch, capsys, {
+        "delta_path": str(delta),
+        "new_state_parquet": str(empty),
+        "business_key_columns": ["id"],
+        "business_columns": ["id", "v"],
+        "allow_empty": True,
+    })
+
+    assert result["status"] == "ok"
+    assert "preserved_existing" not in result
     assert result["rows_total"] == 0
     assert result["rows_deleted"] == 2
 

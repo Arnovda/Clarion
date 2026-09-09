@@ -1687,8 +1687,12 @@ function RunActivityDock({
                   });
                 }
               } else if (t === 'product') {
+                // 'skipped' is its own outcome, not a failure: the product was
+                // never run because its source did not sync cleanly. Showing
+                // it in red would send someone hunting for a broken
+                // transformation that never ran.
                 const status = (ev.status === 'ok' ? 'ok' :
-                                ev.status === 'partial' ? 'failed' :
+                                ev.status === 'skipped' ? 'skipped' :
                                 'failed') as NodeRunStatus;
                 updateNodeByName(ev.productName as string, 'product', {
                   status,

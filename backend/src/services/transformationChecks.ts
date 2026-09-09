@@ -673,3 +673,42 @@ export async function runTransformationChecks(
 
   return results;
 }
+
+/**
+ * Which check failures must STOP a table from publishing.
+ *
+ * Until 2026-09-09 the runner ran these checks inside a try/catch that only
+ * logged, so a fact with a duplicate grain published to every dashboard and
+ * every AI answer built on it. A duplicate grain is not a data-quality
+ * observation, it is a broken table: every SUM over it double-counts, and
+ * nothing downstream can detect that.
+ *
+ * Only BK uniqueness blocks. The reasoning per check:
+ *   • `bk_uniqueness` fail — the table's declared grain is not its actual
+ *     grain. Blocking.
+ *   • `fan_out` fail — the SAME measurement, narrowed to tables whose SQL
+ *     contains a JOIN (compare `checkFanOut` with `checkBkUniqueness`: both
+ *     are `COUNT(*)` vs `COUNT(DISTINCT bk)`). It fails together with BK
+ *     uniqueness and needs no separate rule.
+ *   • `ref_integrity` / `value_range` fail — statements about the DATA
+ *     (an orphan key, a negative amount). Real findings, but the table is
+ *     still what it claims to be, and refusing to publish would hide the
+ *     rows a curator needs in order to see the problem. They stay warnings.
+ *   • any `error` — the check itself could not run. "Could not measure" is
+ *     not "measured and bad"; blocking on it would let a broken check take
+ *     the warehouse down.
+ *
+ * Pure and exported so the rule is unit-testable without DuckDB.
+ */
+export function blockingCheckFailure(results: CheckResult[]): string | null {
+  const bk = results.find((r) => r.check_type === 'bk_uniqueness' && r.status === 'fail');
+  if (!bk) return null;
+  const cols = bk.bk_columns.join(', ');
+  return (
+    `Refusing to publish: ${bk.duplicate_count} duplicate business key(s) `
+    + `over (${cols}) — ${bk.total_rows} rows for ${bk.distinct_bk_rows} distinct keys. `
+    + 'Every total over this table would be inflated. Fix the transformation SQL '
+    + '(usually a JOIN that multiplies rows) or the column roles that declare the '
+    + 'grain, then run it again. The previously published version is untouched.'
+  );
+}
