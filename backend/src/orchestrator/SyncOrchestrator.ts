@@ -49,6 +49,8 @@ import { runSchemaProfiler } from '../semantic/SchemaProfiler';
 import { notifyAdmins } from '../services/notificationService';
 import { tenantQuery } from '../services/tenantQuery';
 import { getRedisConnection } from '../jobs/redis';
+import { publishInvalidation } from '../jobs/cacheBus';
+import { DuckDBConnector } from '../connectors/DuckDBConnector';
 
 const log = rootLogger.child({ mod: 'sync-orchestrator' });
 
@@ -722,6 +724,32 @@ async function runSyncInBackground(args: {
         tenantId, connectionId, syncRunId, partial: false,
         reason: redact(errorMessage ?? `Worker exited with code ${exitCode}`).slice(0, 500),
       });
+    }
+
+    // ── Make the new rows visible ───────────────────────────────────
+    // The DuckDB pool holds a session for 30 minutes with its metadata cache
+    // on, and its registered views point at the file set as it was when the
+    // session was opened. Until this call existed, "Sync complete" was
+    // followed by up to half an hour of pre-sync numbers on every surface
+    // that reads the SOURCE layer (Ask AI's source layer, notebooks, catalog
+    // previews, quality profiling) with nothing on screen to say so — the
+    // transformation runner had done this since it was written; the sync
+    // never had.
+    //
+    // Runs on EVERY terminal path, not just the clean one: the worker writes
+    // per entity as it goes, so a partial, cancelled or failed run can still
+    // have landed rows. Keyed on the source warehouse path only, and the
+    // broadcast deliberately carries NO tenantId — the widget and
+    // filter-option caches hold PRODUCT-layer results, which a source sync
+    // does not change; the transformation that follows busts those itself.
+    if (Object.keys(rowCounts).length > 0) {
+      try {
+        await DuckDBConnector.invalidateWarehouse(duckdbReadPath);
+      } catch (invErr) {
+        childLog.warn({ err: invErr }, 'DuckDB pool invalidation after sync failed (non-fatal)');
+      }
+      // Other processes hold their own pools. No-op without Redis.
+      publishInvalidation({ warehousePath: duckdbReadPath });
     }
   } catch (e) {
     cancellationHandles.delete(syncRunId);

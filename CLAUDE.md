@@ -31,7 +31,139 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-09-09 (INGESTION-CHAIN ASSESSMENT — doc only, no product
+**Last updated:** 2026-09-09 (INGESTION-CHAIN PHASE 0 SHIPPED — the four live
+defects, the three dual-write leaks and the worker memory guard from the
+assessment below; owner: *"Please follow your plan and implement"*. Same
+branch and PR #130 as the doc.)
+
+**Everything in §7 phase 0 of `docs/backlog/ingestion-chain-assessment.md` is
+built, each with a test that was red against the old code. None of it is
+architecture; all of it was broken or leaking yesterday.**
+- **(1) SCHEDULED TRANSFORMATIONS RUN AGAIN.** `processTransformationJob`
+  filtered `product_tables` on a `product_id` column that has never existed,
+  so every cron run and every manual `/schedules` run failed with an
+  undefined-column error while the pipeline paths (via `star_schema_id`)
+  worked. The same query had been copy-pasted FIVE times (4× in
+  `busMatrixOrchestrator`, once broken in `workers.ts`, once broken in
+  `routes/schedules.ts`'s inline path). NEW exported
+  `loadTransformableTables(tenantId, productId)` in `transformationRunner.ts`
+  is now the one loader; all six sites call it. A source-level test refuses
+  the old filter shape anywhere in those three files.
+- **(2) A SOURCE SYNC MAKES ITS ROWS VISIBLE.** `SyncOrchestrator` now calls
+  `DuckDBConnector.invalidateWarehouse(duckdbReadPath)` +
+  `publishInvalidation({ warehousePath })` on EVERY terminal path where rows
+  may have landed (succeeded, partial, cancelled, failed — the worker writes
+  per entity as it goes). **The broadcast deliberately carries NO tenantId**:
+  the cache-bus subscriber treats one as "drop the widget + filter-option
+  caches", which hold PRODUCT-layer rows a source sync does not change; the
+  transformation that follows busts those itself. Pinned by test.
+- **(3) A DUPLICATE GRAIN NO LONGER PUBLISHES.** NEW pure
+  `blockingCheckFailure(results)` in `transformationChecks.ts` decides which
+  check failures stop a table: **only `bk_uniqueness` fail blocks.**
+  Reasoning recorded on the function — fan-out is the SAME measurement
+  narrowed to JOIN tables (compare `checkFanOut` with `checkBkUniqueness`,
+  both `COUNT(*)` vs `COUNT(DISTINCT bk)`) so needs no rule; `ref_integrity`
+  and `value_range` fails are statements about the DATA, not a broken
+  contract, and refusing to publish would hide the rows a curator needs to
+  see the problem; any `error` is "could not measure", never "measured and
+  bad". The runner throws the sentence so the per-table catch marks the table
+  failed the same way an SQL error does; **the checks run on the TEMP table
+  before any write, so a refusal never costs the last good version.**
+- **(4) THE PIPELINE RUNNER REFUSES TO BUILD ON A FAILED SOURCE.**
+  `runPipelineWorkflow` recorded a failed/partial source in `sourceResults`
+  and then started every product anyway — contradicting `SyncOrchestrator`'s
+  own refusal to fire on-source-sync triggers after a partial run. NEW
+  `sourceIdsByProduct` + `upstreamProductsWithin` in `pipelineService.ts`
+  (per-product maps; the existing `sourcesForProducts` flattens to a union,
+  which cannot say WHICH product's source failed). A product whose source
+  failed is SKIPPED with the reason, and the skip propagates one hop: a fact
+  whose dimension was just skipped is in the same position. `OrchestratorEvent
+  .status` gained `'skipped'`; `productResults` gained `skipped`/`skipReason`;
+  the pipelines dock renders it as its own grey outcome instead of red (a
+  transformation that never ran is not a broken one).
+- **(5) AN EMPTY RESULT NO LONGER EMPTIES A TOPIC.** `commit_table.py` did
+  `dt.delete()` on a zero-row refresh; the source writers have always
+  preserved. It now preserves an existing non-empty table, reports
+  `preserved_existing: true` with counts describing what the table HOLDS, and
+  emptying on purpose stays possible through an explicit `allow_empty` flag
+  (the source writers' `replace: true`, same shape). `deltaWriter` plumbs
+  `allowEmpty` + `preservedExisting`; **the runner publishes `rowsTotal` on a
+  preserved refresh** so the catalog does not say 0 over data that is still
+  there. The old pytest that PINNED the delete behaviour is rewritten into two
+  (preserve by default / delete with the flag); sidecar suite 29 green in a
+  pinned venv.
+- **(6) THE THREE DUAL-WRITE LEAKS ARE CLOSED.** (a) `updateColumn`/
+  `updateTable` in `semanticGraph.ts` SET every mirrored property and
+  coalesced a missing key to null, so confirming from `/review` (which sends
+  only `ai_draft` + `approval_status`) NULLED the graph's description — the
+  copy the source-layer prompt reads. NEW `buildPatchSet` emits a SET clause
+  for ONLY the keys the patch carries (`undefined` = "said nothing", explicit
+  null = "clear it"); property names come from a fixed map, never from input.
+  The boolean half was subtler: `Boolean(undefined)` cleared an untouched
+  dimension flag, and `is_active` defaulted to TRUE on absence. (b) `PATCH
+  /semantic/product-tables|product-columns/:id` wrote ONLY the graph while
+  `productContext.ts` reads Postgres — the only product-definition editing
+  surface never reached the AI. NEW `mirrorProductPatch` in
+  `routes/semantic.ts` mirrors the columns Postgres HAS (`display_name`,
+  `description`, and `column_role` on columns; owner/domains are graph-only,
+  no Postgres column exists) and accepts either id space (`id` OR
+  `neo4j_pg_id`, same rule as the ownership gate). (c) `upsertConnectionGraph`
+  deleted only `aiDraft: true` edges and then CREATEd unconditionally, so a
+  relationship the profiler re-derives that a human had confirmed came back
+  as a SECOND edge beside the first, draft again — the review queue re-asked,
+  and `getRelationshipsForContext` (which filters FLAGGED edges) handed the
+  model the unflagged twin. Now **MERGE on `(fromColName, toColName)` between
+  the two anchored tables** — not on `pgId`, which the profiler re-mints every
+  run; ON MATCH keeps `aiDraft=false` and a human's description, and never
+  touches `flagged`. Edges with no column pair fall back to CREATE (nothing
+  to identify them by; drafts by construction, cleared next run).
+- **(7) THE WORKER'S DUCKDB IS BOUNDED.** NEW `packages/connectors/src/
+  duckdbGuardrails.ts` — `createGuardedDuckDb()` applies `memory_limit`
+  (default `60%`), `threads` (default `1`) and `temp_directory` to every
+  session the two warehouse writers open (8 sites, all routed through it).
+  A deliberate copy of the backend's `applyResourceGuardrails` rule, not an
+  import — the package must stay standalone; the env var NAMES are the
+  contract. The merge path reads the WHOLE existing parquet, so its peak is
+  proportional to the table, not the batch — this is where a 1-vCPU job
+  container was an OOM-kill waiting to happen.
+- **Ratchet housekeeping**: the dynamic-import count was 74 against a
+  baseline of 87 (stale from prior sessions; my first draft added a 75th and
+  was folded into the existing lazy `pipelineService` load) — **baseline
+  LOWERED 87→74** per the covenant.
+- Validation: backend `npm run check` clean; NEW `tests/ingestion-phase0
+  .test.ts` (16: loader via star schema incl. stubs and no-schema; blocking
+  rule matrix; runner throws BEFORE the write; per-product source/upstream
+  maps; gate wired ahead of the run; sync invalidation wired and tenant-free;
+  product PATCH mirror for both tables, graph-id space, foreign tenant 404) —
+  **the mirror test verified RED** with the mirror call removed; `semantic
+  Graph.tenant.test.ts` +6 (patch-only SET incl. explicit null and booleans;
+  relationship MERGE key, ON MATCH preservation, `flagged` untouched, CREATE
+  fallback); connectors **22 files / 308 passed** with the guarded sessions
+  (the DuckDB-backed `ParquetWriter` suite runs through them), `tsc` clean,
+  dist rebuilt; worker `tsc` clean; sidecar pytest **29 green**; **all eleven
+  ratchets green from the repo root**; frontend `tsc` clean, the touched
+  file's two lint findings are PRE-EXISTING on untouched lines (verified
+  against HEAD); `next build` green **46/46** (`/pipelines` 84.5 kB); full
+  backend vitest **87 files / 824 passed / 4 skipped** (was 86/802 — +22
+  across the two suites above). SANDBOX: Postgres died once between commands
+  mid-session (the documented unsupervised-service trap) — `ECONNREFUSED` on
+  a suite that had just passed is that, not a regression.
+- **NOT runtime-exercised against a live tenant.** Watch after deploy: the
+  first cron transformation landing `success` in `transformation_runs`
+  (they all landed `failed` before); a `'transformation blocked by a quality
+  check'` ERROR line, which means a duplicate-grain fact that used to publish
+  now refuses — read the `transformation_checks` samples on the Quality tab
+  and fix the SQL or the roles; `'transformation returned zero rows — previous
+  data preserved'` WARN; and a pipeline run showing a grey "skipped" product
+  after a partial source sync.
+- **NOT in phase 0, deliberately** (phase 1 next): stable hash/natural keys in
+  both design paths (C1), AI repair of vanished source columns not persisting
+  (`degraded` instead), one provenance vocabulary (E5), keeping source types
+  (E6). And NOT done: `allow_empty` has no caller yet — the explicit "empty
+  this topic" act is a later slice; today a legitimately-emptied source
+  leaves the topic at its last rows with a WARN on every refresh.
+
+**Prior last updated:** 2026-09-09 (INGESTION-CHAIN ASSESSMENT — doc only, no product
 code changed; owner: *"Onderzoek het ingestion framework… is dit de beste opzet
 en future proof om 200+ connectoren te bouwen… full load en dan mergen naar de
 topics, of overwrite?… wat met veranderende schema's… en de manier waarop we de

@@ -36,7 +36,7 @@
  *     bounded and predictable.
  */
 
-import { Database } from 'duckdb-async';
+import { createGuardedDuckDb } from './duckdbGuardrails';
 import * as fs from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
@@ -206,7 +206,7 @@ async function convertNdjsonToParquet(
   parquetPath: string,
   columns?: ColumnSchema,
 ): Promise<void> {
-  const db = await Database.create(':memory:');
+  const db = await createGuardedDuckDb();
   try {
     const escNd = ndjsonPath.replace(/'/g, "''");
     const escPq = parquetPath.replace(/'/g, "''");
@@ -222,7 +222,7 @@ async function convertNdjsonToParquet(
 }
 
 async function writeEmptyParquet(parquetPath: string): Promise<void> {
-  const db = await Database.create(':memory:');
+  const db = await createGuardedDuckDb();
   try {
     const esc = parquetPath.replace(/'/g, "''");
     await db.all(`
@@ -242,7 +242,7 @@ async function writeEmptyParquetWithSchema(
   parquetPath: string,
   schema: ReadonlyArray<{ name: string; sqlType: string }>,
 ): Promise<void> {
-  const db = await Database.create(':memory:');
+  const db = await createGuardedDuckDb();
   try {
     const esc = parquetPath.replace(/'/g, "''");
     const projections = schema.map((col, i) => {
@@ -276,7 +276,7 @@ async function mergeNdjsonIntoExistingParquet(
   // The Blob writer's `existingParquetPath` is already a tmpdir-local
   // file (the downloadToFile result), so no further staging copy is
   // needed — the file Azure SDK created is exclusively ours.
-  const db = await Database.create(':memory:');
+  const db = await createGuardedDuckDb();
   try {
     const escNd = ndjsonPath.replace(/'/g, "''");
     const escEx = existingParquetPath.replace(/'/g, "''");

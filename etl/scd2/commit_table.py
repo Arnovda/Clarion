@@ -451,6 +451,9 @@ def main() -> int:
     business_key_columns: list[str] = cfg.get("business_key_columns") or []
     business_columns: list[str] = cfg["business_columns"]
     mode: str = cfg.get("mode", "scd1")
+    # Opt-in "yes, this table really should end up empty". Absent → a zero-row
+    # result over an existing table preserves what is there (see the write step).
+    allow_empty: bool = bool(cfg.get("allow_empty", False))
 
     if mode != "scd1":
         # SCD2 lives in the backlog; sidecar refuses unknown modes loudly
@@ -463,6 +466,7 @@ def main() -> int:
         return 0
 
     storage_options = cfg.get("storage_options") or derive_storage_options(delta_path)
+    preserved_existing = False
 
     try:
         # 1. Read the new state Node DuckDB just produced.
@@ -560,6 +564,28 @@ def main() -> int:
                     mode="ignore",
                     storage_options=storage_options,
                 )
+            elif len(existing) > 0 and not allow_empty:
+                # PRESERVE, don't wipe. Until 2026-09-09 this branch was an
+                # unconditional `dt.delete()`, so anything that made the
+                # transformation return nothing for one run — a source that
+                # answered empty, a WHERE clause narrowed by a column the AI
+                # repair had just cut out — emptied the topic, and every
+                # dashboard on it went to zero. The source writers have always
+                # preserved an existing table on a zero-row batch; the product
+                # writer was the one place that destroyed.
+                #
+                # Emptying a topic on purpose stays possible, through the same
+                # shape the source writers use for it: an explicit flag from
+                # the caller (`replace: true` there, `allow_empty` here), never
+                # inferred from an empty result.
+                counts = {
+                    "rows_unchanged": int(len(existing)),
+                    "rows_updated": 0,
+                    "rows_inserted": 0,
+                    "rows_deleted": 0,
+                    "rows_total": int(len(existing)),
+                }
+                preserved_existing = True
             else:
                 dt.delete()
         else:
@@ -586,6 +612,10 @@ def main() -> int:
             "first_run": first_run,
             **counts,
         }
+        if preserved_existing:
+            # Node turns this into a warning on the run and keeps the
+            # catalog's row count truthful (the table still holds these rows).
+            result["preserved_existing"] = True
         if cleanup_msg:
             result["legacy_cleanup"] = cleanup_msg
         sys.stdout.write(json.dumps(result))

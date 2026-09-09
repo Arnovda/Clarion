@@ -188,6 +188,44 @@ async function recordVersion(
   });
 }
 
+/**
+ * Mirror a product-layer definition patch into Postgres.
+ *
+ * The product layer has the same dual-write contract as the source layer
+ * (see CLAUDE.md), and until 2026-09-09 these two routes honoured only half
+ * of it: they wrote Neo4j, while `services/productContext.ts` — the module
+ * that builds the AI's picture of a topic — reads `product_tables` and
+ * `product_columns` straight from Postgres. A curator renaming a column or
+ * writing what it means changed the catalog screen and nothing else.
+ *
+ * `fields` names the columns that actually exist on the Postgres table; the
+ * graph carries a few (owner, domains) that Postgres does not, and silently
+ * dropping those is correct — inventing columns for them is not.
+ *
+ * The id may be either id space: the catalog panel holds the graph-minted
+ * `neo4j_pg_id`, other callers hold the Postgres `id`. Same rule as
+ * `denyUnlessOwned`'s GRAPH_ID_ALIAS, so a patch that passed the gate can
+ * never miss its row here.
+ */
+async function mirrorProductPatch(
+  db: Knex | Knex.Transaction,
+  table: 'product_tables' | 'product_columns',
+  pgId: number,
+  body: Record<string, unknown>,
+  fields: string[],
+): Promise<void> {
+  const patch: Record<string, unknown> = {};
+  for (const f of fields) {
+    if (typeof body[f] === 'string') patch[f] = body[f];
+  }
+  // A human touched it — the same statement `updateProductTable`/`Column`
+  // makes in the graph.
+  patch.ai_draft = false;
+  await db(table)
+    .where((qb) => { qb.where('id', pgId).orWhere('neo4j_pg_id', pgId); })
+    .update(patch);
+}
+
 async function auditLog(
   db: Knex | Knex.Transaction,
   tenantId: number | undefined,
@@ -1840,6 +1878,15 @@ router.patch('/product-tables/:id', requireAuth, requireRole('admin', 'analyst')
       owner_name:   body.owner_name,
       domains:      body.domains,
     }, req.user!.tenantId);
+    // Mirror to Postgres. THE LEAK THIS CLOSES: the product-layer AI context
+    // (`productContext.ts`) reads product_tables/product_columns from
+    // POSTGRES ONLY, while this — the only surface that edits a product
+    // definition — wrote only the graph. So a curator's description reached
+    // the catalog screen and never reached the model, which is the one
+    // consumer the editing exists for. Only the columns that exist on
+    // `product_tables` are mirrored: owner_name and domains live in the graph
+    // alone (no Postgres column), which is why they are absent here.
+    await mirrorProductPatch(db, 'product_tables', pgId, body, ['display_name', 'description']);
 
     await invalidateSemanticCache(await connectionIdForEntity(db, 'product_tables', pgId) ?? undefined);
     await auditLog(db, req.user!.tenantId, req.user!.sub, req.user!.name as string, 'update', 'product_table', pgId, body.display_name as string ?? null, body);
@@ -1863,6 +1910,8 @@ router.patch('/product-columns/:id', requireAuth, requireRole('admin', 'analyst'
       owner_name:   body.owner_name,
       column_role:  body.column_role,
     }, req.user!.tenantId);
+    // Mirror to Postgres — see PATCH /product-tables/:id above for why.
+    await mirrorProductPatch(db, 'product_columns', pgId, body, ['display_name', 'description', 'column_role']);
 
     await invalidateSemanticCache(await connectionIdForEntity(db, 'product_columns', pgId) ?? undefined);
     await auditLog(db, req.user!.tenantId, req.user!.sub, req.user!.name as string, 'update', 'product_column', pgId, body.display_name as string ?? null, body);

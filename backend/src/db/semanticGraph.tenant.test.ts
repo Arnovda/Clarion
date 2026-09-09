@@ -158,3 +158,92 @@ describe('semanticGraph tenant predicate binding', () => {
     expect(captured[0].cypher).not.toContain('$tenantId');
   });
 });
+
+/**
+ * Two dual-write leaks that the tenant predicate cannot see, both found by the
+ * 2026-09-09 ingestion-chain assessment (§6.3). Same driver mock: what is
+ * under test is the Cypher this module emits, not Neo4j's behaviour.
+ */
+describe('semanticGraph — a patch touches only what the patch carries', () => {
+  it('confirming a definition does not blank the fields it never mentions', async () => {
+    // THE PRODUCTION SHAPE: /review confirms a column by PATCHing exactly
+    // `{ ai_draft: false, approval_status: 'approved' }`. The old Cypho SET
+    // every mirrored property, coalescing each missing key to null — so the
+    // act of approving a description deleted it from the graph, which is the
+    // copy the source-layer AI prompt reads.
+    await graph.updateColumn(11, {}, TENANT);
+    const { cypher, params } = captured[0];
+    expect(cypher).not.toContain('c.description');
+    expect(cypher).not.toContain('c.displayName');
+    expect(cypher).not.toContain('c.ownerName');
+    // Booleans are the subtler half: `Boolean(undefined)` is false, so an
+    // untouched dimension flag used to be silently cleared.
+    expect(cypher).not.toContain('c.isDimension');
+    expect(cypher).not.toContain('c.isMeasure');
+    // What a confirm DOES mean is still written.
+    expect(cypher).toContain('c.aiDraft      = false');
+    expect(params).not.toHaveProperty('description');
+  });
+
+  it('a field the patch does carry is still written, including an explicit null', async () => {
+    await graph.updateColumn(11, { description: 'What this column means', owner_name: null }, TENANT);
+    const { cypher, params } = captured[0];
+    expect(cypher).toContain('c.description = $description');
+    expect(params.description).toBe('What this column means');
+    // An explicit null is an instruction to clear, not an absent key.
+    expect(cypher).toContain('c.ownerName = $ownerName');
+    expect(params.ownerName).toBeNull();
+    // Still untouched.
+    expect(cypher).not.toContain('c.displayName');
+  });
+
+  it('the same rule holds for tables', async () => {
+    await graph.updateTable(9, { display_name: 'Invoices' }, TENANT);
+    const { cypher, params } = captured[0];
+    expect(cypher).toContain('t.displayName = $displayName');
+    expect(params.displayName).toBe('Invoices');
+    expect(cypher).not.toContain('t.description');
+    expect(cypher).not.toContain('t.domains');
+    expect(cypher).not.toContain('t.grain');
+    // is_active defaulted to TRUE when absent, so a confirm could silently
+    // re-activate a table someone had switched off.
+    expect(cypher).not.toContain('t.isActive');
+  });
+});
+
+describe('semanticGraph — re-profiling merges relationships instead of duplicating them', () => {
+  const rel = {
+    pgId: 501, fromTablePgId: 1, toTablePgId: 2,
+    fromColPgId: 10, fromColName: 'customer_id',
+    toColPgId: 20, toColName: 'id',
+    relType: 'many_to_one', description: 'Invoice belongs to a customer',
+  };
+
+  it('merges on the join it asserts, not on the Postgres id', async () => {
+    await graph.upsertConnectionGraph([], [], [rel], TENANT);
+    const create = captured.find((c) => c.cypher.includes('RELATES_TO') && /MERGE|CREATE \(ft\)/.test(c.cypher));
+    expect(create).toBeDefined();
+    expect(create!.cypher).toContain('MERGE (ft)-[r:RELATES_TO {fromColName: $fromColName, toColName: $toColName}]->(tt)');
+    // pgId must NOT be part of the merge key: the profiler wipes and
+    // re-inserts its Postgres rows every run, so the same real relationship
+    // arrives with a new id each time and would never match.
+    expect(create!.cypher).not.toContain('MERGE (ft)-[r:RELATES_TO {pgId');
+  });
+
+  it('a confirmed edge stays confirmed and keeps its description', async () => {
+    await graph.upsertConnectionGraph([], [], [rel], TENANT);
+    const merge = captured.find((c) => c.cypher.includes('ON MATCH SET'))!;
+    expect(merge.cypher).toContain('r.aiDraft     = CASE WHEN r.aiDraft = false THEN false ELSE true END');
+    expect(merge.cypher).toContain('r.description = CASE WHEN r.aiDraft = false THEN r.description ELSE $description END');
+    // `flagged` is a statement about the DATA. Re-deriving the relationship
+    // does not settle it, so the merge must never clear it.
+    expect(merge.cypher).not.toContain('r.flagged');
+  });
+
+  it('falls back to CREATE when there is no column pair to identify the edge by', async () => {
+    await graph.upsertConnectionGraph([], [], [{ ...rel, fromColName: null, toColName: null }], TENANT);
+    const stmt = captured.find((c) => c.cypher.includes('RELATES_TO') && !c.cypher.includes('DELETE r'))!;
+    expect(stmt.cypher).toContain('CREATE (ft)-[r:RELATES_TO');
+    expect(stmt.cypher).not.toContain('MERGE');
+  });
+});

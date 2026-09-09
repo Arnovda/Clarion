@@ -74,7 +74,7 @@ export interface OrchestratorEvent {
   friendly?: string;
   productName?: string;
   productId?: number;
-  status?: 'ok' | 'error' | 'partial';
+  status?: 'ok' | 'error' | 'partial' | 'skipped';
   details?: unknown;
   /** designed: the topics the build is about to create (with real ids). */
   topics?: DesignedTopic[];
@@ -377,7 +377,7 @@ export async function runBusMatrixWorkflow(
   emit({ type: 'phase', text: 'Running transformations…', friendly: 'Building the data behind your topics…' });
 
   const sortedProducts = [...products].sort((a, b) => a.build_order - b.build_order);
-  const { runProductTransformation } = await loadTransformationRunner();
+  const { runProductTransformation, loadTransformableTables } = await loadTransformationRunner();
 
   let allOk = true;
 
@@ -399,25 +399,7 @@ export async function runBusMatrixWorkflow(
       const product = await tenantQuery(tenantId, (trx) =>
         trx('data_products').where({ id: p.id }).first()
       );
-      const schemas = await tenantQuery(tenantId, (trx) =>
-        trx('star_schemas').where({ data_product_id: p.id })
-      );
-      const schemaIds = schemas.map((s: { id: number }) => s.id);
-      const tables = schemaIds.length
-        ? await tenantQuery(tenantId, (trx) =>
-            trx('product_tables')
-              .whereIn('star_schema_id', schemaIds)
-              .where((qb) => {
-                // Stubs (shared dims from another product) carry no SQL — the
-                // runner's skip-path publishes them from the upstream owner, which
-                // is also what flips their status to 'success'. Excluding them
-                // left every stub at 'draft' forever (found 2026-08-24 via the
-                // topics canvas drawing zero relations).
-                qb.whereNotNull('transformation_sql').orWhere('is_shared_dimension', true);
-              })
-              .orderBy('dag_order', 'asc')
-          )
-        : [];
+      const tables = await loadTransformableTables(tenantId, p.id);
 
       if (!product) {
         // Defensive: even with tenantQuery, surface the missing-row case
@@ -500,7 +482,7 @@ export interface RunPipelineWorkflowOptions {
 export interface RunPipelineWorkflowResult {
   allOk: boolean;
   sourceResults: Array<{ sourceId: number; status: 'succeeded' | 'failed' | 'skipped'; error?: string }>;
-  productResults: Array<{ productId: number; productName: string; allOk: boolean; failedTables: number; totalTables: number }>;
+  productResults: Array<{ productId: number; productName: string; allOk: boolean; failedTables: number; totalTables: number; skipped?: boolean; skipReason?: string }>;
 }
 
 async function checkPipelineCancelled(opts: RunPipelineWorkflowOptions): Promise<void> {
@@ -608,7 +590,7 @@ export async function runPipelineWorkflow(
 
   // ── Phase 2 — product transformations (topological order) ────────────
   if (scope.productIds.length > 0) {
-    const { topoSortProducts } = await import('./pipelineService');
+    const { topoSortProducts, sourceIdsByProduct, upstreamProductsWithin } = await import('./pipelineService');
     const ordered = await topoSortProducts(scope.productIds, tenantId);
     emit({ type: 'phase', text: `Running ${ordered.length} product${ordered.length === 1 ? '' : 's'}…` });
 
@@ -636,7 +618,31 @@ export async function runPipelineWorkflow(
       displayNameById.set(r.id, ambiguous && connName ? `${r.name} (${connName})` : r.name);
     }
 
-    const { runProductTransformation } = await loadTransformationRunner();
+    // ── The gate ────────────────────────────────────────────────────
+    // A source that failed or came back partial still has a warehouse table
+    // holding LAST run's rows. Building a fact on top of it produces a
+    // plausible, wrong number with nothing on screen to say so — which is
+    // exactly why `SyncOrchestrator` refuses to fire on-source-sync pipeline
+    // triggers after a partial run. This runner recorded the failure in
+    // `sourceResults` and then started every product anyway; the two paths
+    // contradicted each other. The skip propagates one more hop: a fact whose
+    // dimension was just skipped is in the same position as one whose source
+    // failed.
+    const productSources = await sourceIdsByProduct(ordered, tenantId);
+    const upstreamOf = await upstreamProductsWithin(ordered, tenantId);
+    const failedSourceIds = new Set(
+      sourceResults.filter((r) => r.status === 'failed').map((r) => r.sourceId),
+    );
+    const sourceNameById = new Map<number, string>();
+    if (failedSourceIds.size > 0) {
+      const rows = await tenantQuery(tenantId, (db) => db('connections')
+        .whereIn('id', Array.from(failedSourceIds))
+        .select<{ id: number; name: string }[]>('id', 'name'));
+      for (const r of rows) sourceNameById.set(r.id, r.name);
+    }
+    const skippedProducts = new Map<number, string>();
+
+    const { runProductTransformation, loadTransformableTables } = await loadTransformationRunner();
     for (const pid of ordered) {
       await checkPipelineCancelled(opts);
       // Same RLS guard as Phase E in runBusMatrixWorkflow — tenantQuery
@@ -649,27 +655,31 @@ export async function runPipelineWorkflow(
         continue;
       }
       const dispName = displayNameById.get(pid) ?? product.name;
+
+      // Refuse rather than build on rows we know are stale.
+      const brokenSources = (productSources.get(pid) ?? [])
+        .filter((sid) => failedSourceIds.has(sid))
+        .map((sid) => sourceNameById.get(sid) ?? `source ${sid}`);
+      const brokenUpstream = (upstreamOf.get(pid) ?? [])
+        .filter((up) => skippedProducts.has(up))
+        .map((up) => displayNameById.get(up) ?? `#${up}`);
+      if (brokenSources.length > 0 || brokenUpstream.length > 0) {
+        const reason = brokenSources.length > 0
+          ? `its source did not sync cleanly (${brokenSources.join(', ')})`
+          : `it builds on ${brokenUpstream.join(', ')}, which was skipped`;
+        skippedProducts.set(pid, reason);
+        emit({ type: 'log', text: `  "${dispName}": skipped — ${reason}` });
+        emit({ type: 'product', productName: dispName, productId: pid, status: 'skipped', text: `skipped — ${reason}` });
+        productResults.push({
+          productId: pid, productName: dispName, allOk: false,
+          failedTables: 0, totalTables: 0, skipped: true, skipReason: reason,
+        });
+        continue;
+      }
+
       emit({ type: 'log', text: `  Running "${dispName}"…` });
 
-      const schemas = await tenantQuery(tenantId, (trx) =>
-        trx('star_schemas').where({ data_product_id: pid })
-      );
-      const schemaIds = schemas.map((s: { id: number }) => s.id);
-      const tables = schemaIds.length
-        ? await tenantQuery(tenantId, (trx) =>
-            trx('product_tables')
-              .whereIn('star_schema_id', schemaIds)
-              .where((qb) => {
-                // Stubs (shared dims from another product) carry no SQL — the
-                // runner's skip-path publishes them from the upstream owner, which
-                // is also what flips their status to 'success'. Excluding them
-                // left every stub at 'draft' forever (found 2026-08-24 via the
-                // topics canvas drawing zero relations).
-                qb.whereNotNull('transformation_sql').orWhere('is_shared_dimension', true);
-              })
-              .orderBy('dag_order', 'asc')
-          )
-        : [];
+      const tables = await loadTransformableTables(tenantId, pid);
 
       try {
         const results = await runProductTransformation(product, tables, tenantId);
@@ -867,27 +877,8 @@ export async function runProductRefreshWorkflow(
   emit({ type: 'phase', text: 'Running transformations…' });
   emit({ type: 'log', text: `  Running "${product.name}"…` });
 
-  const schemas = await tenantQuery(tenantId, (trx) =>
-    trx('star_schemas').where({ data_product_id: productId })
-  );
-  const schemaIds = schemas.map((s: { id: number }) => s.id);
-  const tables = schemaIds.length
-    ? await tenantQuery(tenantId, (trx) =>
-        trx('product_tables')
-          .whereIn('star_schema_id', schemaIds)
-          .where((qb) => {
-                // Stubs (shared dims from another product) carry no SQL — the
-                // runner's skip-path publishes them from the upstream owner, which
-                // is also what flips their status to 'success'. Excluding them
-                // left every stub at 'draft' forever (found 2026-08-24 via the
-                // topics canvas drawing zero relations).
-                qb.whereNotNull('transformation_sql').orWhere('is_shared_dimension', true);
-              })
-          .orderBy('dag_order', 'asc')
-      )
-    : [];
-
-  const { runProductTransformation } = await loadTransformationRunner();
+  const { runProductTransformation, loadTransformableTables } = await loadTransformationRunner();
+  const tables = await loadTransformableTables(tenantId, productId);
   const results = await runProductTransformation(product, tables, tenantId);
 
   const failed = results.filter((r) => r.status === 'error');
@@ -1227,29 +1218,11 @@ export async function runTopicExtensionWorkflow(
   emit({ type: 'phase', text: 'Running transformations…', friendly: `Building the data behind ${request.name}…` });
   emit({ type: 'product_start', productName: built.name, productId: built.id });
 
-  const { runProductTransformation } = await loadTransformationRunner();
+  const { runProductTransformation, loadTransformableTables } = await loadTransformationRunner();
   const product = await tenantQuery(tenantId, (trx) =>
     trx('data_products').where({ id: built.id }).first(),
   );
-  const schemas = await tenantQuery(tenantId, (trx) =>
-    trx('star_schemas').where({ data_product_id: built.id }),
-  );
-  const schemaIds = schemas.map((s: { id: number }) => s.id);
-  const tables = schemaIds.length
-    ? await tenantQuery(tenantId, (trx) =>
-        trx('product_tables')
-          .whereIn('star_schema_id', schemaIds)
-          .where((qb) => {
-                // Stubs (shared dims from another product) carry no SQL — the
-                // runner's skip-path publishes them from the upstream owner, which
-                // is also what flips their status to 'success'. Excluding them
-                // left every stub at 'draft' forever (found 2026-08-24 via the
-                // topics canvas drawing zero relations).
-                qb.whereNotNull('transformation_sql').orWhere('is_shared_dimension', true);
-              })
-          .orderBy('dag_order', 'asc'),
-      )
-    : [];
+  const tables = await loadTransformableTables(tenantId, built.id);
   if (!product) throw new Error(`Product ${built.id} was inserted but cannot be read back — RLS or transaction visibility issue.`);
 
   let allOk = true;

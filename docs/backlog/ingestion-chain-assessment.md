@@ -185,6 +185,8 @@ Niet per se — en dat is belangrijk om eerlijk te zeggen. Voor SMB-volumes (hon
 
 ### 4.3 De vier defecten die vandaag kapot zijn
 
+> **Status 2026-09-09:** alle vier, plus de drie dual-write-lekken (E2) en de `memory_limit` in de worker-writer, zijn gefixt in dezelfde PR als dit document (fase 0 van §7). Zie de CLAUDE.md-entry van die datum voor wat precies is gebouwd en getest.
+
 Deze horen niet in een roadmap maar in de volgende PR:
 
 1. **Geplande transformaties falen altijd.** `processTransformationJob` laadt tabellen met `trx('product_tables').where({ product_id: productId })` (`workers.ts:181`), maar `product_tables` heeft geen `product_id`-kolom — alleen `star_schema_id` (`20260402000017_create_data_products.ts:36`; geen latere migratie voegt er een toe). Elke cron-run (`scheduler.ts:57` → queue `scheduled-transformation` → `workers.ts:436`) en elke handmatige run via `routes/schedules.ts:191-193` landt als `failed` in `transformation_runs` met een Postgres undefined-column-fout. Geen test dekt het; het SchedulePanel is op 2026-09-06 verwijderd, dus de feature is tegelijk kapot en onbereikbaar. De pipelines (`busMatrixOrchestrator.ts:408,660`, via `star_schema_id`) werken wél — dat is waarom niemand het merkte. *Geverifieerd door de migratie en de worker met de hand te lezen.*
@@ -311,7 +313,7 @@ Volgorde op afhankelijkheid en op *wat vandaag fout gaat*, niet op ambitie. Insc
 
 | Fase | Wat | Waarom eerst | Orde |
 |---|---|---|---|
-| **0 — Deze week** | §4.3-1 kolomfout in de transformatie-worker; §3.1 invalidatie na sync (B4); blokkerende checks (C6); `sourceResults`-gate in de pipeline-runner; preserve-on-empty in de sidecar; de drie dual-write-lekken (E2); `memory_limit` in de worker-writer | Alles hier is kapot of lekt vandaag; niets ervan is architectuur | 2–3 dagen |
+| **0 — Deze week** ✅ *gebouwd 2026-09-09* | §4.3-1 kolomfout in de transformatie-worker; §3.1 invalidatie na sync (B4); blokkerende checks (C6); `sourceResults`-gate in de pipeline-runner; preserve-on-empty in de sidecar; de drie dual-write-lekken (E2); `memory_limit` in de worker-writer | Alles hier is kapot of lekt vandaag; niets ervan is architectuur | 2–3 dagen |
 | **1 — Sleutels en beleid** | Stabiele hash-/natuurlijke sleutels in beide ontwerp-paden (C1); AI-repair van verdwenen bronkolommen niet meer persisteren, tabel `degraded` (D3-helft); één herkomst-vocabulaire (E5); brontype bewaren (E6) | Voorwaarde voor incrementeel, SCD2, crosswalk en impact-analyse; kleine wijzigingen met grote hefboom | 1 week |
 | **2 — Het tabelformaat** | DuckLake (of Delta-MERGE) voor bron én topics; soft-delete-conventie + `reconcile`-mode (B2); hervatbare loads (B3); één writer; Python-sidecar weg | Lost O(tabel)-merge, deletes, 30-min-grens, historie en de dubbele writer in één beweging op; alles daarna bouwt erop | 3–4 weken, incl. migratie van bestaande data (eenmalige re-sync per tenant is acceptabel — er zijn nog geen betalende klanten en één connector per tenant) |
 | **3 — Schema als beleid** | Schema-registry per entiteit (D1), beleid per wijzigingstype (D2), impact-analyse vóór de run (D3), productcontract (D4), bronversie (D5) | Maakt "veranderende schema's" van een verrassing een melding met namen | 2–3 weken |

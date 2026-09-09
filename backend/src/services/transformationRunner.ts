@@ -10,7 +10,7 @@ import path from 'path';
 import fs from 'fs';
 import { Database } from 'duckdb-async';
 import { semanticDb } from '../db/knex';
-import { runTransformationChecks } from './transformationChecks';
+import { runTransformationChecks, blockingCheckFailure } from './transformationChecks';
 import { tenantQuery } from './tenantQuery';
 import { syncProductToNeo4j } from './productGraphSync';
 import { DuckDBConnector } from '../connectors/DuckDBConnector';
@@ -356,6 +356,44 @@ async function refreshFactRollup(
 /**
  * Runs transformations for a data product's tables, respecting DAG order.
  */
+/**
+ * Load the product tables a transformation run should execute, in DAG order.
+ *
+ * THE COLUMN THAT DOES NOT EXIST: `product_tables` has no `product_id` — a
+ * table belongs to a star schema, and the schema belongs to the product
+ * (migration 20260402000017). `processTransformationJob` filtered on
+ * `product_id` anyway, so every scheduled transformation failed with an
+ * undefined-column error while the pipeline paths (which resolve through
+ * `star_schema_id`) worked. That is why nobody noticed. This helper exists so
+ * there is exactly ONE place that knows how to answer "which tables does this
+ * product run?" — the query was copy-pasted five times, and the fifth copy
+ * drifted.
+ */
+export async function loadTransformableTables(
+  tenantId: number,
+  productId: number,
+): Promise<TableRow[]> {
+  const schemas = await tenantQuery(tenantId, (trx) =>
+    trx('star_schemas').where({ data_product_id: productId }).select('id'),
+  ) as Array<{ id: number }>;
+  const schemaIds = schemas.map((s) => s.id);
+  if (schemaIds.length === 0) return [];
+
+  return (await tenantQuery(tenantId, (trx) =>
+    trx('product_tables')
+      .whereIn('star_schema_id', schemaIds)
+      .where((qb) => {
+        // Stubs (shared dims from another product) carry no SQL — the runner's
+        // skip-path publishes them from the upstream owner, which is also what
+        // flips their status to 'success'. Excluding them left every stub at
+        // 'draft' forever (found 2026-08-24 via the topics canvas drawing zero
+        // relations).
+        qb.whereNotNull('transformation_sql').orWhere('is_shared_dimension', true);
+      })
+      .orderBy('dag_order', 'asc'),
+  )) as TableRow[];
+}
+
 export async function runProductTransformation(
   product: ProductRow,
   tables: TableRow[],
@@ -723,10 +761,28 @@ export async function runProductTransformation(
           );
         }
 
+        // Quality gates. These run against the TEMP table, before anything is
+        // written, so a refusal costs the run and never the last good version
+        // of the table.
+        //
+        // The catch stays: a check that cannot RUN must not fail a table (a
+        // broken check would take the warehouse down). What changed on
+        // 2026-09-09 is that a check that ran and FAILED can now block —
+        // `blockingCheckFailure` owns which ones do, and why.
+        let checkResults: Awaited<ReturnType<typeof runTransformationChecks>> = [];
         try {
-          await runTransformationChecks(db, tempTable, table.id, table.table_role, table.transformation_sql, tenantId);
+          checkResults = await runTransformationChecks(db, tempTable, table.id, table.table_role, table.transformation_sql, tenantId);
         } catch (checkErr) {
-          log.warn({ err: checkErr }, `Quality checks failed for ${table.table_name}`);
+          log.warn({ err: checkErr }, `Quality checks could not run for ${table.table_name}`);
+        }
+        const blocker = blockingCheckFailure(checkResults);
+        if (blocker) {
+          // Thrown, so the per-table catch marks it failed and records the
+          // sentence — the same path an SQL error takes. The `transformation
+          // _checks` rows are already persisted, so the Quality tab shows the
+          // duplicate samples next to the refusal.
+          log.error({ table: table.table_name, productId: product.id }, 'transformation blocked by a quality check');
+          throw new Error(blocker);
         }
 
         // Write output
@@ -773,7 +829,7 @@ export async function runProductTransformation(
           // The Delta path writes directly at `tableOutputPath` (the dim's
           // directory). No `data.parquet` suffix — Delta owns the directory
           // layout (`_delta_log/` + parquet data files inside).
-          await writeDeltaWithSidecar({
+          const deltaResult = await writeDeltaWithSidecar({
             db,
             deltaUri: tableOutputPath,
             selectSql: `SELECT * FROM ${tempTable}`,
@@ -782,6 +838,18 @@ export async function runProductTransformation(
             businessKeyColumns,
             businessColumns,
           });
+
+          if (deltaResult.preservedExisting) {
+            // The transformation returned nothing and the sidecar kept the
+            // previous rows. The catalog must say what the table HOLDS, not
+            // what this run produced — publishing 0 here would show an empty
+            // topic over data that is still there.
+            rowCount = deltaResult.rowsTotal;
+            log.warn(
+              { table: table.table_name, productId: product.id, rowsKept: rowCount },
+              'transformation returned zero rows — previous data preserved',
+            );
+          }
 
           await db.exec(`DROP TABLE IF EXISTS ${tempTable};`);
           await publishProductTable(tenantId, table.id, tableOutputPath, rowCount);
