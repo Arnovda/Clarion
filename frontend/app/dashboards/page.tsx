@@ -1742,8 +1742,9 @@ export default function DashboardsPage() {
       // Provenance modal context
       dataLayer: currentSpec?.dataLayer ?? 'product',
       isAdminOrAnalyst: isAdmin,
-      // Self-heal — only offered when the widget actually errored
-      onFixWidget: data.error ? () => handleFixWidget(widget.id) : undefined,
+      // Self-heal — offered when the widget errored, or when the readability
+      // check left a note on it (runs fine, cannot be read).
+      onFixWidget: data.error || widget.readabilityNote ? () => handleFixWidget(widget.id) : undefined,
       fixing: fixingWidgets.has(widget.id),
       // Aim the assistant at this one card. Suppressed while arranging —
       // there the cards are being moved, not edited.

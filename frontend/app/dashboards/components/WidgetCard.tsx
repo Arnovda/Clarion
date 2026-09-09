@@ -157,6 +157,28 @@ export function WidgetCard({
         </div>
       )}
 
+      {/* Readability note — the post-generation check found this chart runs
+          but cannot be read (too many bars, more series than colours, raw
+          timestamps as labels …) and the repair could not settle it. Same
+          button as the self-heal: /fix-widget re-runs execute → contract →
+          readability → repair for just this card. */}
+      {!data?.error && spec.readabilityNote && (
+        <div className="px-5 py-2 flex items-center justify-between gap-3 border-b border-line bg-warn/10 shrink-0">
+          <span className="text-[11px] text-ink-2 truncate" title={spec.readabilityNote}>
+            <span className="text-warn mr-1">⚠</span>Hard to read — {spec.readabilityNote}
+          </span>
+          {onFixWidget && (
+            <button
+              onClick={onFixWidget}
+              disabled={fixing}
+              className="text-[11px] font-mono tracking-[0.08em] uppercase text-ocean hover:text-ocean-hover disabled:opacity-50 transition-colors shrink-0"
+            >
+              {fixing ? 'Fixing…' : 'Fix with AI'}
+            </button>
+          )}
+        </div>
+      )}
+
       {/* Card header (non-KPI only) */}
       {!isKpi && (
         <div className="px-5 pt-4 pb-3 flex items-center justify-between gap-3 shrink-0 border-b border-line">

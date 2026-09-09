@@ -139,7 +139,7 @@ jobs:
           # One round trip, bucketed server-side. `contains` rather than `has`
           # because several of these phrases carry punctuation that token-based
           # matching would split.
-          SIG_Q="ContainerAppConsoleLogs_CL | where TimeGenerated > ago($WINDOW) | where ContainerAppName_s in ('$APP', '$WORKER') $NARROW | extend sig = case(Log_s contains '42501' or Log_s contains 'insufficient_privilege' or Log_s contains 'permission denied for', 'grant-missing', Log_s contains 'violates row-level security', 'rls-write-denied', Log_s contains 'ownership check refused', 'ownership-refused', Log_s contains 'Child-process query runner ACTIVE', 'runner-active', Log_s contains 'compiled runner script was not found', 'runner-degraded', Log_s contains 'request failed', 'server-error', Log_s contains 'overnight investigation complete', 'overnight-ok', Log_s contains 'overnight investigation failed', 'overnight-failed', Log_s contains 'skipping overnight investigation', 'overnight-skipped', Log_s contains 'morning brief run done', 'brief-run', '') | where sig != '' | summarize n = count(), firstSeen = min(TimeGenerated), lastSeen = max(TimeGenerated), example = take_any(Log_s) by sig | order by n desc"
+          SIG_Q="ContainerAppConsoleLogs_CL | where TimeGenerated > ago($WINDOW) | where ContainerAppName_s in ('$APP', '$WORKER') $NARROW | extend sig = case(Log_s contains '42501' or Log_s contains 'insufficient_privilege' or Log_s contains 'permission denied for', 'grant-missing', Log_s contains 'violates row-level security', 'rls-write-denied', Log_s contains 'ownership check refused', 'ownership-refused', Log_s contains 'Child-process query runner ACTIVE', 'runner-active', Log_s contains 'compiled runner script was not found', 'runner-degraded', Log_s contains 'request failed', 'server-error', Log_s contains 'overnight investigation complete', 'overnight-ok', Log_s contains 'overnight investigation failed', 'overnight-failed', Log_s contains 'skipping overnight investigation', 'overnight-skipped', Log_s contains 'morning brief run done', 'brief-run', Log_s contains 'readability: spec fix applied', 'readability-spec-fix', Log_s contains 'readability: SQL rewrite needed', 'readability-to-model', Log_s contains 'readability: repaired', 'readability-repaired', Log_s contains 'readability: still unreadable', 'readability-unresolved', Log_s contains 'readability: the repair broke', 'readability-repair-broke', '') | where sig != '' | summarize n = count(), firstSeen = min(TimeGenerated), lastSeen = max(TimeGenerated), example = take_any(Log_s) by sig | order by n desc"
 
           say "### Signatures"
           say ""
@@ -173,6 +173,16 @@ jobs:
                   MEANING="GOOD — the child-process query runner announced itself. This is the positive signal whose ABSENCE means it silently fell back to in-process execution." ;;
                 runner-degraded)
                   MEANING="BAD — the runner could not find its compiled script and fell back in-process. DUCKDB_RUNNER=child is achieving nothing." ;;
+                readability-spec-fix)
+                  MEANING="GOOD — the readability gate fixed a chart with a type/format change and no model call (a 12-slice pie became a bar, a count lost its €)." ;;
+                readability-to-model)
+                  MEANING="INFO — a chart ran but could not be read (too many bars/series, raw timestamps, a KPI returning many rows) and was handed to the repair model. Compare with readability-repaired / readability-unresolved: the model's hit rate on these rewrites." ;;
+                readability-repaired)
+                  MEANING="GOOD — the model's rewrite made the chart readable; the re-check confirmed it." ;;
+                readability-unresolved)
+                  MEANING="INVESTIGATE — the model was told exactly what to rewrite and the chart is STILL unreadable; it shipped with a note on the card and 'Fix with AI'. A run of these means the fix rule in dashboardPrompt.ts (rule 9) needs tightening, not that the gate is wrong." ;;
+                readability-repair-broke)
+                  MEANING="BAD — the repair turned a readable-but-cluttered chart into one that errors; the pre-repair version was kept. More than one of these is a prompt regression." ;;
                 *)
                   MEANING="no interpretation recorded" ;;
               esac
