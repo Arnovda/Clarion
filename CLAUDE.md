@@ -31,7 +31,110 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-09-08 (THE LOG READER COULD NOT READ THE ONE SIGNAL IT
+**Last updated:** 2026-09-09 (INGESTION-CHAIN ASSESSMENT — doc only, no product
+code changed; owner: *"Onderzoek het ingestion framework… is dit de beste opzet
+en future proof om 200+ connectoren te bouwen… full load en dan mergen naar de
+topics, of overwrite?… wat met veranderende schema's… en de manier waarop we de
+relaties, definities… van bronsystemen opslaan"*)
+
+**NEW DOC: `docs/backlog/ingestion-chain-assessment.md` (Dutch, ~7,700 words).**
+Four independent code audits (connector contract, sync/warehouse, source→topics,
+semantic metadata), every claim `file:line`, crossed with external research
+(Airbyte declarative CDK, dlt `rest_api` + `dlt-init-openapi`, Fivetran schema
+and soft-delete rules, DuckLake v1.0, ODCS v3.1, OSI/Apache Ossie). The heaviest
+claims were re-read by hand. Nothing run against a live tenant.
+- **VERDICT: the connector CONTRACT and the semantic channels are good enough
+  for 200 connectors; the EXECUTION SUBSTRATE is built for five.** Every REST
+  connector hand-writes 300–600 lines of transport (Odoo 566, SharePoint 553),
+  there is no declarative/manifest path, no plugin loading, no connector
+  version, one package. Airbyte's own number: a YAML manifest covers ~90% of
+  connectors; dlt generates one from an OpenAPI spec.
+- **Source layer = current state only, one parquet per entity; incremental
+  sync rewrites the WHOLE file** (`ParquetWriter.ts:225-346`; on Azure download
+  + upload of the full table, `BlobSasWarehouseWriter.ts:118-119,163`) —
+  O(table) per run, against a hard 30-min sync ceiling with no resume. **Deletes
+  never propagate** except via manual full re-sync. The API connectors are
+  already incremental (EO 50/61, Odoo 21/21); only file sources are full-load.
+- **THE ANSWER TO "MERGE OR OVERWRITE INTO TOPICS": neither — every refresh is
+  a full recompute of the transformation SQL over the whole source and a full
+  overwrite** (`commit_table.py:566-572`, `write_deltalake(mode="overwrite",
+  schema_mode="merge")`). No product-side watermark; the only incremental
+  branch is unreachable (`transformationRunner.ts:806` `continue`) and
+  `load_mode='incremental'` is never set. AI-designed surrogate keys are
+  `ROW_NUMBER()` (`busMatrixPrompt.ts:155`) — renumbered every run — while the
+  templates use natural keys: the two design paths disagree on the one choice
+  that gates incremental facts, SCD2 and the crosswalk.
+- **Schema evolution is emergent, not policy**: added columns flow; removed
+  columns stay as all-NULL ghosts (so `schema_hash` drift detection cannot see
+  them); a removed source column that a topic uses is **cut out by the AI
+  repair and PERSISTED** (`AIService.ts:2387`, `transformationRunner.ts:718-720`)
+  with nothing on screen. No source→product contract, no impact analysis to
+  dashboards/saved questions.
+- **FOUR LIVE DEFECTS, all verified by hand, none architectural — fix before
+  any of the above:** (1) **scheduled transformations always fail**:
+  `workers.ts:181` queries `product_tables.product_id`, a column that does not
+  exist (only `star_schema_id`, migration 17); every cron run and the manual
+  `/schedules` run land as `failed`; pipelines (via `star_schema_id`) work,
+  which is why nobody noticed. (2) **a source sync invalidates nothing** — no
+  `invalidateWarehouse`/`publishInvalidation` in `SyncOrchestrator.ts` while
+  the DuckDB pool holds sessions 30 min with metadata cache on: "Sync complete"
+  and up to 30 min of stale numbers. (3) **quality checks never block**
+  (`transformationRunner.ts:722-726` warn-only) — a duplicate-grain fact
+  publishes. (4) **the pipeline runner builds facts on top of a failed source
+  sync** (`busMatrixOrchestrator.ts:640-700` ignores `sourceResults`),
+  contradicting the orchestrator's own partial-sync gate. Plus: the product
+  sidecar EMPTIES a topic on a zero-row result (`commit_table.py:540-564`)
+  where the source writers preserve.
+- **Semantic storage — the ideas are right, the form is wrong for scale.**
+  Documentation-before-inference with a stored provenance ladder, measured
+  vendor references and `kind = join|match` are better than any mainstream
+  tool. But: knowledge per source is CODE in four shapes (`docs.ts`,
+  `entities.ts`, `starSchemaTemplate.ts`, Odoo's different `docs.ts`), no
+  vendor-docs/API version, `definition_versions` orphaned on every re-profile
+  (wipe-and-reinsert), two provenance vocabularies and no `human` rung,
+  original source types discarded (`Edm.Guid` → VARCHAR, so `typeClass` cannot
+  protect a canvas-drawn relationship), four relationship truths, glossary
+  unlinked to columns. **Three dual-write LEAKS verified in code**: confirming
+  from `/review` NULLs the Neo4j description (`routes/semantic.ts:342` passes
+  the bare body to `graph.updateColumn`, whose Cypher SETs `$description ??
+  null`, `semanticGraph.ts:330-345`) and Neo4j is what the source-layer prompt
+  reads; `PATCH /semantic/product-columns` writes ONLY the graph
+  (`routes/semantic.ts:1860`) while `productContext.ts:263` reads ONLY
+  Postgres — the only product-column editing surface never reaches the AI;
+  confirmed relationships duplicate in Neo4j on re-profile
+  (`semanticGraph.ts:2057,2073`).
+- **RECOMMENDATION, in dependency order (doc §7):** phase 0 the defects above
+  + the three leaks (days) · phase 1 stable hash/natural keys in BOTH design
+  paths, AI repair of schema loss stops persisting (table → `degraded`), one
+  provenance vocabulary, keep source types (week) · phase 2 ONE table format
+  with MERGE for source and topics — **DuckLake** (DuckDB-native, Postgres
+  catalog Clarion already has, MERGE/time-travel/schema-evolution in SQL, v1.0
+  April 2026; Delta-MERGE via the sidecar as the conservative fallback) plus a
+  `_clarion_deleted`/`_clarion_synced_at` soft-delete convention behind the
+  `is_technical` firewall and a cheap `reconcile` sync mode, resumable loads,
+  one writer, Python sidecar gone (3–4 wk; needs a PoC on a real EO
+  `TransactionLines` first) · phase 3 schema-registry per entity + policy per
+  change type (Fivetran-conservative) + impact analysis BEFORE the run + a
+  versioned product contract (ODCS-shaped) · phase 4 incremental facts as
+  opt-in MERGE per table + SCD2 on chosen dims + id-preserving rebuild ·
+  phase 5 **ONE declarative "source package" per source as DATA with a JSON
+  Schema** (entities, columns with source type/enum/unit, relationships with
+  provenance, star template referencing the same entities, glossary) —
+  `describeEntities`/`getKnownRelationships`/`getBusinessKeys`/
+  `getStarSchemaTemplate` become loaders; map to OSI/Ossie constructs · phase 6
+  a `RestSourceKit` + manifest (declarative paginators/auth/record selector/
+  incremental), record/replay fixtures, connector versioning, a `SqlSourceKit`
+  for the four direct databases and the Python ETL path deleted · phase 7
+  OpenAPI/LLM-assisted generation. **Do NOT**: build connector #6 in the old
+  form before phase 5; SCD2 before stable keys; switch to Airbyte/dlt as
+  runtime; Iceberg; persisting AI repairs of schema loss.
+- Validation: doc only — `git status` shows one new file. The four defects
+  and three leaks are read-verified, not executed; the DuckLake recommendation
+  is explicitly conditioned on a PoC. `airbyte.com`, `docs.airbyte.com`,
+  `dlthub.com` and `fivetran.com` are egress-blocked here, so those references
+  came via GitHub mirrors and search results.
+
+**Prior last updated:** 2026-09-08 (THE LOG READER COULD NOT READ THE ONE SIGNAL IT
 WAS DOCUMENTED TO READ — `.ops/prod-logs` fixed; the overnight investigation's
 first real run is STILL UNREAD)
 
