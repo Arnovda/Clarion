@@ -37,7 +37,7 @@ en future proof om 200+ connectoren te bouwen… full load en dan mergen naar de
 topics, of overwrite?… wat met veranderende schema's… en de manier waarop we de
 relaties, definities… van bronsystemen opslaan"*)
 
-**NEW DOC: `docs/backlog/ingestion-chain-assessment.md` (Dutch, ~7,700 words).**
+**NEW DOC: `docs/backlog/ingestion-chain-assessment.md` (Dutch, ~7,700 words). Artifact: "Ingestion-keten assessment" ([link](https://claude.ai/code/artifact/a5c64849-401c-40dd-95fe-4f02319ce439)). PR #130.**
 Four independent code audits (connector contract, sync/warehouse, source→topics,
 semantic metadata), every claim `file:line`, crossed with external research
 (Airbyte declarative CDK, dlt `rest_api` + `dlt-init-openapi`, Fivetran schema
