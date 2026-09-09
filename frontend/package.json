@@ -61,7 +61,7 @@
     "Transitive advisories cleared without leaving the dependency's current",
     "major, so no package receives an API it was not written against.",
     "  lodash   <=4.17.23      HIGH  prototype pollution (dagre -> graphlib)",
-    "  js-yaml  4.0.0-4.2.0    HIGH  quadratic-complexity DoS (eslint, dev only)",
+    "  js-yaml  4.0.0-4.3.1    HIGH  quadratic-complexity DoS (eslint, dev only); re-raised 2026-09-09",
     "  postcss  <=8.5.22       HIGH  XSS via unescaped </style>. It is BOTH a",
     "    direct devDependency and vendored by next@14 (which pinned 8.4.31),",
     "    so bumping the direct pin alone left the vulnerable copy in place.",
@@ -85,7 +85,7 @@
   ],
   "overrides": {
     "lodash": "^4.18.1",
-    "js-yaml": "^4.3.1",
+    "js-yaml": "^4.3.2",
     "nanoid": "^3.3.18",
     "postcss": "^8.5.25"
   }
