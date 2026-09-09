@@ -266,6 +266,13 @@ The recipe, in order of wow-per-effort:
    — label overflow, series-count caps, top-N+other collapsing, axis
    formatting (the "2.025" year bug class). VisEval's core finding is that
    readability fails even when execution passes.
+   **SHIPPED 2026-09-09** — `services/widgetReadability.ts`: a pure gate over
+   a profile of every row the validation execution returned; spec-level
+   fixes (type/format) applied with no model call, SQL-level ones handed to
+   the repair model as `readabilityIssue` and re-checked afterwards; what
+   still cannot be read lands on the card as `readabilityNote` with "Fix
+   with AI". The axis half: `yAxisFormatter` honours `format`, year columns
+   and ISO stamps render as such in tables.
 8. **Then** the already-planned Tier-2 remainder (brush/zoom, small multiples,
    dark mode) — real but behind the above in wow-per-effort.
 9. **Medium-term, strategic**: the research consensus is that "dashboards feel

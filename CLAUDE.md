@@ -31,7 +31,129 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-09-08 (THE LOG READER COULD NOT READ THE ONE SIGNAL IT
+**Last updated:** 2026-09-09 (A READABILITY GATE, NOT JUST A VALIDITY GATE — a
+chart that runs without error can still be unreadable, and now that is a
+caught, repaired, and when it cannot be repaired, an HONESTLY LABELLED
+condition; owner picked §2.3 item 7 of the dashboard assessment: *"Een
+leesbaarheidscontrole na generatie, niet alleen een validiteitscontrole"*)
+
+**THE FINDING THAT SHAPED IT: the validation pass kept 3 sample rows per
+widget** (`sampleRows: rows.slice(0, 3)`) — enough to check a column contract,
+useless for "how many bars is this". So the gate does not read the sample, it
+reads a **profile of every row** the validation execution returned (bounded at
+20k), computed before the slice and stripped again before anything reaches the
+model. And the one readability rule that existed was inline in the route
+(`pie_chart && rowCount > 3`), invisible to any test — it now lives in the
+module as `PIE_MAX_SLICES`, one of 22 named limits, **each carrying the
+renderer line that decided it** (BarChartWidget's `min(n×36+48, 320)` height
+→ 15 bars; `PALETTE.series` has 6 colours and `SERIES_COLORS[i % 6]` REUSES
+them → 6 series; EChartsWidgets' `rows.slice(0, 12)` on the bullet chart →
+rows past 12 are silently dropped).
+- **NEW `services/widgetReadability.ts` — pure, 41 tests, both directions per
+  rule.** `profileRows` → `assessReadability(widget, profile)` → findings with
+  one of THREE fix kinds. **`set_type` / `set_format` cost no model call**: a
+  12-slice pie becomes a horizontal bar, names on a vertical bar's x-axis
+  become horizontal bars, 37+ months of vertical bars become a line, a line
+  whose SQL returns a `series` column (the Ask AI zigzag of 2026-09-02, on the
+  dashboard side) becomes a stacked bar, a count titled "Orders per month"
+  with values ≥ 100 and no `format` gets `format: 'number'` (it would have
+  rendered as "€450,00"), a "Gross margin %" gets `percentage`.
+  `applyReadabilityFixes` applies them and **RE-ASSESSES against the same
+  profile**, because a swap changes which rules apply — a 40-slice pie → bar →
+  still 40 bars → the SQL rule. Bounded at 3 passes and one visit per type so
+  two rules can never ping-pong; a swap is only made when the DATA satisfies
+  the target's contract, whatever the declared group. **`sql` findings go to
+  the repair model as `readabilityIssue`** beside `contractIssue`, each with
+  the exact rewrite (top-N + ONE "Other" row via a `ROW_NUMBER()` pattern,
+  top-N series + "Other", `strftime` for raw timestamps, aggregate the
+  many-row KPI, fix the GROUP BY behind duplicate labels) and **fix rule 9** in
+  `VALIDATE_DASHBOARD_SYSTEM` tells the model to apply it literally.
+- **THE REPAIR IS RE-CHECKED, which is what makes "the check passed"
+  falsifiable.** `settleReadability` re-executes only the flagged widgets
+  after the repair call and writes the verdict onto each: nothing when it now
+  reads; **`readabilityNote`** (new optional contract field, both copies, plain
+  sentence, no SQL) when it still does not — the card renders it as a quiet
+  amber strip with the same **"Fix with AI"** the self-heal uses, which
+  re-runs execute → contract → readability → repair for that one card; and
+  the **pre-repair version** when the rewrite broke the widget outright (a
+  cluttered chart that runs beats one that errors). Without this step a
+  finding the model ignored would simply have vanished.
+- **Two postures, on purpose.** Generate, the full-spec refine and fix-widget
+  are model-steered → the gate REPAIRS. The refine-stream fast path is
+  user-steered ("make it a pie", "per customer") → the gate only ANNOTATES:
+  the note lands on the card and the chat says *"Revenue by customer" may be
+  hard to read: 34 bars…*. A gate that silently undid what the user just asked
+  for would be a second opinion nobody asked for.
+- **The axis half, in the renderer — because it also fixes every saved
+  dashboard**: `yAxisFormatter` moved to `utils/format.ts` and now HONOURS
+  `spec.format` (every chart hard-coded `€` above 1000 whatever the format
+  said, `BarChartWidget` even against its own tooltip); data-table columns
+  whose values are all whole numbers in 1900..2100 render as ids
+  (`looksLikeYearColumn` — the "€2.025,00" year, which no name rule could
+  catch for `boekjaar`); a DATE that crossed the wire as
+  `2025-01-31T00:00:00.000Z` renders as `2025-01-31` (`formatIsoTimestamp`,
+  cells only — chart labels are ALSO the cross-filter VALUE substituted into
+  SQL, so they are deliberately left raw and the gate makes the model
+  `strftime` them instead).
+- **Cost**: zero on open (nothing here runs at render). At creation a spec
+  fix is free; a SQL finding rides the SAME Sonnet repair call that already
+  fires for errors and contract issues, plus one warehouse re-execution of the
+  flagged widgets. A generation with nothing unreadable costs exactly what it
+  did.
+- **`.ops/prod-logs` gained five `readability-*` signatures the same day**,
+  every string verified against the emitting line in `routes/dashboards.ts`
+  (the 2026-09-08 rule): `spec-fix`, `to-model`, `repaired`, `unresolved`,
+  `repair-broke`. Read `repaired` against `to-model` — that ratio is the
+  model's hit rate on the rewrites, and a run of `unresolved` means rule 9
+  needs tightening, not that the gate is wrong.
+- Validation: backend `npm run check` clean; NEW `widget-readability.test.ts`
+  (41 — the first run had **3 real failures that were rule-order defects**:
+  "Gross margin %" was excluded by the money-word list, so `%` now wins; and
+  the scatter rule sat behind a label/value gate a scatter can never pass,
+  since its contract is label/x/y) and NEW `readability-gate-wiring.test.ts`
+  (7, source-level, each slice bounded at the next top-level declaration —
+  **verified RED under two sabotages**: the gate call removed → 1 fails; the
+  finding dropped from `hasIssues` → a 2nd fails); full backend vitest
+  **88 files / 850 passed / 4 skipped** (was 86/802 — +2 files, +48 tests); all eleven ratchets green from the repo root with
+  per-ratchet exit codes (`lint-contract-sync` on the two-copy contract
+  edit); frontend `tsc` clean, vitest **7 files / 62 passed** (was 6/52 —
+  10 new in `dashboardFormat.test.ts`), touched files lint-clean (the one
+  finding, an unused `_spec` destructure in `DataTableWidget`, was
+  pre-existing at HEAD and is removed), `next build` green 46/46
+  (`/dashboards` 64.8 kB; the "Compiled with warnings" is the pre-existing
+  `@duckdb/duckdb-wasm` critical-dependency notice). `prod-logs.yml` parses.
+  SANDBOX NOTE: `npm.duckdb.org` is reachable from this environment now —
+  backend `npm install` took the prebuilt binary in seconds instead of the
+  12-minute compile; the connectors binding was copied per the hook recipe
+  (both 1.4.2).
+- **NOT runtime-exercised against a live model** — rule 9 has not seen a real
+  Anthropic response, and the top-N pattern has not been executed by DuckDB
+  from a model rewrite. Watch the first production generation for the
+  `readability-*` signatures above; the first `unresolved` is the prompt's
+  problem, the first `repair-broke` is a regression.
+- **DRIVE-BY ON THE SAME PR: BOTH AUDIT GATES WENT RED UNDER EVERY BRANCH**
+  (the 2026-09-05 `fast-uri` shape again). PR #129's first CI run failed
+  "Widget Render Gate" at the FRONTEND audit gate — a new `js-yaml`
+  advisory (GHSA-2883-xcg3-v3hh, `>=4.0.0 <4.3.2`, eslint-only) one patch
+  above the existing `^4.3.1` override — and "API Integration Tests" at the
+  BACKEND gate — four new `nodemailer` advisories (`<=9.1.0`: recipient-
+  domain bypasses, addressparser DoS, `resolveContent` file-access bypass),
+  runtime-exposed through `emailService`. Neither touches this diff; main's
+  last green run predates the advisories; both FIXED inside their majors,
+  never allowlisted: override `js-yaml ^4.3.2` (lockfile regenerated with
+  npm), `nodemailer ^9.0.3 → ^9.1.1` (its usage surface —
+  `createTransport`/`sendMail` — is unchanged; `npm run check` clean,
+  `invite-email` + `signup-hardening` 16/16). Both gates exit 0 locally.
+- **NOT done, deliberately**: the renderer still cycles colours past 6
+  series and truncates long horizontal-bar labels — the gate prevents both at
+  GENERATION; an old saved dashboard is only re-checked when it is refined or
+  a card is fixed (a retro-sweep of every saved spec would spend model calls
+  on dashboards nobody opens); no "Other" fold in the renderer (the SQL
+  carries it, so export/e-mail agree with the screen); and the
+  dynamic-import ratchet reports 74 against a baseline of 87 — slack left by
+  earlier sessions, not lowered here to keep this diff about one thing.
+
+**Prior last updated:** 2026-09-08 (THE LOG READER COULD NOT READ THE ONE SIGNAL IT
 WAS DOCUMENTED TO READ — `.ops/prod-logs` fixed; the overnight investigation's
 first real run is STILL UNREAD)
 
@@ -9529,6 +9651,7 @@ clarion/                              ← on disk: databridge/
 │       │   ├── transformationRunner.ts     ← DuckDB transformation materialization (Parquet) + monthly rollup generation
 │       │   ├── transformationChecks.ts     ← BK uniqueness + fan-out quality gates
 │       │   ├── widgetCache.ts             ← 5-min in-memory widget result cache (tenantId + sql_hash keyed)
+│       │   ├── widgetReadability.ts       ← the READABILITY gate: row profile → findings → spec fixes / SQL findings (pure)
 │       │   ├── emailService.ts            ← nodemailer wrapper; no-op when SMTP_HOST not configured
 │       │   └── reportEmailService.ts      ← execute dashboard widgets + AI summary + HTML email builder
 │       │
@@ -9560,6 +9683,8 @@ clarion/                              ← on disk: databridge/
 │           ├── auth.test.ts
 │           ├── connections.test.ts
 │           ├── dashboards.test.ts
+│           ├── widget-readability.test.ts        ← the gate's rules, both directions
+│           ├── readability-gate-wiring.test.ts   ← source-level: the gate is called, repair re-checked, stream path annotates
 │           ├── health.test.ts
 │           ├── notifications.test.ts
 │           ├── tenant-isolation.test.ts
@@ -9622,7 +9747,7 @@ clarion/                              ← on disk: databridge/
     │   │   ├── layout.tsx            ← app shell wrap
     │   │   ├── types.ts              ← FilterSpec, WidgetSpec, DashboardSpec, SavedDashboard, DashboardTemplate, DrillState, RefinementQuestion, ChatMessage, WidgetData
     │   │   ├── utils/
-    │   │   │   ├── format.ts         ← buildDefaultFilters, relTime, formatValue
+    │   │   │   ├── format.ts         ← buildDefaultFilters, relTime, formatValue, yAxisFormatter (format-aware), looksLikeYearColumn, formatIsoTimestamp
     │   │   │   ├── motion.ts         ← Framer Motion variants (containerVariants, slideUp, shimmerClass)
     │   │   │   ├── chart-theme.ts    ← Recharts palette + style helpers
     │   │   │   └── download.ts       ← authenticated file-download helper (CSV/XLSX/PDF)

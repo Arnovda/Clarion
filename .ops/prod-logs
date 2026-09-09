@@ -71,6 +71,21 @@
 #                     clicks — not to a broken page. A RUN of these is the
 #                     signal; one is a bad night.
 #
+#   readability-*     The dashboard READABILITY gate (2026-09-09,
+#                     services/widgetReadability.ts) — five lines, all emitted
+#                     by routes/dashboards.ts at generation / refine / fix:
+#                     `spec-fix` a chart fixed with no model call (pie → bar,
+#                     count → format number); `to-model` a chart handed to the
+#                     repair model with the exact rewrite; `repaired` the
+#                     re-check confirmed the rewrite; `unresolved` STILL
+#                     unreadable after the rewrite — shipped with a note on the
+#                     card and "Fix with AI" (a run of these = the fix rule
+#                     needs tightening); `repair-broke` the rewrite errored and
+#                     the pre-repair version was kept (a prompt regression).
+#                     Until the first `to-model` line appears the gate has never
+#                     met a real model response. Read `repaired` against
+#                     `to-model`: that ratio is the model's hit rate.
+#
 # The four above were added 2026-09-08 because CLAUDE.md had been telling the
 # next person to "watch .ops/prod-logs for 'overnight investigation complete'"
 # while this file queried six signatures, none of them that one. A reader that

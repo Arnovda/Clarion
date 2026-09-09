@@ -10,21 +10,12 @@ import {
 } from 'recharts';
 import type { WidgetExecutionProps } from '../types';
 import { SERIES_COLORS, PALETTE, getSeriesColor } from '../utils/chart-theme';
-import { formatValue, inferColumnFormat } from '../utils/format';
+import { formatValue, inferColumnFormat, yAxisFormatter, looksLikeYearColumn, formatIsoTimestamp } from '../utils/format';
 import { PremiumTooltip } from './PremiumTooltip';
 import { ChartSkeleton, WidgetSkeleton, WidgetError, EmptyWidget } from './WidgetSkeletons';
 import { useWindowedRows } from '../utils/useWindowedRows';
 
 // ─── Shared axis formatter ──────────────────────────────────────────────────
-
-function yAxisFormatter(maxVal: number) {
-  return (v: number) =>
-    maxVal > 10000
-      ? `\u20AC${(v / 1000).toFixed(0)}k`
-      : maxVal > 1000
-        ? `\u20AC${(v / 1000).toFixed(1)}k`
-        : String(v);
-}
 
 /** Shared axis tick styling — muted ink-3 label in Observatory. */
 const TICK = { fontSize: 11, fill: PALETTE.axisLabel };
@@ -44,7 +35,7 @@ export function BarChartWidget({
   }));
   const maxVal = Math.max(...chartData.map((r) => r.value), 0);
   const height = Math.max(180, Math.min(chartData.length * 36 + 48, 320));
-  const yFmt = (v: number) => (maxVal > 1000 ? `\u20AC${(v / 1000).toFixed(1)}k` : String(v));
+  const yFmt = yAxisFormatter(maxVal, spec.format);
 
   return (
     <div>
@@ -114,7 +105,7 @@ export function VerticalBarChartWidget({
     target: r.target !== undefined ? Number(r.target) : undefined,
   }));
   const maxVal = Math.max(...chartData.map((r) => r.value), 0);
-  const yFmt = yAxisFormatter(maxVal);
+  const yFmt = yAxisFormatter(maxVal, spec.format);
   const hasTarget = chartData.some((r) => r.target !== undefined);
 
   return (
@@ -173,7 +164,7 @@ export function LineChartWidget({
     value: Number(r.value ?? 0),
   }));
   const maxVal = Math.max(...chartData.map((r) => r.value), 0);
-  const yFmt = yAxisFormatter(maxVal);
+  const yFmt = yAxisFormatter(maxVal, spec.format);
   const gradientId = `line-area-${spec.id}`;
   const lineColor = getSeriesColor(0);
 
@@ -241,7 +232,7 @@ export function StackedBarChartWidget({
     const total = seriesNames.reduce((s, k) => s + Number(row[k] ?? 0), 0);
     return Math.max(acc, total);
   }, 0);
-  const yFmt = yAxisFormatter(maxVal);
+  const yFmt = yAxisFormatter(maxVal, spec.format);
 
   return (
     <ResponsiveContainer width="100%" height={240}>
@@ -344,7 +335,7 @@ export function ComboChartWidget({ spec, data }: WidgetExecutionProps) {
     line: r.line !== undefined ? Number(r.line) : undefined,
   }));
   const maxVal = Math.max(...chartData.map((r) => r.value), 1);
-  const yFmt = yAxisFormatter(maxVal);
+  const yFmt = yAxisFormatter(maxVal, spec.format);
   const gradientId = `combo-${spec.id}`;
   const overlayColor = getSeriesColor(3); // plum
 
@@ -447,7 +438,7 @@ function evalFormula(expr: string, row: Record<string, unknown>): number | null 
 // ─── DataTableWidget ─────────────────────────────────────────────────────────
 
 export function DataTableWidget({
-  spec: _spec, data, onCrossFilter, onContextMenu,
+  data, onCrossFilter, onContextMenu,
 }: WidgetExecutionProps) {
   const [calcCols, setCalcCols] = useState<Array<{ name: string; expr: string }>>([]);
   const [showFormulaForm, setShowFormulaForm] = useState(false);
@@ -464,6 +455,13 @@ export function DataTableWidget({
 
   const baseKeys = Object.keys(data.rows[0]);
   const allKeys = [...baseKeys, ...calcCols.map((c) => c.name)];
+  // Column formats: by name first (the _pct / _id suffix rules), then by
+  // VALUE for the one case a name cannot settle — a year column, which the
+  // money heuristic would otherwise render as "€2.025,00". Years are uniform,
+  // so the first 500 rows decide.
+  const columnFormats = new Map<string, ReturnType<typeof inferColumnFormat>>(
+    baseKeys.map((k) => [k, inferColumnFormat(k) ?? (looksLikeYearColumn(data.rows.slice(0, 500).map((r) => r[k])) ? 'id' : undefined)]),
+  );
   const capitalize = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
   const headerLabel = (k: string) => capitalize(k.replace(/_/g, ' '));
   const isNumeric = (v: unknown) =>
@@ -576,13 +574,15 @@ export function DataTableWidget({
                 const calcDef = calcCols.find((c) => c.name === k);
                 const rawVal = calcDef ? evalFormula(calcDef.expr, row) : row[k];
                 // Column-aware formatting: detect %, €, ids, counts from header name
-                const colFormat = calcDef ? 'number' : inferColumnFormat(k);
+                const colFormat = calcDef ? 'number' : columnFormats.get(k);
                 const display =
                   rawVal == null
                     ? '—'
                     : isNumeric(rawVal) || calcDef
                       ? formatValue(rawVal, colFormat)
-                      : String(rawVal);
+                      : typeof rawVal === 'string'
+                        ? formatIsoTimestamp(rawVal)
+                        : String(rawVal);
                 return (
                   <td
                     key={k}

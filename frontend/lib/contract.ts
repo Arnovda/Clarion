@@ -148,6 +148,15 @@ export interface WidgetSpec {
    * drags/resizes in edit mode; wins over colSpan when present.
    */
   layout?: { x: number; y: number; w: number; h: number };
+  /**
+   * Set by the post-generation READABILITY check when a chart executes fine
+   * but cannot be read (too many bars, series past the palette, raw
+   * timestamps as labels, a KPI returning many rows …) AND the repair could
+   * not settle it. One plain sentence, no SQL. The card shows it as a quiet
+   * warning with "Fix with AI"; cleared the moment a re-check passes. Absent
+   * on every widget that read fine.
+   */
+  readabilityNote?: string;
 }
 
 export interface DashboardSpec {

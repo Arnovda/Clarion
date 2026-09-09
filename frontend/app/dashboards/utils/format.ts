@@ -61,6 +61,57 @@ export function formatValue(v: unknown, format?: string): string {
   return n.toLocaleString('nl-BE', { maximumFractionDigits: 2 });
 }
 
+// ─── Axis Formatter ───────────────────────────────────────────────────────────
+
+/**
+ * Tick formatter for a chart's value axis. Honours the widget's declared
+ * `format`: a count axis must not read "€1.2k" — it did, because every chart
+ * hard-coded the € above 1000 whatever the format said (the "orders shown as
+ * euros" class the readability check now also catches at generation).
+ * Without a format the historical heuristic stands: big numbers are money.
+ */
+export function yAxisFormatter(maxVal: number, format?: string): (v: number) => string {
+  const big = Math.abs(maxVal) > 1000;
+  const compact = (v: number) =>
+    Math.abs(maxVal) > 10000 ? `${(v / 1000).toFixed(0)}k` : big ? `${(v / 1000).toFixed(1)}k` : String(v);
+  if (format === 'percentage') return (v) => `${v}%`;
+  if (format === 'number') return compact;
+  if (format === 'currency') return (v) => `\u20AC${compact(v)}`;
+  return (v) => (big ? `\u20AC${compact(v)}` : String(v));
+}
+
+// ─── Cell helpers ─────────────────────────────────────────────────────────────
+
+/**
+ * A numeric column whose every value is a whole number in 1900..2100 is a
+ * year. Rendered through the money heuristic it reads "€2.025,00"; as an id
+ * it reads "2025". Name-based inference cannot catch `boekjaar` or `period`
+ * — the values can.
+ */
+export function looksLikeYearColumn(values: unknown[]): boolean {
+  let seen = 0;
+  for (const v of values) {
+    if (v === null || v === undefined || v === '') continue;
+    const n = typeof v === 'number' ? v : Number(v);
+    if (!Number.isInteger(n) || n < 1900 || n > 2100) return false;
+    seen++;
+  }
+  return seen > 0;
+}
+
+const ISO_TS_RE = /^(\d{4}-\d{2}-\d{2})T(\d{2}):(\d{2})(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?$/;
+
+/**
+ * A DATE that crossed the wire as '2025-01-31T00:00:00.000Z' shows as
+ * '2025-01-31'; a real timestamp keeps its HH:MM. Anything that is not an
+ * ISO stamp is returned untouched, so this is safe on every string cell.
+ */
+export function formatIsoTimestamp(s: string): string {
+  const m = ISO_TS_RE.exec(s);
+  if (!m) return s;
+  return m[2] === '00' && m[3] === '00' ? m[1] : `${m[1]} ${m[2]}:${m[3]}`;
+}
+
 // ─── Compact Formatter ────────────────────────────────────────────────────────
 
 /**
