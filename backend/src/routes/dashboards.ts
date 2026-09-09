@@ -16,6 +16,7 @@ import { getWidgetCache, putWidgetCache } from '../services/widgetCache';
 import { getFilterOptionsCache, putFilterOptionsCache } from '../services/filterOptionsCache';
 import { reqDb } from '../db/reqDb';
 import { validateWidgetColumns } from '../shared/widgetContracts';
+import { profileRows, assessReadability, applyReadabilityFixes, readabilityIssueText, readabilityNoteText, type RowProfile, type ReadabilityOutcome } from '../services/widgetReadability';
 import { preserveSpecCarryover, diffSpecChanges } from '../services/dashboardSpecMerge';
 import { applyEditOps, pendingSqlEdits, realRefusals, isDeterministicOp, type DashboardEditOp } from '../services/dashboardEditOps';
 import { startSSE } from '../services/sse';
@@ -171,13 +172,21 @@ async function dashboardScope(
   }, trx);
 }
 
+/**
+ * An execution result plus the profile of EVERY row it returned, for the
+ * readability gate. The prompt only ever sees 3 sample rows; distinct counts
+ * and label lengths need the whole result. The profile is stripped again
+ * before anything goes to the model.
+ */
+type ExecResult = WidgetExecutionResult & { profile?: RowProfile };
+
 async function executeSpecForValidation(
   spec: DashboardSpec,
   connectionId: number,
   tenantId?: number,
   dataLayer?: 'product' | 'source',
   actor?: ReadActor,
-): Promise<WidgetExecutionResult[]> {
+): Promise<ExecResult[]> {
   // Wrap all RLS-dependent queries in a single transaction
   const useSource = dataLayer === 'source';
   const { connection, productPath } = await semanticDb.transaction(async (trx) => {
@@ -204,7 +213,7 @@ async function executeSpecForValidation(
             rowCount: 0,
             error: 'Widget SQL refused for safety',
             sampleRows: [],
-          } satisfies WidgetExecutionResult;
+          } satisfies ExecResult;
         }
         const resolvedSql = fixDuckDbDialect(applyDefaultFilters(widget.sql));
         try {
@@ -218,7 +227,8 @@ async function executeSpecForValidation(
             type: widget.type,
             rowCount: rows.length,
             sampleRows: rows.slice(0, 3),
-          } satisfies WidgetExecutionResult;
+            profile: profileRows(rows),
+          } satisfies ExecResult;
         } catch (err: unknown) {
           return {
             id: widget.id,
@@ -227,7 +237,7 @@ async function executeSpecForValidation(
             rowCount: 0,
             error: err instanceof Error ? err.message : String(err),
             sampleRows: [],
-          } satisfies WidgetExecutionResult;
+          } satisfies ExecResult;
         }
       }),
     );
@@ -282,6 +292,33 @@ async function validateAndRepairSpec(
       }
     }
 
+    // Deterministic READABILITY check (services/widgetReadability.ts) — the
+    // query runs and has its columns, but can the chart be read? Fixes that
+    // need no SQL (a type or format change) are applied HERE with no model
+    // call; what needs a rewrite rides to the repair model as
+    // `readabilityIssue` and is re-checked afterwards by settleReadability.
+    const readability = new Map<string, ReadabilityOutcome>();
+    for (const r of executionResults) {
+      if (r.error || r.rowCount === 0 || r.contractIssue || !r.profile) continue;
+      const widget = spec.widgets.find((w) => w.id === r.id);
+      if (!widget) continue;
+      const outcome = applyReadabilityFixes(stripReadabilityNote(widget), r.profile);
+      readability.set(r.id, outcome);
+      if (outcome.applied.length > 0) {
+        log.info(
+          { widgetId: r.id, from: widget.type, to: outcome.widget.type, applied: outcome.applied.map((f) => f.code) },
+          'readability: spec fix applied without a model call',
+        );
+        spec = { ...spec, widgets: spec.widgets.map((w) => (w.id === r.id ? outcome.widget : w)) };
+        r.type = outcome.widget.type;
+      }
+      const issue = readabilityIssueText(outcome.remaining);
+      if (issue) {
+        r.readabilityIssue = issue;
+        log.info({ widgetId: r.id, codes: outcome.remaining.map((f) => f.code) }, 'readability: SQL rewrite needed — handing to the repair model');
+      }
+    }
+
     // Semantic check in parallel — skip widgets that already failed (error or 0 rows).
     const semanticIssues = await Promise.all(
       executionResults.map(async (r) => {
@@ -294,20 +331,23 @@ async function validateAndRepairSpec(
     });
 
     const hasIssues = executionResults.some(
-      (r) => r.error || r.rowCount === 0 || r.semanticIssue || r.contractIssue
-        || (r.type === 'pie_chart' && r.rowCount > 3),
+      (r) => r.error || r.rowCount === 0 || r.semanticIssue || r.contractIssue || r.readabilityIssue,
     );
     if (hasIssues) {
+      // The profile is for the gate, not the model — counts and lengths would
+      // add tokens for nothing the issue text does not already say.
+      const forModel: WidgetExecutionResult[] = executionResults.map(({ profile: _profile, ...rest }) => rest);
       const repaired = await validateAndFixDashboardSpec(
-        spec, executionResults, semanticCtx.semanticContext, semanticCtx.relationshipContext,
+        spec, forModel, semanticCtx.semanticContext, semanticCtx.relationshipContext,
       );
       // The pass ran, so clear any stale marker carried in from a previous
       // generation (refine-spec re-validates an existing spec).
       delete repaired.validation;
-      return repaired;
+      return await settleReadability(repaired, spec, readability, connectionId, tenantId, dataLayer, actor);
     }
     delete spec.validation;
-    return spec;
+    // Every checked widget read fine — a note left by an earlier pass is stale.
+    return clearReadabilityNotes(spec, new Set(executionResults.map((r) => r.id)));
   } catch (validationErr) {
     // Still best-effort: a transient warehouse timeout must not throw away a
     // dashboard that is probably fine. But it no longer passes silently — the
@@ -317,6 +357,70 @@ async function validateAndRepairSpec(
     log.warn({ err: reason }, 'dashboard validation pass failed — returning spec marked unvalidated');
     return { ...spec, validation: { ok: false, reason } };
   }
+}
+
+function stripReadabilityNote(w: WidgetSpec): WidgetSpec {
+  if (w.readabilityNote === undefined) return w;
+  const { readabilityNote: _note, ...rest } = w;
+  return rest;
+}
+
+function clearReadabilityNotes(spec: DashboardSpec, ids: Set<string>): DashboardSpec {
+  if (!spec.widgets.some((w) => ids.has(w.id) && w.readabilityNote !== undefined)) return spec;
+  return { ...spec, widgets: spec.widgets.map((w) => (ids.has(w.id) ? stripReadabilityNote(w) : w)) };
+}
+
+/**
+ * After the repair call: re-run ONLY the widgets that carried a readability
+ * issue and write the verdict onto each — nothing when it now reads,
+ * `readabilityNote` when it still does not (the card shows it, with "Fix with
+ * AI"), and the PRE-repair version when the repair broke the widget outright
+ * (a chart that runs and is hard to read beats one that errors). Without this
+ * step "the check passed" would be unfalsifiable: a finding the model ignored
+ * would simply vanish. Best-effort — a failure here leaves the repaired spec.
+ */
+async function settleReadability(
+  repaired: DashboardSpec,
+  before: DashboardSpec,
+  readability: Map<string, ReadabilityOutcome>,
+  connectionId: number,
+  tenantId: number | undefined,
+  dataLayer: 'product' | 'source' | undefined,
+  actor?: ReadActor,
+): Promise<DashboardSpec> {
+  const passedIds = new Set([...readability.entries()].filter(([, o]) => o.remaining.length === 0).map(([id]) => id));
+  let spec = clearReadabilityNotes(repaired, passedIds);
+  const flagged = [...readability.entries()].filter(([, o]) => o.remaining.length > 0);
+  if (flagged.length === 0) return spec;
+  try {
+    const ids = new Set(flagged.map(([id]) => id));
+    const recheck = await executeSpecForValidation(
+      { ...spec, widgets: spec.widgets.filter((w) => ids.has(w.id)) },
+      connectionId, tenantId, dataLayer, actor,
+    );
+    for (const r of recheck) {
+      const widget = spec.widgets.find((w) => w.id === r.id);
+      const outcome = readability.get(r.id);
+      if (!widget || !outcome) continue;
+      let next: WidgetSpec;
+      const broken = !!r.error || r.rowCount === 0 || !r.profile || validateWidgetColumns(r.type, r.sampleRows) !== null;
+      if (broken) {
+        const prev = before.widgets.find((w) => w.id === r.id) ?? widget;
+        next = { ...stripReadabilityNote(prev), readabilityNote: readabilityNoteText(outcome.remaining) };
+        log.warn({ widgetId: r.id, err: r.error ?? 'no rows / contract' }, 'readability: the repair broke the widget — kept the pre-repair version, noted on the card');
+      } else {
+        const again = applyReadabilityFixes(stripReadabilityNote(widget), r.profile as RowProfile);
+        const note = readabilityNoteText(again.remaining);
+        next = note ? { ...again.widget, readabilityNote: note } : again.widget;
+        if (note) log.info({ widgetId: r.id, codes: again.remaining.map((f) => f.code) }, 'readability: still unreadable after repair — noted on the card');
+        else log.info({ widgetId: r.id }, 'readability: repaired');
+      }
+      spec = { ...spec, widgets: spec.widgets.map((w) => (w.id === r.id ? next : w)) };
+    }
+  } catch (err) {
+    log.warn({ err: err instanceof Error ? err.message : String(err) }, 'readability re-check failed — leaving the repaired spec as it is');
+  }
+  return spec;
 }
 
 // ---------------------------------------------------------------------------
@@ -866,6 +970,19 @@ router.post('/refine-spec-stream', requireAuth, validate(refineSpecSchema), asyn
             const issue = validateWidgetColumns(r.type, r.sampleRows);
             if (issue) r.contractIssue = issue;
           }
+        }
+        // Readability on the user-steered path: TELL, do not change. The
+        // user asked for this shape ("make it a pie", "per customer"); a gate
+        // that silently undid it would be a second opinion nobody asked for.
+        // The card carries the note with "Fix with AI", and the chat says it.
+        for (const r of results) {
+          if (r.error || r.contractIssue || r.rowCount === 0 || !r.profile) continue;
+          const widget = spec.widgets.find((w) => w.id === r.id);
+          if (!widget) continue;
+          const bare = stripReadabilityNote(widget);
+          const note = readabilityNoteText(assessReadability(bare, r.profile));
+          spec = { ...spec, widgets: spec.widgets.map((w) => (w.id === r.id ? (note ? { ...bare, readabilityNote: note } : bare) : w)) };
+          if (note) notes.push(`"${widget.title}" may be hard to read: ${note}`);
         }
         const failing = results.filter((r) => r.error || r.contractIssue);
         for (const fail of failing) {
