@@ -131,6 +131,19 @@ rows past 12 are silently dropped).
   from a model rewrite. Watch the first production generation for the
   `readability-*` signatures above; the first `unresolved` is the prompt's
   problem, the first `repair-broke` is a regression.
+- **DRIVE-BY ON THE SAME PR: BOTH AUDIT GATES WENT RED UNDER EVERY BRANCH**
+  (the 2026-09-05 `fast-uri` shape again). PR #129's first CI run failed
+  "Widget Render Gate" at the FRONTEND audit gate — a new `js-yaml`
+  advisory (GHSA-2883-xcg3-v3hh, `>=4.0.0 <4.3.2`, eslint-only) one patch
+  above the existing `^4.3.1` override — and "API Integration Tests" at the
+  BACKEND gate — four new `nodemailer` advisories (`<=9.1.0`: recipient-
+  domain bypasses, addressparser DoS, `resolveContent` file-access bypass),
+  runtime-exposed through `emailService`. Neither touches this diff; main's
+  last green run predates the advisories; both FIXED inside their majors,
+  never allowlisted: override `js-yaml ^4.3.2` (lockfile regenerated with
+  npm), `nodemailer ^9.0.3 → ^9.1.1` (its usage surface —
+  `createTransport`/`sendMail` — is unchanged; `npm run check` clean,
+  `invite-email` + `signup-hardening` 16/16). Both gates exit 0 locally.
 - **NOT done, deliberately**: the renderer still cycles colours past 6
   series and truncates long horizontal-bar labels — the gate prevents both at
   GENERATION; an old saved dashboard is only re-checked when it is refined or
