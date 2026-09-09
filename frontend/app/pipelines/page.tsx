@@ -2103,7 +2103,7 @@ function ProductRunDetail({ productId, live, errors }: { productId: number; live
     id: number; product_id: number | null; table_name: string;
     table_role: string | null; transformation_status: string | null;
     last_run_at: string | null; last_run_error: string | null;
-    row_count: number | null;
+    row_count: number | null; degraded_reason?: string | null;
   };
   const [tables, setTables] = useState<Tbl[]>([]);
   const [loading, setLoading] = useState(true);
@@ -2137,14 +2137,20 @@ function ProductRunDetail({ productId, live, errors }: { productId: number; live
   return (
     <div className="px-4 py-2 space-y-0.5">
       {tables.map((t) => {
-        const status = (t.transformation_status ?? 'idle').toLowerCase();
+        // A table that published without a column the source stopped
+        // providing is its own outcome: not red (it ran), not green (it is
+        // narrower than the one a person approved).
+        const status = t.degraded_reason && t.transformation_status === 'success'
+          ? 'degraded'
+          : (t.transformation_status ?? 'idle').toLowerCase();
         const color = status === 'success' ? OBSERVATORY.ok
+          : status === 'degraded' ? OBSERVATORY.warn
           : status === 'running' ? OBSERVATORY.ocean
           : status === 'error' ? OBSERVATORY.err
           : OBSERVATORY.muted2;
         const Icon = status === 'success' ? CheckCircle2
           : status === 'running' ? Loader2
-          : status === 'error' ? AlertCircle
+          : status === 'error' || status === 'degraded' ? AlertCircle
           : Clock;
         return (
           <div key={t.id} className="flex items-center gap-2 text-[11px] py-0.5">

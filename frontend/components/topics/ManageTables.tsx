@@ -65,6 +65,8 @@ function label(t: ProductTable): string {
 /** Health dot for a table: last run status, then its quality checks. */
 function dotClass(t: ProductTable): string {
   if (t.transformation_status === 'error') return 'bg-err';
+  // Published, but without a column the source stopped providing.
+  if (t.degraded_reason) return 'bg-warn';
   const failed = (t.quality_checks ?? []).some((c) => c.status === 'fail' || c.status === 'error');
   if (failed) return 'bg-warn';
   if (t.transformation_status === 'success') return 'bg-ok';
@@ -138,6 +140,11 @@ export default function ManageTables({
                 {q && (
                   <span className="mt-px block truncate text-[12px] text-muted">
                     Answers “{q}”
+                  </span>
+                )}
+                {t.degraded_reason && (
+                  <span className="mt-px block text-[11.5px] text-warn" title={t.degraded_reason}>
+                    Missing a column the source stopped providing
                   </span>
                 )}
               </span>

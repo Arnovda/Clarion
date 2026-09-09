@@ -52,7 +52,12 @@ const CLASSES: ReadonlyArray<readonly [RegExp, TypeClass]> = [
     /^(edm\.)?(byte|sbyte|int16|int32|int64|single|double|decimal)$|^(tiny|small|big|)int(eger)?$|^numeric|^decimal|^float|^real$|^money$|^monetary$|^number$/,
     'number',
   ],
-  [/^(edm\.)?string$|^n?varchar|^n?char|^text$|^str$|^clob$/, 'string'],
+  [/^(edm\.)?string$|^n?varchar|^n?char|^text$|^str$|^clob$|^html$|^selection$/, 'string'],
+  // Odoo `fields_get` types (E6): a many2one lands as the target's integer
+  // id once the connector flattens `[id, name]`, so it is a number for the
+  // purpose of "could these two columns be one key". one2many/many2many are
+  // never synced as columns and stay unknown.
+  [/^many2one$/, 'number'],
 ];
 
 export function typeClass(dataType?: string | null): TypeClass {

@@ -33,6 +33,7 @@ interface TableRow {
   table_role: string | null; dag_order: number | null;
   transformation_status: string | null; last_run_at: Date | string | null;
   last_run_error: string | null; row_count: number | null;
+  degraded_reason?: string | null;
 }
 interface ScheduleRow {
   product_id: number; cron_expression: string; timezone: string | null; enabled: boolean;
@@ -67,6 +68,7 @@ router.get('/', requireAuth, async (req: Request, res: Response, next: NextFunct
           .select<TableRow[]>(
             'id', 'star_schema_id', 'table_name', 'display_name', 'table_role',
             'dag_order', 'transformation_status', 'last_run_at', 'last_run_error', 'row_count',
+            'degraded_reason',
           )
       : [];
 
@@ -175,6 +177,7 @@ router.get('/', requireAuth, async (req: Request, res: Response, next: NextFunct
           last_run_at: t.last_run_at,
           last_run_error: t.last_run_error,
           row_count: t.row_count,
+          degraded_reason: t.degraded_reason ?? null,
         })),
         tableEdges: tableEdges.map((e) => ({
           source: e.from_table_id,

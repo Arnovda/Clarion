@@ -76,6 +76,8 @@ export interface ProductTable {
   row_count: number | null;
   last_run_at: string | null;
   last_run_error: string | null;
+  /** Set when the table ran without a column the source stopped providing. */
+  degraded_reason?: string | null;
   load_mode: string;
   quality_checks?: QualityCheck[];
   source_product_table_id?: number | null;

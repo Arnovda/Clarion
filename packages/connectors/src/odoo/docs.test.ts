@@ -86,6 +86,13 @@ describe('buildEntityDocs', () => {
     expect(company.description).toBe('Company (in multi-company setups) this contact belongs to');
   });
 
+  it("keeps the vendor's own field type on every column (E6)", () => {
+    const docs = buildEntityDocs(partner, meta, selected);
+    expect(docs.columns.find((c) => c.name === 'credit_limit')!.dataType).toBe('monetary');
+    expect(docs.columns.find((c) => c.name === 'company_id')!.dataType).toBe('many2one');
+    expect(docs.columns.find((c) => c.name === 'name')!.dataType).toBe('char');
+  });
+
   it('live help text always beats the curated fallback', () => {
     const withHelp: Record<string, OdooFieldMeta> = {
       ...meta,

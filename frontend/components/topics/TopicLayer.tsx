@@ -70,6 +70,14 @@ function trustSentence(topic: Topic): string {
       : `Could not match ${sourceName} — refresh pending`;
   }
   if (state === 'warn') {
+    const degraded = topic.freshness.degradedTables ?? [];
+    if (degraded.length > 0) {
+      // A column the source stopped providing: the topic still answers,
+      // narrower. Named, because "something is off" sends nobody anywhere.
+      return degraded.length === 1
+        ? `${degraded[0].table} is missing a column ${sourceName} stopped providing`
+        : `${degraded.length} tables are missing columns ${sourceName} stopped providing`;
+    }
     if (!lastBuiltAt) return `Not matched against ${sourceName} yet`;
     return `Last matched ${sourceName} ${when} — refresh pending`;
   }

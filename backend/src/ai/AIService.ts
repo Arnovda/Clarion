@@ -2390,7 +2390,7 @@ Common failure patterns and how to fix them:
 
 Hard rules:
 - Reference ONLY columns that appear in the AVAILABLE SCHEMAS section. If a column is not listed there, you may not reference it.
-- Preserve the table's intended grain and surrogate-key strategy (ROW_NUMBER for dims, COALESCE(dim_key, -1) for fact FKs).
+- Preserve the table's intended grain and its keys. Keys are STABLE: a dim's key is its natural key carried unchanged, a fact's FK is the same value computed from the fact's own source column. Never introduce ROW_NUMBER(), UUID() or RANDOM() into a key — a key that renumbers per run is refused.
 - Keep TRY_CAST for type conversions; never use plain CAST.
 - Output a single self-contained SELECT statement. No semicolons at the end. No comments.`;
 
@@ -2407,8 +2407,8 @@ Your job: given a table name, its role (fact / dimension / bridge), and the AVAI
 
 Hard rules:
 - Reference ONLY columns that appear in the AVAILABLE SCHEMAS section.
-- For dimensions: surrogate key via ROW_NUMBER() OVER (...) AS <table>_key. Include the natural key + descriptive attributes.
-- For facts: foreign keys via COALESCE((SELECT key FROM dim_x WHERE …), -1) AS <dim>_key. Plus measures.
+- For dimensions: the key is the NATURAL key carried unchanged — <natural_id> AS <table>_key (never ROW_NUMBER()/UUID()/RANDOM(); a key that renumbers per run is refused). Include the natural key column + descriptive attributes.
+- For facts: foreign keys are the same natural-key value computed from the fact's own column — TRY_CAST(f.<col> AS VARCHAR) AS <dim>_key (NULL when missing; date keys use COALESCE(..., -1)). Plus measures.
 - Use TRY_CAST for type conversions; never plain CAST.
 - Output a single self-contained SELECT statement starting with the keyword SELECT or WITH. No semicolons. No comments. No prose.
 - If you genuinely cannot infer the table from the schemas, output exactly the keyword SELECT followed by a clear FROM clause referencing the most relevant schema — don't apologise; the platform handles the empty-result case.`;

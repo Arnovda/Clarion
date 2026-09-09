@@ -438,6 +438,10 @@ export function buildEntityDocs(
       displayName: label,
       description,
       role: odooFieldRole(name, type),
+      // The vendor's own type, kept verbatim (E6): after landing a many2one
+      // id and a char code are both plain columns, and only this word lets
+      // the profiler and the relationship canvas tell them apart.
+      dataType: type || undefined,
     });
 
     if (relationTable && selectedTables.has(relationTable)) {

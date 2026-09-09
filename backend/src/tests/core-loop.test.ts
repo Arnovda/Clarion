@@ -25,6 +25,16 @@ import { Database } from 'duckdb-async';
 process.env.STORAGE_FORMAT = 'parquet';
 
 import { request, registerUser, createUserWithToken } from './helpers';
+import { vi } from 'vitest';
+
+// The ONE mocked thing, and only for the schema-loss test at the end: the
+// AI repair. It returns the dim's SQL with the vanished column cut out —
+// what the model does in production — so what is tested is what the runner
+// DOES with that repair, which is the whole of D3.
+vi.mock('../ai/AIService', async (orig) => ({
+  ...(await orig<typeof import('../ai/AIService')>()),
+  repairTransformationSql: vi.fn(async (_t: string, _r: string, sql: string) => sql.replace('Country AS country, ', '')),
+}));
 import { getTestDb, cleanTestDb, closeTestDb } from './db-helpers';
 import { runProductTransformation } from '../services/transformationRunner';
 
@@ -174,5 +184,66 @@ describe('core loop: Parquet → transformation → product query', () => {
   it('the guard still stands on the product layer: a quoted external read is refused', async () => {
     const res = await execute(adminToken, `SELECT * FROM "read_text"('/proc/self/environ')`);
     expect(res.status).toBe(400);
+  });
+
+  // ── D3: a vanished source column degrades the table, it does not rewrite it ──
+  it('a source column that vanished is repaired for this run only: SQL kept, table marked degraded, admins told', async () => {
+    const db = getTestDb();
+    const before = await db('product_tables').where({ id: dimId }).first();
+    expect(before.transformation_sql).toContain('Country');
+
+    // Exact stops providing Country on the next sync.
+    await writeSourceTable('Accounts', `
+      SELECT * FROM (VALUES
+        ('a1', 'Van Damme BVBA', 'BE0123456789'),
+        ('a2', 'Peeters NV',     'BE0987654321'),
+        ('a3', 'Nord GmbH',      'DE123456789')
+      ) AS t(ID, Name, VATNumber)`);
+
+    const product = await db('data_products').where({ id: productId }).first();
+    const [dimRow] = await db('product_tables').whereIn('id', [dimId]);
+    const results = await runProductTransformation(product, [dimRow], tenantId);
+    expect(results).toHaveLength(1);
+    expect(results[0].status).toBe('success');
+    expect(results[0].degraded).toContain('"Country"');
+
+    const after = await db('product_tables').where({ id: dimId }).first();
+    // The repaired SQL ran — 3 rows, no country column — but was NOT persisted.
+    expect(after.transformation_sql).toBe(before.transformation_sql);
+    expect(after.transformation_status).toBe('success');
+    expect(after.degraded_reason).toContain('"Country"');
+    expect(after.degraded_at).toBeTruthy();
+    const cols = await db('product_columns').where({ product_table_id: dimId }).pluck('column_name');
+    expect(cols).not.toContain('country');
+
+    const note = await db('notifications').where({ tenant_id: tenantId, type: 'quality_alert' }).first();
+    expect(note).toBeTruthy();
+    expect(note.link).toBe(`/topics/${productId}?manage=1`);
+
+    // The topic page says so, in the reader's language.
+    const topic = await (await request()).get(`/api/products/${productId}/topic`).set('Authorization', `Bearer ${adminToken}`);
+    expect(topic.status).toBe(200);
+    expect(topic.body.data.freshness.state).toBe('warn');
+    expect(topic.body.data.freshness.degradedTables).toEqual([{ table: 'dim_account', reason: after.degraded_reason }]);
+  });
+
+  it('the column coming back clears the degraded state on the next clean run', async () => {
+    const db = getTestDb();
+    await writeSourceTable('Accounts', `
+      SELECT * FROM (VALUES
+        ('a1', 'Van Damme BVBA', 'BE', 'BE0123456789'),
+        ('a2', 'Peeters NV',     'BE', 'BE0987654321'),
+        ('a3', 'Nord GmbH',      'DE', 'DE123456789')
+      ) AS t(ID, Name, Country, VATNumber)`);
+    const product = await db('data_products').where({ id: productId }).first();
+    const [dimRow] = await db('product_tables').whereIn('id', [dimId]);
+    const results = await runProductTransformation(product, [dimRow], tenantId);
+    expect(results[0].status).toBe('success');
+    expect(results[0].degraded).toBeUndefined();
+    const row = await db('product_tables').where({ id: dimId }).first();
+    expect(row.degraded_reason).toBeNull();
+    expect(row.degraded_at).toBeNull();
+    // Still exactly one notification: the transition fired once.
+    expect(await db('notifications').where({ tenant_id: tenantId, type: 'quality_alert' }).count().first()).toMatchObject({ count: '1' });
   });
 });

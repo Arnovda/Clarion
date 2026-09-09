@@ -70,6 +70,21 @@ gap-filler, not a second opinion.
 4. ai_draft   — AI-inferred, unverified; requires human review
 ```
 
+> **Since 2026-09-09 the ladder is code, not prose.** `backend/src/shared/
+> provenance.ts` (byte-identical copy at `frontend/lib/provenance.ts`,
+> lint-locked) defines the rungs — `human` · `declared` · `curated` ·
+> `derived` · `ai_verified` · `ai_draft` · `unknown` — and ONE pure
+> `provenanceOf()` that derives a rung from the stored fields (`semantic_
+> source`, `edited_by_user` / `confirmed_by_user`, `ai_draft`, `approval_
+> status`, a cached `measured`). Storage keeps recording the CHANNEL, which
+> confirmation must not overwrite; the rung is what readers ask for. Two
+> rungs the prose above lacked: `human` (a person edited or confirmed —
+> outranks everything) and `derived` (Clarion computed it from the data or
+> the SQL without a model: lineage read off a query, a fact→dim join
+> synthesised from FK metadata, a name-pattern or value-overlap candidate).
+> The rung is stamped onto `product_relationships` and `column_lineage` at
+> persist, so provenance no longer dies at the product boundary.
+
 Trust consequences:
 
 - `declared` and `curated` facts land with `ai_draft = false` and
@@ -352,6 +367,7 @@ and the template can be written later without re-research.
 - [ ] `getKnownRelationships` with descriptions (Tier 1/2)
 - [ ] Every relationship endpoint column EXISTS, and the two ends' declared types could be one key (Phase E1a) — both are conformance errors, not runtime drops
 - [ ] Column/table docs harvested (Tier 1) or curated (Tier 2), landing at the trusted rung; AI covers only the remainder
+- [ ] Every `ColumnDoc` carries the vendor's own `dataType` verbatim (`Edm.Guid`, `many2one`, `char`…). The profiler stores it as `source_columns.source_data_type`; without it `typeClass` cannot refuse a GUID→code relationship on the canvas, and a source that publishes no types must leave it undefined rather than invent one
 - [ ] Conformance suite green; unit tests for all pure logic; mocked sync tests for the six scenarios in Phase G
 - [ ] Live sandbox validation performed and findings noted in the README
 - [ ] Registered + frontend tile + CLAUDE.md updated

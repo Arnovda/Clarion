@@ -19,6 +19,9 @@ import { invalidateFilterOptionsCache } from './filterOptionsCache';
 import { publishInvalidation } from '../jobs/cacheBus';
 import { trackMetric, trackEvent } from '../utils/monitoring';
 import { isSqlShaped } from '../utils/sqlGuard';
+import { classifyBindFailure, missingColumnFromError, degradedReason } from './schemaLoss';
+import { parseAliasMap } from './lineageDerivation';
+import { notifyAdmins } from './notificationService';
 import {
   publishProductTable,
   publishRollup,
@@ -59,6 +62,8 @@ interface TableRow {
   dag_order: number;
   load_mode: string; // 'full' | 'incremental'
   is_shared_dimension?: boolean | null;
+  /** Set once the table has published; the schema-loss rule reads it. */
+  delta_path?: string | null;
 }
 
 interface TransformResult {
@@ -66,6 +71,83 @@ interface TransformResult {
   status: 'success' | 'error';
   row_count?: number;
   error?: string;
+  /**
+   * The table published, but WITHOUT a column the source stopped providing
+   * (schemaLoss.ts). The stored SQL was not changed; this is the sentence
+   * the person who owns the topic reads.
+   */
+  degraded?: string;
+}
+
+/**
+ * Does a column of this name exist on any relation the SQL actually READS?
+ *
+ * Scoped to the FROM/JOIN tables rather than the whole session on purpose:
+ * a sibling product table or an upstream dim registered as a view may well
+ * carry a same-named passthrough column, and that would make a genuine
+ * source loss read as an alias slip. If the column is on one of the tables
+ * this query names, the query is wrong (it used the wrong alias); if it is
+ * on none of them, the source stopped providing it.
+ */
+async function columnExistsInReferencedTables(db: Database, sql: string, column: string): Promise<boolean> {
+  const tables = new Set(parseAliasMap(sql).values());
+  for (const t of tables) {
+    try {
+      const cols = await db.all(`DESCRIBE "${t.replace(/"/g, '""')}"`) as Array<{ column_name: string }>;
+      if (cols.some((c) => c.column_name.toLowerCase() === column.toLowerCase())) return true;
+    } catch { /* not a relation in this session — a CTE alias or a typo; skip */ }
+  }
+  return false;
+}
+
+/**
+ * Record — or clear — the degraded state on a table (D3). Runs on every
+ * successful build so a run that needed no repair clears a stale reason.
+ * The notification fires only on the TRANSITION into degraded: a topic
+ * refreshed nightly must not page its admins nightly for one missing
+ * column they already know about.
+ */
+async function recordDegradedState(
+  tenantId: number,
+  product: ProductRow,
+  table: TableRow,
+  schemaLoss: { column: string; reason: string } | null,
+): Promise<void> {
+  const current = await tenantQuery(tenantId, (trx) =>
+    trx('product_tables').where({ id: table.id }).select('degraded_reason').first(),
+  ) as { degraded_reason: string | null } | undefined;
+  const wasDegraded = !!current?.degraded_reason;
+  if (!schemaLoss) {
+    if (wasDegraded) {
+      await tenantQuery(tenantId, (trx) =>
+        trx('product_tables').where({ id: table.id }).update({ degraded_reason: null, degraded_at: null }),
+      );
+      log.info({ table: table.table_name, productId: product.id }, 'transformation no longer degraded');
+    }
+    return;
+  }
+  await tenantQuery(tenantId, (trx) =>
+    trx('product_tables').where({ id: table.id }).update({
+      degraded_reason: schemaLoss.reason,
+      degraded_at: new Date().toISOString(),
+    }),
+  );
+  log.warn(
+    { table: table.table_name, productId: product.id, column: schemaLoss.column },
+    'transformation degraded — source column vanished, repaired in memory only',
+  );
+  if (!wasDegraded) {
+    try {
+      await notifyAdmins(tenantId, 'quality_alert', `${product.name}: a source column disappeared`, {
+        message: schemaLoss.reason,
+        entityType: 'product_table',
+        entityId: table.id,
+        link: `/topics/${product.id}?manage=1`,
+      });
+    } catch (err) {
+      log.warn({ err }, 'degraded-state notification failed (non-fatal)');
+    }
+  }
 }
 
 /**
@@ -628,6 +710,10 @@ export async function runProductTransformation(
         // the repaired SQL so subsequent runs use the fixed version.
         let sql = table.transformation_sql;
         let aiRepaired = false;
+        // Set when the failure is the SOURCE losing a column, not the SQL
+        // being wrong: the repair then runs for this build only and the
+        // stored SQL stays as a person wrote or approved it (schemaLoss.ts).
+        let schemaLoss: { column: string; reason: string } | null = null;
         const tempTable = `__temp_${table.table_name}`;
 
         // Guard: missing/empty transformation_sql produces "AS null;" which
@@ -712,6 +798,25 @@ export async function runProductTransformation(
               .test(errMsg);
           if (!isRepairable) throw firstErr;
 
+          // Is this the source changing under a query that used to run?
+          // Decided from three facts, none of them a model's opinion —
+          // see schemaLoss.ts for why all three are needed.
+          const missing = missingColumnFromError(errMsg);
+          const bind = missing
+            ? classifyBindFailure({
+                errorMessage: errMsg,
+                publishedBefore: !!table.delta_path,
+                columnExistsSomewhere: await columnExistsInReferencedTables(db, sql, missing),
+              })
+            : null;
+          if (bind?.kind === 'schema_loss') {
+            schemaLoss = { column: bind.column, reason: degradedReason(bind.column, table.table_name) };
+            log.warn(
+              { table: table.table_name, column: bind.column },
+              'source column vanished — repairing for this run only, stored SQL untouched',
+            );
+          }
+
           log.warn(`${table.table_name} failed (${errMsg.slice(0, 160)}) — attempting AI repair`);
           const schemasText = await collectAvailableSchemas(db);
           const { repairTransformationSql, AiCreditExhaustedError } = await import('../ai/AIService');
@@ -755,7 +860,11 @@ export async function runProductTransformation(
         const rowResult = await db.all(`SELECT COUNT(*) AS cnt FROM ${tempTable}`);
         let rowCount = Number((rowResult[0] as { cnt: number | bigint })?.cnt ?? 0);
 
-        if (aiRepaired) {
+        // A repair of a bookkeeping slip in the model's own SQL is persisted
+        // so the next run does not pay for it again. A repair that papered
+        // over a VANISHED SOURCE COLUMN is not: persisting it is how a topic
+        // got narrower overnight with nothing on screen (assessment §5.1).
+        if (aiRepaired && !schemaLoss) {
           await tenantQuery(tenantId, (trx) =>
             trx('product_tables').where({ id: table.id }).update({ transformation_sql: sql }),
           );
@@ -784,6 +893,10 @@ export async function runProductTransformation(
           log.error({ table: table.table_name, productId: product.id }, 'transformation blocked by a quality check');
           throw new Error(blocker);
         }
+
+        // The checks passed, so this build publishes: record whether it is a
+        // narrower table than the one a person approved, or clear an old flag.
+        await recordDegradedState(tenantId, product, table, schemaLoss);
 
         // Write output
         const parquetPath = useAzure
@@ -870,7 +983,7 @@ export async function runProductTransformation(
             log.warn({ err: syncErr }, `Column sync failed for ${table.table_name}`);
           }
 
-          results.push({ table_name: table.table_name, status: 'success', row_count: rowCount });
+          results.push({ table_name: table.table_name, status: 'success', row_count: rowCount, ...(schemaLoss ? { degraded: schemaLoss.reason } : {}) });
 
           // The rollup is refreshed on the Delta path too (7-3): the helper
           // reads the freshly written Delta directory through the scan view.
@@ -938,7 +1051,7 @@ export async function runProductTransformation(
           log.warn({ err: syncErr }, `Column sync failed for ${table.table_name}`);
         }
 
-        results.push({ table_name: table.table_name, status: 'success', row_count: rowCount });
+        results.push({ table_name: table.table_name, status: 'success', row_count: rowCount, ...(schemaLoss ? { degraded: schemaLoss.reason } : {}) });
 
         await refreshFactRollup(db, table, parquetPath, productDir, useAzure, tenantId);
       } catch (err: unknown) {

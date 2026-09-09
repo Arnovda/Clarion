@@ -91,6 +91,7 @@ router.get('/:id/topic', requireAuth, async (req: Request, res: Response, next: 
           .select(
             'id', 'table_name', 'display_name', 'table_role',
             'transformation_status', 'last_run_at', 'row_count', 'transformation_sql',
+            'degraded_reason',
           )
       : [];
 
@@ -141,6 +142,12 @@ router.get('/:id/topic', requireAuth, async (req: Request, res: Response, next: 
     const failedTables = tables.filter(
       (t: { transformation_status: string }) => t.transformation_status === 'error',
     ).length;
+    // Tables that published WITHOUT a column the source stopped providing
+    // (schemaLoss.ts). They answer questions — narrower — so this is a
+    // warning with names, never a failure and never silence.
+    const degradedTables = (tables as Array<{ table_name: string; display_name: string | null; degraded_reason: string | null }>)
+      .filter((t) => !!t.degraded_reason)
+      .map((t) => ({ table: t.display_name ?? t.table_name, reason: t.degraded_reason as string }));
 
     // The source this product is attributed to — "Matches Exact Online as of…"
     // needs both the connection's NAME and when it last synced. Same
@@ -175,6 +182,7 @@ router.get('/:id/topic', requireAuth, async (req: Request, res: Response, next: 
     // to say, even if the source synced five minutes ago.
     const state: 'ok' | 'warn' | 'err' =
       failedTables > 0 ? 'err'
+        : degradedTables.length > 0 ? 'warn'
         : lastBuiltMs === 0 ? 'warn'
           : (syncedMs > 0 && now - syncedMs > FRESH_WINDOW_MS) ? 'warn'
             : (now - lastBuiltMs > FRESH_WINDOW_MS) ? 'warn'
@@ -241,6 +249,7 @@ router.get('/:id/topic', requireAuth, async (req: Request, res: Response, next: 
           lastBuiltAt: lastBuiltMs > 0 ? new Date(lastBuiltMs).toISOString() : null,
           sourceSyncedAt: isoOrNull(syncedAt as Date | string | null),
           failedTables,
+          degradedTables,
         },
         quality: { checksPassing, checksTotal },
         pendingChanges,

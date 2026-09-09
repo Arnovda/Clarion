@@ -31,6 +31,20 @@ import type { BusMatrixOutput, BusMatrixDimension, ExistingDimContext, ColumnDes
 // giving the dynamic-import ratchet a single site instead of one per
 // workflow function.
 const loadTransformationRunner = () => import('./transformationRunner');
+
+/**
+ * A table that published WITHOUT a column the source stopped providing is
+ * not a failure and must not read as one — but it is not silence either.
+ * One log line per degraded table, on every path that runs transformations.
+ */
+function emitDegraded(
+  results: ReadonlyArray<{ table_name: string; degraded?: string }>,
+  emit: (e: OrchestratorEvent) => void,
+): void {
+  for (const r of results) {
+    if (r.degraded) emit({ type: 'log', text: `⚠ ${r.table_name}: ${r.degraded}` });
+  }
+}
 const loadProductGraphSync = () => import('./productGraphSync');
 
 export type OrchestratorEventType =
@@ -411,6 +425,7 @@ export async function runBusMatrixWorkflow(
       const results = await runProductTransformation(product, tables, tenantId);
 
       if (Array.isArray(results)) {
+        emitDegraded(results, emit);
         const failed = results.filter((r: { status: string }) => r.status === 'error');
         if (failed.length > 0) {
           emit({ type: 'product', productName: p.name, productId: p.id, status: 'partial', text: `${results.length - failed.length} ok, ${failed.length} failed` });
@@ -683,6 +698,7 @@ export async function runPipelineWorkflow(
 
       try {
         const results = await runProductTransformation(product, tables, tenantId);
+        emitDegraded(results, emit);
         const failed = results.filter((r) => r.status === 'error');
         const allOk = failed.length === 0;
         if (failed.length > 0) {
@@ -880,6 +896,7 @@ export async function runProductRefreshWorkflow(
   const { runProductTransformation, loadTransformableTables } = await loadTransformationRunner();
   const tables = await loadTransformableTables(tenantId, productId);
   const results = await runProductTransformation(product, tables, tenantId);
+  emitDegraded(results, emit);
 
   const failed = results.filter((r) => r.status === 'error');
   const allOk = failed.length === 0;
