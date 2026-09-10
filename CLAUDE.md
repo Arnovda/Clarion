@@ -31,7 +31,52 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-09-10 (THE SYNC WORKER HAS NOT RUN IN SEVEN DAYS, AND
+**Last updated:** 2026-09-10 (THE READER WENT GREEN AND SAID NOTHING — a KQL
+parse error blinded the whole signature section on the one run that was
+supposed to answer the `source-stale` question, and it reported success.
+Owner: *"Merge to main and production and tell me what the next steps are"*.
+PR #136 rebase-merged (`f70ff11`); deploy #595 put the aiBudget fix live.
+**B1 still not started.**)
+
+**THE ONE RUN THAT MATTERED COULD NOT RUN, AND NOTHING SAID SO LOUDLY.**
+Production logs run #11 — triggered by the #136 merge, the run built to answer
+whether `source-stale` appears — printed its volume table, printed its Sources
+seen table, and then:
+- `**COULD NOT RUN** — the signature query failed. … "Query could not be parsed
+  at '\' on line [1,1640]"`, **and the step exited 0**. Green tick, no
+  signatures, no answer.
+- **Cause: `\s+` in the relation-extraction regex I added in the previous
+  slice.** A KQL string literal accepts only a fixed escape set and `\s` is
+  not in it, so Log Analytics rejected the query WHOLE. The regex had been
+  dry-run as a *regex*; it was never checked as a *KQL string*, which is the
+  layer that rejected it.
+- **The deeper defect is the `exit 0`.** The volume and source tables are
+  CONTEXT; the signatures are the report. A reader that cannot read was
+  reporting exactly what a healthy system reports — the failure this control
+  was created to stop the platform making, made inside the control for the
+  fourth time. **A failed signature query now FAILS the workflow.**
+- **Fix, and the rule it establishes: NO BACKSLASH MAY REACH KQL.** The regex
+  spells its skip as `[^a-z_]*`, stepping over the space, the backslash and the
+  quote in `insert into \"ai_call_log\"` without naming any of them. The rule
+  is written into the workflow beside the query. Verified by expanding `SIG_Q`
+  exactly as bash does and grepping the result: **zero backslashes reach KQL**.
+- **The dry-run earned its keep a second time**: the first backslash-free draft
+  matched `permission denied for table X` and MISSED
+  `…row-level security policy for table X` — i.e. it would have named no
+  relation for the RLS bucket, the very bucket the feature was built for.
+  Both shapes are matched now; nine cases pass, including two real production
+  log lines and two negatives.
+- Validation: YAML parses; embedded bash passes `bash -n`; the extraction
+  dry-run over the two real shapes plus GRANT/RLS/insert/update/delete and two
+  non-matching lines; `SIG_Q` expanded through bash and checked backslash-free.
+  No product code touched (`git status`), so no suite applies.
+- **WHAT TO READ NEXT, unchanged and still owed**: the Production logs run this
+  push triggers. **Does `source-stale` appear?** Present = sources are
+  configured to sync and the worker is not running (an outage, fix first).
+  Absent = nothing was ever scheduled, and a sync must be triggered
+  deliberately before B1 can be judged at all.
+
+**Prior last updated:** 2026-09-10 (THE SYNC WORKER HAS NOT RUN IN SEVEN DAYS, AND
 THE COST LOG HAD THE SAME LEAK AS THE BUDGET — owner: *"Merge to main and
 production and tell me what the next steps are"*. PR #135 rebase-merged
 (`ad4805c`). Production logs run #10 finally answers the question three
