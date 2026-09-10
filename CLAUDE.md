@@ -31,7 +31,50 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-09-10 (THE READER WENT GREEN AND SAID NOTHING — a KQL
+**Last updated:** 2026-09-10 (NOTHING WAS EVER SCHEDULED — `source-stale` does
+NOT appear, so the sync worker's seven days of silence is not an outage.
+Owner: *"Merge to main and production and tell me what the next steps are"*.
+PR #137 rebase-merged (`7c7e1cd`); deploy #596 put the aiCallLogger fix live.
+**B1 cannot be judged until a sync is triggered deliberately.**)
+
+**THE QUESTION FOUR SLICES HAVE BEEN CHASING IS ANSWERED.** Production logs
+run #12 — the first run whose signature query could execute — returned exactly
+three signatures over seven days, and **`source-stale` is not among them**:
+- `rls-write-denied` **19**, `brief-run` **5**, `runner-active` **4**. Nothing
+  else. No `grant-missing`, no `server-error`, no `sync-*` of any kind.
+- **`source-stale` absent + no sync worker in the volume table = nothing was
+  ever scheduled.** The freshness sweep logs `'source stale'` only when an
+  ENABLED sync schedule has gone past its own window; with no schedule there
+  is nothing to flag, and the Container Apps Job correspondingly never runs.
+  **This is the benign branch**: not an outage, not a broken worker, not the
+  scope bug three slices chased. Nobody has turned a sync on.
+- **The sweep itself is running**, which is what makes the absence readable:
+  `brief-run` fired five times, and the freshness monitor is started in the
+  same scheduler-owning process as the morning-brief job. Absence of a signal
+  from a process that is demonstrably alive is evidence; from a dead one it
+  would be nothing.
+- **THE RELATION SET PAID FOR ITSELF ON ITS FIRST REAL RUN**: the
+  `rls-write-denied` bucket reports `relations named: ["ai_call_log",
+  "ai_usage"]` — both tables in one bucket, exactly as the previous slice
+  deduced from two `take_any` samples landing differently. That deduction is
+  now a measurement.
+- **The 19 refusals END 2026-09-09T14:14**, before either fix deployed
+  (#595 at 14:28, #596 at 14:39 today). The next run over a fresh window is
+  what confirms they have stopped; a 20th occurrence dated after today would
+  mean a third site still writes an RLS table on the bare pool.
+- **WHAT THIS UNBLOCKS AND WHAT IT DOES NOT.** The four phase-2 signals
+  (`sync-complete` with `mode: merge:…`, `sync-budget-stop` →
+  `sync-continuation`, `sync-tombstoned` against its `rowsTotal`) are not
+  waiting on the reader or on a fix — they are waiting on **somebody enabling
+  a sync schedule, or triggering one by hand**. Until then B1, the DuckLake
+  writer, cannot be validated even if its two owner decisions were settled.
+- Also worth the owner's eye on its own: `brief-run` reports
+  `tenantsRun: 2, briefsCreated: 0` on every one of the five runs, with no
+  `overnight-*` line at all. Consistent — no brief, nothing to investigate —
+  but the morning brief has never produced anything.
+- Validation: doc only (`git status`), so no suite applies.
+
+**Prior last updated:** 2026-09-10 (THE READER WENT GREEN AND SAID NOTHING — a KQL
 parse error blinded the whole signature section on the one run that was
 supposed to answer the `source-stale` question, and it reported success.
 Owner: *"Merge to main and production and tell me what the next steps are"*.
