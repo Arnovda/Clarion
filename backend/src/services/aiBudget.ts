@@ -24,6 +24,7 @@
 import { requestScope, type RequestScope } from '../utils/requestScope';
 import type { Request, Response, NextFunction } from 'express';
 import { semanticDb } from '../db/knex';
+import { tenantQuery } from './tenantQuery';
 import { logger } from '../utils/logger';
 
 const log = logger.child({ module: 'ai-budget' });
@@ -131,10 +132,19 @@ export async function checkTenantAiBudget(tenantId: number): Promise<BudgetStatu
       ? Number(tenant.monthly_token_budget)
       : null;
 
-    const usageRow = await semanticDb('ai_usage')
-      .where({ tenant_id: tenantId, period_start: currentPeriodStart() })
-      .select('total_tokens')
-      .first();
+    // `ai_usage` is RLS-forced, so this MUST carry tenant context. On the bare
+    // pool the policy predicate is `tenant_id = NULL` and the read returns ZERO
+    // ROWS WITH NO ERROR — `used` reads 0, `allowed` reads true, and the budget
+    // never bites. That is what production was doing: the 2026-09-10 prod-logs
+    // run found the sibling INSERT failing 19 times in five days (42501), while
+    // this read failed silently beside it and said nothing at all. The explicit
+    // tenant filter below is the authorization statement; it does not, and
+    // cannot, substitute for the context — the two predicates AND together.
+    const usageRow = await tenantQuery(tenantId, (trx) =>
+      trx('ai_usage')
+        .where({ tenant_id: tenantId, period_start: currentPeriodStart() })
+        .select('total_tokens')
+        .first());
     const used = usageRow ? Number(usageRow.total_tokens) : 0;
 
     if (budget == null) {
@@ -160,7 +170,7 @@ export async function recordTenantAiUsage(
   const total = inputTokens + outputTokens;
   if (total <= 0) return;
   try {
-    await semanticDb.raw(
+    await tenantQuery(tenantId, (trx) => trx.raw(
       `INSERT INTO ai_usage (tenant_id, period_start, input_tokens, output_tokens, total_tokens, call_count, updated_at)
        VALUES (?, ?, ?, ?, ?, 1, NOW())
        ON CONFLICT (tenant_id, period_start) DO UPDATE SET
@@ -170,7 +180,7 @@ export async function recordTenantAiUsage(
          call_count    = ai_usage.call_count    + 1,
          updated_at    = NOW()`,
       [tenantId, currentPeriodStart(), inputTokens, outputTokens, total],
-    );
+    ));
   } catch (err) {
     log.warn({ err, tenantId, total }, 'recordTenantAiUsage failed');
   }

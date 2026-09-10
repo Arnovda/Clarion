@@ -32,6 +32,8 @@ type Svc = {
   resolveScope: typeof import('../services/pipelineService').resolveScope;
   topoSortProducts: typeof import('../services/pipelineService').topoSortProducts;
   triggerSync: typeof import('../orchestrator/SyncOrchestrator').triggerSync;
+  recordTenantAiUsage: typeof import('../services/aiBudget').recordTenantAiUsage;
+  checkTenantAiBudget: typeof import('../services/aiBudget').checkTenantAiBudget;
   requestCancellation: typeof import('../orchestrator/SyncOrchestrator').requestCancellation;
 };
 let svc: Svc;
@@ -69,17 +71,19 @@ beforeAll(async () => {
   await cleanTestDb();
   A = await seed('alpha');
   B = await seed('beta');
-  const [n, a, ap, p, o] = await Promise.all([
+  const [n, a, ap, p, o, b] = await Promise.all([
     import('../services/notificationService'),
     import('../services/auditService'),
     import('../services/autoApproveService'),
     import('../services/pipelineService'),
     import('../orchestrator/SyncOrchestrator'),
+    import('../services/aiBudget'),
   ]);
   svc = {
     notifyAdmins: n.notifyAdmins, notify: n.notify, recordSystemAudit: a.recordSystemAudit,
     autoApproveStaleDrafts: ap.autoApproveStaleDrafts, getDag: p.getDag, resolveScope: p.resolveScope,
     topoSortProducts: p.topoSortProducts, triggerSync: o.triggerSync, requestCancellation: o.requestCancellation,
+    recordTenantAiUsage: b.recordTenantAiUsage, checkTenantAiBudget: b.checkTenantAiBudget,
   };
 });
 
@@ -114,6 +118,45 @@ describe('worker-reachable services under databridge_app with no ambient tenant 
     const rows = await superDb('notifications').where('title', 'like', '_-%').select('tenant_id', 'title');
     for (const r of rows) expect(r.tenant_id).toBe(r.title.startsWith('A') ? A.tenantId : B.tenantId);
     expect(rows).toHaveLength(12);
+  });
+
+
+  /**
+   * The 2026-09-10 prod-logs run caught this live: 19 `42501` lines in five
+   * days, all of them aiBudget's `ai_usage` INSERT being refused by its own
+   * RLS policy on the bare pool. `recordTenantAiUsage` swallows the failure
+   * as a warn, and — worse — `checkTenantAiBudget` reads the same table the
+   * same way, where RLS returns ZERO ROWS WITH NO ERROR: `used` reads 0,
+   * `allowed` reads true, and the spend cap never bites. The write failing
+   * loudly was visible; the read failing silently was not.
+   */
+  it('recordTenantAiUsage actually writes ai_usage (it was failing RLS and swallowing it)', async () => {
+    await svc.recordTenantAiUsage(A.tenantId, 100, 40);
+    await svc.recordTenantAiUsage(A.tenantId, 10, 5);
+    const rows = await superDb('ai_usage').where({ tenant_id: A.tenantId }).select('total_tokens', 'call_count');
+    expect(rows).toHaveLength(1);
+    expect(Number(rows[0].total_tokens)).toBe(155);
+    expect(Number(rows[0].call_count)).toBe(2);
+  });
+
+  it('checkTenantAiBudget SEES that usage, so the cap can bite', async () => {
+    await svc.recordTenantAiUsage(B.tenantId, 900, 100);
+    await superDb('tenants').where({ id: B.tenantId }).update({ monthly_token_budget: 1000 });
+
+    const at = await svc.checkTenantAiBudget(B.tenantId);
+    expect(at.used).toBe(1000);          // read 0 on the bare pool
+    expect(at.allowed).toBe(false);      // and so was always true
+
+    await superDb('tenants').where({ id: B.tenantId }).update({ monthly_token_budget: 5000 });
+    const under = await svc.checkTenantAiBudget(B.tenantId);
+    expect(under.used).toBe(1000);
+    expect(under.remaining).toBe(4000);
+    expect(under.allowed).toBe(true);
+  });
+
+  it('one tenant\'s usage is never counted against another', async () => {
+    const a = await svc.checkTenantAiBudget(A.tenantId);
+    expect(a.used).toBe(155);
   });
 
   it('recordSystemAudit writes the audit row', async () => {
