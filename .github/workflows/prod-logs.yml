@@ -205,7 +205,22 @@ jobs:
           # One round trip, bucketed server-side. `contains` rather than `has`
           # because several of these phrases carry punctuation that token-based
           # matching would split.
-          SIG_Q="ContainerAppConsoleLogs_CL | where TimeGenerated > ago($WINDOW) $SCOPE | extend sig = case(Log_s contains 'violates row-level security', 'rls-write-denied', Log_s contains '\"42501\"' or Log_s contains 'insufficient_privilege' or Log_s contains 'permission denied for', 'grant-missing', Log_s contains 'ownership check refused', 'ownership-refused', Log_s contains 'Child-process query runner ACTIVE', 'runner-active', Log_s contains 'compiled runner script was not found', 'runner-degraded', Log_s contains 'request failed', 'server-error', Log_s contains 'overnight investigation complete', 'overnight-ok', Log_s contains 'overnight investigation failed', 'overnight-failed', Log_s contains 'skipping overnight investigation', 'overnight-skipped', Log_s contains 'morning brief run done', 'brief-run', Log_s contains 'source stale', 'source-stale', Log_s contains 'sync run failed', 'sync-failed', Log_s contains 'stopped at the time budget', 'sync-budget-stop', Log_s contains 'continuation run queued', 'sync-continuation', Log_s contains 'full re-sync finalised' or Log_s contains '\"tombstoned\"', 'sync-tombstoned', Log_s contains 'sync complete', 'sync-complete', '') | where sig != '' | summarize n = count(), firstSeen = min(TimeGenerated), lastSeen = max(TimeGenerated), example = take_any(Log_s), rels = make_set_if(extract('(?i)(?:insert into|update|delete from|permission denied for (?:table|relation))\\s+\\\\?\\\"?([a-z_]+)', 1, Log_s), isnotempty(extract('(?i)(?:insert into|update|delete from|permission denied for (?:table|relation))\\s+\\\\?\\\"?([a-z_]+)', 1, Log_s)), 6) by sig | order by n desc"
+          #
+          # NO BACKSLASH MAY REACH KQL. A KQL string literal accepts only a
+          # fixed escape set, and `\s` is not in it - the query is rejected
+          # whole with a parse error, the step reports COULD NOT RUN, and
+          # before the exit below it did that while going GREEN. That is what
+          # happened to run #11: a relation-extraction regex written with
+          # `\s+` blinded the entire signature section on the one run that
+          # was supposed to answer whether `source-stale` appears. So the
+          # regex below spells its skip as `[^a-z_]*` - it steps over the
+          # space, the backslash and the quote in `insert into \"ai_call_log\"`
+          # without naming any of them. Two message shapes are matched
+          # deliberately: Postgres says `permission denied for table X` for a
+          # missing GRANT and `...policy for table X` for an RLS refusal, and
+          # a dry-run over real log lines is what caught the second being
+          # absent from the first draft.
+          SIG_Q="ContainerAppConsoleLogs_CL | where TimeGenerated > ago($WINDOW) $SCOPE | extend sig = case(Log_s contains 'violates row-level security', 'rls-write-denied', Log_s contains '\"42501\"' or Log_s contains 'insufficient_privilege' or Log_s contains 'permission denied for', 'grant-missing', Log_s contains 'ownership check refused', 'ownership-refused', Log_s contains 'Child-process query runner ACTIVE', 'runner-active', Log_s contains 'compiled runner script was not found', 'runner-degraded', Log_s contains 'request failed', 'server-error', Log_s contains 'overnight investigation complete', 'overnight-ok', Log_s contains 'overnight investigation failed', 'overnight-failed', Log_s contains 'skipping overnight investigation', 'overnight-skipped', Log_s contains 'morning brief run done', 'brief-run', Log_s contains 'source stale', 'source-stale', Log_s contains 'sync run failed', 'sync-failed', Log_s contains 'stopped at the time budget', 'sync-budget-stop', Log_s contains 'continuation run queued', 'sync-continuation', Log_s contains 'full re-sync finalised' or Log_s contains '\"tombstoned\"', 'sync-tombstoned', Log_s contains 'sync complete', 'sync-complete', '') | where sig != '' | extend rel = extract('(?i)(?:insert into|update|delete from|permission denied for (?:table|relation)|policy for (?:table|relation))[^a-z_]*([a-z_]+)', 1, Log_s) | summarize n = count(), firstSeen = min(TimeGenerated), lastSeen = max(TimeGenerated), example = take_any(Log_s), rels = make_set_if(rel, isnotempty(rel), 6) by sig | order by n desc"
 
           say "### Signatures"
           say ""
@@ -216,7 +231,14 @@ jobs:
             say '```'
             head -c 2000 /tmp/qerr 2>/dev/null | tee -a "$GITHUB_STEP_SUMMARY"
             say '```'
-            exit 0
+            say ""
+            say "The volume and source tables above are CONTEXT, not the report. Without the"
+            say "signatures this run establishes nothing, so it fails rather than going green"
+            say "on an unreadable reader — a check that cannot fail reports exactly what a"
+            say "healthy system reports, which is the failure this whole control exists to"
+            say "stop making. Run #11 went green this way after a KQL parse error and said"
+            say "nothing about production at all."
+            exit 1
           fi
 
           COUNT=$(jq 'length' /tmp/sig.json)

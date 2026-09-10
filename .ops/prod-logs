@@ -189,6 +189,17 @@
 # this reader. `source-stale` above is what will say whether that silence is
 # expected.
 #
+# RUN #11 WENT GREEN AND SAID NOTHING, AND THAT IS THE FAILURE THIS CONTROL
+# EXISTS TO STOP. The relation-extraction regex added for run #11 was written
+# with `\s+`, which is not a KQL string escape, so Log Analytics rejected the
+# whole signature query with a parse error. The step printed COULD NOT RUN and
+# then `exit 0` — a green run, on the one execution that was supposed to answer
+# whether `source-stale` appears. Two fixes: the regex now carries NO backslash
+# at all (`[^a-z_]*` steps over the space, backslash and quote without naming
+# them), and a signature query that cannot run now FAILS THE WORKFLOW. The
+# volume and source tables are context; the signatures are the report, and a
+# reader that cannot read must not look like a clean one.
+#
 # A clean report is only as good as the traffic behind it: no `grant-missing`
 # in a window where nobody used the product proves nothing. The report prints
 # the total log volume for exactly that reason — read it first.
