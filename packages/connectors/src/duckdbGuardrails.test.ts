@@ -11,7 +11,7 @@
  */
 import { afterEach, describe, expect, it } from 'vitest';
 import { Database } from 'duckdb-async';
-import { applyWorkerGuardrails, createGuardedDuckDb, resolveMemoryLimit, visibleMemoryBytes } from './duckdbGuardrails';
+import { applyWorkerGuardrails, createGuardedDuckDb, pickVisibleMemory, resolveMemoryLimit, visibleMemoryBytes } from './duckdbGuardrails';
 
 const GiB = 1024 * 1024 * 1024;
 
@@ -41,12 +41,37 @@ describe('resolveMemoryLimit (pure)', () => {
   });
 });
 
+describe('pickVisibleMemory (pure)', () => {
+  it('prefers a real cgroup limit, falls back to the host when unconstrained', () => {
+    expect(pickVisibleMemory(1 * GiB, 16 * GiB)).toBe(1 * GiB);
+    expect(pickVisibleMemory(0, 16 * GiB)).toBe(16 * GiB);
+    expect(pickVisibleMemory(NaN, 16 * GiB)).toBe(16 * GiB);
+  });
+
+  it("refuses cgroup v1's unlimited sentinel — a limit the host cannot back is no limit", () => {
+    // 2^63 − 4096 is what memory.limit_in_bytes reads when nothing is set;
+    // 60% of it would have been a memory_limit in petabytes on the CI runner.
+    expect(pickVisibleMemory(9223372036854771712, 16 * GiB)).toBe(16 * GiB);
+    expect(pickVisibleMemory(16 * GiB + 1, 16 * GiB)).toBe(16 * GiB);
+  });
+});
+
 describe('applyWorkerGuardrails (real DuckDB)', () => {
   const saved = { limit: process.env.DUCKDB_MEMORY_LIMIT, threads: process.env.DUCKDB_THREADS };
   afterEach(() => {
     if (saved.limit === undefined) delete process.env.DUCKDB_MEMORY_LIMIT; else process.env.DUCKDB_MEMORY_LIMIT = saved.limit;
     if (saved.threads === undefined) delete process.env.DUCKDB_THREADS; else process.env.DUCKDB_THREADS = saved.threads;
   });
+
+  /** DuckDB prints a size as `<n>.<d> <unit>` with binary units up to PiB
+   *  (`StringUtil::BytesToHumanReadableString`); returns MiB, throws with the
+   *  raw text on any other shape so a failure names what came back. */
+  function parseDuckDbSize(text: string): number {
+    const m = /^([\d.]+)\s*(bytes?|KiB|MiB|GiB|TiB|PiB)$/.exec(text);
+    if (!m) throw new Error(`unexpected memory_limit read-back: ${JSON.stringify(text)}`);
+    const factor: Record<string, number> = { byte: 1 / 1024 / 1024, bytes: 1 / 1024 / 1024, KiB: 1 / 1024, MiB: 1, GiB: 1024, TiB: 1024 ** 2, PiB: 1024 ** 3 };
+    return Number(m[1]) * factor[m[2]];
+  }
 
   async function setting(db: Database, name: string): Promise<string> {
     const rows = await db.all(`SELECT current_setting('${name}') AS v`) as Array<{ v: string }>;
@@ -66,9 +91,9 @@ describe('applyWorkerGuardrails (real DuckDB)', () => {
       // the memory visible to this process, so the two must agree within
       // rounding of the MiB/MB conversion.
       const expectedMb = Number(resolveMemoryLimit('60%', visibleMemoryBytes())!.replace(/MB$/, ''));
-      const m = /^([\d.]+)\s*(KiB|MiB|GiB|TiB)$/.exec(after);
-      expect(m).not.toBeNull();
-      const reportedMiB = Number(m![1]) * ({ KiB: 1 / 1024, MiB: 1, GiB: 1024, TiB: 1024 * 1024 }[m![2]] ?? 1);
+      const reportedMiB = parseDuckDbSize(after);
+      // Past TiB the ceiling is no ceiling: that is the sentinel defect.
+      expect(reportedMiB, `memory_limit read back as ${JSON.stringify(after)}`).toBeLessThan(1024 * 1024 * 1024);
       expect(Math.abs(reportedMiB - expectedMb * 1e6 / (1024 * 1024))).toBeLessThan(expectedMb * 0.02 + 1);
       expect(await setting(db, 'threads')).toBe('1');
     } finally {

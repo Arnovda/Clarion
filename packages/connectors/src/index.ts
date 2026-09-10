@@ -145,7 +145,7 @@ export { BlobSasWarehouseWriter } from './BlobSasWarehouseWriter';
 export { TECHNICAL_COLUMNS, DELETED_COL, SYNCED_AT_COL } from './parquetOps';
 // The worker's DuckDB guardrails (the backend has a mirrored copy; the
 // percentage rule is exported so both sides can be tested to agree).
-export { resolveMemoryLimit, visibleMemoryBytes } from './duckdbGuardrails';
+export { pickVisibleMemory, resolveMemoryLimit, visibleMemoryBytes } from './duckdbGuardrails';
 
 // ─── IPC (worker ↔ orchestrator) ──────────────────────────────────────────
 export {
