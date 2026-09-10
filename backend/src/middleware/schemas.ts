@@ -134,6 +134,8 @@ export const triggerSyncSchema = z.object({
   }),
   body: z.object({
     full: z.boolean().optional(),
+    /** Reconcile (phase 2, B2): keys only; rows the source no longer has are hidden. Not with `full`. */
+    reconcile: z.boolean().optional(),
     entities: z.array(z.string().min(1).max(128)).max(200).optional(),
   }).passthrough().optional(),
 });

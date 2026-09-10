@@ -27,7 +27,38 @@ import {
   type SyncOptions,
   type SyncResult,
   type TestResult,
+  type WriteTableOptions,
 } from './types';
+
+/** See `BaseSourceConnector.writeEntityInChunks`. */
+export interface ChunkedWriteArgs<T extends Record<string, unknown>> {
+  entity: string;
+  rows: AsyncIterable<T>;
+  ctx: SyncContext;
+  writeOpts?: WriteTableOptions;
+  /**
+   * Present ONLY when `rows` arrive in ascending order of this cursor and the
+   * source pages by key rather than by offset (so a row updated mid-run
+   * cannot shift an unseen row backwards across a page boundary). Enables
+   * mid-entity checkpoints: after every flushed chunk the highest cursor
+   * written so far is reported through `ctx.onEntityCheckpoint`.
+   */
+  checkpoint?: { type: 'timestamp' | 'integer' | 'string'; cursorOf: (row: T) => string | undefined };
+  /** Rows per flush; default `SYNC_CHECKPOINT_ROWS` (50 000). Ignored without a merge key. */
+  chunkRows?: number;
+}
+
+export interface ChunkedWriteResult {
+  rowsWritten: number;
+  bytesWritten: number;
+  rowsTotal?: number;
+  maxCursorSeen?: string;
+  preservedExisting?: boolean;
+  /** True when the time budget stopped the entity before its rows ran out. */
+  stoppedForBudget: boolean;
+}
+
+const DEFAULT_CHUNK_ROWS = 50_000;
 
 const ajv = new Ajv({ allErrors: true, useDefaults: true, removeAdditional: false });
 addFormats(ajv);
@@ -108,6 +139,93 @@ export abstract class BaseSourceConnector implements SourceConnector {
     return v;
   }
 
+  // ─── Chunked, resumable entity writes (phase 2, B3) ─────────────────────
+  /**
+   * Stream an entity's rows to the warehouse in CHUNKS, so that:
+   *
+   *   • a checkpoint can be persisted after every chunk (`checkpoint` set):
+   *     a worker killed at its ceiling resumes from the last cursor written
+   *     instead of pulling the entity from the start again;
+   *   • the run's time budget (`ctx.timeBudget`) can stop the entity CLEANLY
+   *     between rows — whatever was fetched is flushed, reported as a
+   *     checkpoint, and the entity comes back as `stoppedForBudget` so the
+   *     connector reports it incomplete and the orchestrator continues it in
+   *     a follow-up run.
+   *
+   * Chunking is only possible with a merge key (a second write without one
+   * would overwrite the first); without it the whole entity is one write,
+   * which the budget may still end early. The rows are never buffered in
+   * JavaScript: each chunk is an async iterable the writer drains straight
+   * into its staging file. The first chunk carries the caller's options
+   * verbatim (so `replace` still means replace); later chunks always merge.
+   * A one-row lookahead keeps an exhausted source from costing an extra,
+   * empty merge.
+   */
+  protected static async writeEntityInChunks<T extends Record<string, unknown>>(
+    args: ChunkedWriteArgs<T>,
+  ): Promise<ChunkedWriteResult> {
+    const { entity, ctx, checkpoint } = args;
+    const writer = ctx.warehouseWriter;
+    const canChunk = !!args.writeOpts?.mergeKey;
+    const chunkRows = canChunk ? (args.chunkRows ?? envChunkRows()) : Number.POSITIVE_INFINITY;
+    const budget = ctx.timeBudget;
+    const it = args.rows[Symbol.asyncIterator]();
+
+    let pending: IteratorResult<T> | null = null;
+    let rowsWritten = 0;
+    let bytesWritten = 0;
+    let rowsTotal: number | undefined;
+    let maxCursorSeen: string | undefined;
+    let preservedExisting: boolean | undefined;
+    let flushes = 0;
+    let stopped = false;
+
+    const track = (row: T): void => {
+      if (!checkpoint) return;
+      const v = checkpoint.cursorOf(row);
+      if (v && (!maxCursorSeen || v > maxCursorSeen)) maxCursorSeen = v;
+    };
+
+    try {
+      for (;;) {
+        if (!pending) pending = await it.next();
+        if (pending.done && flushes > 0) break;
+
+        let count = 0;
+        const chunk = async function* (): AsyncIterable<T> {
+          while (count < chunkRows) {
+            if (!pending) {
+              if (count > 0 && budget?.shouldStop()) { stopped = true; return; }
+              pending = await it.next();
+            }
+            if (pending.done) return;
+            const row = pending.value;
+            pending = null;
+            count += 1;
+            track(row);
+            yield row;
+          }
+        };
+
+        const opts = flushes === 0 ? args.writeOpts : { ...args.writeOpts, replace: false };
+        const res = await writer.writeTable(entity, chunk(), opts);
+        flushes += 1;
+        rowsWritten += count;
+        bytesWritten = res.bytesWritten;
+        rowsTotal = res.rowsTotal;
+        if (res.preservedExisting) preservedExisting = true;
+
+        if (count > 0 && checkpoint && maxCursorSeen && ctx.onEntityCheckpoint) {
+          await ctx.onEntityCheckpoint({ entity, cursor: { type: checkpoint.type, value: maxCursorSeen }, rowsSoFar: rowsWritten });
+        }
+        if (stopped || pending?.done) break;
+      }
+    } finally {
+      if (stopped) await it.return?.().catch(() => undefined);
+    }
+    return { rowsWritten, bytesWritten, rowsTotal, maxCursorSeen, preservedExisting, stoppedForBudget: stopped };
+  }
+
   // ─── Pagination helper ─────────────────────────────────────────────────
   /**
    * Async-iterable adapter for cursor / link-based pagination. Yields one
@@ -171,6 +289,11 @@ export abstract class BaseSourceConnector implements SourceConnector {
       cursor = nextCursor;
     }
   }
+}
+
+function envChunkRows(): number {
+  const n = Number(process.env.SYNC_CHECKPOINT_ROWS);
+  return Number.isFinite(n) && n >= 1000 ? Math.floor(n) : DEFAULT_CHUNK_ROWS;
 }
 
 // ─── Errors ───────────────────────────────────────────────────────────────

@@ -13,6 +13,33 @@ import { logger as rootLogger } from '../../utils/logger';
 const log = rootLogger.child({ mod: 'warehouse-duckdb' });
 
 /**
+ * Turn a configured memory limit into a value DuckDB 1.4 accepts. A percentage
+ * is resolved against the memory this process is actually allowed
+ * (`process.constrainedMemory()` = the cgroup limit in a container, else the
+ * host) into an absolute `<n>MB`; absolute values pass through; anything else
+ * is null. Mirrored verbatim in `packages/connectors/src/duckdbGuardrails.ts`
+ * (the worker package has no backend import) — keep the two in step.
+ */
+export function resolveMemoryLimit(raw: string, totalBytes: number): string | null {
+  const v = raw.trim();
+  const pct = /^(\d+(?:\.\d+)?)\s*%$/.exec(v);
+  if (pct) {
+    const share = Number(pct[1]);
+    if (!(share > 0) || !(totalBytes > 0)) return null;
+    const mb = Math.max(64, Math.floor((totalBytes * Math.min(share, 100)) / 100 / (1024 * 1024)));
+    return `${mb}MB`;
+  }
+  if (/^\d+(\.\d+)?\s*[KMGT]?B$/i.test(v)) return v;
+  return null;
+}
+
+/** Memory this process may use: the cgroup limit inside a container, else the host. */
+export function visibleMemoryBytes(): number {
+  const constrained = typeof process.constrainedMemory === 'function' ? process.constrainedMemory() : 0;
+  return constrained && constrained > 0 ? constrained : os.totalmem();
+}
+
+/**
  * Apply memory / thread / spill guardrails to a DuckDB session. Idempotent
  * and defensive: every setting is wrapped so an older DuckDB build that
  * doesn't recognise a pragma simply skips it rather than failing session
@@ -28,10 +55,14 @@ export async function applyResourceGuardrails(db: Database): Promise<void> {
   const threads = process.env.DUCKDB_THREADS ?? '2';
   const tempDir = process.env.DUCKDB_TEMP_DIR ?? os.tmpdir();
 
-  // memory_limit accepts values like '512MB' / '1GB' / '70%'. Reject anything
-  // that isn't one of those shapes so a bad env var can't inject SQL.
-  if (/^\d+(\.\d+)?\s*(%|[KMGT]?B)$/i.test(memoryLimit)) {
-    try { await db.exec(`SET memory_limit='${memoryLimit}';`); } catch { /* older build */ }
+  // memory_limit accepts values like '512MB' / '1GB' / '70%'. A percentage is
+  // resolved to an absolute size first — DuckDB 1.4 REJECTS '%' and the
+  // try/catch below (meant for a build without the setting) hid that for
+  // months, so every '70%' session ran at DuckDB's own default. Anything that
+  // isn't one of those shapes is rejected so a bad env var can't inject SQL.
+  const resolved = resolveMemoryLimit(memoryLimit, visibleMemoryBytes());
+  if (resolved) {
+    try { await db.exec(`SET memory_limit='${resolved}';`); } catch { /* older build */ }
   }
   if (/^\d+$/.test(threads)) {
     try { await db.exec(`SET threads=${threads};`); } catch { /* older build */ }

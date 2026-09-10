@@ -296,3 +296,127 @@ describe('LocalFileWarehouseWriter — empty batches and full replace (P0-6)', (
     }
   });
 });
+
+describe('LocalFileWarehouseWriter — soft delete + row counts (phase 2, B2/B6)', () => {
+  async function query<T = Record<string, unknown>>(root: string, table: string, sql: string): Promise<T[]> {
+    const db = await Database.create(':memory:');
+    try {
+      const p = path.join(root, table, 'data.parquet').replace(/'/g, "''");
+      return await db.all(sql.replace('$T', `read_parquet('${p}')`)) as T[];
+    } finally {
+      await db.close();
+    }
+  }
+  const aliveIds = async (root: string, table: string) =>
+    (await query<{ ID: bigint }>(root, table, `SELECT ID FROM $T WHERE NOT COALESCE(_clarion_deleted, false) ORDER BY ID`)).map((r) => Number(r.ID));
+  const deletedIds = async (root: string, table: string) =>
+    (await query<{ ID: bigint }>(root, table, `SELECT ID FROM $T WHERE COALESCE(_clarion_deleted, false) ORDER BY ID`)).map((r) => Number(r.ID));
+
+  it('every write carries the two technical columns and reports the alive row count', async () => {
+    const root = await makeTmpRoot();
+    const writer = new LocalFileWarehouseWriter(root);
+    const before = Date.now();
+    const r = await writer.writeTable('Items', fromArray([{ ID: 1, Name: 'Alpha' }, { ID: 2, Name: 'Bravo' }]));
+    expect(r.rowsTotal).toBe(2);
+    const rows = await query<{ ID: bigint; _clarion_synced_at: Date; _clarion_deleted: boolean }>(root, 'Items', `SELECT * FROM $T ORDER BY ID`);
+    expect(rows.map((x) => x._clarion_deleted)).toEqual([false, false]);
+    for (const x of rows) expect(new Date(x._clarion_synced_at).getTime()).toBeGreaterThanOrEqual(before - 1000);
+  });
+
+  it('a merge keeps a deleted row deleted unless the delta brings it back, and a legacy file gains the columns', async () => {
+    const root = await makeTmpRoot();
+    // A file written BEFORE the columns existed: plain parquet, no stamps.
+    await fs.mkdir(path.join(root, 'Legacy'), { recursive: true });
+    const db = await Database.create(':memory:');
+    try {
+      const p = path.join(root, 'Legacy', 'data.parquet').replace(/'/g, "''");
+      await db.all(`COPY (SELECT * FROM (VALUES (1, 'a'), (2, 'b'), (3, 'c')) t(ID, Name)) TO '${p}' (FORMAT parquet)`);
+    } finally { await db.close(); }
+    const writer = new LocalFileWarehouseWriter(root);
+
+    // Merge a delta: legacy rows read as alive with no stamp; the delta row is stamped.
+    const r1 = await writer.writeTable('Legacy', fromArray([{ ID: 2, Name: 'B2' }]), { mergeKey: 'ID' });
+    expect(r1.rowsTotal).toBe(3);
+    expect(await aliveIds(root, 'Legacy')).toEqual([1, 2, 3]);
+    const stamps = await query<{ ID: bigint; s: Date | null }>(root, 'Legacy', `SELECT ID, _clarion_synced_at AS s FROM $T ORDER BY ID`);
+    expect(stamps.map((x) => x.s === null)).toEqual([true, false, true]);
+
+    // A full re-sync that saw only rows 1 and 2 → 3 is marked deleted, not removed.
+    const syncStartedAt = new Date(Date.now() - 60_000).toISOString();
+    await writer.writeTable('Legacy', fromArray([{ ID: 1, Name: 'a' }, { ID: 2, Name: 'b' }]), { mergeKey: 'ID' });
+    const fin = await writer.finalizeFullSync('Legacy', { syncStartedAt });
+    expect(fin).toEqual({ tombstoned: 1, rowsTotal: 2 });
+    expect(await deletedIds(root, 'Legacy')).toEqual([3]);
+    expect((await query(root, 'Legacy', `SELECT count(*) AS n FROM $T`))[0]).toMatchObject({ n: 3n });
+
+    // The row reappears in a later delta → alive again; the others untouched.
+    const r2 = await writer.writeTable('Legacy', fromArray([{ ID: 3, Name: 'c-again' }]), { mergeKey: 'ID' });
+    expect(r2.rowsTotal).toBe(3);
+    expect(await deletedIds(root, 'Legacy')).toEqual([]);
+  });
+
+  it('finalizeFullSync on a file that never had the columns marks everything (nothing in it was seen)', async () => {
+    const root = await makeTmpRoot();
+    await fs.mkdir(path.join(root, 'Old'), { recursive: true });
+    const db = await Database.create(':memory:');
+    try {
+      const p = path.join(root, 'Old', 'data.parquet').replace(/'/g, "''");
+      await db.all(`COPY (SELECT * FROM (VALUES (1), (2)) t(ID)) TO '${p}' (FORMAT parquet)`);
+    } finally { await db.close(); }
+    const writer = new LocalFileWarehouseWriter(root);
+    const fin = await writer.finalizeFullSync('Old', { syncStartedAt: new Date().toISOString() });
+    expect(fin).toEqual({ tombstoned: 2, rowsTotal: 0 });
+    expect(await writer.finalizeFullSync('Missing', { syncStartedAt: new Date().toISOString() })).toEqual({ tombstoned: 0, rowsTotal: 0 });
+  });
+
+  it('reconcileKeys marks absent keys deleted, revives present ones, and refuses an empty key list', async () => {
+    const root = await makeTmpRoot();
+    const writer = new LocalFileWarehouseWriter(root);
+    await writer.writeTable('Accounts', fromArray([{ ID: 'a', N: 1 }, { ID: 'b', N: 2 }, { ID: 'c', N: 3 }]), { mergeKey: 'ID' });
+
+    const r1 = await writer.reconcileKeys('Accounts', 'ID', fromArray(['a', 'c']));
+    expect(r1).toEqual({ tombstoned: 1, revived: 0, rowsTotal: 2 });
+    expect((await query<{ ID: string }>(root, 'Accounts', `SELECT ID FROM $T WHERE _clarion_deleted ORDER BY ID`)).map((x) => x.ID)).toEqual(['b']);
+
+    // b is back at the source, a is gone.
+    const r2 = await writer.reconcileKeys('Accounts', 'ID', fromArray(['b', 'c']));
+    expect(r2).toEqual({ tombstoned: 1, revived: 1, rowsTotal: 2 });
+    expect((await query<{ ID: string }>(root, 'Accounts', `SELECT ID FROM $T WHERE _clarion_deleted ORDER BY ID`)).map((x) => x.ID)).toEqual(['a']);
+
+    // An empty key list over a non-empty table is refused — a throttled
+    // endpoint must not tombstone a whole table.
+    const r3 = await writer.reconcileKeys('Accounts', 'ID', fromArray([]));
+    expect(r3.refusedEmpty).toBe(true);
+    expect(r3.rowsTotal).toBe(2);
+    expect((await query<{ ID: string }>(root, 'Accounts', `SELECT ID FROM $T WHERE _clarion_deleted ORDER BY ID`)).map((x) => x.ID)).toEqual(['a']);
+
+    await expect(writer.reconcileKeys('Accounts', 'ID; DROP', fromArray(['a']))).rejects.toThrow(/Unsafe key column/);
+  });
+
+  it('a merge under a bounded memory limit stays proportional to the delta, not the table', async () => {
+    // 300k existing rows, a 1k delta, 96MB ceiling: the window-function merge
+    // this replaced needed the whole table in memory (OOM at 1.1 GiB on 3M
+    // rows in the PoC); the anti-join builds its hash table from the delta.
+    process.env.DUCKDB_MEMORY_LIMIT = '96MB';
+    try {
+      const root = await makeTmpRoot();
+      await fs.mkdir(path.join(root, 'Big'), { recursive: true });
+      const db = await Database.create(':memory:');
+      try {
+        const p = path.join(root, 'Big', 'data.parquet').replace(/'/g, "''");
+        await db.all(`COPY (SELECT i AS ID, md5(i::varchar) AS Payload, i * 1.5 AS Amount FROM range(300000) t(i)) TO '${p}' (FORMAT parquet)`);
+      } finally { await db.close(); }
+      const writer = new LocalFileWarehouseWriter(root);
+      async function* delta() {
+        for (let i = 0; i < 1000; i++) yield { ID: i * 100, Payload: 'updated', Amount: 0 };
+      }
+      const r = await writer.writeTable('Big', delta(), { mergeKey: 'ID' });
+      expect(r.rowsWritten).toBe(1000);
+      expect(r.rowsTotal).toBe(300000);
+      const upd = await query<{ n: bigint }>(root, 'Big', `SELECT count(*) AS n FROM $T WHERE Payload = 'updated'`);
+      expect(Number(upd[0].n)).toBe(1000);
+    } finally {
+      delete process.env.DUCKDB_MEMORY_LIMIT;
+    }
+  });
+});

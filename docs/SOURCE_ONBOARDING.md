@@ -366,6 +366,7 @@ and the template can be written later without re-research.
 - [ ] Cursor filter `>=` + merge-by-key; type-aware flattening; stable pagination order; streaming + cancellation
 - [ ] `getKnownRelationships` with descriptions (Tier 1/2)
 - [ ] Every relationship endpoint column EXISTS, and the two ends' declared types could be one key (Phase E1a) — both are conformance errors, not runtime drops
+- [ ] The connector writes through `writeEntityInChunks` and honours `ctx.timeBudget`; it passes a `checkpoint` ONLY when its rows arrive in cursor order from a source that pages by key (a source that pages by offset must not checkpoint mid-entity — a row updated during the pull can hide another behind a page boundary); it reports `onEntityComplete`, supports `opts.reconcile` for every entity with a business key, and on a full re-sync of a keyed entity merges then calls `finalizeFullSync` instead of replacing (phase 2, `docs/incremental-sync.md`)
 - [ ] Column/table docs harvested (Tier 1) or curated (Tier 2), landing at the trusted rung; AI covers only the remainder
 - [ ] Every `ColumnDoc` carries the vendor's own `dataType` verbatim (`Edm.Guid`, `many2one`, `char`…). The profiler stores it as `source_columns.source_data_type`; without it `typeClass` cannot refuse a GUID→code relationship on the canvas, and a source that publishes no types must leave it undefined rather than invent one
 - [ ] Conformance suite green; unit tests for all pure logic; mocked sync tests for the six scenarios in Phase G

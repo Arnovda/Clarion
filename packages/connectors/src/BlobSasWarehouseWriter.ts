@@ -22,29 +22,42 @@
  * Pipeline:
  *   1. Stream rows → NDJSON file in the container's tmpdir (same as local
  *      writer — bounded memory, streaming friendly).
- *   2. Run DuckDB COPY → produce a local Parquet file.
+ *   2. Run the shared DuckDB operation (`parquetOps.ts`) → a local Parquet.
  *   3. Upload the Parquet file to Blob via the SAS URL.
  *   4. Delete the local tmp files.
  *
  * Why DuckDB→local-Parquet→Blob rather than DuckDB→Blob directly:
- *   • DuckDB's azure_blob extension exists but expects credentials in a
- *     different format than SAS URLs and has weaker isolation guarantees
- *     (it'd need broader permissions than this writer's per-connection scope).
+ *   • DuckDB's azure extension expects credentials in a different format
+ *     than SAS URLs and would need broader permissions than this writer's
+ *     per-connection scope.
  *   • Two stages keeps the trust surface small: DuckDB only writes to
  *     local disk; only `@azure/storage-blob` ever talks to Azure.
- *   • Parquet files at SMB scale are tens of MB — the upload step is
- *     bounded and predictable.
+ *
+ * Cost, stated plainly: every merge, finalisation and reconcile DOWNLOADS
+ * the whole table and UPLOADS the whole result — O(table) per entity per
+ * sync. That is the phase-2 B1 finding (see the ingestion-chain assessment)
+ * and the reason the table format is being replaced; this writer is the
+ * conservative path until then.
  */
 
-import { createGuardedDuckDb } from './duckdbGuardrails';
 import * as fs from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
 import { randomUUID } from 'crypto';
 import { ContainerClient } from '@azure/storage-blob';
 import type { TableWriteResult, WarehouseWriter, WriteTableOptions } from './types';
-
-const BATCH_ROWS = 5_000;
+import {
+  convertNdjsonToParquet,
+  countAliveRows,
+  finalizeFullSyncFile,
+  isSafeColumnName,
+  isSafeTableName,
+  mergeNdjsonIntoExistingParquet,
+  reconcileKeysFile,
+  writeEmptyParquet,
+  writeEmptyParquetWithSchema,
+} from './parquetOps';
+import { mapKeys, stageRows } from './ParquetWriter';
 
 export class BlobSasWarehouseWriter implements WarehouseWriter {
   private readonly container: ContainerClient;
@@ -53,8 +66,6 @@ export class BlobSasWarehouseWriter implements WarehouseWriter {
   /**
    * @param sasUrl  Container-scoped SAS URL the orchestrator issued.
    *                Format: `https://<account>.blob.core.windows.net/<container>?<sas>`.
-   *                Optional `?prefix=` query param sandboxes writes — the
-   *                writer will prepend it to every blob path.
    * @param pathPrefix Path inside the container to scope all writes to,
    *                e.g. `conn_42/`. Trailing slash optional.
    */
@@ -67,6 +78,10 @@ export class BlobSasWarehouseWriter implements WarehouseWriter {
     }
     this.container = new ContainerClient(sasUrl);
     this.pathPrefix = pathPrefix.endsWith('/') ? pathPrefix : `${pathPrefix}/`;
+  }
+
+  private blobPath(tableName: string): string {
+    return `${this.pathPrefix}${tableName}/data.parquet`;
   }
 
   async writeTable(
@@ -84,35 +99,15 @@ export class BlobSasWarehouseWriter implements WarehouseWriter {
     const stagingNdjson = path.join(os.tmpdir(), `clarion-stage-${randomUUID()}.ndjson`);
     const stagingParquet = path.join(os.tmpdir(), `clarion-out-${randomUUID()}.parquet`);
     const existingParquet = path.join(os.tmpdir(), `clarion-existing-${randomUUID()}.parquet`);
-    const blobPath = `${this.pathPrefix}${tableName}/data.parquet`;
+    const blobPath = this.blobPath(tableName);
     const blockBlob = this.container.getBlockBlobClient(blobPath);
 
-    let rowsWritten = 0;
     let downloadedExisting = false;
     try {
-      // ─── Stream rows to NDJSON ────────────────────────────────────────
-      const fh = await fs.open(stagingNdjson, 'w');
-      try {
-        let batch: string[] = [];
-        for await (const row of rows) {
-          batch.push(jsonLine(row));
-          rowsWritten += 1;
-          if (batch.length >= BATCH_ROWS) {
-            await fh.write(batch.join(''));
-            batch = [];
-          }
-        }
-        if (batch.length > 0) await fh.write(batch.join(''));
-      } finally {
-        await fh.close();
-      }
+      const rowsWritten = await stageRows(stagingNdjson, rows);
 
-      // ─── Merge or overwrite? ─────────────────────────────────────────
-      // If a mergeKey is supplied AND the blob exists, download it
-      // locally and run the same merge SQL the local writer uses. Then
-      // re-upload. This keeps the merge logic in one place (DuckDB) and
-      // bounds the trust surface (only @azure/storage-blob talks to
-      // Azure; DuckDB only sees local files).
+      // Merge or overwrite? A mergeKey AND an existing blob → download it and
+      // run the shared merge; otherwise overwrite.
       let useMerge = false;
       if (opts?.mergeKey && !opts?.replace) {
         if (await blobExists(blockBlob)) {
@@ -124,22 +119,24 @@ export class BlobSasWarehouseWriter implements WarehouseWriter {
 
       if (rowsWritten === 0 && !useMerge && !opts?.replace && await blobExists(blockBlob)) {
         // Empty batch, overwrite path, table exists: keep it (P0-6 — same
-        // rule as the local writer; a full re-sync sets `replace`).
+        // rule as the local writer; a full re-sync clears it).
         const props = await blockBlob.getProperties();
+        let rowsTotal: number | undefined;
+        try {
+          await blockBlob.downloadToFile(existingParquet);
+          downloadedExisting = true;
+          rowsTotal = await countAliveRows(existingParquet);
+        } catch { /* the count is a nicety; the preserved table is the point */ }
         return {
           rowsWritten: 0,
           bytesWritten: Number(props.contentLength ?? 0),
           warehousePath: blobPath,
           preservedExisting: true,
+          ...(rowsTotal !== undefined ? { rowsTotal } : {}),
         };
       }
 
       if (rowsWritten === 0 && !useMerge) {
-        // Empty entity. If the connector handed us an explicit schema
-        // (e.g. from OData $metadata on a zero-row table), materialise
-        // the parquet WITH those columns so the catalog can show the
-        // table's shape. Otherwise fall back to the legacy
-        // single-_placeholder schema.
         const emptyCols = opts?.emptySchema?.length ? opts.emptySchema : opts?.columns;
         if (emptyCols && emptyCols.length > 0) {
           await writeEmptyParquetWithSchema(stagingParquet, emptyCols);
@@ -147,31 +144,73 @@ export class BlobSasWarehouseWriter implements WarehouseWriter {
           await writeEmptyParquet(stagingParquet);
         }
       } else if (useMerge) {
-        await mergeNdjsonIntoExistingParquet(
-          stagingNdjson,
-          existingParquet,
-          stagingParquet,
-          opts!.mergeKey!,
-          opts?.columns,
-        );
+        await mergeNdjsonIntoExistingParquet(stagingNdjson, existingParquet, stagingParquet, opts!.mergeKey!, opts?.columns);
       } else {
         await convertNdjsonToParquet(stagingNdjson, stagingParquet, opts?.columns);
       }
 
-      // ─── Upload to Blob ──────────────────────────────────────────────
       const stat = await fs.stat(stagingParquet);
       await blockBlob.uploadFile(stagingParquet);
-
       return {
         rowsWritten,
         bytesWritten: stat.size,
         warehousePath: blobPath,
+        rowsTotal: rowsWritten === 0 && !useMerge ? 0 : await countAliveRows(stagingParquet),
       };
     } finally {
-      // Best-effort cleanup; never throw from the cleanup path.
       await fs.unlink(stagingNdjson).catch(() => undefined);
       await fs.unlink(stagingParquet).catch(() => undefined);
       if (downloadedExisting) await fs.unlink(existingParquet).catch(() => undefined);
+    }
+  }
+
+  async finalizeFullSync(tableName: string, opts: { syncStartedAt: string }): Promise<{ tombstoned: number; rowsTotal: number }> {
+    if (!isSafeTableName(tableName)) throw new Error(`Unsafe table name: ${tableName}`);
+    let result = { tombstoned: 0, rowsTotal: 0 };
+    await this.rewriteBlob(tableName, async (existing, out) => {
+      result = await finalizeFullSyncFile(existing, out, opts.syncStartedAt);
+    });
+    return result;
+  }
+
+  async reconcileKeys(
+    tableName: string,
+    keyColumn: string,
+    keys: AsyncIterable<string | number>,
+  ): Promise<{ tombstoned: number; revived: number; rowsTotal: number; refusedEmpty?: boolean }> {
+    if (!isSafeTableName(tableName)) throw new Error(`Unsafe table name: ${tableName}`);
+    if (!isSafeColumnName(keyColumn)) throw new Error(`Unsafe key column: ${keyColumn}`);
+    const keysPath = path.join(os.tmpdir(), `clarion-keys-${randomUUID()}.ndjson`);
+    await stageRows(keysPath, mapKeys(keys));
+    let result: { tombstoned: number; revived: number; rowsTotal: number; refusedEmpty?: boolean } = { tombstoned: 0, revived: 0, rowsTotal: 0 };
+    try {
+      await this.rewriteBlob(tableName, async (existing, out) => {
+        result = await reconcileKeysFile(existing, out, keyColumn, keysPath);
+        return !result.refusedEmpty;
+      });
+    } finally {
+      await fs.unlink(keysPath).catch(() => undefined);
+    }
+    return result;
+  }
+
+  /** Download → `op` → upload. `op` may return false to leave the blob untouched. No blob → no-op. */
+  private async rewriteBlob(
+    tableName: string,
+    op: (existingLocal: string, outLocal: string) => Promise<void | boolean>,
+  ): Promise<void> {
+    const blockBlob = this.container.getBlockBlobClient(this.blobPath(tableName));
+    if (!await blobExists(blockBlob)) return;
+    const existing = path.join(os.tmpdir(), `clarion-existing-${randomUUID()}.parquet`);
+    const out = path.join(os.tmpdir(), `clarion-out-${randomUUID()}.parquet`);
+    try {
+      await blockBlob.downloadToFile(existing);
+      const upload = await op(existing, out);
+      if (upload === false) return;
+      await blockBlob.uploadFile(out);
+    } finally {
+      await fs.unlink(existing).catch(() => undefined);
+      await fs.unlink(out).catch(() => undefined);
     }
   }
 }
@@ -180,202 +219,7 @@ async function blobExists(blockBlob: { exists(): Promise<boolean> }): Promise<bo
   try { return await blockBlob.exists(); } catch { return false; }
 }
 
-// ─── DuckDB helpers (mirror LocalFileWarehouseWriter) ─────────────────────
-type ColumnSchema = ReadonlyArray<{ name: string; sqlType: string }>;
-
-/** See ParquetWriter.readJsonExpr — kept in sync; library-isolated copy. */
-function readJsonExpr(escNdPath: string, columns?: ColumnSchema): string {
-  if (columns && columns.length > 0) {
-    const struct = columns
-      .filter((c) => isSafeColumnName(c.name) && isSafeSqlType(c.sqlType))
-      .map((c) => `'${c.name}': '${c.sqlType}'`)
-      .join(', ');
-    if (struct.length > 0) {
-      return `read_json('${escNdPath}', format='newline_delimited', columns={${struct}})`;
-    }
-  }
-  return `read_json('${escNdPath}', format='newline_delimited', auto_detect=true)`;
-}
-
-function isSafeSqlType(t: string): boolean {
-  return /^(VARCHAR|BIGINT|INTEGER|SMALLINT|TINYINT|DOUBLE|REAL|DECIMAL\(\d+,\d+\)|BOOLEAN|DATE|TIMESTAMP|TIMESTAMPTZ|UUID|BLOB)$/.test(t);
-}
-
-async function convertNdjsonToParquet(
-  ndjsonPath: string,
-  parquetPath: string,
-  columns?: ColumnSchema,
-): Promise<void> {
-  const db = await createGuardedDuckDb();
-  try {
-    const escNd = ndjsonPath.replace(/'/g, "''");
-    const escPq = parquetPath.replace(/'/g, "''");
-    await db.all(`
-      COPY (
-        SELECT * FROM ${readJsonExpr(escNd, columns)}
-      )
-      TO '${escPq}' (FORMAT 'parquet', COMPRESSION 'snappy')
-    `);
-  } finally {
-    await db.close();
-  }
-}
-
-async function writeEmptyParquet(parquetPath: string): Promise<void> {
-  const db = await createGuardedDuckDb();
-  try {
-    const esc = parquetPath.replace(/'/g, "''");
-    await db.all(`
-      COPY (SELECT NULL::VARCHAR AS _placeholder WHERE FALSE)
-      TO '${esc}' (FORMAT 'parquet', COMPRESSION 'snappy')
-    `);
-  } finally {
-    await db.close();
-  }
-}
-
-/**
- * Empty parquet with a connector-supplied schema. Same shape as the
- * ParquetWriter mirror — see that file for the validation rationale.
- */
-async function writeEmptyParquetWithSchema(
-  parquetPath: string,
-  schema: ReadonlyArray<{ name: string; sqlType: string }>,
-): Promise<void> {
-  const db = await createGuardedDuckDb();
-  try {
-    const esc = parquetPath.replace(/'/g, "''");
-    const projections = schema.map((col, i) => {
-      const safeName = /^[A-Za-z_][A-Za-z0-9_]*$/.test(col.name) && col.name.length <= 128 ? col.name : `col_${i}`;
-      const safeType = /^(VARCHAR|BIGINT|INTEGER|SMALLINT|TINYINT|DOUBLE|REAL|DECIMAL\(\d+,\d+\)|BOOLEAN|DATE|TIMESTAMP|TIMESTAMPTZ|UUID|BLOB)$/.test(col.sqlType) ? col.sqlType : 'VARCHAR';
-      return `NULL::${safeType} AS "${safeName.replace(/"/g, '""')}"`;
-    }).join(', ');
-    await db.all(`
-      COPY (SELECT ${projections} WHERE FALSE)
-      TO '${esc}' (FORMAT 'parquet', COMPRESSION 'snappy')
-    `);
-  } finally {
-    await db.close();
-  }
-}
-
-/**
- * Merge an NDJSON delta into an existing Parquet, writing to `outPath`.
- * Same shape as the local writer's merge — see ParquetWriter.ts for the
- * detailed comment. Lives here too because the BlobSasWarehouseWriter
- * runs in the sandboxed sync-worker container, which has no shared
- * library imports with the main backend (egress + library isolation).
- */
-async function mergeNdjsonIntoExistingParquet(
-  ndjsonPath: string,
-  existingParquetPath: string,
-  outPath: string,
-  mergeKey: string,
-  columns?: ColumnSchema,
-): Promise<void> {
-  // The Blob writer's `existingParquetPath` is already a tmpdir-local
-  // file (the downloadToFile result), so no further staging copy is
-  // needed — the file Azure SDK created is exclusively ours.
-  const db = await createGuardedDuckDb();
-  try {
-    const escNd = ndjsonPath.replace(/'/g, "''");
-    const escEx = existingParquetPath.replace(/'/g, "''");
-    const escOut = outPath.replace(/'/g, "''");
-    const escKey = mergeKey.replace(/"/g, '""');
-    const deltaExpr = readJsonExpr(escNd, columns);
-
-    // Mirror of ParquetWriter's NULL-key guard. PARTITION BY treats each
-    // NULL as a distinct partition, so a merge with NULL business keys
-    // silently produces one duplicate per sync. Fail loudly instead.
-    const nullCheck = await db.all(
-      `SELECT COUNT(*) AS n FROM ${deltaExpr} WHERE "${escKey}" IS NULL`,
-    ) as Array<{ n: number | bigint }>;
-    const nullCount = Number(nullCheck[0]?.n ?? 0);
-    if (nullCount > 0) {
-      throw new Error(
-        `Merge refused: ${nullCount} delta row(s) have NULL in business-key column '${mergeKey}'. ` +
-        `Merging with NULL keys would silently produce duplicates on every sync.`,
-      );
-    }
-
-    // Mirror of ParquetWriter's type-convergence projection: with an
-    // explicit schema, CAST the existing side to the declared types so a
-    // column mistyped by auto-detect in the past converges instead of
-    // winning the UNION-BY-NAME coercion forever. CAST (not TRY_CAST) so
-    // an unconvertible legacy value fails this entity loudly.
-    let existingExpr = `SELECT * FROM read_parquet('${escEx}')`;
-    if (columns && columns.length > 0) {
-      const typeByName = new Map(
-        columns
-          .filter((c) => isSafeColumnName(c.name) && isSafeSqlType(c.sqlType))
-          .map((c) => [c.name, c.sqlType] as const),
-      );
-      const existingSchema = await db.all(
-        `DESCRIBE SELECT * FROM read_parquet('${escEx}')`,
-      ) as Array<{ column_name: string; column_type: string }>;
-      const selectList = existingSchema
-        .filter((c) => isSafeColumnName(c.column_name))
-        .map((c) => {
-          const target = typeByName.get(c.column_name);
-          return target && target !== c.column_type
-            ? `CAST("${c.column_name}" AS ${target}) AS "${c.column_name}"`
-            : `"${c.column_name}"`;
-        })
-        .join(', ');
-      if (selectList.length > 0) {
-        existingExpr = `SELECT ${selectList} FROM read_parquet('${escEx}')`;
-      }
-    }
-
-    await db.all(`
-      COPY (
-        WITH delta AS (
-          SELECT * FROM ${deltaExpr}
-        ),
-        existing AS (
-          ${existingExpr}
-        ),
-        merged AS (
-          SELECT *, 0 AS _origin FROM existing
-          UNION ALL BY NAME
-          SELECT *, 1 AS _origin FROM delta
-        ),
-        ranked AS (
-          SELECT *, ROW_NUMBER() OVER (
-            PARTITION BY "${escKey}"
-            ORDER BY _origin DESC
-          ) AS _rn
-          FROM merged
-        )
-        SELECT * EXCLUDE (_origin, _rn) FROM ranked WHERE _rn = 1
-      )
-      TO '${escOut}' (FORMAT 'parquet', COMPRESSION 'snappy')
-    `);
-  } finally {
-    await db.close();
-  }
-}
-
-// ─── Validation ──────────────────────────────────────────────────────────
-function isSafeTableName(name: string): boolean {
-  return /^[A-Za-z0-9_\-]+$/.test(name) && name.length <= 128 && !name.startsWith('-');
-}
-
-function isSafeColumnName(name: string): boolean {
-  return /^[A-Za-z_][A-Za-z0-9_]*$/.test(name) && name.length <= 128;
-}
-
 function isSafePathPrefix(prefix: string): boolean {
   // Allow alphanum, _, -, /, no leading/trailing whitespace, no .. traversal.
   return /^[A-Za-z0-9_\-/]+$/.test(prefix) && !prefix.includes('..');
-}
-
-function jsonLine(row: Record<string, unknown>): string {
-  const cleaned: Record<string, unknown> = {};
-  for (const [k, v] of Object.entries(row)) {
-    if (v === undefined) continue;
-    if (typeof v === 'number' && !Number.isFinite(v)) cleaned[k] = null;
-    else cleaned[k] = v;
-  }
-  return `${JSON.stringify(cleaned)}\n`;
 }

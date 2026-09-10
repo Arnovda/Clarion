@@ -31,7 +31,140 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-09-09 (INGESTION-CHAIN PHASE 0 IN PRODUCTION + PHASE 1
+**Last updated:** 2026-09-10 (INGESTION-CHAIN PHASE 1 IN PRODUCTION + PHASE 2,
+FIRST SLICE, BUILT — owner: *"Pls proceed"*. PR #131 rebase-merged to main
+(`5720e10`); deploy run #591 built all images, **`migrate-sql` applied
+migration 98**, Go live health-checked the new backend and shifted traffic
+at 11:54 UTC. Phase 2 is on the same branch name, restarted from main, as a
+NEW draft PR.)
+
+**Phase 2 of §7 of `docs/backlog/ingestion-chain-assessment.md` — "the table
+format" — started with the PoC the doc's own §9 demanded, and the PoC
+changed the order of work. Everything below is on the CURRENT parquet
+format; the format switch itself (B1) is measured, argued and deliberately
+NOT taken yet.**
+- **THE POC FOUND TWO THINGS BEFORE IT MEASURED ANYTHING**
+  (`backend/scripts/poc-ducklake-merge.js`, synthetic 3M-row / 208 MB
+  `TransactionLines`, 10k delta, one thread; numbers in the assessment §9).
+  (1) **THE DUCKDB MEMORY LIMIT WAS NEVER SET IN PRODUCTION.** DuckDB 1.4.2
+  refuses `SET memory_limit='70%'` (parser error: unknown unit `%`), and
+  BOTH guardrails — backend `applyResourceGuardrails` and the worker's
+  `applyWorkerGuardrails` from phase 0 — wrapped the SET in a try/catch
+  written for "an older build without the setting". Every backend session,
+  every child query runner and every worker writer ran at DuckDB's own
+  default (80% of visible RAM) the whole time, and phase 0's "the worker's
+  DuckDB is bounded" was untrue. Fixed in both files: `resolveMemoryLimit`
+  turns a percentage into an absolute `<n>MB` from
+  `process.constrainedMemory()` (the cgroup limit) before the SET; the test
+  READS THE SETTING BACK from a live session, because a string-level test
+  would have passed before too. (2) **Under an honest 1.1 GiB ceiling the
+  current merge cannot merge a table this size at all** — the
+  `ROW_NUMBER() OVER (PARTITION BY key)` formulation went out of memory
+  (1.3 GB peak with the ceiling lifted, 8.8 s). **The merge is an anti-join
+  now** (`existing WHERE NOT EXISTS (delta) UNION ALL delta`, delta
+  deduplicated by key first): same result, 4.5 s, +150 MB, pinned by a
+  writer test that merges 300k rows under a 96 MB limit. DuckLake's
+  `MERGE INTO` did the same delta in 0.4 s at +37 MB, with snapshots and
+  time travel for free — the architecture choice stands, but the PoC also
+  surfaced two design questions that need the owner before B1 is built:
+  the sync worker deliberately holds NO database credentials while
+  DuckLake's catalogue lives in Postgres, and DuckLake's catalogue tables
+  are not tenant-scoped. Both recorded under §3.3 of the assessment.
+- **(B2) DELETES ARE SOFT, AND A REFRESH CAN NOW SEE THEM.** NEW
+  `packages/connectors/src/parquetOps.ts` is the ONE set of DuckDB
+  operations both writers run (the Azure writer's "library-isolated copy"
+  of the merge is gone). Every source table carries `_clarion_synced_at` +
+  `_clarion_deleted` behind the underscore firewall; a merge stamps its
+  delta; a **full re-sync MERGES then `finalizeFullSync`** marks every row
+  the run did not rewrite as deleted (only unkeyed entities are still
+  replaced outright); a new **`reconcile` sync mode** (`POST
+  /connections/:id/sync { reconcile: true }`, "Check for deleted rows" on
+  the source card, run mode `reconcile`) pulls KEYS only (`$select=ID` on
+  EO, `fields: ['id']` on Odoo) and `reconcileKeys` tombstones what is
+  gone and revives what is back — refusing an empty key list over a
+  non-empty table, the empty-batch rule again. **`createScanView` is the
+  one read-side door**: a parquet view carrying the columns registers as
+  `SELECT * EXCLUDE (…) WHERE NOT COALESCE(_clarion_deleted, false)` (one
+  DESCRIBE per registration), so no prompt, profile, notebook or
+  transformation ever sees a tombstone; legacy files read as before and
+  gain the columns on their next write.
+- **(B3) LOADS RESUME INSTEAD OF RESTARTING.** The worker receives the
+  orchestrator's ceiling (`WORKER_DEADLINE_AT`) and stops pulling cleanly
+  `SYNC_DEADLINE_MARGIN_MS` before it. NEW
+  `BaseSourceConnector.writeEntityInChunks` streams an entity in
+  `SYNC_CHECKPOINT_ROWS` chunks (never buffered in JS — each chunk is an
+  iterable the writer drains), reporting the highest cursor written after
+  each flush through `ctx.onEntityCheckpoint`; the orchestrator persists it
+  ON ARRIVAL (`last_status='incomplete'`) — a worker that dies later
+  resumes from it. Checkpoints only where they are correct: EO pages by
+  KEY in `Modified asc` order; **Odoo pages by OFFSET in id order, so it
+  gets the clean stop but no mid-entity checkpoint** (a row updated during
+  the pull can hide another behind a page boundary) — the reason is in the
+  connector and in `SOURCE_ONBOARDING.md`'s DoD. `ctx.onEntityComplete`
+  persists an entity the moment it finishes. A stopped run reports
+  `incompleteEntities`; the orchestrator records them
+  (`source_sync_runs.incomplete_entities`), persists the run as `succeeded`
+  with a warning, and **queues a continuation run** for exactly those
+  entities (`resumed_from_run_id`; the source card tags it `continued`).
+  Pure `planContinuation` refuses to chain past `SYNC_MAX_CONTINUATIONS`
+  and after a part that made NO progress — then the run is `partial` and
+  says why. The pipeline gate (`unfinishedLoadAsPartial`) reads a run with
+  incomplete entities as partial: a fact must not be built on a half-loaded
+  table; profiling and on-source-sync triggers wait for the last part.
+- **(B6) PER-ENTITY STATE EXISTS NOW.** Migration 99: `entity_sync_cursors`
+  is the per-(connection, entity) state row — `cursor_type`/`cursor_value`
+  nullable (an always-full entity, or a failed first pull, carries a status
+  without a watermark; a CHECK keeps the pair whole), `rows_total` (what
+  the table HOLDS after its last write, tombstones excluded), `last_status`
+  gains `incomplete`; `source_sync_runs` gains `resumed_from_run_id` +
+  `incomplete_entities`. `persistEntityCursor` (validated, monotonic; a
+  re-reported checkpoint is a quiet no-op, backwards stays loud) and
+  `persistEntityState` (never touches the cursor) are the two writers;
+  `tableCatalog.listSourceTables` reads `rows_total` — the connector-path
+  tables finally have a row count in the catalog. A state-only row is
+  never handed to the worker as a watermark.
+- **NOT done, deliberately**: the DuckLake writer itself (two owner
+  decisions above); a door for a topic that WANTS deleted rows
+  (cancellations) — the views hide them for everyone today; the Python
+  sidecar is untouched (it is the topics' writer; B1 decides its fate);
+  per-entity cadence and backfill (B5); the legacy ETL path (§3.4). A
+  full re-sync that stops at its budget continues INCREMENTALLY and its
+  deleted-row check does not carry over — the warning says to reconcile
+  once the load finishes.
+- Validation: connectors **24 files / 331 passed** (was 22/310: +6
+  guardrails read back from a live session, +5 writer soft-delete/row-count/
+  bounded-memory, +6 `writeEntityInChunks`, +4 EO phase-2 — full re-sync
+  tombstones instead of overwriting, reconcile sends `$select=ID` and moves
+  no cursor, a spent budget checkpoints and reports incomplete never
+  failed, `onEntityComplete` carries cursor + count), `tsc` clean, dist
+  rebuilt; worker `tsc` clean; backend `tsc` clean; NEW
+  `tests/ingestion-phase2.test.ts` (15: the continuation rules; event
+  dispatch; the pipeline gate; cursor/state persistence incl. redaction and
+  the catalog count; the route refusing `full`+`reconcile` and recording
+  `mode=reconcile` with cursors untouched; **the orchestrator end to end
+  through an in-process fake launcher** — checkpoint persisted on arrival,
+  ONE continuation queued for the unfinished entity from its checkpoint,
+  the load finishing, a no-progress stop becoming `partial` with nothing
+  queued, a state-only row not handed over as a cursor; `createScanView`
+  hiding deleted rows and the columns while a legacy file reads as before);
+  NEW `services/warehouse/guardrails.test.ts` (3); migration 99 down/up
+  round-tripped; all eleven ratchets green from the repo root; frontend
+  `tsc` clean, `next build` 46/46, `sources/page.tsx` carries only its four
+  documented pre-existing findings; full backend vitest **90 files / 860
+  passed / 4 skipped** (was 88/842).
+- **NOT runtime-exercised against a live tenant.** Watch after deploy: the
+  first sync's log line `'<entity> sync complete'` with `mode: merge:…`
+  landing without an OOM on the largest EO entity (the anti-join); the
+  first `'entity … stopped at the time budget'` WARN followed by
+  `'continuation run queued'` and a `continued` tag in the history; the
+  first "Check for deleted rows" run's warning naming how many rows were
+  hidden; and, in the catalog, row counts on connector tables after their
+  next sync. Existing `entity_sync_cursors` rows carry NULL `rows_total`
+  until then. The memory limit is REALLY set now — a large merge that used
+  to run unbounded may spill to disk and be slower; that is the guard
+  working, and the anti-join is what keeps it from failing.
+
+**Prior last updated:** 2026-09-09 (INGESTION-CHAIN PHASE 0 IN PRODUCTION + PHASE 1
 BUILT — owner: *"put in main and production and then proceed"*. PR #130
 rebase-merged to main (`94768c5`); deploy run #590 built all four images,
 `migrate-sql` skipped correctly (phase 0 adds no migration), Go live
@@ -9906,6 +10039,7 @@ clarion/                              ← on disk: databridge/
 │       │   ├── tenantExport.ts             ← the streamed ZIP export (P0-7)
 │       │   ├── notificationService.ts      ← notify(), notifyTenant()
 │       │   ├── schemaLoss.ts               ← pure: is a bind failure the source losing a column, or a slip? (D3)
+│       │   ├── warehouse/views.ts          ← createScanView + parquetSelect: hides soft-deleted rows and _clarion_* columns (phase 2)
 │       │   ├── queryScope.ts              ← WHICH data a question may reach (tenant + connections + products)
 │       │   ├── warehouseRegistration.ts   ← view naming + the cross-source collision rule (pure)
 │       │   ├── productContext.ts           ← build star schema semantic context for NL→SQL; detects rollup tables
@@ -10101,7 +10235,7 @@ clarion/                              ← on disk: databridge/
             └── useDebounce.ts       ← custom debounce hook
 ```
 
-### Database Migrations (99 files on disk)
+### Database Migrations (100 files on disk)
 
 ```
 20260328000001  create_connections
@@ -10145,6 +10279,7 @@ clarion/                              ← on disk: databridge/
 20260906000096  query_log_duration                (time-to-answer, measured end to end)
 20260907000097  cross_source_scope                (notebooks + saved_questions.cross_source)
 20260909000098  ingestion_phase1                  (source_columns.source_data_type; product_tables.degraded_reason/_at; provenance on product_relationships + column_lineage)
+20260910000099  ingestion_phase2                  (entity_sync_cursors: nullable cursor, rows_total, 'incomplete'; source_sync_runs.resumed_from_run_id + incomplete_entities)
 ```
 
 ---
@@ -10408,6 +10543,12 @@ NODE_ENV=development
 
 # Semantic layer DB — PostgreSQL running in Docker
 DATABASE_URL=postgresql://databridge:databridge@localhost:5432/databridge
+
+# Source sync, phase 2: checkpoint flush size, the worker's stop margin
+# before SYNC_MAX_DURATION_MS, and the continuation-chain cap
+SYNC_CHECKPOINT_ROWS=50000
+SYNC_DEADLINE_MARGIN_MS=240000
+SYNC_MAX_CONTINUATIONS=24
 
 # JWT auth — access tokens are short-lived (15m) + 30-day refresh tokens;
 # JWT_EXPIRES_IN is deprecated and ignored (P1-3)

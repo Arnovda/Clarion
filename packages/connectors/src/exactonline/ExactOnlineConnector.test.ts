@@ -589,3 +589,136 @@ describe('ExactOnlineConnector — probeEntities', () => {
     expect(accountsCallCount).toBe(2);  // retried exactly once
   }, 15_000);
 });
+
+describe('ExactOnlineConnector — phase 2: soft delete, reconcile, time budget', () => {
+  const warehouses: string[] = [];
+  async function makeWarehouse(): Promise<string> {
+    const root = path.join(os.tmpdir(), `eo-p2-${randomUUID()}`);
+    await fs.mkdir(root, { recursive: true });
+    warehouses.push(root);
+    return root;
+  }
+  afterEach(async () => {
+    nock.cleanAll();
+    while (warehouses.length > 0) {
+      const root = warehouses.pop()!;
+      await fs.rm(root, { recursive: true, force: true }).catch(() => undefined);
+    }
+  });
+
+  function makeCtx(root: string, extra: Partial<SyncContext> = {}): SyncContext {
+    return {
+      tenantId: 't1',
+      connectionId: 'c42',
+      warehouseWriter: new LocalFileWarehouseWriter(root),
+      log: createNoopLogger(),
+      progress: vi.fn(),
+      cancellationToken: createCancellationToken(),
+      onCredentialRotated: async () => undefined,
+      syncStartedAt: new Date().toISOString(),
+      ...extra,
+    };
+  }
+
+  async function readAccounts(root: string): Promise<Array<{ ID: string; deleted: boolean }>> {
+    const db = await Database.create(':memory:');
+    try {
+      const p = path.join(root, 'Accounts', 'data.parquet').replace(/'/g, "''");
+      return (await db.all(`SELECT ID, COALESCE(_clarion_deleted, false) AS deleted FROM read_parquet('${p}') ORDER BY ID`)) as Array<{ ID: string; deleted: boolean }>;
+    } finally {
+      await db.close();
+    }
+  }
+
+  function mockAccounts(rows: Array<Record<string, unknown>>) {
+    nock(BASE_URL).get(`/api/v1/${DIVISION}/crm/Accounts`).query(true).reply(200, { d: { results: rows } });
+  }
+
+  it('a full re-sync MERGES and marks what it did not see as deleted — the row stays, hidden', async () => {
+    const root = await makeWarehouse();
+    const c = new ExactOnlineConnector();
+
+    mockTokenRefresh();
+    mockAccounts([{ ID: 'a1', Name: 'One' }, { ID: 'a2', Name: 'Two' }, { ID: 'a3', Name: 'Three' }]);
+    await c.sync(makeConfig(), { entities: ['Accounts'] }, makeCtx(root));
+    expect((await readAccounts(root)).map((r) => r.deleted)).toEqual([false, false, false]);
+
+    // The source lost a2. A full re-sync used to overwrite the file; now the
+    // row is tombstoned and the table keeps its history.
+    // The run's start is stamped after the previous sync's writes (a real
+    // run starts minutes or days later; here a few ms must do).
+    await new Promise((r) => setTimeout(r, 10));
+    mockTokenRefresh();
+    mockAccounts([{ ID: 'a1', Name: 'One' }, { ID: 'a3', Name: 'Three v2' }]);
+    const ctx = makeCtx(root);
+    const result = await c.sync(makeConfig(), { entities: ['Accounts'], fullResync: true }, ctx);
+    expect(result.failedEntities ?? {}).toEqual({});
+    expect(await readAccounts(root)).toEqual([{ ID: 'a1', deleted: false }, { ID: 'a2', deleted: true }, { ID: 'a3', deleted: false }]);
+    expect(result.warnings.join('\n')).toMatch(/1 row\(s\) no longer at the source were hidden/);
+  });
+
+  it('reconcile lists keys only ($select) and tombstones the missing ones without moving a cursor', async () => {
+    const root = await makeWarehouse();
+    const c = new ExactOnlineConnector();
+    mockTokenRefresh();
+    mockAccounts([{ ID: 'a1', Name: 'One' }, { ID: 'a2', Name: 'Two' }]);
+    await c.sync(makeConfig(), { entities: ['Accounts'] }, makeCtx(root));
+
+    mockTokenRefresh();
+    let selectSeen: string | null = null;
+    nock(BASE_URL)
+      .get(`/api/v1/${DIVISION}/crm/Accounts`)
+      .query((qs) => { selectSeen = String((qs as Record<string, unknown>).$select ?? ''); return true; })
+      .reply(200, { d: { results: [{ ID: 'a2' }] } });
+    const result = await c.sync(makeConfig(), { entities: ['Accounts'], reconcile: true }, makeCtx(root));
+    expect(selectSeen).toBe('ID');
+    expect(result.cursors ?? {}).toEqual({});
+    expect(result.rowCounts).toEqual({ Accounts: 1 });
+    expect(await readAccounts(root)).toEqual([{ ID: 'a1', deleted: true }, { ID: 'a2', deleted: false }]);
+    expect(result.warnings.join('\n')).toMatch(/1 row\(s\) no longer at the source were hidden/);
+  });
+
+  it('a spent time budget stops after a checkpoint and reports the rest as incomplete, never failed', async () => {
+    const root = await makeWarehouse();
+    const c = new ExactOnlineConnector();
+    mockTokenRefresh();
+    nock(BASE_URL)
+      .get(`/api/v1/${DIVISION}/crm/Accounts`)
+      .query(true)
+      .reply(200, {
+        d: {
+          results: [{ ID: 'a1', Modified: '2026-09-01T00:00:01' }, { ID: 'a2', Modified: '2026-09-01T00:00:02' }, { ID: 'a3', Modified: '2026-09-01T00:00:03' }],
+        },
+      });
+    const checkpoints: Array<{ entity: string; value: string; rowsSoFar: number }> = [];
+    const completed: string[] = [];
+    let ticks = 0;
+    const ctx = makeCtx(root, {
+      timeBudget: { shouldStop: () => (ticks += 1) > 1, remainingMs: () => 0 },
+      onEntityCheckpoint: (i) => { checkpoints.push({ entity: i.entity, value: i.cursor.value, rowsSoFar: i.rowsSoFar }); },
+      onEntityComplete: (i) => { completed.push(i.entity); },
+    });
+    const result = await c.sync(makeConfig(), { entities: ['Accounts', 'Items'] }, ctx);
+
+    expect(result.failedEntities ?? {}).toEqual({});
+    expect(Object.keys(result.incompleteEntities ?? {}).sort()).toEqual(['Accounts', 'Items']);
+    expect(result.incompleteEntities!.Items).toEqual({ reason: 'time_budget', rowsSoFar: 0 });
+    expect(result.incompleteEntities!.Accounts.rowsSoFar).toBeGreaterThan(0);
+    expect(result.incompleteEntities!.Accounts.cursor?.value).toBe(checkpoints[checkpoints.length - 1].value);
+    // The stopped entity is a checkpoint, not a completion, and not a cursor.
+    expect(checkpoints.length).toBeGreaterThan(0);
+    expect(completed).toEqual([]);
+    expect(result.cursors ?? {}).toEqual({});
+  });
+
+  it('a completed entity reports its cursor and row count through onEntityComplete', async () => {
+    const root = await makeWarehouse();
+    const c = new ExactOnlineConnector();
+    mockTokenRefresh();
+    mockAccounts([{ ID: 'a1', Modified: '2026-09-01T00:00:01' }, { ID: 'a2', Modified: '2026-09-01T00:00:05' }]);
+    const completions: Array<{ entity: string; rowsTotal?: number; cursor?: { value: string } }> = [];
+    const ctx = makeCtx(root, { onEntityComplete: (i) => { completions.push({ entity: i.entity, rowsTotal: i.rowsTotal, cursor: i.cursor }); } });
+    await c.sync(makeConfig(), { entities: ['Accounts'] }, ctx);
+    expect(completions).toEqual([{ entity: 'Accounts', rowsTotal: 2, cursor: { type: 'timestamp', value: '2026-09-01T00:00:05' } }]);
+  });
+});

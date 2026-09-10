@@ -20,6 +20,7 @@
 import fs from 'fs';
 import path from 'path';
 import type { Database } from 'duckdb-async';
+import { DELETED_COL, SYNCED_AT_COL } from '@databridge/connectors';
 import { isAzurePath, sqlEscapePath } from './paths';
 import { logger as rootLogger } from '../../utils/logger';
 
@@ -38,6 +39,30 @@ export interface CreateScanViewOptions {
  * Azure). Idempotent (`CREATE OR REPLACE`). Throws if every fallback
  * fails — caller decides whether to log + skip or surface the error.
  */
+/**
+ * The SELECT a parquet-backed view reads through (phase 2, B2). Every
+ * source table the sync writers produce carries `_clarion_synced_at` and
+ * `_clarion_deleted`; a row the source no longer has is MARKED, never
+ * removed. This is the one place that hides such rows — and the two
+ * technical columns with them, so no prompt, profile, notebook or
+ * transformation ever sees a tombstone or a stamp. A file without the
+ * columns (a legacy sync, a product table, a grid) reads as before. The
+ * probe is one `DESCRIBE` per registration; sessions are pooled, so it is
+ * paid once per view per session, not per query.
+ */
+export async function parquetSelect(db: Database, escapedPath: string): Promise<string> {
+  const source = `read_parquet('${escapedPath}')`;
+  try {
+    const cols = await db.all(`DESCRIBE SELECT * FROM ${source}`) as Array<{ column_name: string }>;
+    const names = new Set(cols.map((c) => c.column_name));
+    if (names.has(DELETED_COL)) {
+      const exclude = [DELETED_COL, ...(names.has(SYNCED_AT_COL) ? [SYNCED_AT_COL] : [])].map((c) => `"${c}"`).join(', ');
+      return `SELECT * EXCLUDE (${exclude}) FROM ${source} WHERE NOT COALESCE("${DELETED_COL}", false)`;
+    }
+  } catch { /* an unreadable file fails on the view itself, with its own error */ }
+  return `SELECT * FROM ${source}`;
+}
+
 export async function createScanView(
   db: Database,
   viewName: string,
@@ -71,7 +96,7 @@ export async function createScanView(
 
     // Bare parquet file? Some callers pass a direct `<dir>/data.parquet`.
     if (fs.existsSync(fsPath) && fs.statSync(fsPath).isFile()) {
-      await db.exec(`CREATE OR REPLACE VIEW ${qualified} AS SELECT * FROM read_parquet('${escaped}');`);
+      await db.exec(`CREATE OR REPLACE VIEW ${qualified} AS ${await parquetSelect(db, escaped)};`);
       return;
     }
 
@@ -79,7 +104,7 @@ export async function createScanView(
     // used by transformationRunner), then `*.parquet` glob (older writes).
     const dataParquet = path.join(fsPath, 'data.parquet');
     if (fs.existsSync(dataParquet)) {
-      await db.exec(`CREATE OR REPLACE VIEW ${qualified} AS SELECT * FROM read_parquet('${escaped}/data.parquet');`);
+      await db.exec(`CREATE OR REPLACE VIEW ${qualified} AS ${await parquetSelect(db, `${escaped}/data.parquet`)};`);
       return;
     }
     await db.exec(`CREATE OR REPLACE VIEW ${qualified} AS SELECT * FROM read_parquet('${escaped}/*.parquet');`);
@@ -97,7 +122,7 @@ export async function createScanView(
 
   let parquetFileErr: unknown;
   try {
-    await db.exec(`CREATE OR REPLACE VIEW ${qualified} AS SELECT * FROM read_parquet('${escaped}/data.parquet');`);
+    await db.exec(`CREATE OR REPLACE VIEW ${qualified} AS ${await parquetSelect(db, `${escaped}/data.parquet`)};`);
     return;
   } catch (e) { parquetFileErr = e; }
 

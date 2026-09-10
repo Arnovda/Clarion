@@ -239,14 +239,31 @@ export async function listSourceTables(
     }));
   }
 
-  // Source-connector flow — derive from selected_entities.
+  // Source-connector flow — derive from selected_entities. The row count and
+  // the last landing per entity come from `entity_sync_cursors`, which the
+  // orchestrator now keeps per entity for every run (phase 2, B6): the rows
+  // the table HOLDS after its last write, soft-deleted ones excluded.
   const entities: string[] = Array.isArray(conn.selected_entities) ? conn.selected_entities : [];
-  return entities.map((entity) => ({
-    tableName: entity,
-    uri: deriveSourceUri(warehousePath, entity),
-    rowCount: null,
-    lastUpdatedAt: conn.last_synced_at ? String(conn.last_synced_at) : null,
-  }));
+  const state = new Map<string, { rows_total: number | string | null; last_sync_at: Date | string | null }>();
+  try {
+    const rows = await tenantQuery(tenantId, (trx) =>
+      trx('entity_sync_cursors')
+        .where({ connection_id: connectionId })
+        .select('entity_name', 'rows_total', 'last_sync_at'),
+    );
+    for (const r of rows as Array<{ entity_name: string; rows_total: number | string | null; last_sync_at: Date | string | null }>) {
+      state.set(r.entity_name, r);
+    }
+  } catch { /* the count is a nicety; the listing must not fail over it */ }
+  return entities.map((entity) => {
+    const st = state.get(entity);
+    return {
+      tableName: entity,
+      uri: deriveSourceUri(warehousePath, entity),
+      rowCount: st?.rows_total != null ? Number(st.rows_total) : null,
+      lastUpdatedAt: st?.last_sync_at ? String(st.last_sync_at) : conn.last_synced_at ? String(conn.last_synced_at) : null,
+    };
+  });
 }
 
 /** List every ready product table for a single product (joined to its parent). */

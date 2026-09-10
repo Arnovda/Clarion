@@ -93,6 +93,29 @@ const envSchema = z.object({
   WORKER_FULL_RESYNC: z.string().optional().transform((s) => s === '1'),
   /** Correlation id of the request this sync descends from (6-1); rides on every log event. */
   WORKER_REQUEST_ID: z.string().optional().transform((s) => (s && s.trim() ? s.trim() : undefined)),
+  /**
+   * '1' = RECONCILE (phase 2, B2): list keys only and mark the rows the
+   * source no longer has as deleted. No row content is pulled, no cursor moves.
+   */
+  WORKER_RECONCILE: z.string().optional().transform((s) => s === '1'),
+  /**
+   * ISO timestamp of the orchestrator's hard ceiling for this run (phase 2,
+   * B3). The worker stops pulling cleanly `SYNC_DEADLINE_MARGIN_MS` before
+   * it, flushing a checkpoint, instead of being SIGKILLed mid-entity. Absent
+   * → no budget (local dev, tests).
+   */
+  WORKER_DEADLINE_AT: z
+    .string()
+    .optional()
+    .transform((s, ctx) => {
+      if (!s || !s.trim()) return undefined;
+      const t = Date.parse(s);
+      if (Number.isNaN(t)) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: `WORKER_DEADLINE_AT is not a timestamp: ${s}` });
+        return z.NEVER;
+      }
+      return t;
+    }),
   WORKER_CURSORS: z
     .string()
     .optional()
