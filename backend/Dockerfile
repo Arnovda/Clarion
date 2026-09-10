@@ -37,15 +37,18 @@ RUN apt-get update && apt-get install -y \
       wget python3 python3-pip python3-venv make g++ ca-certificates libcurl4-openssl-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Python deps for the SCD1/SCD2 sidecar (etl/scd2/commit_table.py). The
-# sidecar is invoked by `services/warehouse/deltaWriter.ts` whenever a
-# product transformation runs under `STORAGE_FORMAT=delta_v1`. Install
-# into a venv to sidestep PEP 668's "externally-managed-environment"
-# guard on Debian; expose the venv on PATH so plain `python3` resolves
-# to it (matches the default `PYTHON_BIN=python3`).
+# Python deps for the Delta sidecar (etl/scd2/commit_table.py), invoked by
+# `services/warehouse/deltaWriter.ts` on every product transformation
+# (Delta is the default; STORAGE_FORMAT=parquet opts out) and by the weekly
+# maintenance job. Install into a venv to sidestep PEP 668's
+# "externally-managed-environment" guard on Debian; expose the venv on PATH
+# so plain `python3` resolves to it (matches the default `PYTHON_BIN`).
+# PINS ARE THE CONTRACT: `.github/workflows/test.yml` (sidecar-tests,
+# api-tests) installs the same two lines — keep all three in step. No
+# pandas since 2026-09-10: the sidecar streams and never holds a frame.
 RUN python3 -m venv /opt/sidecar-venv \
     && /opt/sidecar-venv/bin/pip install --no-cache-dir \
-        deltalake==0.23.2 pandas==2.2.3 pyarrow==18.1.0
+        deltalake==1.6.3 pyarrow==25.0.1
 ENV PATH="/opt/sidecar-venv/bin:${PATH}"
 
 # The backend's `file:../packages/connectors` dep resolution looks RELATIVE to

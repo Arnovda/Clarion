@@ -204,6 +204,10 @@ jobs:
             backend:
               - 'backend/**'
               - 'packages/connectors/**'
+              # The Delta sidecar ships INSIDE the backend image (Dockerfile
+              # copies etl/scd2/); a sidecar-only change must rebuild it, not
+              # just the ETL service.
+              - 'etl/scd2/**'
               - '.ops/redeploy'
             worker:
               - 'worker/**'

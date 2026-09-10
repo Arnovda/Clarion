@@ -918,9 +918,11 @@ export async function runProductTransformation(
           ? false  // Azure: always overwrite for now (incremental merge on blob needs read-back)
           : fs.existsSync(path.join(tableOutputPath, 'data.parquet'));
 
-        // Feature-flagged Delta write path. Routes through the Python
-        // sidecar which computes row_hash + change counts + writes Delta.
-        // Replaces the parquet write entirely when STORAGE_FORMAT=delta_v1.
+        // Delta write path (the default). DuckDB computes `_row_hash` and
+        // the change counts against the previous state HERE, under its
+        // memory limit; the Python sidecar only streams the parquet into a
+        // Delta commit (2026-09-10 — it used to hold the whole table twice
+        // in pandas). STORAGE_FORMAT=parquet keeps the legacy write.
         // Same code path for dim and fact (per user spec: facts overwrite
         // each refresh too, change counts tracked for the chart).
         const { isDeltaStorageEnabled, writeDeltaWithSidecar, isSidecarReachable } = await import('./warehouse/deltaWriter');

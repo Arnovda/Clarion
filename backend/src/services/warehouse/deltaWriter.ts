@@ -2,26 +2,34 @@
  * Delta + Python-sidecar writer for product tables.
  *
  * Pairs Node DuckDB (executes the AI-generated transformation SQL) with
- * a Python sidecar (`etl/scd2/commit_table.py`) that owns the Delta
+ * the Python sidecar (`etl/scd2/commit_table.py`) that owns the Delta
  * commit:
  *
- *   1. DuckDB writes the transformation result to a tmp parquet
- *   2. Sidecar reads that parquet + the existing Delta table
- *   3. Sidecar computes `_row_hash` per row + diffs on business key
- *   4. Sidecar writes the new state to Delta with schema evolution
- *   5. Sidecar returns counts (unchanged / updated / inserted / deleted)
- *   6. Node persists the counts in `product_table_refresh_history` for
- *      the per-table change-evolution chart on /products/[id]
+ *   1. DuckDB writes the transformation result to a tmp parquet — WITH the
+ *      per-row `_row_hash`, computed here in SQL over the business columns.
+ *   2. DuckDB counts what changed against the table's previous state
+ *      (business key + hash on both sides, a FULL OUTER JOIN under the
+ *      session's memory limit, spilling to `temp_directory` when it must).
+ *   3. The sidecar streams the parquet into a Delta commit — never holding
+ *      the table — and returns the write's shape.
+ *   4. Node persists counts + outcome in `product_table_refresh_history`
+ *      for the per-table change-evolution chart.
  *
- * Why a Python sidecar at all: deltalake-rs (via the Python `deltalake`
- * package) handles ACID Delta commits, schema evolution, and time travel
- * natively. DuckDB's Delta WRITE support is improving but not at parity.
- * The sidecar is ~150 lines of Python; the architectural seam is small
- * and pays for itself when SCD2 lands (same sidecar, different mode flag).
+ * THE DIVISION OF LABOUR IS THE POINT (2026-09-10). Until this rewrite
+ * the sidecar loaded the existing table AND the new state into pandas,
+ * hashed every row through a Python lambda and outer-merged the frames
+ * for the counts: two full copies of a fact table inside a 1 GiB
+ * jobs-worker, the same failure class phase 2 closed on the source side.
+ * Everything that is proportional to the table now runs where a memory
+ * ceiling exists — DuckDB (`applyResourceGuardrails`) — and the sidecar
+ * only ever holds one batch. Measured on the PoC's 3M-row table:
+ * delta-rs' own MERGE peaked at 1.9 GB even for a 10k-row delta and at
+ * 4.3 GB for a full-table merge, which is why the counts are NOT computed
+ * by delta-rs and the write is an overwrite, not a merge (see the
+ * ingestion-chain assessment §9).
  *
- * Feature flagging: gated on `STORAGE_FORMAT=delta_v1`. When unset (or
- * any value other than `delta_v1`), `transformationRunner` keeps using
- * the legacy parquet path. Lets us roll out tenant-by-tenant if needed.
+ * Feature flagging: `STORAGE_FORMAT=parquet` keeps the legacy parquet
+ * path; anything else (including unset) is Delta.
  */
 
 import fs from 'fs';
@@ -31,16 +39,28 @@ import { spawn } from 'child_process';
 import { randomUUID } from 'crypto';
 import type { Database } from 'duckdb-async';
 
-import { isAzurePath, sqlEscapePath } from './paths';
+import { createScanView } from './views';
 import { tenantQuery } from '../tenantQuery';
 import { logger } from '../../utils/logger';
 
 const log = logger.child({ component: 'deltaWriter' });
 
-/** Default sidecar timeout — 15 min per the user's call. SMB-scale dim
- *  refreshes complete in seconds; the headroom protects against pathological
- *  Azure latency without leaving stuck processes around indefinitely. */
+/** Default sidecar timeout — 15 min. SMB-scale refreshes complete in seconds;
+ *  the headroom protects against pathological Azure latency without leaving
+ *  stuck processes around indefinitely. */
 const SIDECAR_TIMEOUT_MS = 15 * 60 * 1000;
+/** Maintenance walks every product table of every tenant in one run. */
+const MAINTAIN_TIMEOUT_MS = 60 * 60 * 1000;
+
+/** Parquet row groups the sidecar reads one at a time; small groups keep the
+ *  reader's footprint small (a DuckDB default group is 122,880 rows). */
+const TMP_PARQUET_ROW_GROUP = 16_384;
+
+export const ROW_HASH_COL = '_row_hash';
+/** The hash of a row with no business columns to hash — every row identical,
+ *  which is the honest reading when rows cannot be told apart. Mirrors the
+ *  sidecar's `NO_BUSINESS_COLUMNS_HASH`. */
+export const NO_BUSINESS_COLUMNS_HASH = 'no-business-columns';
 
 export interface DeltaWriteResult {
   status: 'ok' | 'failed';
@@ -55,19 +75,41 @@ export interface DeltaWriteResult {
    *  the existing data was kept. Not an error — see the sidecar's write
    *  step — but the caller must not report it as "refreshed to 0 rows". */
   preservedExisting?: boolean;
+  /** How the sidecar wrote: `overwrite`, `preserved`, `emptied`. */
+  writeMode?: string;
+}
+
+export interface ChangeCounts {
+  rows_unchanged: number;
+  rows_updated: number;
+  rows_inserted: number;
+  rows_deleted: number;
+  rows_total: number;
 }
 
 interface SidecarConfig {
+  mode: 'scd1';
   delta_path: string;
   new_state_parquet: string;
   business_key_columns: string[];
   business_columns: string[];
-  mode: 'scd1';
   storage_options?: Record<string, string>;
   /** Explicit "this table really should end up empty". Without it a zero-row
    *  result over a non-empty table preserves what is there, matching the
    *  source writers' contract. */
   allow_empty?: boolean;
+  target_file_size?: number;
+  /** Counts Node computed against the previous state; absent on a first run
+   *  or an unkeyed table, where the sidecar reports "all inserted". */
+  counts?: ChangeCounts;
+}
+
+interface MaintainConfig {
+  mode: 'maintain';
+  delta_paths: string[];
+  target_file_size?: number;
+  retention_hours?: number;
+  storage_options?: Record<string, string>;
 }
 
 interface SidecarResult {
@@ -79,29 +121,140 @@ interface SidecarResult {
   rows_inserted?: number;
   rows_deleted?: number;
   rows_total?: number;
-  /** Set when a zero-row refresh left the existing rows in place. */
   preserved_existing?: boolean;
-  /** Set when the sidecar removed a legacy `data.parquet` on first
-   *  Delta commit. Logged for audit; not surfaced on the chart. */
   legacy_cleanup?: string;
+  write_mode?: string;
+}
+
+export interface MaintainTableResult {
+  delta_path: string;
+  skipped?: string;
+  error?: string;
+  files_before?: number;
+  files_after?: number;
+  compact?: { numFilesAdded?: number; numFilesRemoved?: number; totalConsideredFiles?: number };
+  vacuum_files_removed?: number;
+}
+
+interface MaintainResult {
+  status: 'ok' | 'failed';
+  error?: string;
+  results?: MaintainTableResult[];
 }
 
 /**
  * Returns true when product transformations should write Delta + run
- * the Python sidecar.
- *
- * Delta is the DEFAULT as of 2026-05-07 — the production image bakes
- * the Python venv + sidecar in, and Azure Blob auth flows through the
- * existing AZURE_STORAGE_CONNECTION_STRING env var. The only escape
- * hatch is `STORAGE_FORMAT=parquet`, which keeps the legacy parquet
- * COPY TO path (useful for local dev environments that don't have
- * `deltalake`/`pandas`/`pyarrow` installed in their Python).
- *
- * Unset → Delta. `delta_v1` → Delta. `parquet` → legacy. Any other
- * value is treated as "Delta" too, so a typo doesn't silently downgrade.
+ * the Python sidecar. Delta is the DEFAULT — the production image bakes
+ * the Python venv + sidecar in. The only escape hatch is
+ * `STORAGE_FORMAT=parquet`; any other value is treated as Delta too, so a
+ * typo doesn't silently downgrade.
  */
 export function isDeltaStorageEnabled(): boolean {
   return process.env.STORAGE_FORMAT !== 'parquet';
+}
+
+/** `DELTA_TARGET_FILE_SIZE_MB` (default 64): the data-file size delta-rs aims
+ *  for. Smaller files make a future partial rewrite touch less; larger files
+ *  read faster. 64 MB is delta-rs' recommended middle for tables this size. */
+export function deltaTargetFileSizeBytes(): number {
+  const mb = Number(process.env.DELTA_TARGET_FILE_SIZE_MB ?? '64');
+  return (Number.isFinite(mb) && mb >= 1 ? mb : 64) * 1024 * 1024;
+}
+
+/** `DELTA_VACUUM_RETENTION_HOURS` (default 168): how long a superseded data
+ *  file stays on storage for time travel before the weekly vacuum drops it.
+ *  delta-rs refuses anything under its own 7-day minimum unless enforcement
+ *  is switched off, which this deliberately never does. */
+export function deltaVacuumRetentionHours(): number {
+  const h = Number(process.env.DELTA_VACUUM_RETENTION_HOURS ?? '168');
+  return Number.isFinite(h) && h >= 0 ? h : 168;
+}
+
+const q = (ident: string) => `"${ident.replace(/"/g, '""')}"`;
+
+/**
+ * The `_row_hash` expression: md5 over the business columns the result
+ * actually carries, joined with the ASCII unit separator, NULL spelled
+ * 'NULL' so an empty string stays distinguishable from a missing value.
+ * Columns declared in `product_columns` but absent from the SELECT are
+ * skipped (a catalog column the transformation renamed or dropped); with
+ * none present every row gets the same placeholder hash.
+ */
+export function rowHashExpression(businessColumns: readonly string[], presentColumns: readonly string[]): string {
+  const present = new Set(presentColumns);
+  const cols = businessColumns.filter((c) => present.has(c) && c !== ROW_HASH_COL);
+  if (cols.length === 0) return `'${NO_BUSINESS_COLUMNS_HASH}'`;
+  const parts = cols.map((c) => `COALESCE(CAST(${q(c)} AS VARCHAR), 'NULL')`).join(', ');
+  return `md5(concat_ws(chr(31), ${parts}))`;
+}
+
+async function describeSelect(db: Database, selectSql: string): Promise<string[]> {
+  const rows = await db.all(`DESCRIBE ${selectSql}`) as Array<{ column_name: string }>;
+  return rows.map((r) => r.column_name);
+}
+
+/**
+ * Change counts of `selectSql` (the new state, hash included) against the
+ * table at `deltaUri`, keyed on the business key. Returns null when the
+ * previous state cannot be read — a first run, or a path that is not yet a
+ * table — so the caller reports "all inserted" instead of guessing.
+ *
+ * The previous state is read through `createScanView`: the same door every
+ * other read uses, and the one the warehouse-scan ratchet allows. The join
+ * runs under the session's memory limit and spills; it never holds more
+ * than the key + hash of each side.
+ */
+export async function countChangesAgainstPrevious(
+  db: Database,
+  deltaUri: string,
+  selectSql: string,
+  businessKeyColumns: readonly string[],
+): Promise<ChangeCounts | null> {
+  if (businessKeyColumns.length === 0) return null;
+  const view = `__prev_${randomUUID().replace(/-/g, '')}`;
+  try {
+    await createScanView(db, view, deltaUri);
+  } catch {
+    return null;
+  }
+  try {
+    const prevCols = new Set(await describeSelect(db, `SELECT * FROM ${q(view)}`));
+    if (!prevCols.has(ROW_HASH_COL) || businessKeyColumns.some((k) => !prevCols.has(k))) return null;
+    const keys = businessKeyColumns.map(q).join(', ');
+    const joinOn = businessKeyColumns.map((k) => `e.${q(k)} IS NOT DISTINCT FROM n.${q(k)}`).join(' AND ');
+    const rows = await db.all(`
+      WITH e AS (SELECT ${keys}, ${q(ROW_HASH_COL)} AS h_old FROM ${q(view)}),
+           n AS (SELECT ${keys}, ${q(ROW_HASH_COL)} AS h_new FROM (${selectSql}))
+      SELECT
+        COUNT(*) FILTER (WHERE h_old IS NULL AND h_new IS NOT NULL)                       AS ins,
+        COUNT(*) FILTER (WHERE h_old IS NOT NULL AND h_new IS NULL)                       AS del,
+        COUNT(*) FILTER (WHERE h_old IS NOT NULL AND h_new IS NOT NULL AND h_old <> h_new) AS upd,
+        COUNT(*) FILTER (WHERE h_old IS NOT NULL AND h_new IS NOT NULL AND h_old = h_new)  AS same,
+        (SELECT COUNT(*) FROM n)                                                            AS total
+      FROM e FULL OUTER JOIN n ON ${joinOn}
+    `) as Array<{ ins: number | bigint; del: number | bigint; upd: number | bigint; same: number | bigint; total: number | bigint }>;
+    const r = rows[0];
+    return {
+      rows_unchanged: Number(r.same),
+      rows_updated: Number(r.upd),
+      rows_inserted: Number(r.ins),
+      rows_deleted: Number(r.del),
+      rows_total: Number(r.total),
+    };
+  } finally {
+    await db.exec(`DROP VIEW IF EXISTS ${q(view)};`).catch(() => undefined);
+  }
+}
+
+/** Rows of `selectSql` whose business key repeats — a merge could not tell
+ *  them apart, and a diff on them would count wrong. */
+export async function duplicateKeyRows(db: Database, selectSql: string, businessKeyColumns: readonly string[]): Promise<number> {
+  if (businessKeyColumns.length === 0) return 0;
+  const keys = businessKeyColumns.map(q).join(', ');
+  const rows = await db.all(`
+    SELECT COALESCE(SUM(n - 1), 0) AS dup FROM (SELECT ${keys}, COUNT(*) AS n FROM (${selectSql}) GROUP BY ALL HAVING COUNT(*) > 1)
+  `) as Array<{ dup: number | bigint }>;
+  return Number(rows[0]?.dup ?? 0);
 }
 
 /**
@@ -119,48 +272,65 @@ export async function writeDeltaWithSidecar(opts: {
   selectSql: string;
   productTableId: number;
   tenantId: number;
-  /** Columns the sidecar should treat as the business key for diffing.
-   *  Empty array = no change tracking; counts come back as "all inserted". */
+  /** Columns that identify a row across refreshes. Empty = no change
+   *  tracking; counts come back as "all inserted". */
   businessKeyColumns: string[];
-  /** All business columns (excluding technical `_row_hash`, etc.). Used
-   *  to compute `_row_hash` over the same set on both sides of the diff. */
+  /** All business columns (excluding technical `_row_hash`, etc.). Hashed
+   *  in the same order on both sides of the diff. */
   businessColumns: string[];
   /** Opt in to emptying the table when the transformation returns no rows.
    *  Default (absent) preserves the existing rows — a source that answers
-   *  empty for one run must not wipe a topic. The deliberate-empty act is
-   *  the caller's to make, exactly as `replace: true` is on the source side. */
+   *  empty for one run must not wipe a topic. */
   allowEmpty?: boolean;
 }): Promise<DeltaWriteResult> {
   const refreshStartedAt = new Date();
+  const startedMs = Date.now();
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'clarion-scd1-'));
   const tmpParquet = path.join(tmpDir, `${randomUUID()}.parquet`).replace(/\\/g, '/');
 
   let result: DeltaWriteResult;
   try {
-    // 1. DuckDB → tmp parquet
-    const escaped = tmpParquet.replace(/'/g, "''");
-    await opts.db.exec(`COPY (${opts.selectSql}) TO '${escaped}' (FORMAT PARQUET);`);
+    // 1. The new state, hash included, as one SELECT DuckDB can both copy
+    //    and join. Duplicate business keys mean the key does not identify a
+    //    row: the diff is skipped and the chart reads "all inserted", which
+    //    is what is true.
+    const presentColumns = await describeSelect(opts.db, `(${opts.selectSql})`);
+    const hashExpr = rowHashExpression(opts.businessColumns, presentColumns);
+    const newState = `SELECT *, ${hashExpr} AS ${q(ROW_HASH_COL)} FROM (${opts.selectSql})`;
 
-    // 2. Sidecar
-    const sidecarResult = await spawnSidecar({
+    let keyColumns = opts.businessKeyColumns.filter((k) => presentColumns.includes(k));
+    if (keyColumns.length > 0) {
+      const dup = await duplicateKeyRows(opts.db, opts.selectSql, keyColumns);
+      if (dup > 0) {
+        log.warn(
+          { productTableId: opts.productTableId, keyColumns, duplicateRows: dup },
+          'business key repeats in the transformation result — change counts unavailable for this refresh',
+        );
+        keyColumns = [];
+      }
+    }
+
+    // 2. Counts against the previous state, BEFORE the write replaces it.
+    const counts = await countChangesAgainstPrevious(opts.db, opts.deltaUri, newState, keyColumns);
+
+    // 3. The parquet the sidecar streams.
+    const escaped = tmpParquet.replace(/'/g, "''");
+    await opts.db.exec(`COPY (${newState}) TO '${escaped}' (FORMAT PARQUET, ROW_GROUP_SIZE ${TMP_PARQUET_ROW_GROUP});`);
+
+    // 4. Sidecar
+    const sidecarResult = await spawnSidecar<SidecarResult>({
+      mode: 'scd1',
       delta_path: opts.deltaUri,
       new_state_parquet: tmpParquet,
-      business_key_columns: opts.businessKeyColumns,
+      business_key_columns: keyColumns,
       business_columns: opts.businessColumns,
-      mode: 'scd1',
       allow_empty: opts.allowEmpty === true,
-    });
+      target_file_size: deltaTargetFileSizeBytes(),
+      ...(counts ? { counts } : {}),
+    }, SIDECAR_TIMEOUT_MS);
 
     if (sidecarResult.status !== 'ok') {
-      result = {
-        status: 'failed',
-        error: sidecarResult.error ?? 'unknown sidecar error',
-        rowsUnchanged: 0,
-        rowsUpdated: 0,
-        rowsInserted: 0,
-        rowsDeleted: 0,
-        rowsTotal: 0,
-      };
+      result = failed(sidecarResult.error ?? 'unknown sidecar error');
     } else {
       result = {
         status: 'ok',
@@ -171,7 +341,25 @@ export async function writeDeltaWithSidecar(opts: {
         rowsDeleted: sidecarResult.rows_deleted ?? 0,
         rowsTotal: sidecarResult.rows_total ?? 0,
         preservedExisting: sidecarResult.preserved_existing === true,
+        writeMode: sidecarResult.write_mode,
       };
+      // LOAD-BEARING LOG LINE: `.ops/prod-logs` keys `delta-write` on
+      // 'delta write complete'. Reword it there too, or the reader goes
+      // blind on the one signal that says the rewritten sidecar runs.
+      log.info(
+        {
+          productTableId: opts.productTableId,
+          writeMode: result.writeMode,
+          firstRun: result.firstRun === true,
+          rowsTotal: result.rowsTotal,
+          rowsUpdated: result.rowsUpdated,
+          rowsInserted: result.rowsInserted,
+          rowsDeleted: result.rowsDeleted,
+          countsMeasured: counts !== null,
+          durationMs: Date.now() - startedMs,
+        },
+        'delta write complete',
+      );
       if (result.preservedExisting) {
         log.warn(
           { productTableId: opts.productTableId, rowsKept: result.rowsTotal },
@@ -186,22 +374,12 @@ export async function writeDeltaWithSidecar(opts: {
       }
     }
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    result = {
-      status: 'failed',
-      error: msg,
-      rowsUnchanged: 0,
-      rowsUpdated: 0,
-      rowsInserted: 0,
-      rowsDeleted: 0,
-      rowsTotal: 0,
-    };
+    result = failed(err instanceof Error ? err.message : String(err));
   } finally {
-    // Always clean up tmp; if sidecar already consumed it, this is a no-op.
     try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
   }
 
-  // 3. Persist the refresh row regardless of outcome — failed rows show
+  // 5. Persist the refresh row regardless of outcome — failed rows show
   //    up on the chart as red markers so users see "something tried" rather
   //    than silent gaps.
   await recordRefreshHistory({
@@ -219,18 +397,43 @@ export async function writeDeltaWithSidecar(opts: {
   return result;
 }
 
+function failed(error: string): DeltaWriteResult {
+  return { status: 'failed', error, rowsUnchanged: 0, rowsUpdated: 0, rowsInserted: 0, rowsDeleted: 0, rowsTotal: 0 };
+}
+
+/**
+ * OPTIMIZE + VACUUM the listed Delta tables through the sidecar's `maintain`
+ * mode. A path that is not a Delta table comes back `skipped`, not failed:
+ * the caller enumerates catalog rows and a legacy parquet directory is a
+ * legitimate thing to find there.
+ */
+export async function maintainDeltaTables(deltaPaths: string[]): Promise<MaintainTableResult[]> {
+  if (deltaPaths.length === 0) return [];
+  const res = await spawnSidecar<MaintainResult>({
+    mode: 'maintain',
+    delta_paths: deltaPaths,
+    target_file_size: deltaTargetFileSizeBytes(),
+    retention_hours: deltaVacuumRetentionHours(),
+  }, MAINTAIN_TIMEOUT_MS);
+  if (res.status !== 'ok') throw new Error(`Delta maintenance sidecar failed: ${res.error ?? 'unknown error'}`);
+  return res.results ?? [];
+}
+
+function sidecarPath(): string {
+  return process.env.SCD2_SIDECAR_PATH
+    ?? path.resolve(__dirname, '../../../../etl/scd2/commit_table.py');
+}
+
 /**
  * Spawn the Python sidecar with the given config. Returns the parsed JSON
  * result on success, throws on hard failure (timeout, non-zero exit,
  * unparseable output).
  */
-async function spawnSidecar(cfg: SidecarConfig): Promise<SidecarResult> {
-  return new Promise<SidecarResult>((resolve, reject) => {
+async function spawnSidecar<T extends { status: string }>(cfg: SidecarConfig | MaintainConfig, timeoutMs: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
     const pythonBin = process.env.PYTHON_BIN ?? 'python3';
-    const sidecarPath = process.env.SCD2_SIDECAR_PATH
-      ?? path.resolve(__dirname, '../../../../etl/scd2/commit_table.py');
 
-    const proc = spawn(pythonBin, [sidecarPath], {
+    const proc = spawn(pythonBin, [sidecarPath()], {
       stdio: ['pipe', 'pipe', 'pipe'],
       env: { ...process.env },
     });
@@ -243,8 +446,8 @@ async function spawnSidecar(cfg: SidecarConfig): Promise<SidecarResult> {
     const timer = setTimeout(() => {
       // SIGKILL — SIGTERM may not break a stuck Azure write
       proc.kill('SIGKILL');
-      reject(new Error(`sidecar timed out after ${SIDECAR_TIMEOUT_MS}ms`));
-    }, SIDECAR_TIMEOUT_MS);
+      reject(new Error(`sidecar timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
 
     proc.on('error', (err) => {
       clearTimeout(timer);
@@ -253,14 +456,14 @@ async function spawnSidecar(cfg: SidecarConfig): Promise<SidecarResult> {
 
     proc.on('close', (code) => {
       clearTimeout(timer);
+      if (stderr.trim().length > 0) log.warn({ sidecarStderr: stderr.slice(0, 2000) }, 'sidecar wrote to stderr');
       if (code !== 0) {
         reject(new Error(`sidecar exited ${code}: ${stderr || stdout}`));
         return;
       }
       try {
-        const parsed = JSON.parse(stdout) as SidecarResult;
-        resolve(parsed);
-      } catch (e) {
+        resolve(JSON.parse(stdout) as T);
+      } catch {
         reject(new Error(`sidecar output not parseable: ${stdout.slice(0, 500)}`));
       }
     });
@@ -303,21 +506,7 @@ async function recordRefreshHistory(opts: {
  * sidecar script is reachable before starting a long transformation. If
  * we're going to fail, we'd rather fail fast (before running the AI
  * transformation SQL) than after.
- *
- * Returns true if the script file exists at the expected path. Doesn't
- * verify Python itself is on PATH or that deltalake is installed —
- * those failures surface cleanly via spawnSidecar's child_process error
- * path with the actual error message.
  */
 export function isSidecarReachable(): boolean {
-  const sidecarPath = process.env.SCD2_SIDECAR_PATH
-    ?? path.resolve(__dirname, '../../../../etl/scd2/commit_table.py');
-  return fs.existsSync(sidecarPath);
+  return fs.existsSync(sidecarPath());
 }
-
-// Used in tests / integration: silence unused imports of `isAzurePath`
-// + `sqlEscapePath` until the next iteration that uses them for storage
-// option derivation on the Node side. Keeping the imports stops the
-// editor from auto-removing them, since they'll be needed shortly.
-void isAzurePath;
-void sqlEscapePath;

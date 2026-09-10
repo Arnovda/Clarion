@@ -1,16 +1,21 @@
 /**
  * Warehouse maintenance — weekly OPTIMIZE (file compaction) + VACUUM (purge
- * stale Parquet versions past retention) across every connection's Delta
- * warehouse. Keeps query latency from degrading as incremental loads
- * accumulate small files.
+ * data files no snapshot inside the retention window references). Keeps
+ * query latency from degrading as refreshes accumulate small files, and
+ * keeps storage from growing without bound: every Delta overwrite keeps
+ * the previous version's files for time travel until a vacuum drops them.
+ *
+ * Two sweeps:
+ *   - PRODUCT TABLES (every tenant's topics, the Delta the sidecar writes)
+ *     through the sidecar's `maintain` mode — added 2026-09-10; until then
+ *     nothing ever compacted or vacuumed a topic table.
+ *   - the legacy ETL-ingested tables through the Python ETL service
+ *     (`POST /optimize`), kept for the connections that still have them.
  *
  * Exposed two ways:
  *   - a repeatable BullMQ job (registered from scheduler.ts on startup)
  *   - a direct `runMaintenance(opts)` call (used by the on-demand admin
  *     endpoint and inline fallback when Redis is unavailable)
- *
- * The actual OPTIMIZE/VACUUM is executed by the Python ETL service
- * (`POST /optimize`) — this module is just orchestration.
  */
 
 import axios from 'axios';
@@ -19,6 +24,10 @@ import { getRedisConnection } from './redis';
 import { shouldRunQueue } from './queueRoles';
 import { semanticDb } from '../db/knex';
 import { DuckDBConnector } from '../connectors/DuckDBConnector';
+import { readAcrossTenants } from '../services/tenantQuery';
+import { isDeltaStorageEnabled, maintainDeltaTables, type MaintainTableResult } from '../services/warehouse/deltaWriter';
+import { publishInvalidation } from './cacheBus';
+import { warehouseRoot } from '../services/warehouse/paths';
 import { logger } from '../utils/logger';
 
 const ETL_URL = process.env.ETL_URL || 'http://localhost:8000';
@@ -53,6 +62,81 @@ interface ConnectionResult {
   error?: string;
 }
 
+export interface ProductMaintenanceResult {
+  tenantId: number;
+  tables: number;
+  compacted: number;
+  vacuumedFiles: number;
+  skipped: number;
+  errors: number;
+  results: MaintainTableResult[];
+}
+
+/**
+ * Compact + vacuum every materialised product table, tenant by tenant.
+ * Reads the catalog rows under each tenant's own context (the root pool
+ * sees nothing under RLS — the P0-2 shape), hands the sidecar every
+ * `delta_path` of that tenant in one call, and invalidates the pooled
+ * DuckDB sessions afterwards so a view never points at a compacted-away
+ * file. A tenant whose sweep fails is reported and the next one runs.
+ */
+export async function maintainProductTables(opts: { tenantId?: number } = {}): Promise<ProductMaintenanceResult[]> {
+  if (!isDeltaStorageEnabled()) return [];
+  const rows = await readAcrossTenants(semanticDb, async (trx, tenantId) => {
+    if (opts.tenantId !== undefined && opts.tenantId !== tenantId) return [];
+    const r = await trx('product_tables as pt')
+      .join('star_schemas as ss', 'pt.star_schema_id', 'ss.id')
+      .join('data_products as dp', 'ss.data_product_id', 'dp.id')
+      .where('pt.tenant_id', tenantId)
+      .where('pt.transformation_status', 'success')
+      .whereNotNull('pt.delta_path')
+      .select('pt.delta_path', 'dp.connection_id') as Array<{ delta_path: string; connection_id: number | null }>;
+    return r.map((x) => ({ tenantId, deltaPath: x.delta_path, connectionId: x.connection_id }));
+  });
+
+  const byTenant = new Map<number, string[]>();
+  for (const r of rows) {
+    const list = byTenant.get(r.tenantId) ?? [];
+    if (!list.includes(r.deltaPath)) list.push(r.deltaPath);
+    byTenant.set(r.tenantId, list);
+  }
+
+  const out: ProductMaintenanceResult[] = [];
+  for (const [tenantId, paths] of byTenant) {
+    try {
+      const results = await maintainDeltaTables(paths);
+      const summary: ProductMaintenanceResult = {
+        tenantId,
+        tables: results.length,
+        compacted: results.filter((r) => (r.compact?.numFilesRemoved ?? 0) > 0).length,
+        vacuumedFiles: results.reduce((n, r) => n + (r.vacuum_files_removed ?? 0), 0),
+        skipped: results.filter((r) => r.skipped).length,
+        errors: results.filter((r) => r.error).length,
+        results,
+      };
+      out.push(summary);
+      // Compaction replaces files under a registered view: drop the pooled
+      // sessions keyed under this tenant's warehouse root (the product-layer
+      // session key, see `getProductWarehousePath`) here and in every other
+      // process. No tenantId on the broadcast: the widget/filter caches hold
+      // rows that did not change.
+      const root = warehouseRoot(tenantId);
+      try { await DuckDBConnector.invalidateWarehouse(root); } catch { /* best-effort */ }
+      publishInvalidation({ warehousePath: root });
+      // LOAD-BEARING LOG LINE: `.ops/prod-logs` keys `delta-maintenance` on it.
+      log.info(
+        { tenantId, tables: summary.tables, compacted: summary.compacted, vacuumedFiles: summary.vacuumedFiles, skipped: summary.skipped, errors: summary.errors },
+        'delta maintenance done',
+      );
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      log.error({ tenantId, err: msg }, 'delta maintenance failed for tenant');
+      out.push({ tenantId, tables: paths.length, compacted: 0, vacuumedFiles: 0, skipped: 0, errors: paths.length, results: [] });
+    }
+  }
+  return out;
+}
+
 let maintenanceQueue: Queue<MaintenanceJobData> | null = null;
 let maintenanceWorker: Worker | null = null;
 
@@ -83,6 +167,13 @@ export async function runMaintenance(opts: {
 
   const connections = await connsQuery;
   log.info({ connections: connections.length, triggeredBy: opts.triggeredBy }, 'warehouse maintenance start');
+
+  // Product tables first: this is the sweep every tenant has work for.
+  try {
+    await maintainProductTables({});
+  } catch (err) {
+    log.error({ err: err instanceof Error ? err.message : String(err) }, 'product table maintenance failed');
+  }
 
   const results: ConnectionResult[] = [];
 

@@ -1,552 +1,305 @@
 """
-Unit tests for the SCD1 sidecar's pure functions — hashing + diffing.
+Tests for the Delta writer sidecar.
 
-The sidecar's main() is a thin shell around `add_row_hash` + `diff_states`
-+ `write_deltalake`; the I/O concerns aren't easy to unit-test, but the
-two pure functions are where the bug surface area lives:
-
-  - `hash_row` must be stable across runs and distinguish NULL from ''
-  - `diff_states` must classify rows as unchanged / updated / inserted /
-    deleted correctly when we have a business key
+Two layers: the pure helpers (hashing, coercion, the streaming reader) and
+`main()` driven end to end over real Delta tables on the local filesystem
+(`deltalake` installed — CI's sidecar job pins the same versions as the
+backend image).
 
 Run with:
     cd etl && python -m pytest scd2/test_commit_table.py -v
-
-Or, if pytest isn't installed in the dev venv:
-    pip install pytest
-    python -m pytest scd2/test_commit_table.py -v
 """
 
 from __future__ import annotations
 
+import io
+import json
 import sys
+import uuid
+from contextlib import redirect_stdout
 from pathlib import Path
 
-import pandas as pd
+import pyarrow as pa
+import pyarrow.parquet as pq
+import pytest
 
-# Allow `from commit_table import ...` even when pytest is invoked from a
-# different cwd. The sidecar lives next to this file.
 sys.path.insert(0, str(Path(__file__).parent))
-
-import pyarrow as pa  # noqa: E402
 
 from commit_table import (  # noqa: E402
     HASH_SEP,
-    add_row_hash,
+    NO_BUSINESS_COLUMNS_HASH,
+    ROW_HASH_COL,
+    all_inserted,
     coerce_null_columns_to_string,
+    coerce_table,
     coerce_uuid_columns_to_string,
-    diff_states,
+    coerced_schema,
+    hash_batch,
     hash_row,
+    main,
+    new_state_reader,
     remove_legacy_parquet,
 )
+
+deltalake = pytest.importorskip("deltalake")
+from deltalake import DeltaTable  # noqa: E402
 
 
 # ── hash_row ────────────────────────────────────────────────────────────────
 
 
 def test_hash_row_is_stable() -> None:
-    a = hash_row(["abc", 1, "x"])
-    b = hash_row(["abc", 1, "x"])
-    assert a == b, "same input must produce same hash across calls"
+    assert hash_row(["abc", 1, "x"]) == hash_row(["abc", 1, "x"])
 
 
 def test_hash_row_distinguishes_null_from_empty_string() -> None:
-    # The bug we explicitly designed against: a row of (NULL, x) and a
-    # row of ('', x) must NOT hash to the same value, otherwise an empty
-    # string saved as "we cleared this field" gets diff'd as unchanged.
-    null_hash = hash_row([None, "x"])
-    empty_hash = hash_row(["", "x"])
-    assert null_hash != empty_hash
+    # A row of (NULL, x) and a row of ('', x) must NOT hash alike, or an
+    # emptied field diffs as unchanged.
+    assert hash_row([None, "x"]) != hash_row(["", "x"])
 
 
 def test_hash_row_distinguishes_nan_from_value() -> None:
-    nan_hash = hash_row([float("nan"), "x"])
-    val_hash = hash_row([1.5, "x"])
-    assert nan_hash != val_hash
+    assert hash_row([float("nan"), "x"]) != hash_row([1.5, "x"])
 
 
 def test_hash_row_unit_separator_avoids_concat_collision() -> None:
-    # Without a separator, ('ab', 'cd') and ('abc', 'd') collide.
-    # The unit separator (\x1f) prevents this.
-    a = hash_row(["ab", "cd"])
-    b = hash_row(["abc", "d"])
-    assert a != b
+    assert hash_row(["ab", "cd"]) != hash_row(["abc", "d"])
     assert HASH_SEP == "\x1f"
 
 
-# ── add_row_hash ────────────────────────────────────────────────────────────
+# ── hash_batch ──────────────────────────────────────────────────────────────
 
 
-def test_add_row_hash_handles_empty_dataframe() -> None:
-    df = pd.DataFrame({"id": pd.Series([], dtype="object"), "v": pd.Series([], dtype="object")})
-    out = add_row_hash(df, ["id", "v"])
-    assert "_row_hash" in out.columns
-    assert len(out) == 0
+def test_hash_batch_hashes_present_business_columns_in_declared_order() -> None:
+    batch = pa.record_batch({"a": ["x", "y"], "b": [1, None], "c": [True, False]})
+    hashes = hash_batch(batch, ["b", "a", "missing"]).to_pylist()
+    assert hashes == [hash_row([1, "x"]), hash_row([None, "y"])]
 
 
-def test_add_row_hash_tolerates_missing_columns() -> None:
-    """
-    business_columns may list names the transformation SQL didn't
-    produce. Hash on what's present; don't fail.
-    """
-    df = pd.DataFrame({
-        "id": [1, 2],
-        "v": ["a", "b"],
-    })
-    out = add_row_hash(df, ["id", "v", "phantom_fk", "another_missing"])
-    assert "_row_hash" in out.columns
-    assert len(out) == 2
-    # The hash should match what we'd get with just the present columns.
-    expected = add_row_hash(df, ["id", "v"])
-    assert list(out["_row_hash"]) == list(expected["_row_hash"])
+def test_hash_batch_with_no_present_columns_uses_the_placeholder() -> None:
+    batch = pa.record_batch({"a": ["x", "y"]})
+    assert hash_batch(batch, ["nope"]).to_pylist() == [NO_BUSINESS_COLUMNS_HASH] * 2
 
 
-def test_add_row_hash_zero_present_columns() -> None:
-    """If NO business columns are present, every row gets the same
-    placeholder hash so the refresh still ships."""
-    df = pd.DataFrame({"id": [1, 2, 3]})
-    out = add_row_hash(df, ["all_missing", "also_missing"])
-    assert "_row_hash" in out.columns
-    assert all(h == "no-business-columns" for h in out["_row_hash"])
-
-
-def test_add_row_hash_subset_of_columns() -> None:
-    df = pd.DataFrame({
-        "id": [1, 2, 3],
-        "v": ["a", "b", "c"],
-        "ignore_me": ["X", "Y", "Z"],
-    })
-    out = add_row_hash(df, ["id", "v"])
-    # Same business cols → same hash regardless of ignored cols.
-    df2 = df.copy()
-    df2["ignore_me"] = ["foo", "bar", "baz"]
-    out2 = add_row_hash(df2, ["id", "v"])
-    assert list(out["_row_hash"]) == list(out2["_row_hash"])
-
-
-# ── diff_states ─────────────────────────────────────────────────────────────
-
-
-def _hashed(rows: list[dict[str, object]], biz_cols: list[str]) -> pd.DataFrame:
-    return add_row_hash(pd.DataFrame(rows), biz_cols)
-
-
-def test_diff_no_business_key_treats_all_as_inserted() -> None:
-    new_state = _hashed(
-        [{"id": 1, "v": "a"}, {"id": 2, "v": "b"}],
-        ["id", "v"],
-    )
-    counts = diff_states(pd.DataFrame(), new_state, business_key_columns=[])
-    assert counts == {
-        "rows_unchanged": 0,
-        "rows_updated": 0,
-        "rows_inserted": 2,
-        "rows_deleted": 0,
-        "rows_total": 2,
-    }
-
-
-def test_diff_first_run_all_inserted() -> None:
-    new_state = _hashed(
-        [{"id": 1, "v": "a"}, {"id": 2, "v": "b"}],
-        ["v"],
-    )
-    counts = diff_states(pd.DataFrame(), new_state, ["id"])
-    assert counts["rows_inserted"] == 2
-    assert counts["rows_unchanged"] == 0
-    assert counts["rows_updated"] == 0
-    assert counts["rows_deleted"] == 0
-
-
-def test_diff_classifies_each_state() -> None:
-    biz_cols = ["v"]
-    existing = _hashed(
-        [
-            {"id": 1, "v": "a"},     # will stay → unchanged
-            {"id": 2, "v": "b"},     # will change → updated
-            {"id": 3, "v": "c"},     # will disappear → deleted
-        ],
-        biz_cols,
-    )
-    new_state = _hashed(
-        [
-            {"id": 1, "v": "a"},     # unchanged
-            {"id": 2, "v": "B"},     # updated
-            {"id": 4, "v": "d"},     # inserted
-        ],
-        biz_cols,
-    )
-    counts = diff_states(existing, new_state, ["id"])
-    assert counts == {
-        "rows_unchanged": 1,
-        "rows_updated": 1,
-        "rows_inserted": 1,
-        "rows_deleted": 1,
-        "rows_total": 3,
-    }
-
-
-def test_diff_composite_business_key() -> None:
-    # Business key is two columns; both must match for "unchanged".
-    biz_cols = ["v"]
-    existing = _hashed(
-        [
-            {"tenant_id": 1, "id": 1, "v": "a"},
-            {"tenant_id": 1, "id": 2, "v": "b"},
-            {"tenant_id": 2, "id": 1, "v": "z"},  # different tenant — independent row
-        ],
-        biz_cols,
-    )
-    new_state = _hashed(
-        [
-            {"tenant_id": 1, "id": 1, "v": "a"},
-            {"tenant_id": 1, "id": 2, "v": "b"},
-            {"tenant_id": 2, "id": 1, "v": "Z"},  # value changed for tenant 2
-        ],
-        biz_cols,
-    )
-    counts = diff_states(existing, new_state, ["tenant_id", "id"])
-    assert counts["rows_unchanged"] == 2
-    assert counts["rows_updated"] == 1
-    assert counts["rows_inserted"] == 0
-    assert counts["rows_deleted"] == 0
-
-
-# ── remove_legacy_parquet (local paths only — Azure is best-effort) ────────
-
-
-def test_cleanup_removes_legacy_parquet_when_present(tmp_path) -> None:  # type: ignore[no-untyped-def]
-    delta_dir = tmp_path / "dim_supplier"
-    delta_dir.mkdir()
-    legacy = delta_dir / "data.parquet"
-    legacy.write_bytes(b"legacy content")
-    # A real-Delta data file should NOT be touched.
-    keeper = delta_dir / "part-00000-uuid.parquet"
-    keeper.write_bytes(b"delta data")
-
-    msg = remove_legacy_parquet(str(delta_dir), {})
-    assert msg is not None
-    assert "data.parquet" in msg
-    assert not legacy.exists(), "data.parquet should have been removed"
-    assert keeper.exists(), "non-legacy files must not be touched"
-
-
-def test_cleanup_no_op_when_legacy_missing(tmp_path) -> None:  # type: ignore[no-untyped-def]
-    delta_dir = tmp_path / "dim_supplier"
-    delta_dir.mkdir()
-    msg = remove_legacy_parquet(str(delta_dir), {})
-    assert msg is None
-
-
-def test_cleanup_does_not_raise_on_missing_dir(tmp_path) -> None:  # type: ignore[no-untyped-def]
-    nonexistent = tmp_path / "does_not_exist"
-    # No exception even though path doesn't exist; returns None.
-    msg = remove_legacy_parquet(str(nonexistent), {})
-    assert msg is None
-
-
-def test_cleanup_only_targets_data_parquet(tmp_path) -> None:  # type: ignore[no-untyped-def]
-    """The cleanup is deliberately narrow — only `data.parquet`, never anything else."""
-    delta_dir = tmp_path / "dim_supplier"
-    delta_dir.mkdir()
-    other_files = [
-        delta_dir / "schema.json",
-        delta_dir / "metadata.parquet",
-        delta_dir / "data.csv",
-        delta_dir / "_delta_log",
-    ]
-    for f in other_files[:-1]:
-        f.write_bytes(b"x")
-    other_files[-1].mkdir()
-
-    msg = remove_legacy_parquet(str(delta_dir), {})
-    assert msg is None
-    for f in other_files[:-1]:
-        assert f.exists(), f"{f.name} must not be removed"
-    assert other_files[-1].is_dir(), "_delta_log must not be removed"
-
-
-# ── coerce_null_columns_to_string ──────────────────────────────────────────
+# ── coercion ────────────────────────────────────────────────────────────────
 
 
 def test_coerce_null_column_to_string() -> None:
-    """An all-NULL column would fail Delta's schema check otherwise."""
-    table = pa.table({
-        "id": pa.array([1, 2, 3], type=pa.int64()),
-        "all_null": pa.array([None, None, None], type=pa.null()),
-        "name": pa.array(["a", "b", "c"], type=pa.string()),
-    })
-    out = coerce_null_columns_to_string(table)
-    assert out.schema.field("all_null").type == pa.string()
-    assert out.schema.field("id").type == pa.int64()  # untouched
-    assert out.schema.field("name").type == pa.string()  # untouched
-    # Values stay null.
-    assert out.column("all_null").to_pylist() == [None, None, None]
+    t = pa.table({"id": [1, 2], "always_null": pa.array([None, None], type=pa.null())})
+    out = coerce_null_columns_to_string(t)
+    assert out.schema.field("always_null").type == pa.string()
+    assert out.column("always_null").to_pylist() == [None, None]
+    assert out.column("id").to_pylist() == [1, 2]
 
 
-def test_coerce_no_op_when_no_null_columns() -> None:
-    table = pa.table({
-        "id": pa.array([1, 2], type=pa.int64()),
-        "name": pa.array(["a", "b"], type=pa.string()),
-    })
-    out = coerce_null_columns_to_string(table)
-    # Identical schema; same object is fine but not required.
-    assert out.schema == table.schema
+def test_coerce_no_op_when_nothing_to_coerce() -> None:
+    t = pa.table({"id": [1, 2], "name": ["a", "b"]})
+    assert coerce_table(t) is t
 
 
 def test_coerce_uuid_column_to_string() -> None:
-    """fixed_size_binary[16] → STRING (UUID hex). Solves the BLOB-vs-UUID
-    JOIN failure when DuckDB delta_scan reads back binary columns."""
-    uuid_bytes = [
-        bytes.fromhex("12345678123456781234567812345678"),
-        bytes.fromhex("aabbccddaabbccddaabbccddaabbccdd"),
-    ]
-    table = pa.table({
-        "id": pa.array([1, 2], type=pa.int64()),
-        "account_id": pa.array(uuid_bytes, type=pa.binary(16)),
+    u1, u2 = uuid.uuid4(), uuid.uuid4()
+    t = pa.table({"k": pa.array([u1.bytes, u2.bytes], type=pa.binary(16)), "v": [1, 2]})
+    out = coerce_uuid_columns_to_string(t)
+    assert out.schema.field("k").type == pa.string()
+    assert out.column("k").to_pylist() == [str(u1), str(u2)]
+
+
+def test_coerce_uuid_handles_nulls_and_leaves_other_binary_alone() -> None:
+    u = uuid.uuid4()
+    t = pa.table({
+        "k": pa.array([u.bytes, None], type=pa.binary(16)),
+        "raw8": pa.array([b"12345678", b"abcdefgh"], type=pa.binary(8)),
+        "blob": pa.array([b"x", b"yy"], type=pa.binary()),
     })
-    out = coerce_uuid_columns_to_string(table)
-    assert out.schema.field("account_id").type == pa.string()
-    assert out.schema.field("id").type == pa.int64()  # untouched
-    vals = out.column("account_id").to_pylist()
-    # UUID-hex format: 8-4-4-4-12 with dashes.
-    assert vals[0] == "12345678-1234-5678-1234-567812345678"
-    assert vals[1] == "aabbccdd-aabb-ccdd-aabb-ccddaabbccdd"
+    out = coerce_table(t)
+    assert out.column("k").to_pylist() == [str(u), None]
+    assert out.schema.field("raw8").type == pa.binary(8)
+    assert out.schema.field("blob").type == pa.binary()
 
 
-def test_coerce_uuid_no_op_when_no_uuid_columns() -> None:
-    table = pa.table({
-        "id": pa.array([1, 2], type=pa.int64()),
-        "name": pa.array(["a", "b"], type=pa.string()),
-        # Variable binary is left alone — only fixed[16] is converted.
-        "blob_data": pa.array([b"x", b"yy"], type=pa.binary()),
-    })
-    out = coerce_uuid_columns_to_string(table)
-    assert out.schema == table.schema
+def test_coerced_schema_keeps_metadata_and_order() -> None:
+    s = pa.schema([pa.field("n", pa.null()), pa.field("x", pa.int64())], metadata={b"k": b"v"})
+    out = coerced_schema(s)
+    assert out.names == ["n", "x"] and out.field("n").type == pa.string() and out.metadata == {b"k": b"v"}
 
 
-def test_coerce_uuid_handles_nulls() -> None:
-    table = pa.table({
-        "account_id": pa.array(
-            [bytes.fromhex("12345678123456781234567812345678"), None],
-            type=pa.binary(16),
-        ),
-    })
-    out = coerce_uuid_columns_to_string(table)
-    vals = out.column("account_id").to_pylist()
-    assert vals[0] == "12345678-1234-5678-1234-567812345678"
-    assert vals[1] is None
+# ── streaming reader ────────────────────────────────────────────────────────
 
 
-def test_coerce_uuid_only_targets_16_byte_fixed_binary() -> None:
-    """Other fixed sizes (e.g. 8-byte, 32-byte) must not be touched."""
-    table = pa.table({
-        "eight_byte": pa.array([b"01234567", b"abcdefgh"], type=pa.binary(8)),
-        "uuid": pa.array([b"\x00" * 16, b"\xff" * 16], type=pa.binary(16)),
-    })
-    out = coerce_uuid_columns_to_string(table)
-    assert out.schema.field("eight_byte").type == pa.binary(8)  # untouched
-    assert out.schema.field("uuid").type == pa.string()
+def _write_parquet(path: Path, table: pa.Table, row_group_size: int = 2) -> str:
+    pq.write_table(table, path, row_group_size=row_group_size)
+    return str(path)
 
 
-def test_coerce_handles_multiple_null_columns() -> None:
-    table = pa.table({
-        "id": pa.array([1], type=pa.int64()),
-        "a": pa.array([None], type=pa.null()),
-        "b": pa.array([None], type=pa.null()),
-    })
-    out = coerce_null_columns_to_string(table)
-    assert out.schema.field("a").type == pa.string()
-    assert out.schema.field("b").type == pa.string()
+def test_reader_streams_row_groups_and_keeps_a_supplied_hash(tmp_path: Path) -> None:
+    t = pa.table({"id": [1, 2, 3, 4, 5], "v": ["a", "b", "c", "d", "e"], ROW_HASH_COL: ["h1", "h2", "h3", "h4", "h5"]})
+    p = _write_parquet(tmp_path / "n.parquet", t, row_group_size=2)
+    r = new_state_reader(p, ["v"])
+    batches = list(r)
+    assert sum(b.num_rows for b in batches) == 5
+    assert len(batches) >= 3  # one per row group at least
+    assert pa.Table.from_batches(batches).column(ROW_HASH_COL).to_pylist() == ["h1", "h2", "h3", "h4", "h5"]
 
 
-# ── BK validation in diff_states ────────────────────────────────────────────
+def test_reader_computes_the_hash_only_when_node_did_not(tmp_path: Path) -> None:
+    t = pa.table({"id": [1, 2], "v": ["a", None]})
+    p = _write_parquet(tmp_path / "n.parquet", t)
+    r = new_state_reader(p, ["v", "id"])
+    assert r.schema.names == ["id", "v", ROW_HASH_COL]
+    out = r.read_all()
+    assert out.column(ROW_HASH_COL).to_pylist() == [hash_row(["a", 1]), hash_row([None, 2])]
 
 
-def test_diff_filters_missing_bks_and_proceeds() -> None:
-    """
-    A BK tagged in product_columns but not produced by the transformation
-    SQL should not fail the refresh — diff falls back to the BKs that ARE
-    present, with a stderr warning. The chart still tells a useful story.
-    """
-    biz_cols = ["v"]
-    existing = _hashed([{"id": 1, "v": "a"}, {"id": 2, "v": "b"}], biz_cols)
-    new_state = _hashed(
-        [{"id": 1, "v": "a"}, {"id": 2, "v": "B"}, {"id": 3, "v": "c"}],
-        biz_cols,
-    )
-    # 'phantom_fk' is tagged as a BK but doesn't exist in either side.
-    counts = diff_states(existing, new_state, ["id", "phantom_fk"])
-    # Diff still ran on `id` only.
-    assert counts["rows_unchanged"] == 1
-    assert counts["rows_updated"] == 1
-    assert counts["rows_inserted"] == 1
-    assert counts["rows_deleted"] == 0
+def test_reader_applies_coercions_per_batch(tmp_path: Path) -> None:
+    u = uuid.uuid4()
+    t = pa.table({"k": pa.array([u.bytes], type=pa.binary(16)), "n": pa.array([None], type=pa.null()), ROW_HASH_COL: ["h"]})
+    p = _write_parquet(tmp_path / "n.parquet", t)
+    r = new_state_reader(p, [])
+    assert r.schema.field("k").type == pa.string() and r.schema.field("n").type == pa.string()
+    out = r.read_all()
+    assert out.column("k").to_pylist() == [str(u)] and out.column("n").to_pylist() == [None]
 
 
-def test_diff_zero_usable_bks_falls_back_to_all_inserted() -> None:
-    """
-    Edge case: every BK is missing. The diff would be meaningless, so
-    we degrade to "all inserted" (the same answer as no-BK-declared).
-    """
-    biz_cols = ["v"]
-    existing = _hashed([{"id": 1, "v": "a"}], biz_cols)
-    new_state = _hashed([{"id": 1, "v": "a"}, {"id": 2, "v": "b"}], biz_cols)
-    counts = diff_states(existing, new_state, ["totally_missing"])
-    assert counts == {
-        "rows_unchanged": 0,
-        "rows_updated": 0,
-        "rows_inserted": 2,
-        "rows_deleted": 0,
-        "rows_total": 2,
-    }
+# ── legacy cleanup ──────────────────────────────────────────────────────────
 
 
-def test_diff_handles_resurrected_row() -> None:
-    # A BK that was previously not present and now reappears is "inserted"
-    # under SCD1 (we don't have history yet to call it "resurrected"). The
-    # SCD2 backlog covers the proper handling — this test pins the SCD1
-    # behaviour so it's clear when SCD2 lands.
-    biz_cols = ["v"]
-    existing = _hashed([{"id": 1, "v": "a"}], biz_cols)
-    new_state = _hashed(
-        [
-            {"id": 1, "v": "a"},
-            {"id": 2, "v": "b"},
-        ],
-        biz_cols,
-    )
-    counts = diff_states(existing, new_state, ["id"])
-    assert counts["rows_inserted"] == 1
-    assert counts["rows_unchanged"] == 1
+def test_cleanup_removes_legacy_parquet_when_present(tmp_path: Path) -> None:
+    (tmp_path / "data.parquet").write_bytes(b"legacy")
+    (tmp_path / "part-0.parquet").write_bytes(b"delta data file")
+    assert remove_legacy_parquet(str(tmp_path), {}) is not None
+    assert not (tmp_path / "data.parquet").exists()
+    assert (tmp_path / "part-0.parquet").exists()
 
 
-# ── Zero-row materialisation (end-to-end through main) ─────────────────────
-#
-# delta-rs refuses a write with no record batches ("No data source supplied
-# to write command") — the production failure mode for an AI-designed fact
-# whose source entities synced no rows. These tests drive main() with a real
-# local Delta path and pin that an empty result MATERIALISES instead of
-# failing: first run creates the table from the schema; a refresh that goes
-# empty deletes every row as a new Delta version.
-
-import io  # noqa: E402
-import json  # noqa: E402
-
-import pytest  # noqa: E402
-
-deltalake = pytest.importorskip("deltalake")
+def test_cleanup_no_op_when_legacy_missing(tmp_path: Path) -> None:
+    assert remove_legacy_parquet(str(tmp_path), {}) is None
 
 
-def _run_main(monkeypatch, capsys, cfg: dict) -> dict:  # type: ignore[no-untyped-def]
-    from commit_table import main
-
-    monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(cfg)))
-    exit_code = main()
-    assert exit_code == 0
-    return json.loads(capsys.readouterr().out)
+def test_cleanup_does_not_raise_on_missing_dir(tmp_path: Path) -> None:
+    assert remove_legacy_parquet(str(tmp_path / "nope"), {}) is None
 
 
-def _write_parquet(path, rows: list[dict]) -> None:  # type: ignore[no-untyped-def]
-    schema = pa.schema([("id", pa.int64()), ("v", pa.string())])
-    if rows:
-        table = pa.Table.from_pylist(rows, schema=schema)
-    else:
-        table = pa.Table.from_arrays(
-            [pa.array([], type=pa.int64()), pa.array([], type=pa.string())],
-            schema=schema,
-        )
-    import pyarrow.parquet as pq
-
-    pq.write_table(table, path)
+# ── main() end to end over real Delta tables ────────────────────────────────
 
 
-def test_zero_row_first_run_creates_empty_table(tmp_path, monkeypatch, capsys) -> None:  # type: ignore[no-untyped-def]
-    parquet = tmp_path / "new_state.parquet"
-    delta = tmp_path / "delta_table"
-    _write_parquet(parquet, [])
-
-    result = _run_main(monkeypatch, capsys, {
-        "delta_path": str(delta),
-        "new_state_parquet": str(parquet),
-        "business_key_columns": ["id"],
-        "business_columns": ["id", "v"],
-    })
-
-    assert result["status"] == "ok"
-    assert result["first_run"] is True
-    assert result["rows_total"] == 0
-    assert result["rows_inserted"] == 0
-
-    dt = deltalake.DeltaTable(str(delta))
-    loaded = dt.to_pyarrow_table()
-    assert loaded.num_rows == 0
-    assert set(loaded.schema.names) == {"id", "v", "_row_hash"}
+def _run(cfg: dict) -> dict:
+    stdin = io.StringIO(json.dumps(cfg))
+    out = io.StringIO()
+    old = sys.stdin
+    sys.stdin = stdin
+    try:
+        with redirect_stdout(out):
+            code = main()
+    finally:
+        sys.stdin = old
+    assert code == 0, out.getvalue()
+    return json.loads(out.getvalue())
 
 
-def _seed_two_rows(tmp_path, monkeypatch, capsys):  # type: ignore[no-untyped-def]
-    delta = tmp_path / "delta_table"
-    seed = tmp_path / "seed.parquet"
-    _write_parquet(seed, [{"id": 1, "v": "a"}, {"id": 2, "v": "b"}])
-    seeded = _run_main(monkeypatch, capsys, {
-        "delta_path": str(delta),
-        "new_state_parquet": str(seed),
-        "business_key_columns": ["id"],
-        "business_columns": ["id", "v"],
-    })
-    assert seeded["rows_inserted"] == 2
-    empty = tmp_path / "empty.parquet"
-    _write_parquet(empty, [])
-    return delta, empty
+def _state(tmp_path: Path, name: str, rows: dict) -> str:
+    t = pa.table(rows)
+    if ROW_HASH_COL not in t.column_names:
+        t = t.append_column(ROW_HASH_COL, pa.array([hash_row([t.column(c)[i].as_py() for c in t.column_names]) for i in range(t.num_rows)], pa.string()))
+    return _write_parquet(tmp_path / name, t, row_group_size=2)
 
 
-def test_zero_row_refresh_preserves_existing_rows(tmp_path, monkeypatch, capsys) -> None:  # type: ignore[no-untyped-def]
-    """A transformation that returns nothing must not empty a topic.
-
-    Until 2026-09-09 this branch was an unconditional delete, so a source that
-    answered empty for one run (or a WHERE narrowed by a column the AI repair
-    had cut out) wiped the table and every dashboard on it read zero. The
-    source writers have always preserved an existing file on a zero-row
-    batch; this makes the product writer keep the same contract.
-    """
-    delta, empty = _seed_two_rows(tmp_path, monkeypatch, capsys)
-
-    result = _run_main(monkeypatch, capsys, {
-        "delta_path": str(delta),
-        "new_state_parquet": str(empty),
-        "business_key_columns": ["id"],
-        "business_columns": ["id", "v"],
-    })
-
-    assert result["status"] == "ok"
-    assert result["first_run"] is False
-    assert result["preserved_existing"] is True
-    # Counts describe what the table HOLDS, so the catalog stays truthful.
-    assert result["rows_total"] == 2
-    assert result["rows_unchanged"] == 2
-    assert result["rows_deleted"] == 0
-
-    dt = deltalake.DeltaTable(str(delta))
-    assert dt.to_pyarrow_table().num_rows == 2
+def _read(delta_path: str) -> pa.Table:
+    return DeltaTable(delta_path).to_pyarrow_table().sort_by("id")
 
 
-def test_zero_row_refresh_with_allow_empty_deletes_existing_rows(tmp_path, monkeypatch, capsys) -> None:  # type: ignore[no-untyped-def]
-    """Emptying on purpose stays possible — through an explicit flag, never
-    inferred from an empty result (the source writers' `replace: true`)."""
-    delta, empty = _seed_two_rows(tmp_path, monkeypatch, capsys)
+def test_first_run_creates_the_table_streams_every_row_and_cleans_legacy(tmp_path: Path) -> None:
+    table = tmp_path / "dim_x"
+    table.mkdir()
+    (table / "data.parquet").write_bytes(b"legacy")
+    p = _state(tmp_path, "s1.parquet", {"id": [1, 2, 3], "v": ["a", "b", "c"]})
+    r = _run({"delta_path": str(table), "new_state_parquet": p, "business_key_columns": ["id"], "business_columns": ["id", "v"], "mode": "scd1"})
+    assert r["status"] == "ok" and r["first_run"] is True and r["write_mode"] == "overwrite"
+    assert r["rows_inserted"] == 3 and r["rows_total"] == 3 and r["rows_updated"] == 0
+    assert r["legacy_cleanup"] and not (table / "data.parquet").exists()
+    out = _read(str(table))
+    assert out.column("v").to_pylist() == ["a", "b", "c"]
+    assert ROW_HASH_COL in out.column_names
+    assert DeltaTable(str(table)).metadata().configuration.get("delta.targetFileSize")
 
-    result = _run_main(monkeypatch, capsys, {
-        "delta_path": str(delta),
-        "new_state_parquet": str(empty),
-        "business_key_columns": ["id"],
-        "business_columns": ["id", "v"],
-        "allow_empty": True,
-    })
 
-    assert result["status"] == "ok"
-    assert "preserved_existing" not in result
-    assert result["rows_total"] == 0
-    assert result["rows_deleted"] == 2
+def test_refresh_overwrites_and_reports_the_counts_node_measured(tmp_path: Path) -> None:
+    table = tmp_path / "dim_x"
+    _run({"delta_path": str(table), "new_state_parquet": _state(tmp_path, "s1.parquet", {"id": [1, 2, 3], "v": ["a", "b", "c"]}), "business_columns": ["id", "v"], "mode": "scd1"})
+    counts = {"rows_unchanged": 1, "rows_updated": 1, "rows_inserted": 1, "rows_deleted": 1, "rows_total": 3}
+    r = _run({"delta_path": str(table), "new_state_parquet": _state(tmp_path, "s2.parquet", {"id": [1, 2, 4], "v": ["a", "B", "d"]}), "business_columns": ["id", "v"], "mode": "scd1", "counts": counts})
+    assert r["status"] == "ok" and r["first_run"] is False and r["write_mode"] == "overwrite"
+    assert {k: r[k] for k in counts} == counts and r["counts_measured"] is True
+    assert _read(str(table)).column("v").to_pylist() == ["a", "B", "d"]
+    assert DeltaTable(str(table)).version() == 1
 
-    dt = deltalake.DeltaTable(str(delta))
+
+def test_refresh_without_counts_reports_all_inserted(tmp_path: Path) -> None:
+    table = tmp_path / "dim_x"
+    _run({"delta_path": str(table), "new_state_parquet": _state(tmp_path, "s1.parquet", {"id": [1], "v": ["a"]}), "business_columns": ["id", "v"], "mode": "scd1"})
+    r = _run({"delta_path": str(table), "new_state_parquet": _state(tmp_path, "s2.parquet", {"id": [1, 2], "v": ["a", "b"]}), "business_columns": ["id", "v"], "mode": "scd1"})
+    assert r["counts_measured"] is False
+    assert {k: r[k] for k in all_inserted(2)} == all_inserted(2)
+
+
+def test_refresh_with_a_new_column_widens_the_schema(tmp_path: Path) -> None:
+    table = tmp_path / "dim_x"
+    _run({"delta_path": str(table), "new_state_parquet": _state(tmp_path, "s1.parquet", {"id": [1], "v": ["a"]}), "business_columns": ["id", "v"], "mode": "scd1"})
+    r = _run({"delta_path": str(table), "new_state_parquet": _state(tmp_path, "s2.parquet", {"id": [1], "v": ["a"], "w": [2.5]}), "business_columns": ["id", "v", "w"], "mode": "scd1"})
+    assert r["status"] == "ok"
+    assert "w" in _read(str(table)).column_names
+
+
+def test_zero_row_first_run_creates_an_empty_table_with_the_schema(tmp_path: Path) -> None:
+    table = tmp_path / "fact_x"
+    p = _write_parquet(tmp_path / "empty.parquet", pa.table({"id": pa.array([], pa.int64()), "v": pa.array([], pa.string())}))
+    r = _run({"delta_path": str(table), "new_state_parquet": p, "business_columns": ["id", "v"], "mode": "scd1"})
+    assert r["status"] == "ok" and r["first_run"] is True and r["rows_total"] == 0
+    dt = DeltaTable(str(table))
     assert dt.to_pyarrow_table().num_rows == 0
+    assert set(dt.schema().to_arrow().names) >= {"id", "v", ROW_HASH_COL}
+
+
+def test_zero_row_refresh_preserves_existing_rows(tmp_path: Path) -> None:
+    table = tmp_path / "fact_x"
+    _run({"delta_path": str(table), "new_state_parquet": _state(tmp_path, "s1.parquet", {"id": [1, 2], "v": ["a", "b"]}), "business_columns": ["id", "v"], "mode": "scd1"})
+    p = _write_parquet(tmp_path / "empty.parquet", pa.table({"id": pa.array([], pa.int64()), "v": pa.array([], pa.string()), ROW_HASH_COL: pa.array([], pa.string())}))
+    r = _run({"delta_path": str(table), "new_state_parquet": p, "business_columns": ["id", "v"], "mode": "scd1"})
+    assert r["status"] == "ok" and r["preserved_existing"] is True and r["write_mode"] == "preserved"
+    assert r["rows_total"] == 2 and r["rows_unchanged"] == 2
+    assert _read(str(table)).num_rows == 2
+    assert DeltaTable(str(table)).version() == 0, "preserving must not commit a new version"
+
+
+def test_zero_row_refresh_with_allow_empty_deletes_existing_rows(tmp_path: Path) -> None:
+    table = tmp_path / "fact_x"
+    _run({"delta_path": str(table), "new_state_parquet": _state(tmp_path, "s1.parquet", {"id": [1, 2], "v": ["a", "b"]}), "business_columns": ["id", "v"], "mode": "scd1"})
+    p = _write_parquet(tmp_path / "empty.parquet", pa.table({"id": pa.array([], pa.int64()), "v": pa.array([], pa.string()), ROW_HASH_COL: pa.array([], pa.string())}))
+    r = _run({"delta_path": str(table), "new_state_parquet": p, "business_columns": ["id", "v"], "mode": "scd1", "allow_empty": True})
+    assert r["status"] == "ok" and r["write_mode"] == "emptied" and r["rows_deleted"] == 2 and r["rows_total"] == 0
+    assert _read(str(table)).num_rows == 0
+
+
+def test_unknown_mode_is_refused_loudly() -> None:
+    r = _run({"mode": "scd2", "delta_path": "x", "new_state_parquet": "y", "business_columns": []})
+    assert r["status"] == "failed" and "scd2" in r["error"]
+
+
+def test_maintain_compacts_and_vacuums_and_skips_non_delta_paths(tmp_path: Path) -> None:
+    table = tmp_path / "dim_x"
+    for i in range(3):
+        # three commits → three small files → compaction has work to do
+        _run({"delta_path": str(table), "new_state_parquet": _state(tmp_path, f"s{i}.parquet", {"id": [i, i + 10], "v": ["a", "b"]}), "business_columns": ["id", "v"], "mode": "scd1"})
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    (plain / "data.parquet").write_bytes(b"not delta")
+    r = _run({"mode": "maintain", "delta_paths": [str(table), str(plain), str(tmp_path / "missing")], "retention_hours": 168})
+    assert r["status"] == "ok"
+    by_path = {e["delta_path"]: e for e in r["results"]}
+    assert "skipped" in by_path[str(plain)] and "skipped" in by_path[str(tmp_path / "missing")]
+    t = by_path[str(table)]
+    assert "error" not in t
+    assert t["compact"]["totalConsideredFiles"] >= 1
+    # Every superseded file is younger than the retention window: nothing may go.
+    assert t["vacuum_files_removed"] == 0
+    assert _read(str(table)).column("id").to_pylist() == [2, 12]

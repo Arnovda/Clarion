@@ -119,6 +119,14 @@
 #                     data: reconcile again before trusting those tables.
 #   sync-failed       `'sync run failed'` — the same string clarion-failed-syncs
 #                     alerts on, covering failed AND partial runs.
+#   delta-write       POSITIVE. `'delta write complete'` — the topic sidecar
+#                     rewritten on 2026-09-10 (streaming, no pandas, counts from
+#                     DuckDB) committed a Delta version. Its absence over a
+#                     window with topic refreshes means the OLD sidecar still
+#                     runs. Read `writeMode` and `countsMeasured`.
+#   delta-maintenance `'delta maintenance done'` — the weekly compaction +
+#                     vacuum over one tenant's topic tables (added the same day;
+#                     nothing ever did either before). `-failed` is its BAD twin.
 #   source-stale      the hourly freshness sweep (wave B 7-1) finding a source
 #                     whose schedule says data should have landed and it has
 #                     not. Added 2026-09-10 because it is the ONE signal that
