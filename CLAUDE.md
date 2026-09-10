@@ -31,7 +31,107 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-09-10 (INGESTION-CHAIN PHASE 1 IN PRODUCTION + PHASE 2,
+**Last updated:** 2026-09-10 (INGESTION-CHAIN PHASE 2 IN PRODUCTION + THE
+FIREWALL HAS NO BYPASS AND ITS SIGNALS ARE READABLE — owner: *"I follow your
+recommendations for the next slice, but make sure it's the best maintainable
+and professional and secure"*. PR #132 rebase-merged to main (`de0751c`);
+deploy run #592 built backend/frontend/worker, **`migrate-sql` applied
+migration 99 (`Batch 57 run: 1 migrations`)**, Go live health-checked the new
+backend and shifted traffic. **B1, the DuckLake format switch, is deliberately
+NOT started** — it waits on the four phase-2 signals coming back clean from a
+real sync, which is exactly what the second half of this slice makes possible.)
+
+**Phase 2 shipped a read firewall and then this slice found two ways past it.
+Both are closed by construction, and the signals that were supposed to prove
+phase 2 works could not have matched a single line.**
+- **(A1) `createScanView`'s OWN GLOB FALLBACKS BYPASSED THE FIREWALL.**
+  `parquetSelect` hides tombstoned rows and the two `_clarion_*` columns —
+  but only on the `data.parquet` and bare-file branches. The two
+  `*.parquet` fallbacks (local, and the last Azure attempt) registered
+  `SELECT * FROM read_parquet('<dir>/*.parquet')` raw, so any table written
+  under a multi-part or non-`data.parquet` layout served its deleted rows
+  and its technical columns to every prompt, profile, notebook and
+  transformation. Nothing errors in that state: the query runs, the
+  dashboard renders, the number is wrong. Both now go through
+  `parquetSelect`. Pinned by a test that writes **two** part files — a fix
+  that quietly narrowed the view to one file would pass a single-part test
+  while losing rows — and **verified RED** against the old code.
+- **(A2) THE dbt ENGINE CANNOT HONOUR THE FIREWALL, SO IT REFUSES TO RUN.**
+  `dbtProjectBuilder` registers every SOURCE table in an on-run-start hook
+  as raw `delta_scan(...)` / `read_parquet(.../data.parquet)`. That SQL
+  executes inside dbt's own DuckDB process, so it cannot call
+  `parquetSelect` — a product built through that path would carry deleted
+  rows into facts and dimensions. `USE_DBT_TRANSFORMATIONS=true` now
+  **throws before any work**, naming the flag and the file the rule lives
+  in; the dispatch block (and its dynamic `import('./dbtRunner')`) is
+  deleted, so there is no second door. Safe because the flag is `false` in
+  `.env.example` and set NOWHERE in `infra/`, `.github/` or `.ops/` —
+  verified, not assumed — and the assessment §3.4 already records the path
+  as dead. Reviving it means teaching the hook builder the firewall first.
+- **(A3) TWELFTH RATCHET `lint-warehouse-scan`** (in lint.yml): in
+  `backend/src`, a warehouse table is scanned through `createScanView`,
+  never through a bare `read_parquet`/`delta_scan`/`parquet_scan`. Three
+  files are allowlisted WITH THEIR REASONS — `transformationRunner` reads
+  the product table's own freshly written output (the merge must see every
+  row it is merging), `dbtProjectBuilder` is allowlisted as UNREACHABLE
+  rather than safe, and `views.ts` holds the rule itself. **`views.ts` gets
+  a tighter rule than the allowlist**, because the bug lived INSIDE it: at
+  most ONE `read_parquet(` may appear there, the one in `parquetSelect`. A
+  whole-file exemption would have let the fix be undone. It strips comments
+  with a string-aware walk (the first version reported five prose mentions
+  of the rule as breaches of it), refuses an empty scan, reports STALE
+  allowlist entries, and was **verified RED three ways**: the restored glob
+  bypass, a second `read_parquet` in `views.ts`, and a new raw scan in a
+  route. NOT applied to `packages/connectors` — that is the WRITER, and its
+  merge/finalise/reconcile must see tombstones.
+- **(B) `.ops/prod-logs` COULD NOT SEE THE SYNC WORKER, so three of the four
+  phase-2 signals CLAUDE.md told the next person to watch could never have
+  matched.** The reader filtered `ContainerAppName_s in (<backend>,
+  <jobs-worker>)`; the sync worker is a Container Apps **JOB**, whose rows
+  carry the execution name in `ContainerGroupName_s`. And the orchestrator
+  relays worker lines only into a 10 KB `logExcerpt` on the run row
+  (`SyncOrchestrator.ts:643`) — they never pass through the API's pino
+  logger, so there was no second path either. **Third time this same
+  failure has been made in this one file** (see `server-error` matching
+  `'request error'`, and the overnight investigation). Fixed: one shared
+  `SCOPE` fragment used by BOTH the volume and signature queries (two
+  copies would drift, and a denominator measured over a different set than
+  the findings is worse than none), matching the job on its name prefix and
+  folding every execution back onto one bucket. **Five signatures added,
+  each string read off its emitting line rather than recalled**:
+  `sync-complete` (`'sync complete'` — the POSITIVE denominator; its
+  absence now prints a finding of its own, because a budget stop and a
+  tombstone count can only be absent when nothing ran), `sync-budget-stop`,
+  `sync-continuation`, `sync-tombstoned` (`'full re-sync finalised'` or any
+  line carrying a `"tombstoned"` field, so reconcile counts too) and
+  `sync-failed`. Each carries an interpretation naming what a big number
+  means, not just that it appeared. The report rendering was dry-run over
+  synthetic output including a leading-dash excerpt.
+- **NOT done, deliberately**: B1 (the DuckLake writer) — still blocked on
+  the two owner decisions the PoC surfaced (the sync worker holds no
+  database credentials by design while DuckLake's catalogue lives in
+  Postgres; DuckLake's catalogue tables are not tenant-scoped), and now
+  additionally on reading the four signals above from a real sync. The dbt
+  engine is refused, not repaired. `dbtProjectBuilder`,
+  `dbtRunner` and the two dbt scripts stay on disk untouched.
+- Validation: backend `tsc` clean, full backend vitest **91 files / 865
+  passed / 4 skipped** (was 90/860; NEW `tests/ingestion-firewall.test.ts`,
+  4); connectors `tsc` clean; **all TWELVE ratchets green from the repo
+  root** — dynamic-import baseline LOWERED 74→73 per the covenant (the dbt
+  dispatch's lazy import is gone); `lint.yml` and `prod-logs.yml` parse.
+  Frontend and worker untouched (`git status`).
+- **THE FOUR THINGS TO READ AFTER THIS MERGES**, in order: the
+  `.ops/prod-logs` run this push triggers (its edit is what fires the
+  workflow) — the volume table must now show a `*-sync-worker` line, and
+  `sync-complete` must appear with `mode: merge:…` on the largest EO
+  entity; then the first `sync-budget-stop` followed by
+  `sync-continuation`; then the first `sync-tombstoned` count, read against
+  its `rowsTotal` (a large tombstone count beside a small total means the
+  source returned less than it holds and the firewall is now hiding real
+  data — reconcile again before trusting those tables). Only once those
+  read clean is B1 worth starting.
+
+**Prior last updated:** 2026-09-10 (INGESTION-CHAIN PHASE 1 IN PRODUCTION + PHASE 2,
 FIRST SLICE, BUILT — owner: *"Pls proceed"*. PR #131 rebase-merged to main
 (`5720e10`); deploy run #591 built all images, **`migrate-sql` applied
 migration 98**, Go live health-checked the new backend and shifted traffic

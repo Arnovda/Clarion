@@ -481,21 +481,31 @@ export async function runProductTransformation(
   tables: TableRow[],
   tenantId?: number,
 ): Promise<TransformResult[]> {
-  // Feature flag: route through the new dbt-duckdb engine instead.
-  // Phase 1 default: OFF. Set USE_DBT_TRANSFORMATIONS=true to opt a backend
-  // instance into the dbt path for every transformation run.
-  // See docs/rfc-001-dbt-transformations.md.
-  if (process.env.USE_DBT_TRANSFORMATIONS === 'true' && tenantId) {
-    const { runProductTransformationDbt } = await import('./dbtRunner');
-    const dbtResults = await runProductTransformationDbt(product, tables, tenantId);
-    // Map DbtTransformResult to the legacy TransformResult shape so callers
-    // are unaffected by the engine swap.
-    return dbtResults.map((r) => ({
-      table_name: r.table_name,
-      status: r.status,
-      row_count: r.row_count,
-      error: r.error,
-    }));
+  // Feature flag: route through the dbt-duckdb engine instead.
+  //
+  // REFUSED SINCE 2026-09-10, and the refusal is the point. `dbtProjectBuilder`
+  // registers every SOURCE table in a dbt on-run-start hook with a raw
+  // `delta_scan(...)` / `read_parquet(.../data.parquet)`. Those strings run
+  // inside dbt's own DuckDB process, so they cannot go through
+  // `createScanView` — which means they bypass the soft-delete firewall that
+  // ingestion phase 2 (B2) put on every read: a table built through this path
+  // would carry rows the source has DELETED, plus the two `_clarion_*`
+  // technical columns, into facts, dimensions, dashboards and prompts. Wrong
+  // numbers, silently, on the surface people trust most.
+  //
+  // Turning the flag on has never happened (it is `false` in .env.example and
+  // set nowhere in infra/, .github/ or .ops/), and the assessment records the
+  // path as dead. So this refuses loudly instead of half-fixing a dead engine.
+  // To revive it, teach the hook builder the firewall first — the rule lives
+  // in `parquetSelect` (backend/src/services/warehouse/views.ts) — then delete
+  // this guard. Pinned by tests/ingestion-firewall.test.ts.
+  if (process.env.USE_DBT_TRANSFORMATIONS === 'true') {
+    throw new Error(
+      'USE_DBT_TRANSFORMATIONS is set, but the dbt path cannot honour the soft-delete ' +
+      'firewall: its source views scan Delta/Parquet directly, so deleted rows and the ' +
+      '_clarion_* technical columns would reach product tables. Unset the flag. See ' +
+      'backend/src/services/warehouse/views.ts (parquetSelect).',
+    );
   }
 
   const runStart = Date.now();

@@ -71,13 +71,55 @@
 #                     clicks — not to a broken page. A RUN of these is the
 #                     signal; one is a bad night.
 #
-# The four above were added 2026-09-08 because CLAUDE.md had been telling the
-# next person to "watch .ops/prod-logs for 'overnight investigation complete'"
-# while this file queried six signatures, none of them that one. A reader that
-# does not read the signal it is documented to read is the exact failure this
-# control exists to end — and it is the second time the same mistake has been
-# made here (see server-error, which matched 'request error' and so could never
-# have fired). VERIFY THE STRING AGAINST THE SOURCE BEFORE ADDING A SIGNATURE.
+#   sync-complete     POSITIVE. `'sync complete'` — a source entity finished
+#                     pulling. This is the DENOMINATOR for the four sync lines
+#                     below, exactly as brief-run is for the overnight ones.
+#                     Read its `mode:` field: `merge:<key>` is phase 2's
+#                     anti-join merge, and seeing it land without an OOM on the
+#                     largest entity is what phase 2 was waiting to observe.
+#   sync-budget-stop  `'stopped at the time budget'` — an entity stopped CLEANLY
+#                     before the orchestrator's ceiling instead of being killed
+#                     by it (phase 2, B3). Expected, and it should be followed
+#                     by sync-continuation. A stop with no continuation means
+#                     the chain refused (cap reached, or a part that made no
+#                     progress) and the run is partial.
+#   sync-continuation `'continuation run queued'` — the follow-up run for
+#                     exactly the unfinished entities, resuming from their
+#                     checkpoints. A long streak for one connection means the
+#                     ceiling is too tight for that table, not that resume is
+#                     broken.
+#   sync-tombstoned   the deleted-row check hid rows the source no longer has
+#                     ('full re-sync finalised', or any line carrying a
+#                     `"tombstoned"` field — reconcile emits it too). Small
+#                     counts are the feature working. A large `tombstoned`
+#                     beside a small `rowsTotal` means the source returned less
+#                     than it holds and the read firewall is now hiding real
+#                     data: reconcile again before trusting those tables.
+#   sync-failed       `'sync run failed'` — the same string clarion-failed-syncs
+#                     alerts on, covering failed AND partial runs.
+#
+# THE FIVE ABOVE ARE WHY THIS READER NOW COVERS THE SYNC WORKER. It is a
+# Container Apps JOB, and until 2026-09-10 the query filtered on two Container
+# APP names — so `sync complete`, `stopped at the time budget` and the
+# tombstone counts, all of which are written by the worker's own stdout, could
+# never have matched. (The orchestrator relays worker lines only into a 10 KB
+# `logExcerpt` on the run row; they do not pass through the API's logger.) The
+# job's rows carry the execution name in ContainerGroupName_s, so they are
+# matched on that prefix and folded back onto one bucket in the volume table.
+#
+# The four OVERNIGHT signatures were added 2026-09-08 because CLAUDE.md had been
+# telling the next person to "watch .ops/prod-logs for 'overnight
+# investigation complete'" while this file queried six signatures, none of
+# them that one. A
+# reader that does not read the signal it is documented to read is the exact
+# failure this control exists to end — and it is the second time the same
+# mistake has been made here (see server-error, which matched 'request error'
+# and so could never have fired). VERIFY THE STRING AGAINST THE SOURCE BEFORE
+# ADDING A SIGNATURE.
+# And verify the SCOPE too: a signature can be spelled correctly and still be
+# unmatchable because the process that emits it is outside the query's filter.
+# That was the 2026-09-10 finding, and it is the same failure wearing a
+# different hat.
 #
 # A clean report is only as good as the traffic behind it: no `grant-missing`
 # in a window where nobody used the product proves nothing. The report prints

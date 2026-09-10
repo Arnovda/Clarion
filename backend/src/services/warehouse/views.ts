@@ -107,7 +107,7 @@ export async function createScanView(
       await db.exec(`CREATE OR REPLACE VIEW ${qualified} AS ${await parquetSelect(db, `${escaped}/data.parquet`)};`);
       return;
     }
-    await db.exec(`CREATE OR REPLACE VIEW ${qualified} AS SELECT * FROM read_parquet('${escaped}/*.parquet');`);
+    await db.exec(`CREATE OR REPLACE VIEW ${qualified} AS ${await parquetSelect(db, `${escaped}/*.parquet`)};`);
     return;
   }
 
@@ -127,7 +127,7 @@ export async function createScanView(
   } catch (e) { parquetFileErr = e; }
 
   try {
-    await db.exec(`CREATE OR REPLACE VIEW ${qualified} AS SELECT * FROM read_parquet('${escaped}/*.parquet');`);
+    await db.exec(`CREATE OR REPLACE VIEW ${qualified} AS ${await parquetSelect(db, `${escaped}/*.parquet`)};`);
   } catch (globErr) {
     const dMsg = deltaErr instanceof Error ? deltaErr.message : String(deltaErr);
     const pMsg = parquetFileErr instanceof Error ? parquetFileErr.message : String(parquetFileErr);
