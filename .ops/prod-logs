@@ -200,6 +200,16 @@
 # volume and source tables are context; the signatures are the report, and a
 # reader that cannot read must not look like a clean one.
 #
+# ANSWERED 2026-09-10, run #12: `source-stale` does NOT appear. Three
+# signatures over seven days - rls-write-denied 19, brief-run 5,
+# runner-active 4 - and nothing else. No enabled sync schedule exists, so the
+# freshness sweep has nothing to flag and the sync-worker job correspondingly
+# never runs. That is the BENIGN branch: not an outage. The sweep itself is
+# demonstrably alive (brief-run fires from the same scheduler-owning process),
+# which is what makes this absence readable rather than meaningless. The four
+# phase-2 sync signals are therefore waiting on somebody enabling or
+# triggering a sync, not on this reader and not on a fix.
+#
 # A clean report is only as good as the traffic behind it: no `grant-missing`
 # in a window where nobody used the product proves nothing. The report prints
 # the total log volume for exactly that reason — read it first.
