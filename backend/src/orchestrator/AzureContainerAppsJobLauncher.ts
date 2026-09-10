@@ -191,6 +191,12 @@ export class AzureContainerAppsJobLauncher implements JobLauncher {
         if (spec.requestId) {
           envOverrides.push({ name: 'WORKER_REQUEST_ID', value: spec.requestId });
         }
+        if (spec.reconcile) {
+          envOverrides.push({ name: 'WORKER_RECONCILE', value: '1' });
+        }
+        if (spec.deadlineAt) {
+          envOverrides.push({ name: 'WORKER_DEADLINE_AT', value: spec.deadlineAt });
+        }
 
         // ─── Start the Job execution ──────────────────────────────────
         // The override must include image + resources — Container Apps

@@ -27,7 +27,19 @@ export type WorkerEvent =
   | { type: 'log'; ts: string; level: 'debug' | 'info' | 'warn' | 'error'; msg: string; fields?: Record<string, unknown> }
   | { type: 'progress'; ts: string; message: string; perEntity?: Record<string, { rowsFetched?: number; pagesFetched?: number }>; percent?: number }
   | { type: 'credential_rotated'; ts: string; newConfig: Record<string, unknown> }
-  | { type: 'entity_complete'; ts: string; entity: string; rowsWritten: number; bytesWritten: number }
+  | {
+      type: 'entity_complete';
+      ts: string;
+      entity: string;
+      rowsWritten: number;
+      bytesWritten: number;
+      /** Rows the table now holds (soft-deleted excluded), for the catalog (B6). */
+      rowsTotal?: number;
+      /** The entity's new cursor — persisted the moment this arrives, not at the end of the run (B3). */
+      cursor?: { type: 'timestamp' | 'integer' | 'string'; value: string };
+    }
+  /** Rows up to `cursor` are durably written; a killed worker resumes from here (B3). */
+  | { type: 'entity_checkpoint'; ts: string; entity: string; cursor: { type: 'timestamp' | 'integer' | 'string'; value: string }; rowsSoFar: number }
   | {
       type: 'result';
       ts: string;
@@ -42,6 +54,8 @@ export type WorkerEvent =
       cursors?: Record<string, { type: 'timestamp' | 'integer' | 'string'; value: string }>;
       /** Entities that failed (name → error). Non-empty ⇒ the run is `partial`, never `succeeded`. */
       failedEntities?: Record<string, string>;
+      /** Entities stopped at the time budget or not started (B3); the orchestrator queues a continuation. */
+      incompleteEntities?: Record<string, { reason: 'time_budget'; cursor?: { type: 'timestamp' | 'integer' | 'string'; value: string }; rowsSoFar: number }>;
     }
   | { type: 'error'; ts: string; message: string; stack?: string }
   | { type: 'cancelled'; ts: string };
@@ -53,7 +67,7 @@ export function isWorkerEvent(v: unknown): v is WorkerEvent {
   if (typeof e.type !== 'string') return false;
   return [
     'started', 'log', 'progress', 'credential_rotated',
-    'entity_complete', 'result', 'error', 'cancelled',
+    'entity_complete', 'entity_checkpoint', 'result', 'error', 'cancelled',
   ].includes(e.type);
 }
 

@@ -167,21 +167,102 @@ TransactionLines doesn't reset the cursor on Accounts.
 | Connector returns a cursor lower than the stored value | Orchestrator logs `non-advancing cursor; skipping update`. Stored value stays. |
 | Cursor persistence fails after sync succeeded | Sync still counted as successful. Worst case the next sync re-pulls some rows (idempotent). |
 
-## Deletes — explicit non-goal for v1
+## Deletes — soft, never silent (phase 2, September 2026)
 
-ExactOnline does not expose a "deleted records" feed. A row that's been
-deleted in EO simply stops appearing in the API response. Incremental
-sync does **not** detect this — the merge writer keeps the row in the
-warehouse forever.
+ExactOnline does not expose a "deleted records" feed; a row that has been
+deleted simply stops appearing. Until phase 2 the merge writer kept such a
+row forever and the only remedy was a full re-sync that OVERWROTE the table.
 
-Workaround: schedule a periodic *full* re-sync (e.g. weekly), which the
-operator triggers by deleting all `entity_sync_cursors` rows for that
-connection. Future enhancement: a dedicated "force full re-sync" action
-on the connection settings page that clears the cursor table for that
-connection.
+Every source table the writers produce now carries two technical columns,
+behind the platform's underscore firewall (no prompt, profile, notebook or
+transformation ever sees them):
 
-This is not unique to Clarion — every Singer tap, Fivetran connector,
-and bespoke EO integration handles deletes the same way.
+| Column | Meaning |
+|---|---|
+| `_clarion_synced_at` | when a sync last wrote this row |
+| `_clarion_deleted` | true when the source no longer has it |
+
+Three operations set them; none removes a row from disk:
+
+1. **A merge** stamps every delta row `synced_at = now(), deleted = false`.
+   A key that reappears after being marked deleted comes back alive — the
+   delta is the source's word.
+2. **A full re-sync** MERGES everything it pulls (the same stamp) and then
+   calls `finalizeFullSync(entity, { syncStartedAt })`: every row whose
+   stamp is older than the run's start, or absent, was not seen by a pull
+   that saw everything, so it is marked deleted. Only entities WITHOUT a
+   business key are still replaced outright — there is nothing to merge on.
+3. **A reconcile** (`POST /connections/:id/sync { reconcile: true }`,
+   "Check for deleted rows" on the source card) pulls the source's KEYS only
+   — `$select=ID` on Exact Online, `fields: ['id']` on Odoo, a fraction of a
+   full pull — and `reconcileKeys` marks absent keys deleted and revives
+   present ones. Content and cursors are untouched. An empty key list over a
+   non-empty table is REFUSED (a throttled endpoint looks exactly like an
+   empty table), the same rule the empty-batch write follows.
+
+The read side (`backend/src/services/warehouse/views.ts: createScanView`)
+registers a parquet-backed view as
+`SELECT * EXCLUDE (_clarion_synced_at, _clarion_deleted) … WHERE NOT
+COALESCE(_clarion_deleted, false)` whenever the file carries the columns —
+one `DESCRIBE` per registration. A legacy file without them reads as before
+and gains the columns on its next write. A topic that WANTS deleted rows
+(cancellations) has no door yet; that is a later slice.
+
+The merge itself is an anti-join now, not a window function: `existing WHERE
+NOT EXISTS (delta) UNION ALL delta`, with the delta deduplicated by key
+first. Measured on a 3M-row / 208 MB table with a 10k delta at one thread:
+the old `ROW_NUMBER() OVER (PARTITION BY key)` formulation went out of
+memory at a 1.1 GiB ceiling (1.3 GB peak with the ceiling lifted); the
+anti-join finished in 4.5 s at +150 MB. It is still O(table) in I/O — the
+file is rewritten — which is what phase 2's table-format decision (B1) is
+about; but it is the difference between a merge that fits a 1-vCPU / 1-GiB
+job and one that does not.
+
+## Resumable loads (phase 2, B3)
+
+A sync has a hard ceiling (`SYNC_MAX_DURATION_MS`, 30 min). Before phase 2
+a worker that hit it was killed mid-entity and the next run started that
+entity from scratch — an initial load of a large `TransactionLines` could
+never finish. Now:
+
+- **The worker knows the deadline** (`WORKER_DEADLINE_AT`) and stops pulling
+  cleanly `SYNC_DEADLINE_MARGIN_MS` before it (`SyncContext.timeBudget`).
+- **Entities are written in chunks** (`BaseSourceConnector.writeEntityInChunks`,
+  `SYNC_CHECKPOINT_ROWS` per flush). After every flush the connector reports
+  the highest cursor written so far through `ctx.onEntityCheckpoint`, and
+  the orchestrator persists it AT ONCE (`last_status = 'incomplete'`). This
+  is only correct when rows arrive in cursor order from a source that pages
+  by KEY (Exact Online: `$orderby=Modified asc` + `$skiptoken`). Odoo pages
+  by OFFSET in id order, so it gets the clean stop but no mid-entity
+  checkpoint — a stopped Odoo entity re-pulls from its prior cursor.
+- **A completed entity is persisted when it completes**
+  (`ctx.onEntityComplete` → cursor, status, `rows_total`), not when the run
+  ends. A worker that dies after entity three of twenty keeps three.
+- **A stopped run reports `incompleteEntities`** (stopped after a checkpoint,
+  or never started). The orchestrator records them on the run
+  (`source_sync_runs.incomplete_entities`), persists the run as `succeeded`
+  with a warning, and queues a CONTINUATION run for exactly those entities
+  (`resumed_from_run_id` names the part it continues). The pipeline gate
+  reads a run with incomplete entities as `partial` — a fact must not be
+  built on a half-loaded table — and profiling and on-source-sync triggers
+  wait for the last part. `planContinuation` refuses to chain after
+  `SYNC_MAX_CONTINUATIONS` parts, and after a part that made no progress
+  (a source that yields nothing within a whole budget is a fault); then the
+  run is `partial` and says why.
+- A full re-sync that stops at its budget continues INCREMENTALLY; its
+  deleted-row check does not carry over — the warning says to run a
+  reconcile once the load finishes.
+
+## Per-entity state (phase 2, B6)
+
+`entity_sync_cursors` is the per-(connection, entity) STATE row now:
+`cursor_type` / `cursor_value` are nullable (an always-full entity, or one
+whose first pull failed, carries a status without a watermark),
+`rows_total` is what the table holds after its last write (soft-deleted
+rows excluded) — the number the catalog shows — and `last_status` is
+`success` | `failed` | `incomplete`. A failed entity keeps the cursor it
+had and gets `last_error`; a state-only row is never handed to the worker
+as a watermark.
 
 ## Adding incremental support to a new connector
 

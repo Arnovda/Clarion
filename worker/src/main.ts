@@ -38,6 +38,7 @@ import {
   getConnector,
   type Logger,
   type SyncContext,
+  type TimeBudget,
   type WarehouseWriter,
   type WorkerEvent,
 } from '@databridge/connectors';
@@ -85,7 +86,10 @@ async function main(): Promise<void> {
     }
   }
 
-  emit({ type: 'started', ts: new Date().toISOString() }, heartbeat);
+  // Stamped BEFORE any data work: the full re-sync's "seen by this run"
+  // boundary (every row the run writes carries a later stamp).
+  const syncStartedAt = new Date().toISOString();
+  emit({ type: 'started', ts: syncStartedAt }, heartbeat);
 
   // ─── Cancellation token, wired to SIGTERM ──────────────────────────────
   // Both child-process and Container Apps Job cancellation send SIGTERM.
@@ -145,6 +149,25 @@ async function main(): Promise<void> {
       // the new refresh_token lives is the encrypted DB cell.
       emit({ type: 'credential_rotated', ts: new Date().toISOString(), newConfig }, heartbeat);
     },
+    syncStartedAt,
+    // Per-entity persistence happens the moment the connector reports it
+    // (phase 2, B3): the orchestrator writes the cursor / checkpoint on
+    // receipt, so a worker that dies later keeps every entity it finished.
+    onEntityCheckpoint: (info) => {
+      emit({ type: 'entity_checkpoint', ts: new Date().toISOString(), entity: info.entity, cursor: info.cursor, rowsSoFar: info.rowsSoFar }, heartbeat);
+    },
+    onEntityComplete: (info) => {
+      emit({
+        type: 'entity_complete',
+        ts: new Date().toISOString(),
+        entity: info.entity,
+        rowsWritten: info.rowsWritten,
+        bytesWritten: info.bytesWritten,
+        ...(info.rowsTotal !== undefined ? { rowsTotal: info.rowsTotal } : {}),
+        ...(info.cursor ? { cursor: info.cursor } : {}),
+      }, heartbeat);
+    },
+    ...(env.WORKER_DEADLINE_AT ? { timeBudget: makeTimeBudget(env.WORKER_DEADLINE_AT) } : {}),
   };
 
   // ─── Run the sync ──────────────────────────────────────────────────────
@@ -153,7 +176,7 @@ async function main(): Promise<void> {
   try {
     const result = await connector.sync(
       connectorConfig,
-      { entities: env.WORKER_ENTITIES, cursors: env.WORKER_CURSORS, fullResync: env.WORKER_FULL_RESYNC },
+      { entities: env.WORKER_ENTITIES, cursors: env.WORKER_CURSORS, fullResync: env.WORKER_FULL_RESYNC, reconcile: env.WORKER_RECONCILE },
       ctx,
     );
     emit({
@@ -164,6 +187,8 @@ async function main(): Promise<void> {
       cursors: result.cursors,
       // Non-empty ⇒ the orchestrator persists the run as `partial` (P0-6).
       failedEntities: result.failedEntities,
+      // Non-empty ⇒ the orchestrator queues a continuation run (B3).
+      incompleteEntities: result.incompleteEntities,
     }, heartbeat);
     process.exit(EXIT_OK);
   } catch (e) {
@@ -243,6 +268,22 @@ async function resolveConnectorConfig(env: ReturnType<typeof parseEnv>): Promise
     'Missing connector config — set WORKER_CONFIG_BLOB_URL (Azure), WORKER_CONFIG_FILE (local) '
     + 'or WORKER_CONNECTOR_CONFIG (legacy).',
   );
+}
+
+/**
+ * The run's time budget (phase 2, B3). `shouldStop()` turns true
+ * `SYNC_DEADLINE_MARGIN_MS` (default 4 min) before the orchestrator's hard
+ * ceiling — enough to flush one chunk and, on Azure, upload it — so the
+ * connector ends the entity cleanly with a checkpoint instead of being
+ * killed mid-write.
+ */
+function makeTimeBudget(deadlineAt: number): TimeBudget {
+  const margin = Number(process.env.SYNC_DEADLINE_MARGIN_MS);
+  const marginMs = Number.isFinite(margin) && margin >= 0 ? margin : 4 * 60 * 1000;
+  return {
+    remainingMs: () => Math.max(0, deadlineAt - Date.now()),
+    shouldStop: () => deadlineAt - Date.now() <= marginMs,
+  };
 }
 
 function makeWarehouseWriter(warehousePath: string): WarehouseWriter {

@@ -25,6 +25,10 @@ export type {
   Logger,
   ProgressMsg,
   CancellationToken,
+  TimeBudget,
+  EntityCheckpoint,
+  EntityCompletion,
+  IncompleteEntity,
 } from './types';
 
 export { CancellationError } from './types';
@@ -136,6 +140,12 @@ export {
 // ─── Warehouse writers ────────────────────────────────────────────────────
 export { LocalFileWarehouseWriter } from './ParquetWriter';
 export { BlobSasWarehouseWriter } from './BlobSasWarehouseWriter';
+// The soft-delete columns every source table carries (phase 2, B2) — the
+// backend's view registration hides deleted rows and these columns by name.
+export { TECHNICAL_COLUMNS, DELETED_COL, SYNCED_AT_COL } from './parquetOps';
+// The worker's DuckDB guardrails (the backend has a mirrored copy; the
+// percentage rule is exported so both sides can be tested to agree).
+export { resolveMemoryLimit, visibleMemoryBytes } from './duckdbGuardrails';
 
 // ─── IPC (worker ↔ orchestrator) ──────────────────────────────────────────
 export {

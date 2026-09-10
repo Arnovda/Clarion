@@ -72,6 +72,17 @@ export interface JobSpec {
    * `WORKER_REQUEST_ID` so the child's log events carry it back.
    */
   requestId?: string;
+  /**
+   * RECONCILE (phase 2, B2): keys only; rows the source no longer lists are
+   * marked deleted. Forwarded as `WORKER_RECONCILE=1`.
+   */
+  reconcile?: boolean;
+  /**
+   * The orchestrator's hard ceiling for this run as an ISO timestamp (phase
+   * 2, B3). Forwarded as `WORKER_DEADLINE_AT`; the worker stops pulling
+   * cleanly a margin before it, with a checkpoint, instead of being killed.
+   */
+  deadlineAt?: string;
 }
 
 export interface JobHandle {
@@ -137,6 +148,8 @@ export class LocalProcessJobLauncher implements JobLauncher {
         WORKER_CURSORS: spec.cursors ? JSON.stringify(spec.cursors) : '',
         WORKER_FULL_RESYNC: spec.fullResync ? '1' : '',
         WORKER_REQUEST_ID: spec.requestId ?? '',
+        WORKER_RECONCILE: spec.reconcile ? '1' : '',
+        WORKER_DEADLINE_AT: spec.deadlineAt ?? '',
       },
       stdio: ['ignore', 'pipe', 'pipe'],
       // Detach=false so killing the parent kills the child — important

@@ -610,6 +610,21 @@ export interface SyncOptions {
   fullResync?: boolean;
 
   /**
+   * RECONCILE (phase 2, B2). When true the connector does not pull rows at
+   * all: for every entity in scope that declares a `businessKey` it lists
+   * the KEYS the source holds today (cheap on most APIs — EO's
+   * `$select=ID`, Odoo's `search`) and hands them to
+   * `WarehouseWriter.reconcileKeys`, which marks the rows Clarion holds
+   * whose key the source no longer lists as `_clarion_deleted`, and revives
+   * any that came back. This is how a row deleted at the source stops
+   * showing up in answers WITHOUT a full re-sync: a scheduled, cheap act
+   * instead of a manual, expensive one. Entities without a business key
+   * have nothing to reconcile and are skipped with a warning. Cursors are
+   * not touched — a reconcile says nothing about row CONTENT.
+   */
+  reconcile?: boolean;
+
+  /**
    * Per-entity cursor state from the previous successful sync. Keyed by
    * `EntityDescriptor.name`. Loaded by the orchestrator from
    * `entity_sync_cursors` before the sync starts. Missing keys mean
@@ -654,6 +669,74 @@ export interface SyncContext {
    * and persists. Optional — connectors that don't rotate creds can ignore it.
    */
   readonly onCredentialRotated?: (newConfig: ConnectorConfig) => Promise<void>;
+
+  /**
+   * ISO timestamp of the moment this sync run started (the worker stamps it
+   * before the connector runs). A full re-sync hands it to
+   * `WarehouseWriter.finalizeFullSync` so every row the run did NOT rewrite
+   * — i.e. every row the source no longer has — is marked deleted. Absent
+   * only in test contexts that predate it; connectors then skip finalisation.
+   */
+  readonly syncStartedAt?: string;
+
+  /**
+   * RESUMABLE LOADS (phase 2, B3). Called by the connector each time an
+   * entity's rows up to `cursor` have been WRITTEN to the warehouse — the
+   * orchestrator persists the cursor immediately, so a worker killed at the
+   * 30-minute ceiling (or a crash) resumes from the last checkpoint instead
+   * of pulling the entity from the start again. Only meaningful for rows
+   * streamed in ascending cursor order; connectors that cannot order by the
+   * cursor field must not call it. Best-effort on the orchestrator side: a
+   * checkpoint that fails to persist costs a re-pull, never rows.
+   */
+  readonly onEntityCheckpoint?: (info: EntityCheckpoint) => Promise<void> | void;
+
+  /**
+   * Called once per entity the moment it is fully written — with the new
+   * cursor (if any), the rows written this run and the rows the table now
+   * HOLDS. The orchestrator persists the cursor and the per-entity status
+   * right away rather than at the end of the run, so per-entity granularity
+   * survives a worker that dies after entity three of twenty.
+   */
+  readonly onEntityComplete?: (info: EntityCompletion) => Promise<void> | void;
+
+  /**
+   * The run's wall-clock budget, derived by the orchestrator from its own
+   * ceiling minus a safety margin. A connector checks `shouldStop()` between
+   * pages: once it answers true the connector flushes what it has as a
+   * checkpoint and returns, reporting the entity (and every entity it did
+   * not start) in `SyncResult.incompleteEntities` — a clean stop with a
+   * resume point, instead of a SIGKILL that loses the whole entity.
+   */
+  readonly timeBudget?: TimeBudget;
+}
+
+/** See `SyncContext.timeBudget`. */
+export interface TimeBudget {
+  /** True once the remaining time is below the margin the orchestrator set. */
+  shouldStop(): boolean;
+  /** Milliseconds left before the orchestrator's hard ceiling; never negative. */
+  remainingMs(): number;
+}
+
+/** See `SyncContext.onEntityCheckpoint`. */
+export interface EntityCheckpoint {
+  entity: string;
+  /** The cursor up to which rows are now durably in the warehouse. */
+  cursor: EntityCursor;
+  /** Rows written for this entity so far in this run. */
+  rowsSoFar: number;
+}
+
+/** See `SyncContext.onEntityComplete`. */
+export interface EntityCompletion {
+  entity: string;
+  rowsWritten: number;
+  bytesWritten: number;
+  /** Rows the table holds after this write, excluding soft-deleted ones. */
+  rowsTotal?: number;
+  /** New cursor for the entity, when it advanced. */
+  cursor?: EntityCursor;
 }
 
 // ─── Results ──────────────────────────────────────────────────────────────
@@ -699,10 +782,29 @@ export interface SyncResult {
   cursors?: Record<string, EntityCursor>;
 
   /**
+   * Entities this run did not FINISH (phase 2, B3): stopped at the time
+   * budget after a checkpoint, or never started because the budget ran out
+   * on an earlier entity. Not failures — their tables hold every row up to
+   * the checkpoint and the orchestrator queues a continuation run for
+   * exactly these entities. A run with entries here is persisted as
+   * `succeeded` with the continuation named, never as `partial`: a large
+   * initial load spanning several runs is expected behaviour, not an alarm.
+   */
+  incompleteEntities?: Record<string, IncompleteEntity>;
+
+  /**
    * @deprecated Use `cursors`. Pre-incremental field name kept for
    * back-compat.
    */
   nextIncrementalState?: Record<string, unknown>;
+}
+
+/** See `SyncResult.incompleteEntities`. */
+export interface IncompleteEntity {
+  reason: 'time_budget';
+  /** Checkpoint the next run resumes from; absent when nothing was written. */
+  cursor?: EntityCursor;
+  rowsSoFar: number;
 }
 
 // ─── Warehouse writer (the only side-effect connectors are allowed) ───────
@@ -814,12 +916,46 @@ export interface WarehouseWriter {
     rows: AsyncIterable<Record<string, unknown>>,
     opts?: WriteTableOptions,
   ): Promise<TableWriteResult>;
+
+  /**
+   * SOFT DELETE, full re-sync half (phase 2, B2). Every source table the
+   * writers produce carries two technical columns behind the platform's
+   * underscore firewall: `_clarion_synced_at` (when a row was last written
+   * by a sync) and `_clarion_deleted`. A full re-sync now MERGES every row
+   * it pulls (stamping `_clarion_synced_at`) and then calls this once per
+   * entity: every row whose stamp is older than `syncStartedAt` — or has
+   * none — was not seen by a pull that saw everything, so it is marked
+   * deleted. Nothing is removed from disk; the read-side views hide deleted
+   * rows by default. Returns how many rows were newly marked.
+   */
+  finalizeFullSync?(
+    tableName: string,
+    opts: { syncStartedAt: string },
+  ): Promise<{ tombstoned: number; rowsTotal: number }>;
+
+  /**
+   * SOFT DELETE, reconcile half (phase 2, B2). Given the KEYS the source
+   * holds today, mark every row whose key is absent as deleted and revive
+   * every present row that was marked deleted before. Content is not
+   * touched. Cheap where the source can list keys without rows.
+   */
+  reconcileKeys?(
+    tableName: string,
+    keyColumn: string,
+    keys: AsyncIterable<string | number>,
+  ): Promise<{ tombstoned: number; revived: number; rowsTotal: number; refusedEmpty?: boolean }>;
 }
 
 export interface TableWriteResult {
   rowsWritten: number;
   bytesWritten: number;
   warehousePath: string; // relative to warehouse root, e.g. 'conn_42/Accounts/data.parquet'
+  /**
+   * Rows the table holds after this write, excluding soft-deleted ones —
+   * what the catalog shows as the table's size (phase 2, B6). Absent on the
+   * placeholder-only empty write.
+   */
+  rowsTotal?: number;
   /**
    * True when the source returned ZERO rows for a table that already exists
    * and the write was an overwrite (no `mergeKey`), so the writer KEPT the

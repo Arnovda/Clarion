@@ -33,10 +33,14 @@ interface SyncRunRow {
   row_counts: Record<string, number> | string | null;
   warnings: string[] | string | null;
   error_message: string | null;
-  /** 'incremental' | 'full' — a full re-sync reset the cursors and replaced the tables (P0-6). */
+  /** 'incremental' | 'full' | 'reconcile' — a full re-sync reset the cursors; a reconcile hid rows the source no longer has (phase 2). */
   mode?: string;
   /** entity → error for a `partial` run: the worker finished, these entities did not. */
   failed_entities?: Record<string, string> | string | null;
+  /** The run this one continues (phase 2, B3): a load too big for one run reads as one load in several parts. */
+  resumed_from_run_id?: number | null;
+  /** Entities this run stopped at its time budget; a follow-up run carries them on. */
+  incomplete_entities?: Record<string, { rowsSoFar?: number }> | string | null;
 }
 
 const TERMINAL_SYNC = new Set(['succeeded', 'partial', 'failed', 'cancelled']);
@@ -50,6 +54,14 @@ function syncGlyph(status: string): { glyph: string; color: string } {
     case 'cancelled': return { glyph: '–', color: 'text-muted' };
     default:          return { glyph: '•', color: 'text-ai' };
   }
+}
+
+function parseIncompleteEntities(v: SyncRunRow['incomplete_entities']): string[] {
+  if (!v) return [];
+  try {
+    const obj = typeof v === 'string' ? (JSON.parse(v) as Record<string, unknown>) : v;
+    return obj && typeof obj === 'object' ? Object.keys(obj) : [];
+  } catch { return []; }
 }
 
 function parseFailedEntities(v: SyncRunRow['failed_entities']): Record<string, string> {
@@ -690,15 +702,25 @@ function ConnectionCard({
     return () => { stopped = true; clearInterval(interval); };
   }, [profilingPolling, conn.id]);
 
-  async function handleSyncNow(full = false) {
+  async function handleSyncNow(mode: false | true | 'reconcile' = false) {
+    const full = mode === true;
+    const reconcile = mode === 'reconcile';
     if (full) {
-      // A full re-sync is the one sync that can DELETE rows: it forgets
-      // the cursors and replaces every table with what the source holds
-      // right now. Rows deleted at the source disappear from Clarion —
-      // which is the point — so it is confirmed, never one click.
+      // A full re-sync pulls every row again and HIDES what the source no
+      // longer has (phase 2: rows are marked deleted, never removed). It
+      // resets the watermarks and can run long, so it is confirmed.
       const ok = window.confirm(
-        'Full re-sync: pull every selected table again from the source and REPLACE the copies in Clarion.\n\n' +
-        'Rows deleted at the source disappear here too, and the sync watermarks are reset — this can take much longer than a normal sync.\n\nContinue?',
+        'Full re-sync: pull every selected table again from the source.\n\n' +
+        'Rows the source no longer has are hidden here too, and the sync watermarks are reset — this can take much longer than a normal sync.\n\nContinue?',
+      );
+      if (!ok) return;
+    }
+    if (reconcile) {
+      // Reconcile lists the source's keys only — a fraction of a full
+      // re-sync — and hides the rows whose key is gone. Nothing else moves.
+      const ok = window.confirm(
+        'Check for deleted rows: ask the source which rows still exist and hide the ones it no longer has.\n\n' +
+        'No data is re-downloaded and the sync watermarks stay where they are.\n\nContinue?',
       );
       if (!ok) return;
     }
@@ -707,7 +729,7 @@ function ConnectionCard({
     setSyncing(true);
     setSyncStatus('queued');
     try {
-      const res = await api.post(`/connections/${conn.id}/sync`, full ? { full: true } : {});
+      const res = await api.post(`/connections/${conn.id}/sync`, full ? { full: true } : reconcile ? { reconcile: true } : {});
       const data = res.data?.data;
       if (data?.syncRunId) setSyncRunId(data.syncRunId);
     } catch (err) {
@@ -1035,6 +1057,12 @@ function ConnectionCard({
                         {r.mode === 'full' && (
                           <span className="text-[10px] font-mono uppercase tracking-[0.06em] text-muted-2 border border-line rounded px-1">full re-sync</span>
                         )}
+                        {r.mode === 'reconcile' && (
+                          <span className="text-[10px] font-mono uppercase tracking-[0.06em] text-muted-2 border border-line rounded px-1">deleted-row check</span>
+                        )}
+                        {r.resumed_from_run_id != null && (
+                          <span className="text-[10px] font-mono uppercase tracking-[0.06em] text-muted-2 border border-line rounded px-1" title={`Continues run #${r.resumed_from_run_id}`}>continued</span>
+                        )}
                         <span className="text-muted">
                           {new Date(r.queued_at).toLocaleString('en-GB', { dateStyle: 'medium', timeStyle: 'short' })}
                         </span>
@@ -1054,6 +1082,11 @@ function ConnectionCard({
                             <li key={n} className="break-words">✗ {n}: {failed[n]}</li>
                           ))}
                         </ul>
+                      )}
+                      {parseIncompleteEntities(r.incomplete_entities).length > 0 && (
+                        <p className="mt-0.5 text-[11px] font-mono text-muted break-words">
+                          ⋯ out of time before {parseIncompleteEntities(r.incomplete_entities).join(', ')} finished — continues in a follow-up run
+                        </p>
                       )}
                     </li>
                   );
@@ -1199,10 +1232,22 @@ function ConnectionCard({
           <button
             onClick={() => handleSyncNow(true)}
             disabled={syncing}
-            title="Pull every table again and replace the copies in Clarion (removes rows deleted at the source)"
+            title="Pull every table again; rows the source no longer has are hidden"
             className="px-3 py-1.5 text-[12px] bg-raised border border-line text-ink-2 rounded-md hover:bg-softer hover:border-line-strong disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
           >
             Full re-sync
+          </button>
+        )}
+        {/* Reconcile (phase 2, B2): keys only — the cheap way to hide rows
+            deleted at the source without re-downloading anything. */}
+        {isSourceConnector && conn.last_synced_at && (
+          <button
+            onClick={() => handleSyncNow('reconcile')}
+            disabled={syncing}
+            title="Ask the source which rows still exist and hide the ones it no longer has — no data is re-downloaded"
+            className="px-3 py-1.5 text-[12px] bg-raised border border-line text-ink-2 rounded-md hover:bg-softer hover:border-line-strong disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+          >
+            Check for deleted rows
           </button>
         )}
         {isSourceConnector && isAdmin && (

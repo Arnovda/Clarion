@@ -346,11 +346,24 @@ export class ExactOnlineConnector extends BaseSourceConnector implements SourceC
     const rowCounts: Record<string, number> = {};
     const cursors: Record<string, { type: 'timestamp'; value: string }> = {};
     const failedEntities: Record<string, string> = {};
-    // A full re-sync ignores every prior cursor and replaces every table.
+    const incompleteEntities: NonNullable<SyncResult['incompleteEntities']> = {};
+    // A full re-sync ignores every prior cursor, MERGES every row it pulls
+    // and then marks what it did not see as deleted (phase 2, B2).
     const fullResync = opts.fullResync === true;
+
+    // RECONCILE (B2): keys only, no row content, no cursor movement.
+    if (opts.reconcile) {
+      return this.reconcile(http, config, resolved, ctx, warnings);
+    }
 
     for (const entity of resolved) {
       ctx.cancellationToken.throwIfCancelled();
+      // Out of time before this entity even started: it is not a failure,
+      // it is the next run's work (B3).
+      if (ctx.timeBudget?.shouldStop()) {
+        incompleteEntities[entity.name] = { reason: 'time_budget', rowsSoFar: 0 };
+        continue;
+      }
       ctx.progress({
         message: `Syncing ${entity.displayName ?? entity.name}…`,
       });
@@ -362,7 +375,7 @@ export class ExactOnlineConnector extends BaseSourceConnector implements SourceC
       });
 
       try {
-        const { rowsWritten, maxCursorSeen, preservedExisting } =
+        const { rowsWritten, bytesWritten, rowsTotal, maxCursorSeen, preservedExisting, stoppedForBudget } =
           await this.syncOneEntity(http, config, entity, ctx, priorCursor, metadata, warnings, fullResync);
         rowCounts[entity.name] = rowsWritten;
         if (preservedExisting) {
@@ -370,21 +383,32 @@ export class ExactOnlineConnector extends BaseSourceConnector implements SourceC
             `Entity '${entity.name}' returned no rows; the previous table was kept. ` +
             `Run a full re-sync if the source really is empty now.`,
           );
-        } else if (rowsWritten === 0) {
+        } else if (rowsWritten === 0 && !stoppedForBudget) {
           warnings.push(`Entity '${entity.name}' returned no rows.`);
         }
         // Only emit a new cursor when the entity is incremental-capable AND
         // we saw at least one row. If no rows came back, keep the prior
         // cursor unchanged (or absent on first run) — re-running the same
         // filter next time is idempotent under the merge-by-key writer.
+        let newCursor: { type: 'timestamp'; value: string } | undefined;
         if (entity.incrementalCursor && maxCursorSeen) {
           // Defensive: never move cursor BACKWARDS. EO shouldn't return
           // rows whose Modified < prior cursor (we asked for >), but guard
           // anyway against time-zone bugs or out-of-order pages.
           if (!priorCursor || maxCursorSeen > priorCursor.value) {
-            cursors[entity.name] = { type: 'timestamp', value: maxCursorSeen };
+            newCursor = { type: 'timestamp', value: maxCursorSeen };
           }
         }
+        if (stoppedForBudget) {
+          // Rows up to the checkpoint are in the warehouse; the entity is
+          // not finished. Its cursor was persisted at the checkpoint, so it
+          // must NOT also count as a completed entity here.
+          incompleteEntities[entity.name] = { reason: 'time_budget', rowsSoFar: rowsWritten, ...(newCursor ? { cursor: newCursor } : {}) };
+          ctx.log.warn(`entity '${entity.name}' stopped at the time budget — resumes next run`, { rowsSoFar: rowsWritten, checkpoint: newCursor?.value });
+          continue;
+        }
+        if (newCursor) cursors[entity.name] = newCursor;
+        await ctx.onEntityComplete?.({ entity: entity.name, rowsWritten, bytesWritten, ...(rowsTotal !== undefined ? { rowsTotal } : {}), ...(newCursor ? { cursor: newCursor } : {}) });
       } catch (err) {
         if (err instanceof CancellationError) throw err; // never swallow cancellation
         const msg = err instanceof Error ? err.message : String(err);
@@ -397,7 +421,80 @@ export class ExactOnlineConnector extends BaseSourceConnector implements SourceC
       }
     }
 
-    return { rowCounts, warnings, cursors, failedEntities };
+    return { rowCounts, warnings, cursors, failedEntities, ...(Object.keys(incompleteEntities).length > 0 ? { incompleteEntities } : {}) };
+  }
+
+  /**
+   * RECONCILE (phase 2, B2): for every entity with a business key, list the
+   * keys the source holds today (`$select=<key>` — a fraction of a full
+   * pull) and let the writer mark the rows whose key is gone as deleted and
+   * revive any that are back. Content is untouched, cursors are untouched.
+   * An entity without a key has nothing to reconcile on and is skipped
+   * with a warning; a writer without `reconcileKeys` (a test fake) too.
+   */
+  private async reconcile(
+    http: HttpClient,
+    config: ExactOnlineConfig,
+    entities: ExactOnlineEntity[],
+    ctx: SyncContext,
+    warnings: string[],
+  ): Promise<SyncResult> {
+    const rowCounts: Record<string, number> = {};
+    const failedEntities: Record<string, string> = {};
+    const writer = ctx.warehouseWriter;
+    if (!writer.reconcileKeys) {
+      return { rowCounts, warnings: [...warnings, 'This warehouse writer cannot reconcile keys.'], failedEntities };
+    }
+    for (const entity of entities) {
+      ctx.cancellationToken.throwIfCancelled();
+      const key = entity.businessKey;
+      if (!key) {
+        warnings.push(`Entity '${entity.name}' declares no business key — nothing to reconcile on.`);
+        continue;
+      }
+      ctx.progress({ message: `Reconciling ${entity.displayName ?? entity.name}…` });
+      try {
+        const base = `${config.baseUrl.replace(/\/$/, '')}/api/v1/${encodeURIComponent(config.division)}${entity.apiPath}`;
+        const params = [`$select=${encodeURIComponent(key)}`];
+        if (entity.defaultFilter) params.push(`$filter=${encodeURIComponent(entity.defaultFilter)}`);
+        const initialUrl = `${base}?${params.join('&')}`;
+        let seen = 0;
+        const keys = BaseSourceConnector['paginate']<Record<string, unknown>>({
+          initialCursor: initialUrl,
+          cancellationToken: ctx.cancellationToken,
+          onPage: (pageNum, _n, total) => {
+            seen = total;
+            ctx.progress({ message: `Reconciling ${entity.name} (page ${pageNum}, ${total} keys)` });
+          },
+          nextPage: async (cursor) => {
+            const resp = await http.request<ODataResponse>({ url: cursor });
+            const page = parseODataPage(resp.body);
+            return { rows: page.rows, nextCursor: page.nextLink };
+          },
+        });
+        const keyValues = (async function* (): AsyncIterable<string | number> {
+          for await (const row of keys) {
+            const v = row[key];
+            if (typeof v === 'string' || typeof v === 'number') yield v;
+          }
+        })();
+        const r = await writer.reconcileKeys(entity.name, key, keyValues);
+        rowCounts[entity.name] = r.rowsTotal;
+        if (r.refusedEmpty) {
+          warnings.push(`Entity '${entity.name}': the source listed no keys, so nothing was marked deleted (a throttled endpoint looks the same as an empty table).`);
+        } else if (r.tombstoned > 0 || r.revived > 0) {
+          warnings.push(`Entity '${entity.name}': ${r.tombstoned} row(s) no longer at the source were hidden` + (r.revived > 0 ? `, ${r.revived} came back` : '') + '.');
+        }
+        ctx.log.info(`${entity.name} reconciled`, { keys: seen, ...r });
+      } catch (err) {
+        if (err instanceof CancellationError) throw err;
+        const msg = err instanceof Error ? err.message : String(err);
+        ctx.log.warn(`entity '${entity.name}' reconcile failed — continuing`, { error: msg });
+        warnings.push(`Entity '${entity.name}' reconcile failed: ${msg}`);
+        failedEntities[entity.name] = msg;
+      }
+    }
+    return { rowCounts, warnings, failedEntities, cursors: {} };
   }
 
   /** Sync a single entity. Streams pages → cleans → writes Parquet. */
@@ -410,7 +507,10 @@ export class ExactOnlineConnector extends BaseSourceConnector implements SourceC
     metadata: ODataMetadata | null,
     warnings: string[],
     fullResync = false,
-  ): Promise<{ rowsWritten: number; maxCursorSeen?: string; preservedExisting?: boolean }> {
+  ): Promise<{ rowsWritten: number; bytesWritten: number; rowsTotal?: number; maxCursorSeen?: string; preservedExisting?: boolean; stoppedForBudget: boolean }> {
+    // Merge by the business key for incremental entities (a delta must never
+    // overwrite the rows it does not carry); overwrite for always-full ones.
+    const mergeKey = entity.incrementalCursor && entity.businessKey ? entity.businessKey : undefined;
     // For entities EO refuses to list without $select, discover the
     // schema first via $top=1 and use the observed field set as
     // $select on the actual listing. This is the only approach that
@@ -428,6 +528,14 @@ export class ExactOnlineConnector extends BaseSourceConnector implements SourceC
         // neither source covers the entity.
         ctx.log.info(`entity ${entity.name} returned no rows during $select discovery — writing empty parquet with resolved schema`);
         const { columns: emptySchema, source: emptySource } = resolveEntityColumns(metadata, entity);
+        if (fullResync && mergeKey && ctx.syncStartedAt && ctx.warehouseWriter.finalizeFullSync) {
+          // A full re-sync that saw NOTHING of a keyed entity: every row
+          // Clarion holds is unseen, so every row is marked deleted — the
+          // table stays, hidden, instead of being overwritten with nothing.
+          const fin = await ctx.warehouseWriter.finalizeFullSync(entity.name, { syncStartedAt: ctx.syncStartedAt });
+          if (fin.tombstoned > 0) warnings.push(`Entity '${entity.name}': the source is empty now; ${fin.tombstoned} row(s) were hidden.`);
+          return { rowsWritten: 0, bytesWritten: 0, rowsTotal: fin.rowsTotal, stoppedForBudget: false };
+        }
         const result = await ctx.warehouseWriter.writeTable(
           entity.name,
           emptyAsyncIterable(),
@@ -439,7 +547,7 @@ export class ExactOnlineConnector extends BaseSourceConnector implements SourceC
           bytes: result.bytesWritten,
           preservedExisting: result.preservedExisting === true,
         });
-        return { rowsWritten: 0, preservedExisting: result.preservedExisting };
+        return { rowsWritten: 0, bytesWritten: result.bytesWritten, rowsTotal: result.rowsTotal, preservedExisting: result.preservedExisting, stoppedForBudget: false };
       }
     }
 
@@ -515,28 +623,55 @@ export class ExactOnlineConnector extends BaseSourceConnector implements SourceC
     // Without a mergeKey the writer overwrites — which is wrong for
     // incremental (we'd lose all rows not in this delta). With it, the
     // writer reads existing rows, upserts the delta, writes back.
+    // A full re-sync of a KEYED entity merges too (every row it pulls gets
+    // this run's stamp) and `finalizeFullSync` below marks the rest as
+    // deleted; only an unkeyed entity is still replaced outright.
     const writeOpts = {
-      ...(entity.incrementalCursor && entity.businessKey ? { mergeKey: entity.businessKey } : {}),
+      ...(mergeKey ? { mergeKey } : {}),
       ...(typedColumns?.length ? { columns: typedColumns } : {}),
-      // Full re-sync: replace the table outright (removes rows deleted at
-      // the source; the merge path never can).
-      ...(fullResync ? { replace: true } : {}),
+      ...(fullResync && !mergeKey ? { replace: true } : {}),
     };
 
-    const result = await ctx.warehouseWriter.writeTable(
-      entity.name,
-      rowIterable,
-      Object.keys(writeOpts).length > 0 ? writeOpts : undefined,
-    );
-    ctx.log.info(`${entity.name} sync complete`, {
+    // EO pages by `$skiptoken` (a key, not an offset) and the listing is
+    // ordered by the cursor field, so the highest Modified written so far
+    // is a valid resume point — the checkpoint a killed worker resumes
+    // from (B3). Always-full entities have no order and no checkpoint.
+    const result = await BaseSourceConnector['writeEntityInChunks']<Record<string, unknown>>({
+      entity: entity.name,
+      rows: rowIterable,
+      ctx,
+      writeOpts: Object.keys(writeOpts).length > 0 ? writeOpts : undefined,
+      ...(cursorField && mergeKey
+        ? { checkpoint: { type: 'timestamp' as const, cursorOf: (row: Record<string, unknown>) => (typeof row[cursorField] === 'string' ? row[cursorField] as string : undefined) } }
+        : {}),
+    });
+
+    let rowsTotal = result.rowsTotal;
+    if (fullResync && mergeKey && !result.stoppedForBudget && ctx.syncStartedAt && ctx.warehouseWriter.finalizeFullSync) {
+      // Everything this full pull did not rewrite is what the source no
+      // longer has. Never after a budget stop: an unfinished pull has not
+      // seen everything, so it cannot say what is gone.
+      const fin = await ctx.warehouseWriter.finalizeFullSync(entity.name, { syncStartedAt: ctx.syncStartedAt });
+      rowsTotal = fin.rowsTotal;
+      if (fin.tombstoned > 0) warnings.push(`Entity '${entity.name}': ${fin.tombstoned} row(s) no longer at the source were hidden.`);
+      ctx.log.info(`${entity.name} full re-sync finalised`, { tombstoned: fin.tombstoned, rowsTotal: fin.rowsTotal });
+    }
+    ctx.log.info(`${entity.name} sync ${result.stoppedForBudget ? 'stopped at the time budget' : 'complete'}`, {
       pages: pagesFetched,
       rows: rowsFetched,
       bytes: result.bytesWritten,
-      mode: fullResync ? 'replace' : writeOpts?.mergeKey ? `merge:${writeOpts.mergeKey}` : 'overwrite',
-      newCursor: maxCursorSeen,
+      mode: fullResync ? (mergeKey ? `full-merge:${mergeKey}` : 'replace') : writeOpts?.mergeKey ? `merge:${writeOpts.mergeKey}` : 'overwrite',
+      newCursor: result.maxCursorSeen ?? maxCursorSeen,
       preservedExisting: result.preservedExisting === true,
     });
-    return { rowsWritten: result.rowsWritten, maxCursorSeen, preservedExisting: result.preservedExisting };
+    return {
+      rowsWritten: result.rowsWritten,
+      bytesWritten: result.bytesWritten,
+      rowsTotal,
+      maxCursorSeen: result.maxCursorSeen ?? maxCursorSeen,
+      preservedExisting: result.preservedExisting,
+      stoppedForBudget: result.stoppedForBudget,
+    };
   }
 
   /**

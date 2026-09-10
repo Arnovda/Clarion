@@ -225,9 +225,26 @@ export async function triggerSync(args: {
   full?: boolean;
   /** Restrict the run to a subset of the connection's selected entities. */
   entities?: string[];
+  /**
+   * RECONCILE (phase 2, B2): the worker lists the KEYS the source holds and
+   * the writer marks the rows whose key is gone as deleted — no row content
+   * is pulled, no cursor moves. The cheap, schedulable way to make rows
+   * deleted at the source stop showing up. Mutually exclusive with `full`.
+   */
+  reconcile?: boolean;
+  /**
+   * CONTINUATION (phase 2, B3): this run picks up the entities a previous
+   * run left incomplete at its time budget. Recorded on the run row so the
+   * history reads as one load in several parts. Set only by the orchestrator.
+   */
+  resumedFromRunId?: number;
 }): Promise<TriggerSyncResult> {
   const { connectionId, tenantId, triggeredByUserId } = args;
   const full = args.full === true;
+  const reconcile = args.reconcile === true;
+  if (full && reconcile) {
+    throw new Error('A full re-sync and a reconcile cannot be combined: a full re-sync already hides what the source no longer has');
+  }
 
   const conn = await tenantQuery(tenantId, (db) => db('connections')
     .where({ id: connectionId, tenant_id: tenantId })
@@ -271,8 +288,9 @@ export async function triggerSync(args: {
         tenant_id: tenantId,
         connection_id: connectionId,
         status: 'queued',
-        mode: full ? 'full' : 'incremental',
+        mode: reconcile ? 'reconcile' : full ? 'full' : 'incremental',
         triggered_by_user_id: triggeredByUserId ?? null,
+        resumed_from_run_id: args.resumedFromRunId ?? null,
         // CORRELATION (6-1): the HTTP request (or the job) this run descends
         // from — what the operator console shows beside a failed run.
         request_id: getCorrelation().requestId ?? null,
@@ -311,10 +329,10 @@ export async function triggerSync(args: {
     log.info({ connectionId, syncRunId, tenantId, cursorsReset: deleted, entities }, 'full re-sync: cursors reset');
   }
 
-  log.info({ connectionId, syncRunId, tenantId, mode: full ? 'full' : 'incremental', entities }, 'sync queued');
+  log.info({ connectionId, syncRunId, tenantId, mode: reconcile ? 'reconcile' : full ? 'full' : 'incremental', entities, resumedFromRunId: args.resumedFromRunId }, 'sync queued');
 
   setImmediate(() => {
-    void runSyncInBackground({ syncRunId, connectionId, tenantId, full, entities }).catch((e) => {
+    void runSyncInBackground({ syncRunId, connectionId, tenantId, full, reconcile, entities, resumedFromRunId: args.resumedFromRunId }).catch((e) => {
       log.error({ err: e, syncRunId }, 'unexpected error in runSyncInBackground');
     });
   });
@@ -338,18 +356,156 @@ export function summariseFailedEntities(
   return `${head}: ${parts.join('; ')}${rest}`;
 }
 
+// ─── Per-entity state (phase 2, B3 + B6) ──────────────────────────────────
+type CursorIn = { type: 'timestamp' | 'integer' | 'string'; value: string };
+type EntityStatus = 'success' | 'failed' | 'incomplete';
+
+/** How many continuation runs one load may chain before the orchestrator gives up. */
+export const MAX_CONTINUATIONS = Number(process.env.SYNC_MAX_CONTINUATIONS) || 24;
+
+/**
+ * Whether a run that stopped at its time budget gets a follow-up run for
+ * the entities it left incomplete (B3). Pure, so the three refusals are
+ * unit-testable: nothing incomplete; a chain that already ran
+ * `MAX_CONTINUATIONS` parts (a load that never finishes must not run
+ * forever at a nightly price); and a part that made NO progress — a source
+ * that yields nothing within a whole budget is a fault, not a big table,
+ * and a chain of identical zero-progress runs would hide it.
+ */
+export function planContinuation(args: {
+  incomplete: string[];
+  depth: number;
+  progressed: boolean;
+  maxDepth?: number;
+}): { continue: boolean; reason?: string } {
+  const max = args.maxDepth ?? MAX_CONTINUATIONS;
+  if (args.incomplete.length === 0) return { continue: false };
+  if (args.depth >= max) {
+    return { continue: false, reason: `the load did not finish after ${args.depth + 1} runs; not continuing automatically` };
+  }
+  if (!args.progressed) {
+    return { continue: false, reason: 'this run made no progress before its time budget ran out; not continuing automatically' };
+  }
+  return { continue: true };
+}
+
+/** Number of runs before `runId` in its continuation chain (0 = a fresh load). */
+async function continuationDepth(tenantId: number, resumedFromRunId: number | undefined): Promise<number> {
+  let depth = 0;
+  let cursor = resumedFromRunId;
+  while (cursor !== undefined && cursor !== null && depth <= MAX_CONTINUATIONS + 1) {
+    depth += 1;
+    const row = await tenantQuery(tenantId, (db) => db('source_sync_runs')
+      .select('resumed_from_run_id').where({ id: cursor, tenant_id: tenantId }).first()) as { resumed_from_run_id: number | null } | undefined;
+    cursor = row?.resumed_from_run_id ?? undefined;
+  }
+  return depth;
+}
+
+/**
+ * Upsert an entity's cursor — validated and monotonic — together with its
+ * status and counts. Called the moment the worker reports a checkpoint or a
+ * completion (B3), and once more at the end of the run for connectors that
+ * do not report per entity. Never throws: a cursor that fails to persist
+ * costs a re-pull, not rows. Returns what happened, for the log.
+ */
+export async function persistEntityCursor(args: {
+  tenantId: number;
+  connectionId: number;
+  entityName: string;
+  cursor: CursorIn;
+  status: 'success' | 'incomplete';
+  rowsSynced?: number;
+  rowsTotal?: number;
+}): Promise<'persisted' | 'malformed' | 'non-advancing' | 'error'> {
+  const { tenantId, connectionId, entityName, cursor } = args;
+  const l = log.child({ connectionId, tenantId, entityName });
+  try {
+    if (!isValidCursorValue(cursor.type, cursor.value)) {
+      l.error({ cursorType: cursor.type, cursorValue: cursor.value },
+        'connector returned malformed cursor value — refusing to persist (next sync re-reads from prior cursor)');
+      return 'malformed';
+    }
+    // Read current value first to enforce monotonicity in app logic (the
+    // DB can't easily express "new >= old" in a single INSERT ... ON CONFLICT).
+    const existing = await tenantQuery(tenantId, (db) => db('entity_sync_cursors')
+      .where({ tenant_id: tenantId, connection_id: connectionId, entity_name: entityName })
+      .first()) as { cursor_value: string | null; cursor_type: string | null } | undefined;
+    if (existing?.cursor_value && existing.cursor_type && !cursorAdvances(existing.cursor_type, existing.cursor_value, cursor.value)) {
+      // A checkpoint re-reporting the same value is a no-op, not a bug;
+      // going BACKWARDS is evidence of one and stays loud.
+      if (existing.cursor_value !== cursor.value) {
+        l.error({ existingType: existing.cursor_type, existing: existing.cursor_value, incomingType: cursor.type, incoming: cursor.value },
+          'CRITICAL: connector returned non-advancing cursor; refusing to update (possible connector bug)');
+        return 'non-advancing';
+      }
+    }
+    const state = {
+      cursor_type: cursor.type,
+      cursor_value: cursor.value,
+      ...(args.rowsSynced !== undefined ? { rows_synced_last: args.rowsSynced } : {}),
+      ...(args.rowsTotal !== undefined ? { rows_total: args.rowsTotal } : {}),
+      last_status: args.status,
+      last_error: null,
+    };
+    await tenantQuery(tenantId, (db) => db('entity_sync_cursors')
+      .insert({ tenant_id: tenantId, connection_id: connectionId, entity_name: entityName, rows_synced_last: args.rowsSynced ?? 0, ...state, last_sync_at: db.fn.now(), updated_at: db.fn.now() })
+      .onConflict(['tenant_id', 'connection_id', 'entity_name'])
+      .merge({ ...state, last_sync_at: db.fn.now(), updated_at: db.fn.now() }));
+    return 'persisted';
+  } catch (err) {
+    l.warn({ err }, 'failed to persist cursor — sync still counted as succeeded');
+    return 'error';
+  }
+}
+
+/**
+ * Upsert an entity's STATUS, error and counts WITHOUT touching its cursor
+ * (B6). A failed entity keeps the watermark it had; an always-full entity
+ * gets a row with no cursor at all (migration 99 made that legal), so the
+ * catalog can still show how many rows it holds and when it last landed.
+ */
+export async function persistEntityState(args: {
+  tenantId: number;
+  connectionId: number;
+  entityName: string;
+  status: EntityStatus;
+  error?: string | null;
+  rowsSynced?: number;
+  rowsTotal?: number;
+}): Promise<void> {
+  const { tenantId, connectionId, entityName } = args;
+  try {
+    const state = {
+      last_status: args.status,
+      last_error: args.error ? redact(args.error).slice(0, 2000) : null,
+      ...(args.rowsSynced !== undefined ? { rows_synced_last: args.rowsSynced } : {}),
+      ...(args.rowsTotal !== undefined ? { rows_total: args.rowsTotal } : {}),
+    };
+    await tenantQuery(tenantId, (db) => db('entity_sync_cursors')
+      .insert({ tenant_id: tenantId, connection_id: connectionId, entity_name: entityName, cursor_type: null, cursor_value: null, rows_synced_last: args.rowsSynced ?? 0, ...state, last_sync_at: db.fn.now(), updated_at: db.fn.now() })
+      .onConflict(['tenant_id', 'connection_id', 'entity_name'])
+      .merge({ ...state, last_sync_at: db.fn.now(), updated_at: db.fn.now() }));
+  } catch (err) {
+    log.warn({ err, connectionId, tenantId, entityName }, 'failed to persist entity state (non-fatal)');
+  }
+}
+
 // ─── Background execution ────────────────────────────────────────────────
 async function runSyncInBackground(args: {
   syncRunId: number;
   connectionId: number;
   tenantId: number;
   full?: boolean;
+  reconcile?: boolean;
   entities?: string[];
+  resumedFromRunId?: number;
 }): Promise<void> {
   const { syncRunId, connectionId, tenantId } = args;
   const full = args.full === true;
+  const reconcile = args.reconcile === true;
   const requestId = getCorrelation().requestId;
-  const childLog = log.child({ syncRunId, connectionId, tenantId, mode: full ? 'full' : 'incremental' });
+  const childLog = log.child({ syncRunId, connectionId, tenantId, mode: reconcile ? 'reconcile' : full ? 'full' : 'incremental', resumedFromRunId: args.resumedFromRunId });
 
   // Local accumulators — kept in memory to avoid one DB round trip per
   // worker event. Flushed on terminal events + every progress tick.
@@ -358,6 +514,15 @@ async function runSyncInBackground(args: {
   // Entity → error for entities the connector gave up on while the worker
   // itself exited cleanly. Non-empty ⇒ `partial`, never `succeeded` (P0-6).
   const failedEntities: Record<string, string> = {};
+  // Entities the connector stopped at its time budget, or never started
+  // (B3). Not failures: a continuation run picks them up.
+  const incompleteEntities: Record<string, { reason: 'time_budget'; cursor?: CursorIn; rowsSoFar: number }> = {};
+  // Entities whose cursor / state this run already persisted on receipt of
+  // the worker's per-entity events, so the end-of-run sweep skips them.
+  const entityStateDone = new Set<string>();
+  // Per-entity persistence runs in arrival order, off the event path, and
+  // is awaited before the run is finalised.
+  let persistChain: Promise<void> = Promise.resolve();
   let errorMessage: string | null = null;
   let logExcerpt = '';
 
@@ -402,9 +567,11 @@ async function runSyncInBackground(args: {
       const rows = await tenantQuery(tenantId, (db) => db('entity_sync_cursors')
         .where({ tenant_id: tenantId, connection_id: connectionId })
         .select('entity_name', 'cursor_type', 'cursor_value'));
-      for (const r of rows as Array<{ entity_name: string; cursor_type: string; cursor_value: string }>) {
-        // Tight allow-list on cursor_type to match the CHECK constraint.
-        if (r.cursor_type === 'timestamp' || r.cursor_type === 'integer' || r.cursor_type === 'string') {
+      for (const r of rows as Array<{ entity_name: string; cursor_type: string | null; cursor_value: string | null }>) {
+        // Tight allow-list on cursor_type to match the CHECK constraint. A
+        // state-only row (status + counts, no watermark — migration 99) is
+        // not a cursor.
+        if (r.cursor_value && (r.cursor_type === 'timestamp' || r.cursor_type === 'integer' || r.cursor_type === 'string')) {
           priorCursors[r.entity_name] = { type: r.cursor_type, value: r.cursor_value };
         }
       }
@@ -438,7 +605,11 @@ async function runSyncInBackground(args: {
       warehousePath: localWarehousePath,
       cursors: priorCursors,
       fullResync: full,
+      reconcile,
       requestId,
+      // The worker stops pulling a margin before this, with a checkpoint,
+      // instead of meeting the SIGKILL below mid-entity (B3).
+      deadlineAt: new Date(Date.now() + SYNC_MAX_DURATION_MS).toISOString(),
     };
 
     childLog.info({ entities }, 'launching sync worker');
@@ -455,6 +626,12 @@ async function runSyncInBackground(args: {
     // without raising.
     const cursorsOut: Record<string, { type: 'timestamp' | 'integer' | 'string'; value: string }> = {};
 
+    const enqueuePersist = (fn: () => Promise<unknown>): void => {
+      persistChain = persistChain.then(() => fn()).then(() => undefined, (err) => {
+        childLog.warn({ err }, 'per-entity persist failed (non-fatal)');
+      });
+    };
+
     const handle: JobHandle = getLauncher().launch(jobSpec, (event) => {
       handleWorkerEvent({
         event,
@@ -462,7 +639,23 @@ async function runSyncInBackground(args: {
         warnings,
         failedEntities,
         cursorsOut,
+        incompleteEntities,
         onLogLine: (line) => { logExcerpt = (logExcerpt + line + '\n').slice(-10_000); },
+        // B3: a checkpoint is durable the moment it arrives — a worker
+        // killed later resumes from it.
+        onEntityCheckpoint: (ev) => {
+          enqueuePersist(() => persistEntityCursor({
+            tenantId, connectionId, entityName: ev.entity, cursor: ev.cursor, status: 'incomplete', rowsSynced: ev.rowsSoFar,
+          }));
+        },
+        // B3/B6: an entity's cursor, status and row count land when the
+        // entity finishes, not when the run does.
+        onEntityComplete: (ev) => {
+          entityStateDone.add(ev.entity);
+          enqueuePersist(() => ev.cursor
+            ? persistEntityCursor({ tenantId, connectionId, entityName: ev.entity, cursor: ev.cursor, status: 'success', rowsSynced: ev.rowsWritten, rowsTotal: ev.rowsTotal })
+            : persistEntityState({ tenantId, connectionId, entityName: ev.entity, status: 'success', rowsSynced: ev.rowsWritten, rowsTotal: ev.rowsTotal }));
+        },
         onCredentialRotated: (newConfig) => {
           // Fire-and-forget re-encrypt; if it fails the next sync will fail
           // and we'll discover it then. Log loudly either way.
@@ -525,6 +718,7 @@ async function runSyncInBackground(args: {
       stopSyncCancelWatch();
     }
     cancellationHandles.delete(syncRunId);
+    await persistChain;
     if (timedOut && exitCode !== EXIT_OK) {
       errorMessage = errorMessage ?? `Sync exceeded the maximum duration (${Math.round(SYNC_MAX_DURATION_MS / 60000)} min) and was cancelled`;
     }
@@ -546,9 +740,32 @@ async function runSyncInBackground(args: {
       // lie this whole finding is about. Cursors below are still persisted
       // for the entities that DID complete — the connector only emits those.
       const failedNames = Object.keys(failedEntities);
-      const isPartial = failedNames.length > 0;
+      // B3: entities stopped at the time budget get a continuation run when
+      // this one made progress and the chain is not absurdly long; when the
+      // orchestrator declines, the run is PARTIAL and says why — an
+      // unfinished load must never look finished.
+      const incompleteNames = Object.keys(incompleteEntities);
+      const depth = incompleteNames.length > 0 ? await continuationDepth(tenantId, args.resumedFromRunId) : 0;
+      const progressed = incompleteNames.some((n) => (incompleteEntities[n].rowsSoFar ?? 0) > 0)
+        || entities.some((n) => !incompleteEntities[n] && failedEntities[n] === undefined);
+      const plan = planContinuation({ incomplete: incompleteNames, depth, progressed });
+      const isPartial = failedNames.length > 0 || (incompleteNames.length > 0 && !plan.continue);
       const finalStatus = isPartial ? 'partial' : 'succeeded';
-      const partialMessage = isPartial ? summariseFailedEntities(failedEntities, entities.length) : null;
+      const partialMessage = isPartial
+        ? [
+            failedNames.length > 0 ? summariseFailedEntities(failedEntities, entities.length) : null,
+            incompleteNames.length > 0 && !plan.continue ? `${incompleteNames.length} entities unfinished (${incompleteNames.slice(0, 5).join(', ')}${incompleteNames.length > 5 ? ', …' : ''}): ${plan.reason}` : null,
+          ].filter(Boolean).join('; ')
+        : null;
+      if (plan.continue) {
+        // Into the SCRUBBED list — `safeWarnings` was derived before this
+        // branch and is what the run row stores.
+        const parts = incompleteNames.map((n) => `${n} (${incompleteEntities[n].rowsSoFar.toLocaleString()} rows so far)`);
+        safeWarnings.push(
+          `Out of time before ${incompleteNames.length} of ${entities.length} entities finished — ${parts.slice(0, 5).join(', ')}${parts.length > 5 ? ', …' : ''}. ` +
+          `The load continues in a follow-up run` + (full ? '; the deleted-row check of this full re-sync does not carry over, run a reconcile once it finishes' : '') + '.',
+        );
+      }
       if (isPartial) {
         // The words 'sync run failed' are LOAD-BEARING (see the failed
         // branch below): the .ops/alerts rule and .ops/prod-logs match this
@@ -568,7 +785,8 @@ async function runSyncInBackground(args: {
           completed_at: db.fn.now(),
           row_counts: JSON.stringify(rowCounts),
           warnings: JSON.stringify(safeWarnings),
-          failed_entities: isPartial ? JSON.stringify(failedEntities) : null,
+          failed_entities: failedNames.length > 0 ? JSON.stringify(failedEntities) : null,
+          incomplete_entities: incompleteNames.length > 0 ? JSON.stringify(incompleteEntities) : null,
           error_message: partialMessage,
           log_excerpt: safeLogExcerpt,
         }));
@@ -576,72 +794,36 @@ async function runSyncInBackground(args: {
         await notifySyncFailure({ tenantId, connectionId, syncRunId, partial: true, reason: partialMessage });
       }
 
-      // ── Persist per-entity cursors ──────────────────────────────────
-      // Upsert one row per entity that emitted a new cursor. Defensive:
-      //   • Validate the cursor value shape per cursor_type before write —
-      //     a malformed timestamp passed back as a $filter on the next
-      //     sync would surface as an opaque EO 400.
-      //   • Refuse to write a cursor that goes backwards. A non-advancing
-      //     cursor signals a connector bug (returned a stale value) or
-      //     data corruption upstream (EO eventual-consistency edge case).
-      //     Either way, silently keeping the old cursor is the safe choice
-      //     so the next sync re-reads from the trusted high-water mark.
-      //   • Tenant + connection in both INSERT body and WHERE so RLS +
-      //     explicit filter both apply.
-      // Cursor-persistence failures DO NOT mark the sync as failed —
-      // the data is already in the warehouse; worst case the next sync
-      // re-pulls some rows (idempotent via merge-by-key).
-      for (const [entityName, cursor] of Object.entries(cursorsOut)) {
-        try {
-          if (!isValidCursorValue(cursor.type, cursor.value)) {
-            childLog.error({ entityName, cursorType: cursor.type, cursorValue: cursor.value },
-              'connector returned malformed cursor value — refusing to persist (next sync re-reads from prior cursor)');
-            continue;
-          }
-          // Read current value first to enforce monotonicity in app logic
-          // (the DB can't easily express "new >= old" in a single
-          // INSERT ... ON CONFLICT).
-          const existing = await tenantQuery(tenantId, (db) => db('entity_sync_cursors')
-            .where({ tenant_id: tenantId, connection_id: connectionId, entity_name: entityName })
-            .first()) as { cursor_value: string; cursor_type: string } | undefined;
-          if (existing && !cursorAdvances(cursor.type, existing.cursor_value, cursor.value)) {
-            // Backwards / non-advancing. Loud log so this surfaces in
-            // alerting — the data is fine (we just don't advance) but
-            // it's evidence of a real bug somewhere.
-            childLog.error({
-              entityName,
-              existingType: existing.cursor_type,
-              existing: existing.cursor_value,
-              incomingType: cursor.type,
-              incoming: cursor.value,
-            }, 'CRITICAL: connector returned non-advancing cursor; refusing to update (possible connector bug)');
-            continue;
-          }
-          await tenantQuery(tenantId, (db) => db('entity_sync_cursors')
-            .insert({
-              tenant_id:        tenantId,
-              connection_id:    connectionId,
-              entity_name:      entityName,
-              cursor_type:      cursor.type,
-              cursor_value:     cursor.value,
-              rows_synced_last: rowCounts[entityName] ?? 0,
-              last_sync_at:     db.fn.now(),
-              last_status:      'success',
-              last_error:       null,
-              updated_at:       db.fn.now(),
-            })
-            .onConflict(['tenant_id', 'connection_id', 'entity_name'])
-            .merge({
-              cursor_type:      cursor.type,
-              cursor_value:     cursor.value,
-              rows_synced_last: rowCounts[entityName] ?? 0,
-              last_sync_at:     db.fn.now(),
-              last_status:      'success',
-              last_error:       null,
-              updated_at:       db.fn.now(),
-            }));
-        } catch (err) {
-          childLog.warn({ err, entityName }, 'failed to persist cursor — sync still counted as succeeded');
+      // ── Per-entity state sweep (B3 + B6) ─────────────────────────────
+      // Everything the worker reported per entity is already persisted (see
+      // onEntityComplete / onEntityCheckpoint). This sweep covers the rest:
+      // failed entities keep their cursor and get the error; incomplete ones
+      // get the checkpoint and 'incomplete'; entities a connector without
+      // per-entity hooks completed get their cursor from the result event
+      // (validated and monotonic, exactly as before) or a plain success row.
+      // A reconcile's rowCounts carry the rows each table HOLDS.
+      for (const entityName of entities) {
+        if (failedEntities[entityName] !== undefined) {
+          await persistEntityState({ tenantId, connectionId, entityName, status: 'failed', error: failedEntities[entityName], rowsSynced: rowCounts[entityName] ?? 0 });
+          continue;
+        }
+        const inc = incompleteEntities[entityName];
+        if (inc) {
+          if (inc.cursor) await persistEntityCursor({ tenantId, connectionId, entityName, cursor: inc.cursor, status: 'incomplete', rowsSynced: inc.rowsSoFar });
+          else await persistEntityState({ tenantId, connectionId, entityName, status: 'incomplete', rowsSynced: inc.rowsSoFar });
+          continue;
+        }
+        if (entityStateDone.has(entityName)) continue;
+        if (reconcile) {
+          await persistEntityState({ tenantId, connectionId, entityName, status: 'success', rowsTotal: rowCounts[entityName] });
+          continue;
+        }
+        const cursor = cursorsOut[entityName];
+        if (cursor) {
+          const outcome = await persistEntityCursor({ tenantId, connectionId, entityName, cursor, status: 'success', rowsSynced: rowCounts[entityName] ?? 0 });
+          if (outcome !== 'persisted') childLog.warn({ entityName, outcome }, 'cursor not persisted');
+        } else {
+          await persistEntityState({ tenantId, connectionId, entityName, status: 'success', rowsSynced: rowCounts[entityName] ?? 0 });
         }
       }
       await tenantQuery(tenantId, (db) => db('connections')
@@ -662,7 +844,11 @@ async function runSyncInBackground(args: {
       // an empty warehouse just churns AI tokens and surfaces a "all
       // tables removed" schema-drift notification that's just noise.
       const totalRows = Object.values(rowCounts).reduce((sum, n) => sum + (n || 0), 0);
-      if (totalRows > 0) {
+      if (plan.continue) {
+        childLog.info({ connectionId, incomplete: incompleteNames }, 'load continues in a follow-up run — profiling and pipeline triggers wait for it');
+      } else if (reconcile) {
+        childLog.info({ connectionId }, 'reconcile run — no new rows, skipping schema profiling');
+      } else if (totalRows > 0) {
         void runProfilerInBackground({ connectionId, tenantId }).catch((e) => {
           childLog.error({ err: e }, 'schema profiling failed (sync still counted as succeeded)');
         });
@@ -681,12 +867,28 @@ async function runSyncInBackground(args: {
       // the partial run and re-runs the pipeline once the source is fixed.
       if (isPartial) {
         childLog.warn({ failedEntities: failedNames }, 'partial sync — downstream pipeline triggers NOT fired');
+      } else if (plan.continue) {
+        childLog.info({ incomplete: incompleteNames }, 'unfinished load — downstream pipeline triggers wait for the continuation');
       } else {
         void import('../jobs/pipelineScheduler').then(({ firePipelineTriggersOnSourceSync }) =>
           firePipelineTriggersOnSourceSync({ connectionId, tenantId }),
         ).catch((e) => {
           childLog.error({ err: e }, 'on-source-sync pipeline triggers failed (sync still counted as succeeded)');
         });
+      }
+
+      // ── Continuation (B3) ────────────────────────────────────────────
+      // Queued AFTER this run is terminal (the in-flight unique index would
+      // refuse it otherwise) and after the cursors above are durable, so
+      // the follow-up resumes from the checkpoints. Same connection, only
+      // the unfinished entities, incremental from their cursors.
+      if (plan.continue) {
+        try {
+          const next = await triggerSync({ connectionId, tenantId, entities: incompleteNames, resumedFromRunId: syncRunId });
+          childLog.info({ nextSyncRunId: next.syncRunId, entities: incompleteNames, depth: depth + 1 }, 'continuation run queued');
+        } catch (contErr) {
+          childLog.error({ err: contErr }, 'could not queue the continuation run — the next scheduled sync resumes from the checkpoints');
+        }
       }
     } else if (exitCode === EXIT_CANCELLED) {
       await tenantQuery(tenantId, (db) => db('source_sync_runs')
@@ -804,15 +1006,18 @@ async function notifySyncFailure(args: {
 }
 
 // ─── Worker event dispatch ───────────────────────────────────────────────
-function handleWorkerEvent(args: {
+export function handleWorkerEvent(args: {
   event: WorkerEvent;
   rowCounts: Record<string, number>;
   warnings: string[];
   failedEntities: Record<string, string>;
   cursorsOut: Record<string, { type: 'timestamp' | 'integer' | 'string'; value: string }>;
+  incompleteEntities?: Record<string, { reason: 'time_budget'; cursor?: CursorIn; rowsSoFar: number }>;
   onLogLine: (line: string) => void;
   onCredentialRotated: (newConfig: Record<string, unknown>) => void;
   onError: (msg: string) => void;
+  onEntityCheckpoint?: (ev: Extract<WorkerEvent, { type: 'entity_checkpoint' }>) => void;
+  onEntityComplete?: (ev: Extract<WorkerEvent, { type: 'entity_complete' }>) => void;
 }): void {
   const { event, rowCounts, warnings, failedEntities, cursorsOut, onLogLine, onCredentialRotated, onError } = args;
   switch (event.type) {
@@ -831,6 +1036,11 @@ function handleWorkerEvent(args: {
       return;
     case 'entity_complete':
       rowCounts[event.entity] = event.rowsWritten;
+      args.onEntityComplete?.(event);
+      return;
+    case 'entity_checkpoint':
+      rowCounts[event.entity] = event.rowsSoFar;
+      args.onEntityCheckpoint?.(event);
       return;
     case 'credential_rotated':
       onCredentialRotated(event.newConfig);
@@ -842,6 +1052,7 @@ function handleWorkerEvent(args: {
       warnings.push(...event.warnings);
       if (event.cursors) Object.assign(cursorsOut, event.cursors);
       if (event.failedEntities) Object.assign(failedEntities, event.failedEntities);
+      if (event.incompleteEntities && args.incompleteEntities) Object.assign(args.incompleteEntities, event.incompleteEntities);
       return;
     case 'error':
       onError(event.message);

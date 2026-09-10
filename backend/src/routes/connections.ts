@@ -331,12 +331,13 @@ router.post(
         res.status(400).json({ ok: false, error: 'Invalid connection id' });
         return;
       }
-      const body = (req.body ?? {}) as { full?: boolean; entities?: string[] };
+      const body = (req.body ?? {}) as { full?: boolean; reconcile?: boolean; entities?: string[] };
       const result = await triggerSync({
         connectionId: id,
         tenantId: req.user!.tenantId,
         triggeredByUserId: req.user!.sub,
         full: body.full === true,
+        reconcile: body.reconcile === true,
         entities: body.entities,
       });
       res.status(202).json({ ok: true, data: result });
@@ -347,7 +348,8 @@ router.post(
         msg.includes('not found') ||
         msg.includes('not a source-connector') ||
         msg.includes('no selected entities') ||
-        msg.includes('unknown entity')
+        msg.includes('unknown entity') ||
+        msg.includes('cannot be combined')
       ) {
         res.status(400).json({ ok: false, error: msg });
         return;

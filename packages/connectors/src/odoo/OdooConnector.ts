@@ -164,10 +164,21 @@ export class OdooConnector extends BaseSourceConnector implements SourceConnecto
     const rowCounts: Record<string, number> = {};
     const cursors: Record<string, { type: 'timestamp'; value: string }> = {};
     const failedEntities: Record<string, string> = {};
+    const incompleteEntities: NonNullable<SyncResult['incompleteEntities']> = {};
     const fullResync = opts.fullResync === true;
+
+    // RECONCILE (phase 2, B2): ids only, no row content, no cursor movement.
+    if (opts.reconcile) {
+      return this.reconcile(transport, resolved, ctx, warnings);
+    }
 
     for (const entity of resolved) {
       ctx.cancellationToken.throwIfCancelled();
+      if (ctx.timeBudget?.shouldStop()) {
+        // Out of time before this entity started: the next run's work (B3).
+        incompleteEntities[entity.name] = { reason: 'time_budget', rowsSoFar: 0 };
+        continue;
+      }
       const priorCursor = fullResync ? undefined : opts.cursors?.[entity.name];
       ctx.progress({ message: `Syncing ${entity.displayName ?? entity.name}…` });
       ctx.log.info(`syncing ${entity.name}`, {
@@ -177,7 +188,7 @@ export class OdooConnector extends BaseSourceConnector implements SourceConnecto
       });
 
       try {
-        const { rowsWritten, maxCursorSeen, preservedExisting } =
+        const { rowsWritten, bytesWritten, rowsTotal, maxCursorSeen, preservedExisting, stoppedForBudget } =
           await this.syncOneEntity(transport, entity, ctx, priorCursor?.value, fullResync);
         rowCounts[entity.name] = rowsWritten;
         if (preservedExisting) {
@@ -185,14 +196,25 @@ export class OdooConnector extends BaseSourceConnector implements SourceConnecto
             `Entity '${entity.name}' returned no rows; the previous table was kept. ` +
             `Run a full re-sync if the source really is empty now.`,
           );
-        } else if (rowsWritten === 0) warnings.push(`Entity '${entity.name}' returned no rows.`);
+        } else if (rowsWritten === 0 && !stoppedForBudget) warnings.push(`Entity '${entity.name}' returned no rows.`);
+        if (stoppedForBudget) {
+          // Odoo pages by OFFSET in id order, so a partial pull has no valid
+          // write_date checkpoint: the rows written are merged (idempotent)
+          // and the entity is re-pulled from its prior cursor next run.
+          incompleteEntities[entity.name] = { reason: 'time_budget', rowsSoFar: rowsWritten };
+          ctx.log.warn(`entity '${entity.name}' stopped at the time budget — re-pulled next run`, { rowsSoFar: rowsWritten });
+          continue;
+        }
         // Advance the cursor only when we saw a strictly-greater write_date.
         // (We FILTER with >= for boundary-safety, but only ADVANCE on >, so
         // the orchestrator's monotonicity guard is satisfied and we never
         // re-pull the same window forever.)
+        let newCursor: { type: 'timestamp'; value: string } | undefined;
         if (maxCursorSeen && (!priorCursor || maxCursorSeen > priorCursor.value)) {
-          cursors[entity.name] = { type: 'timestamp', value: maxCursorSeen };
+          newCursor = { type: 'timestamp', value: maxCursorSeen };
+          cursors[entity.name] = newCursor;
         }
+        await ctx.onEntityComplete?.({ entity: entity.name, rowsWritten, bytesWritten, ...(rowsTotal !== undefined ? { rowsTotal } : {}), ...(newCursor ? { cursor: newCursor } : {}) });
       } catch (err) {
         if (err instanceof CancellationError) throw err;
         const msg = err instanceof Error ? err.message : String(err);
@@ -203,7 +225,69 @@ export class OdooConnector extends BaseSourceConnector implements SourceConnecto
       }
     }
 
-    return { rowCounts, warnings, cursors, failedEntities };
+    return { rowCounts, warnings, cursors, failedEntities, ...(Object.keys(incompleteEntities).length > 0 ? { incompleteEntities } : {}) };
+  }
+
+  /**
+   * RECONCILE (phase 2, B2): list every model's ids (`search_read` with
+   * `fields: ['id']` — a fraction of a full pull) and let the writer mark
+   * the rows whose id is gone as deleted, reviving any that are back.
+   */
+  private async reconcile(
+    transport: OdooTransport,
+    entities: OdooEntity[],
+    ctx: SyncContext,
+    warnings: string[],
+  ): Promise<SyncResult> {
+    const rowCounts: Record<string, number> = {};
+    const failedEntities: Record<string, string> = {};
+    const writer = ctx.warehouseWriter;
+    if (!writer.reconcileKeys) {
+      return { rowCounts, warnings: [...warnings, 'This warehouse writer cannot reconcile keys.'], failedEntities };
+    }
+    for (const entity of entities) {
+      ctx.cancellationToken.throwIfCancelled();
+      const key = entity.businessKey;
+      if (!key) {
+        warnings.push(`Entity '${entity.name}' declares no business key — nothing to reconcile on.`);
+        continue;
+      }
+      ctx.progress({ message: `Reconciling ${entity.displayName ?? entity.name}…` });
+      try {
+        const keys = (async function* (): AsyncIterable<string | number> {
+          let offset = 0;
+          let pages = 0;
+          for (;;) {
+            ctx.cancellationToken.throwIfCancelled();
+            const batch = await transport.searchRead(entity.model, { domain: [], fields: ['id'], limit: PAGE_SIZE, offset, order: 'id' });
+            if (batch.length === 0) break;
+            for (const raw of batch) {
+              const id = raw['id'];
+              if (typeof id === 'number' || typeof id === 'string') yield id;
+            }
+            pages += 1;
+            offset += PAGE_SIZE;
+            ctx.progress({ message: `Reconciling ${entity.name} (page ${pages}, ${offset} ids)` });
+            if (batch.length < PAGE_SIZE) break;
+          }
+        })();
+        const r = await writer.reconcileKeys(entity.name, key, keys);
+        rowCounts[entity.name] = r.rowsTotal;
+        if (r.refusedEmpty) {
+          warnings.push(`Entity '${entity.name}': the source listed no ids, so nothing was marked deleted.`);
+        } else if (r.tombstoned > 0 || r.revived > 0) {
+          warnings.push(`Entity '${entity.name}': ${r.tombstoned} row(s) no longer at the source were hidden` + (r.revived > 0 ? `, ${r.revived} came back` : '') + '.');
+        }
+        ctx.log.info(`${entity.name} reconciled`, { ...r });
+      } catch (err) {
+        if (err instanceof CancellationError) throw err;
+        const msg = err instanceof Error ? err.message : String(err);
+        ctx.log.warn(`entity '${entity.name}' reconcile failed — continuing`, { error: msg });
+        warnings.push(`Entity '${entity.name}' reconcile failed: ${msg}`);
+        failedEntities[entity.name] = msg;
+      }
+    }
+    return { rowCounts, warnings, failedEntities, cursors: {} };
   }
 
   /** Sync one entity: fields_get → paged search_read → flatten → write. */
@@ -213,7 +297,7 @@ export class OdooConnector extends BaseSourceConnector implements SourceConnecto
     ctx: SyncContext,
     priorCursorValue: string | undefined,
     fullResync = false,
-  ): Promise<{ rowsWritten: number; maxCursorSeen?: string; preservedExisting?: boolean }> {
+  ): Promise<{ rowsWritten: number; bytesWritten: number; rowsTotal?: number; maxCursorSeen?: string; preservedExisting?: boolean; stoppedForBudget: boolean }> {
     const meta = await transport.fieldsGet(entity.model);
     const fields = ingestibleFields(meta);
     const booleanFields = new Set(
@@ -258,18 +342,33 @@ export class OdooConnector extends BaseSourceConnector implements SourceConnecto
       }
     }
 
-    const result = await ctx.warehouseWriter.writeTable(entity.name, rows(), {
-      mergeKey: entity.businessKey, // 'id'
-      columns,
-      ...(fullResync ? { replace: true } : {}),
+    // One write per entity, no mid-entity checkpoint: Odoo pages by OFFSET
+    // in id order, so "everything up to write_date X is written" cannot be
+    // claimed part-way (a row updated during the pull moves in the ordering
+    // and could hide another behind a page boundary). The time budget can
+    // still end the pull cleanly — the rows fetched so far merge idempotently.
+    // A full re-sync merges (stamping every row it pulls) and then marks the
+    // rest deleted through `finalizeFullSync` (B2) instead of replacing.
+    const result = await BaseSourceConnector['writeEntityInChunks']<Record<string, unknown>>({
+      entity: entity.name,
+      rows: rows(),
+      ctx,
+      writeOpts: { mergeKey: entity.businessKey, columns },
+      chunkRows: Number.POSITIVE_INFINITY,
     });
-    ctx.log.info(`${entity.name} sync complete`, {
+    let rowsTotal = result.rowsTotal;
+    if (fullResync && !result.stoppedForBudget && ctx.syncStartedAt && ctx.warehouseWriter.finalizeFullSync) {
+      const fin = await ctx.warehouseWriter.finalizeFullSync(entity.name, { syncStartedAt: ctx.syncStartedAt });
+      rowsTotal = fin.rowsTotal;
+      ctx.log.info(`${entity.name} full re-sync finalised`, { tombstoned: fin.tombstoned, rowsTotal: fin.rowsTotal });
+    }
+    ctx.log.info(`${entity.name} sync ${result.stoppedForBudget ? 'stopped at the time budget' : 'complete'}`, {
       pages: pagesFetched,
       rows: rowsFetched,
       bytes: result.bytesWritten,
       newCursor: maxCursorSeen,
     });
-    return { rowsWritten: result.rowsWritten, maxCursorSeen, preservedExisting: result.preservedExisting };
+    return { rowsWritten: result.rowsWritten, bytesWritten: result.bytesWritten, rowsTotal, maxCursorSeen, preservedExisting: result.preservedExisting, stoppedForBudget: result.stoppedForBudget };
   }
 
   // ─── getKnownRelationships ───────────────────────────────────────────────

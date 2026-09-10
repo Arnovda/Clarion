@@ -505,6 +505,23 @@ async function checkPipelineCancelled(opts: RunPipelineWorkflowOptions): Promise
   if (opts.isCancelled && (await opts.isCancelled())) throw new CancelledError();
 }
 
+/**
+ * A run that stopped at its time budget is persisted `succeeded` with
+ * `incomplete_entities` and a continuation queued (phase 2, B3). For a
+ * pipeline that is NOT a finished source: a fact built now would read a
+ * table holding part of an initial load. The gate treats it exactly like
+ * a partial run — skip the products, say why — and the continuation's own
+ * completion fires the on-source-sync triggers.
+ */
+export function unfinishedLoadAsPartial(row: { status: string; error_message: string | null; incomplete_entities?: unknown }): { status: string; error_message: string | null } {
+  const inc = row.incomplete_entities;
+  const names = inc && typeof inc === 'object' ? Object.keys(inc as Record<string, unknown>) : typeof inc === 'string' ? Object.keys(JSON.parse(inc) as Record<string, unknown>) : [];
+  if (row.status === 'succeeded' && names.length > 0) {
+    return { status: 'partial', error_message: `the source load is not finished — ${names.length} entities (${names.slice(0, 5).join(', ')}) continue in a follow-up run` };
+  }
+  return { status: row.status, error_message: row.error_message };
+}
+
 async function waitForSyncRun(
   syncRunId: number,
   tenantId: number,
@@ -520,7 +537,7 @@ async function waitForSyncRun(
       .first());
     if (!row) throw new Error(`Sync run ${syncRunId} not found`);
     if (row.status === 'succeeded' || row.status === 'partial' || row.status === 'failed' || row.status === 'cancelled') {
-      return { status: row.status, error_message: row.error_message };
+      return unfinishedLoadAsPartial(row);
     }
     if (Date.now() - start > TIMEOUT_MS) throw new Error('Source sync timed out after 30 min');
     await new Promise((r) => setTimeout(r, POLL_MS));
@@ -822,7 +839,7 @@ async function waitForSourceSync(
       opts.emit({ type: 'log', text: `  Source sync: ${row.status}` });
     }
     if (row.status === 'succeeded' || row.status === 'partial' || row.status === 'failed' || row.status === 'cancelled') {
-      return { status: row.status, warnings: row.warnings, error_message: row.error_message };
+      return { ...unfinishedLoadAsPartial(row), warnings: row.warnings };
     }
     if (Date.now() - start > TIMEOUT_MS) {
       throw new Error('Source sync timed out after 30 minutes');
