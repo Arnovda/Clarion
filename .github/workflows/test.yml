@@ -198,9 +198,36 @@ jobs:
       - name: Graph tenant-predicate lint
         run: npx tsx backend/scripts/lint-graph-tenant-predicate.ts
 
+      # The topic Delta writer's end-to-end suite (delta-topic-write.test.ts)
+      # drives the real Python sidecar; without these two packages it SKIPS
+      # and prints that it did. SAME PINS AS backend/Dockerfile — a CI that
+      # tests one deltalake while the image ships another proves nothing.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install the Delta sidecar's Python deps (the image's pins)
+        run: python3 -m pip install --quiet deltalake==1.6.3 pyarrow==25.0.1
+
       - name: Run tests
         working-directory: backend
         run: npx vitest run
+
+  # The Delta sidecar (etl/scd2/commit_table.py) has its own suite, which
+  # until 2026-09-10 no workflow ran: the file that writes every topic table
+  # was tested only when somebody remembered a venv. Same pins as the image.
+  sidecar-tests:
+    name: Delta sidecar tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install the sidecar's deps (the image's pins) + pytest
+        run: python3 -m pip install --quiet deltalake==1.6.3 pyarrow==25.0.1 pytest
+      - name: Run sidecar tests
+        working-directory: etl
+        run: python3 -m pytest scd2/test_commit_table.py -q
 
   # Tenant-isolation gate. `e2e/rls.spec.ts` registers two tenants over the
   # real API and asserts that neither can see the other's rows — the property

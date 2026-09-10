@@ -31,7 +31,123 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-09-10 (NOTHING WAS EVER SCHEDULED — `source-stale` does
+**Last updated:** 2026-09-10 (B1 DECIDED ON A MEASUREMENT, AND THE TOPIC
+SIDECAR NO LONGER HOLDS THE TABLE — owner: *"Okey let's implement this"*,
+after the Delta-everywhere recommendation. The recommendation's centre
+piece, delta-rs MERGE, was measured first and REJECTED by the numbers;
+what shipped is what the numbers allow. Same branch, new draft PR.)
+
+**THE MEASUREMENT CAME BEFORE THE BUILD, AND IT CHANGED THE BUILD.**
+`backend/scripts/poc-delta-rs.py` (evidence in the assessment §9) on the
+same 3M-row TransactionLines table as the DuckLake PoC, deltalake 1.6.3,
+one process per operation so the peak RSS is the operation's own:
+- **The OLD topic sidecar (deltalake 0.23.2 + pandas) peaked at 6.7 GB and
+  took 133 s** for one refresh of that table. It runs in a 1 GiB
+  jobs-worker. A topic over a fact table of that size has never been
+  refreshable in production; the failure mode is an OOM kill, not an error.
+- **delta-rs MERGE is not a writer for this container**: 1.9 GB for a
+  10k-row delta into 3M with the streamed executor, 1.3 GB with the other
+  on one CPU, killed past 4 GB for a table-against-table merge; a DataFusion
+  memory pool (`max_spill_size`) makes the hash join FAIL, not spill.
+  DuckLake's MERGE fits but needs DuckDB 1.5.2, which the legacy
+  `duckdb-async` 1.4.2 binding will never get (last release for 1.4.x) —
+  the `@duckdb/node-api` migration comes first, on its own track.
+- **A streaming Delta OVERWRITE fits: 303 MB on one CPU** — once the reader
+  goes row group by row group with `pre_buffer=False` (pyarrow's
+  `iter_batches` read-ahead alone cost 557 MB) and delta-rs gets small
+  `write_batch_size` / row groups. The pyarrow full-outer join for the
+  counts cost 1.7 GB and was rejected too; the counts come from DuckDB.
+- **So B1's two owner decisions are not answered, they are gone**: Delta
+  (already in production for topics, catalogue in `_delta_log` on blob)
+  has neither, and DuckLake is not the format for now. Recorded under §3.3
+  and §7 of the assessment.
+
+**WHAT SHIPPED.**
+- **`etl/scd2/commit_table.py` REWRITTEN (no pandas at all).** The new
+  state streams into the Delta commit as a RecordBatchReader (one parquet
+  row group at a time, the null→STRING and UUID→STRING coercions applied
+  per batch); the write is `mode="overwrite"` with `schema_mode="merge"`,
+  `target_file_size` (env `DELTA_TARGET_FILE_SIZE_MB`, default 64) and
+  `delta.targetFileSize` on the table; a zero-row refresh still PRESERVES
+  (row count read from the add actions' stats, metadata only); `allow_empty`
+  still empties. `_row_hash` is Node's job now (`rowHashExpression` in
+  `deltaWriter.ts`: `md5(concat_ws(chr(31), COALESCE(CAST(col AS VARCHAR),
+  'NULL')…))` over the business columns the SELECT actually carries — the
+  Python `hash_row` survives only as the fallback for a parquet without it).
+  **KNOWN ONE-TIME EFFECT**: a table hashed by the old Python formula reads
+  as all-updated on its first refresh after this deploys (booleans spell
+  differently); the chart shows one spike and is right from then on.
+  New mode `maintain`: `optimize.compact` + `vacuum` (retention env
+  `DELTA_VACUUM_RETENTION_HOURS`, default 168, delta-rs' floor never
+  overridden) per listed path; a non-Delta path is `skipped`, never failed.
+- **`deltaWriter.ts`: the counts are DuckDB's.** `countChangesAgainstPrevious`
+  reads the previous state through `createScanView` (the firewall's door,
+  and the one the warehouse-scan ratchet allows) and FULL OUTER JOINs key +
+  hash under the session's memory limit, spilling to `temp_directory`. Null
+  = first run or unreadable → "all inserted", never a guess. A repeating
+  business key (`duplicateKeyRows`) drops the key for that refresh with a
+  warn rather than counting wrong. The tmp parquet is written with
+  `ROW_GROUP_SIZE 16384` so the sidecar's reader stays small.
+  **New LOAD-BEARING log line `'delta write complete'`** (writeMode /
+  countsMeasured / durationMs) → `.ops/prod-logs` signature `delta-write`;
+  its ABSENCE over a window with topic refreshes means the old sidecar
+  still runs. `maintainDeltaTables()` exported for the job below.
+- **`warehouseMaintenance.ts` finally maintains the topic tables.** New
+  `maintainProductTables()` reads every tenant's materialised
+  `product_tables` through `readAcrossTenants` (the root pool sees nothing
+  under RLS — the P0-2 shape), hands the sidecar each tenant's paths in one
+  call, invalidates the pooled DuckDB sessions + `publishInvalidation` per
+  warehouse root, logs `'delta maintenance done'` / `'delta maintenance
+  failed'` (signatures `delta-maintenance` / `-failed`). Runs first inside
+  the weekly `runMaintenance`; the legacy ETL `/optimize` loop stays after
+  it. **Until today nothing ever compacted or vacuumed a topic table**, so
+  the first production run may report large numbers.
+- **`views.ts`: the soft-delete firewall now holds on `delta_scan` too.**
+  Both Delta branches of `createScanView` registered `delta_scan` RAW — the
+  exact shape phase 2 closed on the parquet fallbacks. `deltaSelect` /
+  `parquetSelect` share one `scanSelect`; views.ts still holds exactly ONE
+  `read_parquet(` (the ratchet). No table carries the columns in Delta
+  today, so nothing changes on screen; the rule holds by construction for
+  whichever table crosses first. Pinned by a test that writes a Delta table
+  WITH the columns and reads it back through the view.
+- **Pins**: `backend/Dockerfile` venv `deltalake==1.6.3 pyarrow==25.0.1`
+  (pandas dropped from the image); `test.yml` installs the SAME two lines
+  in `api-tests` (so the Node end-to-end suite runs, not skips) and in a
+  NEW `sidecar-tests` job — the sidecar's pytest had never run in any
+  workflow. Protocol written by 1.6.3 is byte-identical to 0.23.2's
+  (reader 3 / writer 7, `timestampNtz` only), verified by diffing both
+  venvs' `_delta_log`; and DuckDB 1.4.2's `delta_scan` reads every table
+  the new sidecar writes — verified in the suite below, not assumed.
+- Validation: sidecar pytest **26 green** (rewritten: reader streams row
+  groups and keeps/computes the hash, coercions per batch, first run +
+  legacy cleanup, counts passed through verbatim, all-inserted without
+  them, schema widening, zero-row create/preserve/empty, unknown mode,
+  maintain compacts + vacuums + skips non-Delta paths); NEW
+  `backend/src/tests/delta-topic-write.test.ts` **8 green** — nothing
+  mocked: DuckDB 1.4.2 → sidecar → `createScanView` read-back, counts on a
+  refresh `[1,1,1,1,3]`, repeating key → all inserted, zero-row preserved
+  with the catalog count kept, new column + maintenance + read-back, the
+  Delta firewall; the suite SKIPS loudly without `deltalake`; backend `tsc`
+  clean; **all TWELVE ratchets green from the repo root**; `test.yml` and
+  `prod-logs.yml` parse; full backend vitest **92 files / 877 passed / 4
+  skipped** (was 91/869 — +8, the new suite). A first full run showed three
+  failures that were self-inflicted: a single-file vitest run concurrently
+  against the same test database; all three pass alone and in the clean rerun.
+- **NOT done, and why**: the source layer stays parquet with the anti-join
+  (step 3 of the recommendation). Without a merge that fits the container,
+  Delta there is O(table) I/O plus a Python venv in the sync worker, bought
+  for atomic commits and time travel the anti-join does not miss today.
+  Revisit after the `@duckdb/node-api` migration, and only if the O(table)
+  I/O is felt on a real tenant. DuckLake likewise. `etl/requirements.txt`
+  (the separate ETL service image) keeps its own 0.23.2 pin; not touched.
+- **WATCH AFTER DEPLOY**: the first topic refresh must log `delta write
+  complete` (prod-logs `delta-write`); its `countsMeasured: true` on a
+  second refresh is the DuckDB diff working; the first Sunday 03:00 run
+  must log `delta maintenance done` per tenant with non-zero `compacted`
+  the first time. A `sidecar exited` error naming `deltalake` means the
+  image built without the venv.
+
+**Prior last updated:** 2026-09-10 (NOTHING WAS EVER SCHEDULED — `source-stale` does
 NOT appear, so the sync worker's seven days of silence is not an outage.
 Owner: *"Merge to main and production and tell me what the next steps are"*.
 PR #137 rebase-merged (`7c7e1cd`); deploy #596 put the aiCallLogger fix live.

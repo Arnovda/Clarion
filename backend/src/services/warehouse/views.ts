@@ -51,7 +51,23 @@ export interface CreateScanViewOptions {
  * paid once per view per session, not per query.
  */
 export async function parquetSelect(db: Database, escapedPath: string): Promise<string> {
-  const source = `read_parquet('${escapedPath}')`;
+  return scanSelect(db, `read_parquet('${escapedPath}')`);
+}
+
+/**
+ * The Delta twin of `parquetSelect`: the same soft-delete firewall over a
+ * `delta_scan`. No table the platform writes carries the columns in Delta
+ * today (product tables have none), so this reads as `SELECT *` — but the
+ * rule must hold BY CONSTRUCTION for whichever table crosses to Delta
+ * first, not be remembered then. Added 2026-09-10 when the Delta branches
+ * were found registering `delta_scan` raw, the exact shape phase 2 closed
+ * on the parquet fallbacks.
+ */
+export async function deltaSelect(db: Database, escapedPath: string): Promise<string> {
+  return scanSelect(db, `delta_scan('${escapedPath}')`);
+}
+
+async function scanSelect(db: Database, source: string): Promise<string> {
   try {
     const cols = await db.all(`DESCRIBE SELECT * FROM ${source}`) as Array<{ column_name: string }>;
     const names = new Set(cols.map((c) => c.column_name));
@@ -90,7 +106,7 @@ export async function createScanView(
     // Delta table?
     const deltaLog = path.join(fsPath, '_delta_log');
     if (fs.existsSync(deltaLog)) {
-      await db.exec(`CREATE OR REPLACE VIEW ${qualified} AS SELECT * FROM delta_scan('${escaped}');`);
+      await db.exec(`CREATE OR REPLACE VIEW ${qualified} AS ${await deltaSelect(db, escaped)};`);
       return;
     }
 
@@ -116,7 +132,7 @@ export async function createScanView(
   // every step fails — single noisy log line beats four silent ones.
   let deltaErr: unknown;
   try {
-    await db.exec(`CREATE OR REPLACE VIEW ${qualified} AS SELECT * FROM delta_scan('${escaped}');`);
+    await db.exec(`CREATE OR REPLACE VIEW ${qualified} AS ${await deltaSelect(db, escaped)};`);
     return;
   } catch (e) { deltaErr = e; }
 
