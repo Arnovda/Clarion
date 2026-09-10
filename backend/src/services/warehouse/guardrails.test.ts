@@ -11,7 +11,7 @@
  */
 import { afterEach, describe, expect, it } from 'vitest';
 import { Database } from 'duckdb-async';
-import { applyResourceGuardrails, resolveMemoryLimit, visibleMemoryBytes } from './duckdb';
+import { applyResourceGuardrails, pickVisibleMemory, resolveMemoryLimit, visibleMemoryBytes } from './duckdb';
 import { dividedMemoryLimit } from './queryRunnerPool';
 
 const GiB = 1024 * 1024 * 1024;
@@ -21,6 +21,12 @@ describe('resolveMemoryLimit', () => {
     expect(resolveMemoryLimit('70%', 2 * GiB)).toBe('1433MB');
     expect(resolveMemoryLimit('512MB', 2 * GiB)).toBe('512MB');
     expect(resolveMemoryLimit('nope', 2 * GiB)).toBeNull();
+  });
+
+  it("refuses cgroup v1's unlimited sentinel as the memory to take a share of", () => {
+    expect(pickVisibleMemory(9223372036854771712, 16 * GiB)).toBe(16 * GiB);
+    expect(pickVisibleMemory(0, 16 * GiB)).toBe(16 * GiB);
+    expect(pickVisibleMemory(1 * GiB, 16 * GiB)).toBe(1 * GiB);
   });
 
   it('composes with the runner pool division: a divided percentage still resolves', () => {
@@ -45,9 +51,12 @@ describe('applyResourceGuardrails (real DuckDB)', () => {
       const after = await read();
       expect(after).not.toBe(before);
       const expectedMb = Number(resolveMemoryLimit('70%', visibleMemoryBytes())!.replace(/MB$/, ''));
-      const m = /^([\d.]+)\s*(MiB|GiB)$/.exec(after);
-      expect(m).not.toBeNull();
-      const reportedMiB = Number(m![1]) * (m![2] === 'GiB' ? 1024 : 1);
+      // DuckDB prints binary units up to PiB; a value past TiB means the
+      // sentinel got through and there is no ceiling at all.
+      const m = /^([\d.]+)\s*(KiB|MiB|GiB|TiB|PiB)$/.exec(after);
+      expect(m, `memory_limit read back as ${JSON.stringify(after)}`).not.toBeNull();
+      const reportedMiB = Number(m![1]) * ({ KiB: 1 / 1024, MiB: 1, GiB: 1024, TiB: 1024 ** 2, PiB: 1024 ** 3 }[m![2]] ?? 1);
+      expect(reportedMiB).toBeLessThan(1024 * 1024 * 1024);
       expect(Math.abs(reportedMiB - expectedMb * 1e6 / (1024 * 1024))).toBeLessThan(expectedMb * 0.02 + 1);
     } finally {
       await db.close();

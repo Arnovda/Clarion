@@ -123,6 +123,20 @@ NOT taken yet.**
   `tableCatalog.listSourceTables` reads `rows_total` — the connector-path
   tables finally have a row count in the catalog. A state-only row is
   never handed to the worker as a watermark.
+- **PR #132's FIRST CI RUN WENT RED ON THE GUARDRAILS TEST, and the failure
+  was a second defect in the same fix, not a flake.** The GitHub runner read
+  `memory_limit` back in **PiB**: on a cgroup-v1 host with no limit set,
+  `process.constrainedMemory()` returns the kernel's "unlimited" sentinel
+  (2^63 − 4096) rather than 0, and 60% of that is a ceiling in petabytes —
+  no ceiling at all, dressed as one. Every container the platform runs is
+  cgroup-limited so production was never on that path, but the rule was
+  wrong. NEW pure `pickVisibleMemory(constrained, total)` in BOTH copies: a
+  constrained value the host cannot back (larger than `os.totalmem()`,
+  non-finite, ≤0) is not a limit and the host total wins. Pinned with the
+  literal sentinel in both suites; both read-back regexes accept every unit
+  DuckDB's `BytesToHumanReadableString` can print (bytes → PiB) and REFUSE a
+  value past TiB, naming the raw text on failure — the first version's
+  regex stopped at TiB and reported only "expected null not to be null".
 - **NOT done, deliberately**: the DuckLake writer itself (two owner
   decisions above); a door for a topic that WANTS deleted rows
   (cancellations) — the views hide them for everyone today; the Python
@@ -131,8 +145,8 @@ NOT taken yet.**
   full re-sync that stops at its budget continues INCREMENTALLY and its
   deleted-row check does not carry over — the warning says to reconcile
   once the load finishes.
-- Validation: connectors **24 files / 331 passed** (was 22/310: +6
-  guardrails read back from a live session, +5 writer soft-delete/row-count/
+- Validation: connectors **24 files / 333 passed** (was 22/310: +8
+  guardrails read back from a live session incl. the cgroup-v1 sentinel, +5 writer soft-delete/row-count/
   bounded-memory, +6 `writeEntityInChunks`, +4 EO phase-2 — full re-sync
   tombstones instead of overwriting, reconcile sends `$select=ID` and moves
   no cursor, a spent budget checkpoints and reports incomplete never
@@ -147,7 +161,7 @@ NOT taken yet.**
   the load finishing, a no-progress stop becoming `partial` with nothing
   queued, a state-only row not handed over as a cursor; `createScanView`
   hiding deleted rows and the columns while a legacy file reads as before);
-  NEW `services/warehouse/guardrails.test.ts` (3); migration 99 down/up
+  NEW `services/warehouse/guardrails.test.ts` (4); migration 99 down/up
   round-tripped; all eleven ratchets green from the repo root; frontend
   `tsc` clean, `next build` 46/46, `sources/page.tsx` carries only its four
   documented pre-existing findings; full backend vitest **90 files / 860

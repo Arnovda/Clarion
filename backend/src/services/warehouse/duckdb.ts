@@ -33,10 +33,25 @@ export function resolveMemoryLimit(raw: string, totalBytes: number): string | nu
   return null;
 }
 
+/**
+ * Choose between the cgroup limit and the host total. `constrainedMemory()`
+ * is 0 when nothing constrains the process — but on a cgroup v1 host with no
+ * limit set it returns the kernel's "unlimited" sentinel (2^63 − 4096), and
+ * 60% of THAT is a memory_limit in petabytes: no ceiling at all, dressed as
+ * one. Found by the connector suite's first CI run (2026-09-10): the GitHub
+ * runner reported the limit in PiB. A constrained value the host cannot back
+ * is therefore not a limit and the host total wins.
+ */
+export function pickVisibleMemory(constrained: number, total: number): number {
+  if (!(total > 0)) return constrained > 0 ? constrained : 0;
+  if (!(constrained > 0) || !Number.isFinite(constrained) || constrained > total) return total;
+  return constrained;
+}
+
 /** Memory this process may use: the cgroup limit inside a container, else the host. */
 export function visibleMemoryBytes(): number {
-  const constrained = typeof process.constrainedMemory === 'function' ? process.constrainedMemory() : 0;
-  return constrained && constrained > 0 ? constrained : os.totalmem();
+  const constrained = typeof process.constrainedMemory === 'function' ? Number(process.constrainedMemory()) : 0;
+  return pickVisibleMemory(constrained, os.totalmem());
 }
 
 /**
