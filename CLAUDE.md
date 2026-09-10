@@ -62,6 +62,13 @@ three signatures over seven days, and **`source-stale` is not among them**:
   (#595 at 14:28, #596 at 14:39 today). The next run over a fresh window is
   what confirms they have stopped; a 20th occurrence dated after today would
   mean a third site still writes an RLS table on the bare pool.
+- **CONFIRMED, run #13 (the run this merge triggered, 16:43 UTC): still 19,
+  still ending `2026-09-09T14:14:08`.** No refusal after either fix went live,
+  so `aiBudget` and `aiCallLogger` were the only two sites and there is no
+  third. `brief-run` is now 5 with its last at `2026-09-10T11:41` — today's
+  06:00-cycle job ran and again reported `tenantsRun: 2, briefsCreated: 0`.
+  `source-stale` still absent, `sync-complete` still never appeared, and the
+  signature section rendered rather than printing COULD NOT RUN.
 - **WHAT THIS UNBLOCKS AND WHAT IT DOES NOT.** The four phase-2 signals
   (`sync-complete` with `mode: merge:…`, `sync-budget-stop` →
   `sync-continuation`, `sync-tombstoned` against its `rowsTotal`) are not
