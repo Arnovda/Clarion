@@ -14,7 +14,7 @@
  *     call (no retroactive recomputation).
  */
 
-import { semanticDb } from '../db/knex';
+import { tenantQuery } from './tenantQuery';
 import { getAiUserContext } from './aiBudget';
 import { estimateCallCost, categoriseCall } from '../utils/aiPricing';
 import { logger } from '../utils/logger';
@@ -53,14 +53,21 @@ export function logAiCall(call: CallTelemetry): void {
   const category = categoriseCall(call.callLabel);
   const cacheUsed = call.cacheReadTokens > 0;
 
-  // Fire-and-forget. tenantQuery isn't strictly needed because we set
-  // tenant_id explicitly and RLS WITH CHECK happens via the default
-  // expression (`current_setting('app.current_tenant', true)::integer`).
-  // But we set tenant_id via the explicit value (from context) so we
-  // don't depend on `app.current_tenant` being set on the connection.
+  // Fire-and-forget, but through tenantQuery — this used to run on the bare
+  // pool, and the comment that stood here had the RLS rule exactly backwards.
+  // It argued that setting `tenant_id` explicitly meant we "don't depend on
+  // app.current_tenant being set on the connection". The policy's WITH CHECK
+  // compares the row's tenant_id AGAINST that session variable, so an explicit
+  // value does not satisfy it — it makes the comparison `<value> = NULL`, and
+  // the insert is refused with SQLSTATE 42501. The catch below then swallowed
+  // it, so `ai_call_log` silently lost rows and the cost dashboard and the
+  // monthly usage CSV under-reported. The 2026-09-10 prod-logs run is what
+  // caught it; the identical misconception was also written into the
+  // bare-pool ratchet's allowlist reason for aiBudget, so read this twice
+  // before deciding any RLS table is safe on the root pool.
   void (async () => {
     try {
-      await semanticDb('ai_call_log').insert({
+      await tenantQuery(ctx.tenantId, (trx) => trx('ai_call_log').insert({
         tenant_id: ctx.tenantId,
         user_id: ctx.userId,
         model: call.model,
@@ -75,7 +82,7 @@ export function logAiCall(call: CallTelemetry): void {
         cache_used: cacheUsed,
         failed: !!call.failed,
         error_code: call.errorCode ?? null,
-      });
+      }));
     } catch (err) {
       logger.warn({ err, call }, 'aiCallLogger: insert failed (non-fatal)');
     }

@@ -34,6 +34,8 @@ type Svc = {
   triggerSync: typeof import('../orchestrator/SyncOrchestrator').triggerSync;
   recordTenantAiUsage: typeof import('../services/aiBudget').recordTenantAiUsage;
   checkTenantAiBudget: typeof import('../services/aiBudget').checkTenantAiBudget;
+  withTenantAiContext: typeof import('../services/aiBudget').withTenantAiContext;
+  logAiCall: typeof import('../services/aiCallLogger').logAiCall;
   requestCancellation: typeof import('../orchestrator/SyncOrchestrator').requestCancellation;
 };
 let svc: Svc;
@@ -71,19 +73,21 @@ beforeAll(async () => {
   await cleanTestDb();
   A = await seed('alpha');
   B = await seed('beta');
-  const [n, a, ap, p, o, b] = await Promise.all([
+  const [n, a, ap, p, o, b, c] = await Promise.all([
     import('../services/notificationService'),
     import('../services/auditService'),
     import('../services/autoApproveService'),
     import('../services/pipelineService'),
     import('../orchestrator/SyncOrchestrator'),
     import('../services/aiBudget'),
+    import('../services/aiCallLogger'),
   ]);
   svc = {
     notifyAdmins: n.notifyAdmins, notify: n.notify, recordSystemAudit: a.recordSystemAudit,
     autoApproveStaleDrafts: ap.autoApproveStaleDrafts, getDag: p.getDag, resolveScope: p.resolveScope,
     topoSortProducts: p.topoSortProducts, triggerSync: o.triggerSync, requestCancellation: o.requestCancellation,
     recordTenantAiUsage: b.recordTenantAiUsage, checkTenantAiBudget: b.checkTenantAiBudget,
+    withTenantAiContext: b.withTenantAiContext, logAiCall: c.logAiCall,
   };
 });
 
@@ -157,6 +161,33 @@ describe('worker-reachable services under databridge_app with no ambient tenant 
   it('one tenant\'s usage is never counted against another', async () => {
     const a = await svc.checkTenantAiBudget(A.tenantId);
     expect(a.used).toBe(155);
+  });
+
+
+  /**
+   * The SECOND bare-pool writer on the same table family, found by the same
+   * prod-logs run once the RLS/grant labels were told apart. The comment that
+   * stood over this insert argued tenantQuery was unnecessary "because we set
+   * tenant_id explicitly" — but the policy's WITH CHECK compares tenant_id
+   * against `app.current_tenant`, so an explicit value makes it `<value> =
+   * NULL` and the row is refused. `ai_call_log` is what /admin/ai-usage and
+   * the monthly usage CSV read for cost, so the rows were lost silently.
+   */
+  it('logAiCall actually writes ai_call_log (it was failing RLS and swallowing it)', async () => {
+    await svc.withTenantAiContext({ tenantId: A.tenantId, userId: A.adminId }, async () => {
+      svc.logAiCall({
+        model: 'claude-sonnet-4-6', callLabel: 'nl-to-sql',
+        inputTokens: 120, outputTokens: 30, cacheReadTokens: 0, cacheCreationTokens: 0,
+        durationMs: 900,
+      });
+    });
+    // logAiCall is fire-and-forget by contract; give its promise a turn.
+    await new Promise((r) => setTimeout(r, 300));
+    const rows = await superDb('ai_call_log').where({ tenant_id: A.tenantId })
+      .select('model', 'input_tokens', 'output_tokens');
+    expect(rows).toHaveLength(1);
+    expect(Number(rows[0].input_tokens)).toBe(120);
+    expect(Number(rows[0].output_tokens)).toBe(30);
   });
 
   it('recordSystemAudit writes the audit row', async () => {
