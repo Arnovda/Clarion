@@ -31,7 +31,65 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-09-10 (INGESTION-CHAIN PHASE 2 IN PRODUCTION + THE
+**Last updated:** 2026-09-10 (THE READER'S FIRST REAL RUN READ THE READER —
+owner: *"Merge to main and production and tell me what the next steps are"*.
+PR #133 rebase-merged to main (`01a45c7`). The `.ops/prod-logs` edit fired
+**Production logs run #8**, the first run that could have seen the sync
+worker, and it found three defects IN THE REPORT ITSELF. All three are fixed
+here. **B1 is still not started** — the four phase-2 signals remain unread,
+and this is what makes reading them possible.)
+
+**A control that has just been rebuilt to stop reporting nothing was reporting
+the wrong thing instead. Read the run before trusting the next one.**
+- **(1) `grant-missing` HAS BEEN FIRING ON EPOCH TIMESTAMPS.** Run #8 reported
+  2 occurrences of the signature labelled *BAD — the app role is missing a
+  GRANT*, and the example line it printed was **a 200 on `/api/ping`**:
+  `Log_s contains '42501'` matched `"time":1789042501257`, whose digits contain
+  `42501`. About one line in ten thousand does, so the residual-risk signal of
+  the 2026-08-06 database role flip has been quietly crying wolf ever since it
+  was added — the precise way to teach someone to ignore the one line that
+  would say the role flip broke something. **The SQLSTATE is matched QUOTED
+  now** (`"42501"`); pg reports `code` as a string, so every real hit survives
+  and no timestamp can. Verified both directions against the actual production
+  line and a real `aclcheck_error` payload. `insufficient_privilege` and
+  `permission denied for` are unchanged — they are unambiguous English.
+- **(2) FIVE SIGNATURES PRINTED "no interpretation recorded", and CLAUDE.md
+  said otherwise.** The 2026-09-08 entry claims each of the four overnight
+  signatures shipped "with its interpretation"; the `case` block never had a
+  branch for `brief-run`, `overnight-ok`, `overnight-failed`,
+  `overnight-skipped` or `server-error`, so run #8 rendered `brief-run` — the
+  entry's own "load-bearing one" — with no meaning at all. That claim is
+  corrected in the record and all five branches are written, each naming what
+  a big number MEANS rather than that it appeared.
+- **(3) THE REPORT NOW VERIFIES ITS OWN SCOPE, because run #8 could not.** The
+  volume table showed no `*-sync-worker` line and `sync-complete` never
+  appeared — and from the report alone those are **indistinguishable**: either
+  no sync ran in the window, or the worker's rows sit under a name the new
+  scope still does not match. Believing the first is the mistake this file has
+  now made three times, so it no longer has to be believed: after the volume
+  table the run lists, **with no filter at all**, every `(app, job)` pair the
+  log table actually holds, folding a job's execution suffix off its name. A
+  source present there and missing from the volume table is a SCOPE BUG;
+  missing from both wrote nothing. **The scope fix from PR #133 is therefore
+  still UNPROVEN** — it is plausible and untested, and the next run is what
+  settles it.
+- **Window widened `24h` → `7d`** so the run has a chance of containing a sync
+  at all. Narrow it again once one has been observed.
+- Validation: the workflow YAML parses and its embedded bash passes `bash -n`;
+  the new `jq` rendering was dry-run over synthetic rows including **both**
+  empty-column cases; the SQLSTATE pattern was checked against the real
+  false-positive line and a real error payload, and it flips exactly one way on
+  each. No product code is touched (`git status`), so no suite applies — this
+  is workflow + ops documentation only.
+- **WHAT TO READ NEXT, in order**: the "Production logs" run this push
+  triggers. First the unfiltered **Sources seen** table — if a
+  `*-sync-worker` job appears there but not in Volume, the scope is still
+  wrong and nothing below it means anything. Then `sync-complete` with
+  `mode: merge:…` on the largest EO entity; then the first `sync-budget-stop`
+  followed by `sync-continuation`; then the first `sync-tombstoned` read
+  against its `rowsTotal`. Only once those read clean is B1 worth starting.
+
+**Prior last updated:** 2026-09-10 (INGESTION-CHAIN PHASE 2 IN PRODUCTION + THE
 FIREWALL HAS NO BYPASS AND ITS SIGNALS ARE READABLE — owner: *"I follow your
 recommendations for the next slice, but make sure it's the best maintainable
 and professional and secure"*. PR #132 rebase-merged to main (`de0751c`);
