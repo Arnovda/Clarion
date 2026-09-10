@@ -101,14 +101,27 @@ jobs:
           fi
 
           # Both apps run the same image and the same code paths, so a missing
-          # grant can surface in either. The worker name follows the derivation
-          # deploy.yml already uses for the sync worker.
+          # grant can surface in either.
           WORKER="${APP%-backend}-jobs-worker"
+
+          # The SYNC WORKER is a Container Apps JOB, not an app, and this
+          # reader could not see it until 2026-09-10 — which meant three of
+          # the four signals the phase-2 entry told people to watch could
+          # never match. A job's rows carry the EXECUTION name in
+          # ContainerGroupName_s ('<job>-abc123'), so match on the prefix and
+          # fold every execution back onto one bucket, or the volume table
+          # fragments into one row per run.
+          SYNC="${APP%-backend}-sync-worker"
+
+          # One scope fragment, used by BOTH queries. Two copies would drift,
+          # and a volume denominator measured over a different set than the
+          # findings is worse than none.
+          SCOPE="| extend app = iff(ContainerGroupName_s startswith '$SYNC', '$SYNC', ContainerAppName_s) | where app in ('$APP', '$WORKER', '$SYNC') $NARROW"
 
           # ── Volume first ────────────────────────────────────────────────────
           # A report with no findings is meaningless if nothing was running.
           # Print the denominator before the numerators.
-          VOL_Q="ContainerAppConsoleLogs_CL | where TimeGenerated > ago($WINDOW) | where ContainerAppName_s in ('$APP', '$WORKER') $NARROW | summarize lines = count() by app = ContainerAppName_s | order by lines desc"
+          VOL_Q="ContainerAppConsoleLogs_CL | where TimeGenerated > ago($WINDOW) $SCOPE | summarize lines = count() by app | order by lines desc"
 
           if ! az monitor log-analytics query --workspace "$WS" \
                  --analytics-query "$VOL_Q" -o json > /tmp/vol.json 2>/tmp/qerr; then
@@ -139,7 +152,7 @@ jobs:
           # One round trip, bucketed server-side. `contains` rather than `has`
           # because several of these phrases carry punctuation that token-based
           # matching would split.
-          SIG_Q="ContainerAppConsoleLogs_CL | where TimeGenerated > ago($WINDOW) | where ContainerAppName_s in ('$APP', '$WORKER') $NARROW | extend sig = case(Log_s contains '42501' or Log_s contains 'insufficient_privilege' or Log_s contains 'permission denied for', 'grant-missing', Log_s contains 'violates row-level security', 'rls-write-denied', Log_s contains 'ownership check refused', 'ownership-refused', Log_s contains 'Child-process query runner ACTIVE', 'runner-active', Log_s contains 'compiled runner script was not found', 'runner-degraded', Log_s contains 'request failed', 'server-error', Log_s contains 'overnight investigation complete', 'overnight-ok', Log_s contains 'overnight investigation failed', 'overnight-failed', Log_s contains 'skipping overnight investigation', 'overnight-skipped', Log_s contains 'morning brief run done', 'brief-run', '') | where sig != '' | summarize n = count(), firstSeen = min(TimeGenerated), lastSeen = max(TimeGenerated), example = take_any(Log_s) by sig | order by n desc"
+          SIG_Q="ContainerAppConsoleLogs_CL | where TimeGenerated > ago($WINDOW) $SCOPE | extend sig = case(Log_s contains '42501' or Log_s contains 'insufficient_privilege' or Log_s contains 'permission denied for', 'grant-missing', Log_s contains 'violates row-level security', 'rls-write-denied', Log_s contains 'ownership check refused', 'ownership-refused', Log_s contains 'Child-process query runner ACTIVE', 'runner-active', Log_s contains 'compiled runner script was not found', 'runner-degraded', Log_s contains 'request failed', 'server-error', Log_s contains 'overnight investigation complete', 'overnight-ok', Log_s contains 'overnight investigation failed', 'overnight-failed', Log_s contains 'skipping overnight investigation', 'overnight-skipped', Log_s contains 'morning brief run done', 'brief-run', Log_s contains 'sync run failed', 'sync-failed', Log_s contains 'stopped at the time budget', 'sync-budget-stop', Log_s contains 'continuation run queued', 'sync-continuation', Log_s contains 'full re-sync finalised' or Log_s contains '\"tombstoned\"', 'sync-tombstoned', Log_s contains 'sync complete', 'sync-complete', '') | where sig != '' | summarize n = count(), firstSeen = min(TimeGenerated), lastSeen = max(TimeGenerated), example = take_any(Log_s) by sig | order by n desc"
 
           say "### Signatures"
           say ""
@@ -173,6 +186,16 @@ jobs:
                   MEANING="GOOD — the child-process query runner announced itself. This is the positive signal whose ABSENCE means it silently fell back to in-process execution." ;;
                 runner-degraded)
                   MEANING="BAD — the runner could not find its compiled script and fell back in-process. DUCKDB_RUNNER=child is achieving nothing." ;;
+                sync-complete)
+                  MEANING="GOOD — an entity finished pulling. This is the DENOMINATOR for the four signals below: without it, their absence means no sync ran, not that nothing went wrong. Read the 'mode:' field — 'merge:<key>' is the phase-2 anti-join, and it landing without an OOM on the largest entity is what phase 2 was waiting to see." ;;
+                sync-budget-stop)
+                  MEANING="EXPECTED, then check the next line — an entity stopped cleanly at the orchestrator's time ceiling instead of being killed by it (phase 2 B3). It should be followed by 'sync-continuation'. A budget stop with no continuation means the chain refused (cap reached, or a part that made no progress) and the run is partial." ;;
+                sync-continuation)
+                  MEANING="GOOD — the orchestrator queued a follow-up run for exactly the entities that did not finish, resuming from their checkpoints. A long streak of these for one connection means the ceiling is too tight for the table, not that resume is broken." ;;
+                sync-tombstoned)
+                  MEANING="INVESTIGATE the count — the deleted-row check (reconcile, or a full re-sync's finalise) hid rows the source no longer has. Small numbers are the feature working. A large 'tombstoned' next to a small 'rowsTotal' means the source returned less than it holds, and the firewall is now hiding real data: reconcile again before trusting the tables." ;;
+                sync-failed)
+                  MEANING="BAD — a source sync ended failed or partial. This is the string the clarion-failed-syncs alert keys on; the run row carries the per-entity reasons." ;;
                 *)
                   MEANING="no interpretation recorded" ;;
               esac
@@ -190,6 +213,16 @@ jobs:
           # Absence is a finding for the POSITIVE signal only. Announcing "no
           # grant-missing, therefore clean" would repeat the exact mistake this
           # workflow exists to stop.
+          if ! jq -e '.[] | select(.sig == "sync-complete")' /tmp/sig.json >/dev/null 2>&1; then
+            say "**\`sync-complete\` never appeared.** No source entity finished a pull in this"
+            say "window, so the three sync signals above say nothing either way — a budget stop,"
+            say "a continuation and a tombstone count can only be absent when nothing ran. Widen"
+            say "the window in \`.ops/prod-logs\`, or check that the sync-worker job is executing"
+            say "at all (its rows are the \`*-sync-worker\` line in the volume table above; a"
+            say "missing line means the job never started, not that syncs are quiet)."
+            say ""
+          fi
+
           if ! jq -e '.[] | select(.sig | startswith("runner-"))' /tmp/sig.json >/dev/null 2>&1; then
             say "**\`runner-active\` never appeared.** With \`.ops/duckdb-runner\` set to \`child\`,"
             say "that line is emitted once on the first query after boot. Its absence means"

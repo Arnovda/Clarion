@@ -17,6 +17,9 @@ name: Lint
 #   • validate-coverage   — new mutating routes shipped without the Zod
 #     validate() middleware (blind `req.body as {...}` casts; baseline only
 #     ever goes down).
+#   • warehouse-scan      — a bare read_parquet/delta_scan over a warehouse table
+#     instead of createScanView, which bypasses the soft-delete firewall and
+#     serves rows the source has deleted.
 #   • contract-sync       — the shared API contract exists as two byte-identical
 #     copies (backend/src/shared/contract.ts + frontend/lib/contract.ts, because
 #     the frontend Docker build context can't reach a shared package); an edit
@@ -79,3 +82,12 @@ jobs:
       # someone tried the feature. 2026-09-07 coherence review, D1.
       - name: api-base-path
         run: npx --yes tsx@4.22 backend/scripts/lint-api-base-path.ts
+
+      # Ingestion phase 2 made deletes SOFT: a row the source no longer has is
+      # marked, not removed, and exactly one place hides it on the way out
+      # (`parquetSelect` in services/warehouse/views.ts). A read that reaches
+      # the file directly gets the tombstones back plus the two `_clarion_*`
+      # technical columns — nothing errors, the dashboard just shows a wrong
+      # total. Two of createScanView's own fallbacks did this until 2026-09-10.
+      - name: warehouse-scan
+        run: npx --yes tsx@4.22 backend/scripts/lint-warehouse-scan.ts
