@@ -1,5 +1,10 @@
-24h
+7d
 
+# How far back to look in production logs. Widened 24h -> 7d on 2026-09-10:
+# the 24h window held no `sync-complete` at all, so the four phase-2 sync
+# signals had no denominator and said nothing either way. Narrow it again once
+# a sync has been observed.
+#
 # How far back to look in production logs. An OPTIONAL second value line
 # `tenant <id>` narrows every signature to lines carrying that tenantId —
 # the log filter that did not exist anywhere until 2026-09-05 (assessment
@@ -27,10 +32,20 @@
 #
 # What it looks for:
 #
-#   grant-missing     42501 / insufficient_privilege / permission denied for
+#   grant-missing     "42501" / insufficient_privilege / permission denied for
 #                     — a table the app role was never granted. THE residual
 #                     risk of the database role flip: verification exercised
 #                     login, not every code path.
+#                     THE SQLSTATE IS MATCHED QUOTED, and that is not fussiness:
+#                     the bare form matched an epoch-millisecond TIMESTAMP. The
+#                     2026-09-10 run reported two grant-missing hits whose
+#                     example line was a 200 on /api/ping, because
+#                     `"time":1789042501257` contains 42501. Roughly one line in
+#                     ten thousand does, so this BAD-labelled signal fired
+#                     steadily on nothing — which is how a reader teaches people
+#                     to ignore the one signature that says the role flip broke
+#                     something. pg reports the code as a string, so `"42501"`
+#                     keeps every real hit and drops every timestamp.
 #   rls-write-denied  a policy refusing an INSERT/UPDATE. Fail-closed, which is
 #                     the right direction, but it means a user hit a wall.
 #   ownership-refused the tenant ownership gate turning away traffic. A burst
@@ -107,6 +122,13 @@
 # job's rows carry the execution name in ContainerGroupName_s, so they are
 # matched on that prefix and folded back onto one bucket in the volume table.
 #
+# EVERY SIGNATURE MUST CARRY AN INTERPRETATION, and five of them did not until
+# 2026-09-10. brief-run, the four overnight lines and server-error printed "no
+# interpretation recorded" in the report — the 2026-09-08 entry claimed each one
+# shipped with its meaning and the code said otherwise. A signature that names
+# what it matched but not what a big number means leaves the reader exactly
+# where they started; naming the number is most of the value.
+#
 # The four OVERNIGHT signatures were added 2026-09-08 because CLAUDE.md had been
 # telling the next person to "watch .ops/prod-logs for 'overnight
 # investigation complete'" while this file queried six signatures, none of
@@ -120,6 +142,15 @@
 # unmatchable because the process that emits it is outside the query's filter.
 # That was the 2026-09-10 finding, and it is the same failure wearing a
 # different hat.
+#
+# THE REPORT VERIFIES ITS OWN SCOPE. After the volume table it lists, with NO
+# filter, every (app, job) pair the log table actually holds. The 2026-09-10 run
+# is why: it showed no `*-sync-worker` line and no `sync-complete`, and from the
+# report alone those two facts are indistinguishable — either no sync ran, or
+# the worker's rows sit under a name the filter does not match. Assuming the
+# first is the mistake this file has now made three times. A source present in
+# that unfiltered list but missing from the volume table is a SCOPE BUG; missing
+# from both means it wrote nothing.
 #
 # A clean report is only as good as the traffic behind it: no `grant-missing`
 # in a window where nobody used the product proves nothing. The report prints

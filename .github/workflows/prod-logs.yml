@@ -148,11 +148,47 @@ jobs:
           say '```'
           say ""
 
+          # ── Sources seen (UNSCOPED, and that is the point) ──────────────────
+          # The 2026-09-10 run came back with no `*-sync-worker` line and no
+          # `sync-complete`, and those two facts are INDISTINGUISHABLE from
+          # here: either no sync ran, or the worker's rows sit under a name
+          # the SCOPE above does not match. Assuming the first is exactly the
+          # mistake this file has now made three times. So the reader verifies
+          # its own scope: list every (app, job) pair the table actually holds,
+          # with no filter, and let a name nobody predicted be visible instead
+          # of silent. The job name is folded off its execution suffix
+          # (`<job>-abc123`) or one row per run buries the list.
+          SRC_Q="ContainerAppConsoleLogs_CL | where TimeGenerated > ago($WINDOW) | extend job = extract('^(.*)-[^-]+$', 1, tostring(ContainerGroupName_s)) | summarize lines = count() by app = tostring(ContainerAppName_s), job | order by lines desc | take 40"
+
+          say "### Sources seen (unfiltered)"
+          say ""
+          if ! az monitor log-analytics query --workspace "$WS" \
+                 --analytics-query "$SRC_Q" -o json > /tmp/src.json 2>/tmp/qerr; then
+            say "**COULD NOT RUN** — the source-listing query failed. The scope above is"
+            say "therefore unverified: a missing line in the Volume table may mean the name"
+            say "is wrong rather than that nothing ran."
+            say ""
+          else
+            say '```'
+            if [ "$(jq 'length' /tmp/src.json)" = "0" ]; then
+              say "nothing at all in this window — the workspace is empty, not the scope wrong"
+            else
+              jq -r '.[] | "\(if .app == "" then "(no app)" else .app end)  \(if .job == "" then "(not a job)" else .job end)  \(.lines) lines"' /tmp/src.json \
+              | while read -r line; do say "$line"; done
+            fi
+            say '```'
+            say ""
+            say "Every name here is one the scope could match. A source that is missing from"
+            say "the Volume table but present here is a SCOPE BUG; missing from both means it"
+            say "wrote nothing in this window."
+            say ""
+          fi
+
           # ── Signatures ──────────────────────────────────────────────────────
           # One round trip, bucketed server-side. `contains` rather than `has`
           # because several of these phrases carry punctuation that token-based
           # matching would split.
-          SIG_Q="ContainerAppConsoleLogs_CL | where TimeGenerated > ago($WINDOW) $SCOPE | extend sig = case(Log_s contains '42501' or Log_s contains 'insufficient_privilege' or Log_s contains 'permission denied for', 'grant-missing', Log_s contains 'violates row-level security', 'rls-write-denied', Log_s contains 'ownership check refused', 'ownership-refused', Log_s contains 'Child-process query runner ACTIVE', 'runner-active', Log_s contains 'compiled runner script was not found', 'runner-degraded', Log_s contains 'request failed', 'server-error', Log_s contains 'overnight investigation complete', 'overnight-ok', Log_s contains 'overnight investigation failed', 'overnight-failed', Log_s contains 'skipping overnight investigation', 'overnight-skipped', Log_s contains 'morning brief run done', 'brief-run', Log_s contains 'sync run failed', 'sync-failed', Log_s contains 'stopped at the time budget', 'sync-budget-stop', Log_s contains 'continuation run queued', 'sync-continuation', Log_s contains 'full re-sync finalised' or Log_s contains '\"tombstoned\"', 'sync-tombstoned', Log_s contains 'sync complete', 'sync-complete', '') | where sig != '' | summarize n = count(), firstSeen = min(TimeGenerated), lastSeen = max(TimeGenerated), example = take_any(Log_s) by sig | order by n desc"
+          SIG_Q="ContainerAppConsoleLogs_CL | where TimeGenerated > ago($WINDOW) $SCOPE | extend sig = case(Log_s contains '\"42501\"' or Log_s contains 'insufficient_privilege' or Log_s contains 'permission denied for', 'grant-missing', Log_s contains 'violates row-level security', 'rls-write-denied', Log_s contains 'ownership check refused', 'ownership-refused', Log_s contains 'Child-process query runner ACTIVE', 'runner-active', Log_s contains 'compiled runner script was not found', 'runner-degraded', Log_s contains 'request failed', 'server-error', Log_s contains 'overnight investigation complete', 'overnight-ok', Log_s contains 'overnight investigation failed', 'overnight-failed', Log_s contains 'skipping overnight investigation', 'overnight-skipped', Log_s contains 'morning brief run done', 'brief-run', Log_s contains 'sync run failed', 'sync-failed', Log_s contains 'stopped at the time budget', 'sync-budget-stop', Log_s contains 'continuation run queued', 'sync-continuation', Log_s contains 'full re-sync finalised' or Log_s contains '\"tombstoned\"', 'sync-tombstoned', Log_s contains 'sync complete', 'sync-complete', '') | where sig != '' | summarize n = count(), firstSeen = min(TimeGenerated), lastSeen = max(TimeGenerated), example = take_any(Log_s) by sig | order by n desc"
 
           say "### Signatures"
           say ""
@@ -194,7 +230,17 @@ jobs:
                   MEANING="GOOD — the orchestrator queued a follow-up run for exactly the entities that did not finish, resuming from their checkpoints. A long streak of these for one connection means the ceiling is too tight for the table, not that resume is broken." ;;
                 sync-tombstoned)
                   MEANING="INVESTIGATE the count — the deleted-row check (reconcile, or a full re-sync's finalise) hid rows the source no longer has. Small numbers are the feature working. A large 'tombstoned' next to a small 'rowsTotal' means the source returned less than it holds, and the firewall is now hiding real data: reconcile again before trusting the tables." ;;
-                sync-failed)
+                server-error)
+                MEANING="BAD — the API answered a request with a 5xx. This is the string \`clarion-server-errors\` keys on. Note the string is 'request failed', NOT 'request error': requestLogger emits the latter from 400 upwards, and matching it would drown this signal in ordinary client mistakes." ;;
+              brief-run)
+                MEANING="GOOD, and LOAD-BEARING — the nightly brief job ran. It is the DENOMINATOR for the three overnight signals: without it their absence means the job never fired, which is a different problem from it firing and declining. Read 'briefsCreated': a run over N tenants that creates 0 briefs is the job working on quiet data, or a gate refusing every tenant." ;;
+              overnight-ok)
+                MEANING="GOOD — the overnight investigation finished and its conclusion is waiting on Home as the lead sentence, with no model call on click." ;;
+              overnight-failed)
+                MEANING="INVESTIGATE — an investigation errored, usually because the picked entry's product is not queryable. It degrades to the pre-R2 behaviour (a fresh run when the user clicks), not to a broken page, so a few are tolerable and a run of them is not." ;;
+              overnight-skipped)
+                MEANING="EXPECTED — the two cost gates did their job: nothing moved worth investigating, or the account has not opened a brief recently. A quiet morning is supposed to cost almost nothing." ;;
+              sync-failed)
                   MEANING="BAD — a source sync ended failed or partial. This is the string the clarion-failed-syncs alert keys on; the run row carries the per-entity reasons." ;;
                 *)
                   MEANING="no interpretation recorded" ;;
