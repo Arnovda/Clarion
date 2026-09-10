@@ -31,7 +31,72 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-09-10 (THE AI SPEND CAP HAS NEVER BITTEN, AND THE
+**Last updated:** 2026-09-10 (THE SYNC WORKER HAS NOT RUN IN SEVEN DAYS, AND
+THE COST LOG HAD THE SAME LEAK AS THE BUDGET — owner: *"Merge to main and
+production and tell me what the next steps are"*. PR #135 rebase-merged
+(`ad4805c`). Production logs run #10 finally answers the question three
+slices have been chasing. **B1 still not started, and now demonstrably
+cannot be validated until a sync runs.**)
+
+**THE SYNC-WORKER QUESTION IS CLOSED, AND THE ANSWER IS NOT A SCOPE BUG.**
+Run #10's unfiltered Sources seen table listed **six** sources — backend
+294,646 lines, jobs-worker 27,251, frontend 282, etl 36, neo4j 33, redis 17 —
+against a cap of 60, so nothing was truncated and every name the log table
+holds is on it. **There is no sync worker among them.** The Container Apps JOB
+has not executed once in seven days. The scope fix from PR #133 was correct
+all along; what was missing was a diagnostic honest enough to prove it, which
+took two attempts (the per-replica fragmentation and the `take 40` cap, both
+mine). **The four phase-2 signals are blocked on a sync HAPPENING, not on the
+reader.** Whether seven days of silence is a fault depends on whether any sync
+schedule is enabled — which is why `source-stale` is now a signature (the
+freshness sweep's `'source stale'` line, wave B 7-1): its presence means syncs
+are configured and not running; its absence beside an absent worker means
+nothing was ever scheduled. Those are different problems and nothing
+distinguished them before.
+
+**`aiCallLogger` HAD THE IDENTICAL DEFECT TO `aiBudget`, and the comment above
+it argued the opposite in so many words.** Run #10's `rls-write-denied` bucket
+— the same 19 rows, correctly labelled now — produced a DIFFERENT example than
+run #9's: `insert into "ai_call_log"` rather than `ai_usage`. Both tables are
+in that bucket; `take_any` had simply landed on one each time.
+- The standing comment read: *"tenantQuery isn't strictly needed because we
+  set tenant_id explicitly … so we don't depend on `app.current_tenant` being
+  set on the connection."* **That is exactly backwards.** The policy's WITH
+  CHECK compares the row's `tenant_id` AGAINST that session variable, so an
+  explicit value makes the comparison `<value> = NULL` and the insert is
+  refused 42501 — into a catch that swallows it. **This is the second place
+  the same misconception was written down** (the first being the bare-pool
+  ratchet's allowlist reason for aiBudget, corrected in the previous entry),
+  which is why the corrected comment now says to read it twice before calling
+  any RLS table safe on the root pool.
+- `ai_call_log` is what `/admin/ai-usage` and the monthly usage CSV read for
+  COST, so the invoice input was losing rows for the same reason the token
+  budget was. Fixed through `tenantQuery`; **verified RED** (the insert lands
+  `[]` against the old code).
+
+**Two reader improvements, both from reading run #10 rather than guessing.**
+- **Every signature now names the RELATIONS it saw**, not just one example
+  line. A `take_any` sample is a sample, not a census — the ai_usage/
+  ai_call_log split above was invisible until the arbitrary pick moved. The
+  bucket's extracted relation set is reported beside the count.
+- **The RLS/grant labels were told apart in the previous slice and it paid
+  immediately**: what run #9 reported as 19 "missing GRANT" hits are 19 RLS
+  refusals, which is a completely different fix.
+- Also read, unchanged from run #9: `server-error` **zero in 7 days**;
+  `brief-run` five runs, all `tenantsRun: 2, briefsCreated: 0`, no
+  `overnight-*` line of any kind.
+- Validation: backend `tsc` clean; full backend vitest **91 files / 869 passed
+  / 4 skipped** (was 91/868); **all TWELVE ratchets green from the repo root**;
+  workflow YAML parses and its embedded bash passes `bash -n`; the new
+  relations rendering dry-run over synthetic rows including an absent field, an
+  empty set and a leading-dash example. Frontend and connectors untouched.
+- **THE NEXT THING TO READ**: whether `source-stale` appears. If it does,
+  sources are configured to sync and the worker is not running — an outage,
+  and the first thing to fix. If it does not, nothing was scheduled, and the
+  phase-2 signals need a sync to be triggered deliberately before B1 can be
+  judged.
+
+**Prior last updated:** 2026-09-10 (THE AI SPEND CAP HAS NEVER BITTEN, AND THE
 READER IS WHAT FOUND IT — owner: *"Merge to main and production and tell me
 what the next steps are"*. PR #134 rebase-merged (`b9cf3cb`); Production logs
 run #9 is the first with the corrected signatures, and its very first real

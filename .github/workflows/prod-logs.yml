@@ -205,7 +205,7 @@ jobs:
           # One round trip, bucketed server-side. `contains` rather than `has`
           # because several of these phrases carry punctuation that token-based
           # matching would split.
-          SIG_Q="ContainerAppConsoleLogs_CL | where TimeGenerated > ago($WINDOW) $SCOPE | extend sig = case(Log_s contains 'violates row-level security', 'rls-write-denied', Log_s contains '\"42501\"' or Log_s contains 'insufficient_privilege' or Log_s contains 'permission denied for', 'grant-missing', Log_s contains 'ownership check refused', 'ownership-refused', Log_s contains 'Child-process query runner ACTIVE', 'runner-active', Log_s contains 'compiled runner script was not found', 'runner-degraded', Log_s contains 'request failed', 'server-error', Log_s contains 'overnight investigation complete', 'overnight-ok', Log_s contains 'overnight investigation failed', 'overnight-failed', Log_s contains 'skipping overnight investigation', 'overnight-skipped', Log_s contains 'morning brief run done', 'brief-run', Log_s contains 'sync run failed', 'sync-failed', Log_s contains 'stopped at the time budget', 'sync-budget-stop', Log_s contains 'continuation run queued', 'sync-continuation', Log_s contains 'full re-sync finalised' or Log_s contains '\"tombstoned\"', 'sync-tombstoned', Log_s contains 'sync complete', 'sync-complete', '') | where sig != '' | summarize n = count(), firstSeen = min(TimeGenerated), lastSeen = max(TimeGenerated), example = take_any(Log_s) by sig | order by n desc"
+          SIG_Q="ContainerAppConsoleLogs_CL | where TimeGenerated > ago($WINDOW) $SCOPE | extend sig = case(Log_s contains 'violates row-level security', 'rls-write-denied', Log_s contains '\"42501\"' or Log_s contains 'insufficient_privilege' or Log_s contains 'permission denied for', 'grant-missing', Log_s contains 'ownership check refused', 'ownership-refused', Log_s contains 'Child-process query runner ACTIVE', 'runner-active', Log_s contains 'compiled runner script was not found', 'runner-degraded', Log_s contains 'request failed', 'server-error', Log_s contains 'overnight investigation complete', 'overnight-ok', Log_s contains 'overnight investigation failed', 'overnight-failed', Log_s contains 'skipping overnight investigation', 'overnight-skipped', Log_s contains 'morning brief run done', 'brief-run', Log_s contains 'source stale', 'source-stale', Log_s contains 'sync run failed', 'sync-failed', Log_s contains 'stopped at the time budget', 'sync-budget-stop', Log_s contains 'continuation run queued', 'sync-continuation', Log_s contains 'full re-sync finalised' or Log_s contains '\"tombstoned\"', 'sync-tombstoned', Log_s contains 'sync complete', 'sync-complete', '') | where sig != '' | summarize n = count(), firstSeen = min(TimeGenerated), lastSeen = max(TimeGenerated), example = take_any(Log_s), rels = make_set_if(extract('(?i)(?:insert into|update|delete from|permission denied for (?:table|relation))\\s+\\\\?\\\"?([a-z_]+)', 1, Log_s), isnotempty(extract('(?i)(?:insert into|update|delete from|permission denied for (?:table|relation))\\s+\\\\?\\\"?([a-z_]+)', 1, Log_s)), 6) by sig | order by n desc"
 
           say "### Signatures"
           say ""
@@ -226,8 +226,8 @@ jobs:
             say ""
           fi
 
-          jq -r '.[] | [.sig, (.n|tostring), .firstSeen, .lastSeen, (.example // "" | gsub("[\r\n]"; " ") | .[0:400])] | @tsv' /tmp/sig.json \
-          | while IFS=$'\t' read -r SIG N FIRST LAST EXAMPLE; do
+          jq -r '.[] | [.sig, (.n|tostring), .firstSeen, .lastSeen, (.example // "" | gsub("[\r\n]"; " ") | .[0:400]), ((.rels // []) | if type=="string" then . else join(", ") end)] | @tsv' /tmp/sig.json \
+          | while IFS=$'\t' read -r SIG N FIRST LAST EXAMPLE RELS; do
               case "$SIG" in
                 grant-missing)
                   MEANING="BAD — the app role is missing a GRANT on some table. This is the residual risk of the database role flip: verification exercised login, not every code path. Fix it with a migration that grants the table, not by reverting the role." ;;
@@ -257,6 +257,8 @@ jobs:
                 MEANING="INVESTIGATE — an investigation errored, usually because the picked entry's product is not queryable. It degrades to the pre-R2 behaviour (a fresh run when the user clicks), not to a broken page, so a few are tolerable and a run of them is not." ;;
               overnight-skipped)
                 MEANING="EXPECTED — the two cost gates did their job: nothing moved worth investigating, or the account has not opened a brief recently. A quiet morning is supposed to cost almost nothing." ;;
+              source-stale)
+                MEANING="INVESTIGATE — the hourly freshness sweep found a source whose schedule says it should have landed data and it has not (wave B 7-1). This is the signal that distinguishes 'nobody has configured a sync' from 'syncs are configured and not running'. Silence here beside an absent sync worker means the former." ;;
               sync-failed)
                   MEANING="BAD — a source sync ended failed or partial. This is the string the clarion-failed-syncs alert keys on; the run row carries the per-entity reasons." ;;
                 *)
@@ -266,6 +268,7 @@ jobs:
               say ""
               say "- first \`$FIRST\`, last \`$LAST\`"
               say "- $MEANING"
+              [ -n "$RELS" ] && [ "$RELS" != "[]" ] && say "- relations named: \`$RELS\`"
               say ""
               say '```'
               say "$EXAMPLE"
