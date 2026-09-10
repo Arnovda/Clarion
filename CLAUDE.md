@@ -31,7 +31,69 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-09-10 (THE READER'S FIRST REAL RUN READ THE READER —
+**Last updated:** 2026-09-10 (THE AI SPEND CAP HAS NEVER BITTEN, AND THE
+READER IS WHAT FOUND IT — owner: *"Merge to main and production and tell me
+what the next steps are"*. PR #134 rebase-merged (`b9cf3cb`); Production logs
+run #9 is the first with the corrected signatures, and its very first real
+finding is a live product defect. **B1 still not started.**)
+
+**`services/aiBudget.ts` read and wrote `ai_usage` on the BARE ROOT POOL, and
+the two halves failed in opposite ways — one loudly into a swallowed catch,
+one in complete silence.**
+- **THE SILENT HALF IS THE SERIOUS ONE.** `checkTenantAiBudget` selected
+  `ai_usage` with no tenant context, so under `databridge_app` the RLS
+  predicate is `tenant_id = NULL`, the read returns **zero rows with no
+  error**, `used` is 0 and `allowed` is true — every call, every tenant.
+  **The monthly token budget has therefore not been enforceable on any path
+  where the request-time session variable did not happen to be carried**, and
+  nothing anywhere said so. `recordTenantAiUsage` hit the same wall from the
+  other side: its INSERT fails the policy's WITH CHECK with SQLSTATE 42501 and
+  is swallowed as a warn. That is what run #9 surfaced — **19 occurrences over
+  five days**, all from `module: "ai-budget"`.
+- **Downstream, all silently wrong**: `/admin/ai-usage` undercounts, and so
+  does `GET /admin/tenants/usage.csv`, which P0-8 built as the invoice input.
+- **The ratchet's own allowlist entry said the opposite and was believed.** It
+  read *"ai_usage with an explicit tenant filter — convert with the AI-cost
+  pass"*, i.e. the explicit `WHERE tenant_id = ?` was taken as making the
+  bare-pool access safe. It does not: RLS **ANDs** its own predicate on top,
+  so an explicit filter is the authorization statement and never a substitute
+  for the context. Entry rewritten to say that.
+- Both accesses go through `tenantQuery` now — the P0-5 pattern, seventh
+  application. `tenants` stays on the root pool (it has no RLS, which is what
+  makes it the legitimate starting point). Baseline unchanged at 19: the
+  ratchet skips allowlisted files entirely, so these never counted.
+- **VERIFIED RED**: three new tests in `services-under-app-role.test.ts` (the
+  harness that flips `DATABASE_URL` to `databridge_app` before importing).
+  Against the old code the write lands `[]` and the read returns `0` where
+  1000 is owed — **both halves reproduced**, including the one that never
+  logged.
+
+**Two more defects in the reader, found by the same run.**
+- **(1) EVERY RLS REFUSAL WAS BEING REPORTED AS A MISSING GRANT.** Postgres
+  uses SQLSTATE 42501 for both, `case()` returns its first match, and the
+  42501 branch sat above `rls-write-denied`. So the label named the wrong
+  cause and pointed at the wrong fix — grant a table, versus carry the tenant
+  context. The RLS branch is tested first now, and the file says why.
+- **(2) THE "SOURCES SEEN" DIAGNOSTIC SHIPPED YESTERDAY COULD NOT ANSWER ITS
+  OWN QUESTION.** `ContainerGroupName_s` is the REPLICA name for an ordinary
+  app, not only a job execution, so folding one segment off it left a row per
+  revision — ~28 backend rows — and `take 40` was then filled before a
+  low-volume job could appear. Now it groups by the APP name where there is
+  one and falls back to a folded group name only for rows without it: a
+  handful of rows, nothing truncatable. **So the sync-worker question is STILL
+  OPEN** — run #9 showed no `*-sync-worker` anywhere, but with that cap in
+  place the absence proves nothing. The next run is what settles it.
+- Also read off run #9, without acting: `server-error` **zero in 7 days**;
+  `brief-run` five runs, every one `tenantsRun: 2, briefsCreated: 0`, and no
+  `overnight-*` line of any kind — consistent (no brief, nothing to
+  investigate), and worth a look on its own.
+- Validation: backend `tsc` clean; full backend vitest **91 files / 868 passed
+  / 4 skipped** (was 91/865); **all TWELVE ratchets green from the repo root
+  with per-ratchet exit codes**; workflow YAML parses and its embedded bash
+  passes `bash -n`; the new `jq` rendering dry-run over synthetic rows
+  including the unnamed-source cases. Frontend and connectors untouched.
+
+**Prior last updated:** 2026-09-10 (THE READER'S FIRST REAL RUN READ THE READER —
 owner: *"Merge to main and production and tell me what the next steps are"*.
 PR #133 rebase-merged to main (`01a45c7`). The `.ops/prod-logs` edit fired
 **Production logs run #8**, the first run that could have seen the sync

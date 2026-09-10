@@ -48,6 +48,13 @@
 #                     keeps every real hit and drops every timestamp.
 #   rls-write-denied  a policy refusing an INSERT/UPDATE. Fail-closed, which is
 #                     the right direction, but it means a user hit a wall.
+#                     TESTED BEFORE grant-missing, deliberately: Postgres uses
+#                     SQLSTATE 42501 for BOTH a policy refusal and a missing
+#                     GRANT, and case() takes the first branch that matches, so
+#                     with the old order every RLS refusal was reported as a
+#                     missing grant. Different cause, different fix — grant the
+#                     table, versus carry the tenant context. The 2026-09-10
+#                     run's 19 "grant-missing" hits were all the second kind.
 #   ownership-refused the tenant ownership gate turning away traffic. A burst
 #                     means it is rejecting legitimate requests — a graph entity
 #                     whose Postgres mirror row is missing — not that someone is
@@ -142,6 +149,13 @@
 # unmatchable because the process that emits it is outside the query's filter.
 # That was the 2026-09-10 finding, and it is the same failure wearing a
 # different hat.
+#
+# THE FIRST THING THIS READER FOUND WAS A PRODUCT DEFECT, which is the point:
+# 19 42501 lines over five days, all of them `aiBudget`'s ai_usage INSERT being
+# refused by its own RLS policy because the service ran on the bare pool. The
+# INSERT failed loudly-but-swallowed; the SELECT beside it failed SILENTLY
+# (RLS returns zero rows, no error), so `used` read 0 and the AI spend cap
+# never bit. Fixed 2026-09-10 by routing both through tenantQuery.
 #
 # THE REPORT VERIFIES ITS OWN SCOPE. After the volume table it lists, with NO
 # filter, every (app, job) pair the log table actually holds. The 2026-09-10 run

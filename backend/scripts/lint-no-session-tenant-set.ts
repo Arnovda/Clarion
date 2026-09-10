@@ -43,7 +43,7 @@ const ROOT_POOL_OK: Record<string, string> = {
   'services/announcements.ts': 'operator record about all tenants — `announcements` has no tenant_id and no RLS (the feature_flags shape)',
   'services/invites.ts': 'reads `tenants` (no RLS) for the workspace name; the user insert takes the caller\'s tenant-scoped handle',
   'services/tenantLimits.ts': 'reads `tenants` (no RLS) for the seat/source caps; the counts take the caller\'s tenant-scoped handle',
-  'services/aiBudget.ts': 'reads `tenants` (no RLS) + ai_usage with an explicit tenant filter — convert with the AI-cost pass',
+  'services/aiBudget.ts': 'reads `tenants` only (no RLS). Its ai_usage read AND write go through tenantQuery since 2026-09-10 — the old reason here claimed an explicit tenant filter made them safe, and it does not: RLS ANDs its own `tenant_id = NULL` predicate on top, so the write failed 42501 and the read returned zero rows silently, i.e. the AI budget never bit',
   'services/refreshTokenService.ts': 'unauthenticated path: `refresh_tokens` carries the auth_lookup carve-out',
   'services/mfaService.ts': 'unauthenticated MFA path: `users` carries the auth_lookup carve-out; writes are SET LOCAL transactions',
   'services/webauthnService.ts': 'unauthenticated WebAuthn path: same carve-out as mfaService',
