@@ -330,6 +330,31 @@ export interface EntityDocs {
   unresolvedReferences?: UnresolvedReference[];
 
   /**
+   * The identifying column for this entity, when the source DECLARES one and
+   * the connector could only learn it at runtime.
+   *
+   * `getBusinessKeys()` already carries this for a catalog known at compile
+   * time — an API connector's entities are the same for every customer, so
+   * the key is a constant. A database the customer owns is different: the
+   * PRIMARY KEY is declared just as authoritatively (more so — the engine
+   * enforces it), but it can only be read by introspecting that customer's
+   * schema, which the synchronous, config-free `getBusinessKeys()` accessor
+   * cannot do.
+   *
+   * Without this the profiler would fall back to guessing the key from the
+   * data for every SQL source, which is the defect that put a `Created`
+   * timestamp on Exact Online's BankEntryLines: a timestamp is unique and
+   * complete on an append-only table, so the quality scores read 100% while
+   * identifying nothing. Throwing away a declared primary key to re-derive a
+   * worse answer would invert the playbook's whole precedence ladder.
+   *
+   * Same rung as `getBusinessKeys()`, different delivery. The platform
+   * prefers whichever is present; `declaredBusinessKeys` in the backend reads
+   * both.
+   */
+  businessKey?: string;
+
+  /**
    * Which playbook rung these docs came from:
    *   • 'declared' — harvested at runtime from the source's metadata API
    *   • 'curated'  — transcribed from vendor docs into the connector package

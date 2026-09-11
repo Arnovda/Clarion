@@ -119,6 +119,8 @@ export const CONNECTOR_MARKS: Record<string, ConnectorMark> = {
       </>
     ),
   },
+  // `sqlserver` is the legacy `connections.type`; `mssql` is the registry
+  // connector type. Same product, so the same mark — see the alias below.
   sqlserver: {
     // MDI (Apache-2.0)
     color: '#CC2927',
@@ -172,6 +174,11 @@ export const CONNECTOR_MARKS: Record<string, ConnectorMark> = {
  * Lives here, beside the marks, because it answers the same question — how a
  * connector is PRESENTED — and having a second copy is how the two drift.
  */
+// `mssql` is the registry connector type for SQL Server; `sqlserver` is the
+// legacy `connections.type` for a direct-database connection. One product, so
+// one mark — aliased rather than copied, or the two would drift.
+CONNECTOR_MARKS.mssql = CONNECTOR_MARKS.sqlserver!;
+
 export const CONNECTOR_LABELS: Record<string, string> = {
   csv: 'CSV',
   exactonline: 'Exact Online',
@@ -181,6 +188,7 @@ export const CONNECTOR_LABELS: Record<string, string> = {
   postgres: 'PostgreSQL',
   mysql: 'MySQL',
   sqlserver: 'SQL Server',
+  mssql: 'SQL Server',
   sqlite: 'SQLite',
 };
 

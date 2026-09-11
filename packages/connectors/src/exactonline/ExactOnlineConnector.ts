@@ -21,7 +21,6 @@
 import { BaseSourceConnector } from '../BaseSourceConnector';
 import { HttpClient } from '../HttpClient';
 import {
-  CancellationError,
   type ConnectorConfig,
   type EntityAvailability,
   type EntityDescriptor,
@@ -34,6 +33,7 @@ import {
   type EntityBusinessKey,
 } from '../types';
 import { businessKeysFromCatalog } from '../businessKeys';
+import { resolveSyncEntities, runEntitySync, type EntitySyncSource } from '../syncEngine';
 import { asEntityDescriptors, EXACT_ONLINE_ENTITIES, EXACT_ONLINE_KNOWN_RELATIONSHIPS, ENTITIES_BY_NAME, type ExactOnlineEntity } from './entities';
 import { EXACT_ONLINE_COLUMN_DOCS } from './docs';
 import { typesJoinable, joinableCandidates } from '../columnTypes';
@@ -202,16 +202,7 @@ export class ExactOnlineConnector extends BaseSourceConnector implements SourceC
     }
 
     // ── Resolve entities (reject unknowns up-front) ────────────────────
-    const resolved: ExactOnlineEntity[] = [];
-    const warnings: string[] = [];
-    for (const name of opts.entities) {
-      const entity = ENTITIES_BY_NAME.get(name);
-      if (!entity) {
-        warnings.push(`Unknown entity '${name}' — skipped.`);
-        continue;
-      }
-      resolved.push(entity);
-    }
+    const { entities: resolved, warnings } = resolveSyncEntities(opts.entities, (n) => ENTITIES_BY_NAME.get(n));
     if (resolved.length === 0) {
       return { rowCounts: {}, warnings };
     }
@@ -329,172 +320,80 @@ export class ExactOnlineConnector extends BaseSourceConnector implements SourceC
       );
     }
 
-    // ── Sync each selected entity ──────────────────────────────────────
-    // Per-entity isolation: an error on one entity is recorded as a
-    // warning and the loop continues with the rest. Only cancellation
-    // aborts the whole sync. This is meaningfully better UX than
-    // failing the entire sync when, say, one wide-table endpoint
-    // rejects a filter — you still keep the work that succeeded.
-    //
-    // Incremental sync (May 2026): for entities declaring
-    // `incrementalCursor`, we read the prior cursor from
-    // `opts.cursors[entityName]`, append a `Modified gt datetime'X'`
-    // filter to the OData URL, and track the highest Modified value
-    // seen. The new cursor is returned in `result.cursors` only if
-    // the entity's sync completed without error — per-entity
-    // granularity prevents partial progress from advancing the cursor.
-    const rowCounts: Record<string, number> = {};
-    const cursors: Record<string, { type: 'timestamp'; value: string }> = {};
-    const failedEntities: Record<string, string> = {};
-    const incompleteEntities: NonNullable<SyncResult['incompleteEntities']> = {};
-    // A full re-sync ignores every prior cursor, MERGES every row it pulls
-    // and then marks what it did not see as deleted (phase 2, B2).
-    const fullResync = opts.fullResync === true;
-
-    // RECONCILE (B2): keys only, no row content, no cursor movement.
-    if (opts.reconcile) {
-      return this.reconcile(http, config, resolved, ctx, warnings);
-    }
-
-    for (const entity of resolved) {
-      ctx.cancellationToken.throwIfCancelled();
-      // Out of time before this entity even started: it is not a failure,
-      // it is the next run's work (B3).
-      if (ctx.timeBudget?.shouldStop()) {
-        incompleteEntities[entity.name] = { reason: 'time_budget', rowsSoFar: 0 };
-        continue;
-      }
-      ctx.progress({
-        message: `Syncing ${entity.displayName ?? entity.name}…`,
-      });
-      const priorCursor = fullResync ? undefined : opts.cursors?.[entity.name];
-      ctx.log.info(`syncing ${entity.name}`, {
-        apiPath: entity.apiPath,
-        mode: fullResync ? 'full-resync' : entity.incrementalCursor ? (priorCursor ? 'incremental' : 'initial-full') : 'always-full',
-        priorCursor: priorCursor?.value,
-      });
-
-      try {
-        const { rowsWritten, bytesWritten, rowsTotal, maxCursorSeen, preservedExisting, stoppedForBudget } =
-          await this.syncOneEntity(http, config, entity, ctx, priorCursor, metadata, warnings, fullResync);
-        rowCounts[entity.name] = rowsWritten;
-        if (preservedExisting) {
-          warnings.push(
-            `Entity '${entity.name}' returned no rows; the previous table was kept. ` +
-            `Run a full re-sync if the source really is empty now.`,
-          );
-        } else if (rowsWritten === 0 && !stoppedForBudget) {
-          warnings.push(`Entity '${entity.name}' returned no rows.`);
-        }
-        // Only emit a new cursor when the entity is incremental-capable AND
-        // we saw at least one row. If no rows came back, keep the prior
-        // cursor unchanged (or absent on first run) — re-running the same
-        // filter next time is idempotent under the merge-by-key writer.
-        let newCursor: { type: 'timestamp'; value: string } | undefined;
-        if (entity.incrementalCursor && maxCursorSeen) {
-          // Defensive: never move cursor BACKWARDS. EO shouldn't return
-          // rows whose Modified < prior cursor (we asked for >), but guard
-          // anyway against time-zone bugs or out-of-order pages.
-          if (!priorCursor || maxCursorSeen > priorCursor.value) {
-            newCursor = { type: 'timestamp', value: maxCursorSeen };
-          }
-        }
-        if (stoppedForBudget) {
-          // Rows up to the checkpoint are in the warehouse; the entity is
-          // not finished. Its cursor was persisted at the checkpoint, so it
-          // must NOT also count as a completed entity here.
-          incompleteEntities[entity.name] = { reason: 'time_budget', rowsSoFar: rowsWritten, ...(newCursor ? { cursor: newCursor } : {}) };
-          ctx.log.warn(`entity '${entity.name}' stopped at the time budget — resumes next run`, { rowsSoFar: rowsWritten, checkpoint: newCursor?.value });
-          continue;
-        }
-        if (newCursor) cursors[entity.name] = newCursor;
-        await ctx.onEntityComplete?.({ entity: entity.name, rowsWritten, bytesWritten, ...(rowsTotal !== undefined ? { rowsTotal } : {}), ...(newCursor ? { cursor: newCursor } : {}) });
-      } catch (err) {
-        if (err instanceof CancellationError) throw err; // never swallow cancellation
-        const msg = err instanceof Error ? err.message : String(err);
-        ctx.log.warn(`entity '${entity.name}' failed — continuing with remaining entities`, { error: msg });
-        warnings.push(`Entity '${entity.name}' failed: ${msg}`);
-        failedEntities[entity.name] = msg;
-        rowCounts[entity.name] = 0;
-        // Don't write a cursor for failed entities — the next sync
-        // re-pulls from the same point.
-      }
-    }
-
-    return { rowCounts, warnings, cursors, failedEntities, ...(Object.keys(incompleteEntities).length > 0 ? { incompleteEntities } : {}) };
+    // ── Hand the loop to the shared engine ─────────────────────────────
+    // Per-entity isolation, the time budget, the cursor advance rule, the
+    // empty-batch warning and reconcile all live in `syncEngine.ts` and are
+    // identical for every connector. What stays here is Exact Online.
+    return runEntitySync<ExactOnlineEntity>({
+      source: this.syncSource(http, config, metadata),
+      entities: resolved,
+      opts,
+      ctx,
+      seedWarnings: warnings,
+    });
   }
 
   /**
-   * RECONCILE (phase 2, B2): for every entity with a business key, list the
-   * keys the source holds today (`$select=<key>` — a fraction of a full
-   * pull) and let the writer mark the rows whose key is gone as deleted and
-   * revive any that are back. Content is untouched, cursors are untouched.
-   * An entity without a key has nothing to reconcile on and is skipped
-   * with a warning; a writer without `reconcileKeys` (a test fake) too.
+   * The source-specific hooks the engine calls.
+   *
+   * `canCheckpoint: true` is the declaration that matters: Exact Online is
+   * paged by KEY in `Modified asc` order, so "everything up to Modified X is
+   * written" is true part-way through, and a worker killed at the 30-minute
+   * ceiling resumes from there instead of re-pulling the entity. Odoo pages
+   * by offset and declares the opposite — see `EntitySyncSource.canCheckpoint`.
    */
-  private async reconcile(
+  private syncSource(
     http: HttpClient,
     config: ExactOnlineConfig,
-    entities: ExactOnlineEntity[],
+    metadata: ODataMetadata | null,
+  ): EntitySyncSource<ExactOnlineEntity> {
+    return {
+      logFields: (entity) => ({ apiPath: entity.apiPath }),
+      canCheckpoint: () => true,
+      pull: async ({ entity, ctx, priorCursor, fullResync }) => {
+        // A fresh array per entity: the engine appends what comes back, so a
+        // warning can never be dropped by the caller's collection strategy.
+        const entityWarnings: string[] = [];
+        const r = await this.syncOneEntity(http, config, entity, ctx, priorCursor, metadata, entityWarnings, fullResync);
+        return { ...r, warnings: entityWarnings };
+      },
+      listKeys: ({ entity, ctx }) => this.listEntityKeys(http, config, entity, ctx),
+    };
+  }
+
+  /**
+   * Reconcile's cheap half: list the keys the source holds today via
+   * `$select=<key>` — a fraction of a full pull, which is what makes delete
+   * detection affordable enough to run on a schedule. The engine owns what
+   * happens to them (`syncEngine.ts`).
+   */
+  private async *listEntityKeys(
+    http: HttpClient,
+    config: ExactOnlineConfig,
+    entity: ExactOnlineEntity,
     ctx: SyncContext,
-    warnings: string[],
-  ): Promise<SyncResult> {
-    const rowCounts: Record<string, number> = {};
-    const failedEntities: Record<string, string> = {};
-    const writer = ctx.warehouseWriter;
-    if (!writer.reconcileKeys) {
-      return { rowCounts, warnings: [...warnings, 'This warehouse writer cannot reconcile keys.'], failedEntities };
+  ): AsyncIterable<string | number> {
+    const key = entity.businessKey;
+    if (!key) return;
+    const base = `${config.baseUrl.replace(/\/$/, '')}/api/v1/${encodeURIComponent(config.division)}${entity.apiPath}`;
+    const params = [`$select=${encodeURIComponent(key)}`];
+    if (entity.defaultFilter) params.push(`$filter=${encodeURIComponent(entity.defaultFilter)}`);
+    const pages = BaseSourceConnector['paginate']<Record<string, unknown>>({
+      initialCursor: `${base}?${params.join('&')}`,
+      cancellationToken: ctx.cancellationToken,
+      onPage: (pageNum, _n, total) => {
+        ctx.progress({ message: `Reconciling ${entity.name} (page ${pageNum}, ${total} keys)` });
+      },
+      nextPage: async (cursor) => {
+        const resp = await http.request<ODataResponse>({ url: cursor });
+        const page = parseODataPage(resp.body);
+        return { rows: page.rows, nextCursor: page.nextLink };
+      },
+    });
+    for await (const row of pages) {
+      const v = row[key];
+      if (typeof v === 'string' || typeof v === 'number') yield v;
     }
-    for (const entity of entities) {
-      ctx.cancellationToken.throwIfCancelled();
-      const key = entity.businessKey;
-      if (!key) {
-        warnings.push(`Entity '${entity.name}' declares no business key — nothing to reconcile on.`);
-        continue;
-      }
-      ctx.progress({ message: `Reconciling ${entity.displayName ?? entity.name}…` });
-      try {
-        const base = `${config.baseUrl.replace(/\/$/, '')}/api/v1/${encodeURIComponent(config.division)}${entity.apiPath}`;
-        const params = [`$select=${encodeURIComponent(key)}`];
-        if (entity.defaultFilter) params.push(`$filter=${encodeURIComponent(entity.defaultFilter)}`);
-        const initialUrl = `${base}?${params.join('&')}`;
-        let seen = 0;
-        const keys = BaseSourceConnector['paginate']<Record<string, unknown>>({
-          initialCursor: initialUrl,
-          cancellationToken: ctx.cancellationToken,
-          onPage: (pageNum, _n, total) => {
-            seen = total;
-            ctx.progress({ message: `Reconciling ${entity.name} (page ${pageNum}, ${total} keys)` });
-          },
-          nextPage: async (cursor) => {
-            const resp = await http.request<ODataResponse>({ url: cursor });
-            const page = parseODataPage(resp.body);
-            return { rows: page.rows, nextCursor: page.nextLink };
-          },
-        });
-        const keyValues = (async function* (): AsyncIterable<string | number> {
-          for await (const row of keys) {
-            const v = row[key];
-            if (typeof v === 'string' || typeof v === 'number') yield v;
-          }
-        })();
-        const r = await writer.reconcileKeys(entity.name, key, keyValues);
-        rowCounts[entity.name] = r.rowsTotal;
-        if (r.refusedEmpty) {
-          warnings.push(`Entity '${entity.name}': the source listed no keys, so nothing was marked deleted (a throttled endpoint looks the same as an empty table).`);
-        } else if (r.tombstoned > 0 || r.revived > 0) {
-          warnings.push(`Entity '${entity.name}': ${r.tombstoned} row(s) no longer at the source were hidden` + (r.revived > 0 ? `, ${r.revived} came back` : '') + '.');
-        }
-        ctx.log.info(`${entity.name} reconciled`, { keys: seen, ...r });
-      } catch (err) {
-        if (err instanceof CancellationError) throw err;
-        const msg = err instanceof Error ? err.message : String(err);
-        ctx.log.warn(`entity '${entity.name}' reconcile failed — continuing`, { error: msg });
-        warnings.push(`Entity '${entity.name}' reconcile failed: ${msg}`);
-        failedEntities[entity.name] = msg;
-      }
-    }
-    return { rowCounts, warnings, failedEntities, cursors: {} };
   }
 
   /** Sync a single entity. Streams pages → cleans → writes Parquet. */

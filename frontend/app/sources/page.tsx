@@ -134,64 +134,17 @@ const CONNECTORS: Connector[] = [
       },
     ],
   },
-  {
-    id: 'sqlserver',
-    name: 'SQL Server',
-    description: 'Microsoft SQL Server / Azure SQL',
-    available: true,
-    color: 'bg-red-500',
-    iconLetter: 'M',
-    formFields: [
-      { key: 'host', label: 'Server', placeholder: 'localhost or myserver.database.windows.net', type: 'text' },
-      { key: 'port', label: 'Port', placeholder: '1433', type: 'number' },
-      { key: 'database', label: 'Database', placeholder: 'AdventureWorks', type: 'text' },
-      { key: 'user', label: 'Username', placeholder: 'sa', type: 'text' },
-      { key: 'password', label: 'Password', placeholder: '••••••••', type: 'password' },
-      { key: 'encrypt', label: 'Encrypt connection', placeholder: 'true', type: 'text', hint: 'Required for Azure SQL. Enter true or false.' },
-      { key: 'trustServerCertificate', label: 'Trust server certificate', placeholder: 'false', type: 'text', hint: 'Set true for local dev with self-signed certs.' },
-      { key: 'schema', label: 'Schema', placeholder: 'dbo', type: 'text', hint: 'Leave empty for default (dbo).' },
-    ],
-  },
-  {
-    id: 'postgres',
-    name: 'PostgreSQL',
-    description: 'PostgreSQL database',
-    available: true,
-    color: 'bg-indigo-500',
-    iconLetter: 'P',
-    formFields: [
-      { key: 'host', label: 'Host', placeholder: 'localhost or db.example.com', type: 'text' },
-      { key: 'port', label: 'Port', placeholder: '5432', type: 'number' },
-      { key: 'database', label: 'Database', placeholder: 'mydb', type: 'text' },
-      { key: 'user', label: 'Username', placeholder: 'postgres', type: 'text' },
-      { key: 'password', label: 'Password', placeholder: '••••••••', type: 'password' },
-      { key: 'ssl', label: 'SSL', placeholder: 'false', type: 'text', hint: 'Enter true for SSL connections.' },
-      { key: 'schema', label: 'Schema', placeholder: 'public', type: 'text', hint: 'Leave empty for default (public).' },
-    ],
-  },
-  {
-    id: 'mysql',
-    name: 'MySQL',
-    description: 'MySQL or MariaDB database',
-    available: true,
-    color: 'bg-orange-500',
-    iconLetter: 'M',
-    formFields: [
-      { key: 'host', label: 'Host', placeholder: 'localhost or db.example.com', type: 'text' },
-      { key: 'port', label: 'Port', placeholder: '3306', type: 'number' },
-      { key: 'database', label: 'Database', placeholder: 'mydb', type: 'text' },
-      { key: 'user', label: 'Username', placeholder: 'root', type: 'text' },
-      { key: 'password', label: 'Password', placeholder: '••••••••', type: 'password' },
-      { key: 'ssl', label: 'SSL', placeholder: 'false', type: 'text', hint: 'Enter true for SSL connections.' },
-    ],
-  },
-  // NOTE: Exact Online, Odoo, Excel and SharePoint are REGISTRY connectors
+  // NOTE: Exact Online, Odoo, Excel, SharePoint, CSV, PostgreSQL, MySQL and
+  // SQL Server are REGISTRY connectors
   // (packages/connectors/src/*). Their tiles come from the /source-types fetch
   // below, so they must not be listed here — a hardcoded "coming soon" Exact
   // Online entry sat in this list long after the connector shipped, and the
-  // page drew it twice: once greyed out, once live. `STATIC_CONNECTORS` filters
+  // page drew it twice: once greyed out, once live. `staticConnectors` filters
   // that collision out now, but the real rule is that a connector belongs in
   // exactly one of the two lists.
+  //
+  // SQLite stays here on purpose: it is the one direct database with no
+  // registry connector, so the legacy path is still the only way to add one.
   {
     id: 'salesforce',
     name: 'Salesforce',
@@ -227,6 +180,9 @@ const REGISTRY_DESCRIPTIONS: Record<string, string> = {
   csv: 'Upload a CSV — the quickest way to get a budget, price list or mapping in.',
   excel: 'Upload a spreadsheet — budgets, mappings, anything you keep in Excel.',
   sharepoint: 'Read spreadsheets straight from a SharePoint or OneDrive library.',
+  postgres: 'Read tables straight from a PostgreSQL database.',
+  mysql: 'Read tables straight from a MySQL or MariaDB database.',
+  mssql: 'Read tables straight from Microsoft SQL Server or Azure SQL.',
 };
 
 const REGISTRY_COLORS: Record<string, string> = {
@@ -235,6 +191,9 @@ const REGISTRY_COLORS: Record<string, string> = {
   csv: 'bg-slate-600',
   excel: 'bg-emerald-600',
   sharepoint: 'bg-sky-600',
+  postgres: 'bg-indigo-500',
+  mysql: 'bg-orange-500',
+  mssql: 'bg-red-500',
 };
 
 // ---------------------------------------------------------------------------
