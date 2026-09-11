@@ -1627,11 +1627,42 @@ reports exactly what a healthy system reports.
   would come back silent about the investigation while looking healthy. Window
   is `24h`. Do NOT read a silent report as success until `brief-run` is
   present; absence of evidence is not evidence.
+- **⚠ EVERY OPERATIONAL INSTRUCTION IN THE FOUR LINES ABOVE IS NOW WRONG.
+  Read the 2026-09-09/10 prod-logs entries instead; this block is kept only
+  because its reasoning is still right.** Superseded, point by point: the fix
+  reached MAIN on 2026-09-08 (deploy #589), so "select the branch" no longer
+  applies and running from main is correct; the window is **14d** as of
+  2026-09-19, not 24h — widened twice (24h → 7d on 09-10 so a run could
+  contain a sync at all, then 7d → 14d so it reaches back past the 09-11 B1
+  deploy boundary), which is why the number to trust is the one in
+  `.ops/prod-logs`, never one written into a note like this; `brief-run`
+  **is** present — five hits over the seven days run #12 read — so the
+  denominator this entry calls load-bearing is satisfied and a silent
+  overnight result is now readable rather than ambiguous; and the run that
+  settled it was #12, not the 06:00 job this entry was waiting on, which has
+  long since aged out of any window.
+- **AND THE FOUR SIGNATURES SHIPPED HALF-BUILT — my defect, found by the
+  reader's own first real run (#8).** The entry above says each was added "with
+  its meaning"; the report's `case` block had **no branch for any of them**, so
+  all five rendered *"no interpretation recorded"*. A signature that fires and
+  then explains nothing is a smaller version of the same failure this entry was
+  written about: I verified the match strings against the source, and did not
+  verify that a match would render. Fixed in the 2026-09-09 slice. **The rule
+  this adds to the one already here: verify the string against the source AND
+  that a hit renders its meaning — a signature is not shipped until both hold.**
 
 **Prior last updated:** 2026-09-07 (CROSS-SOURCE QUESTIONS WORK — the one line that
 forbade them is gone, and the collision it was hiding is closed by construction;
 owner: *"Cross-source questions don't work, make it work for questions,
-dashboards, notebooks, generally in the platform"*)
+dashboards, notebooks, generally in the platform"*. **IN MAIN AND PRODUCTION** —
+owner: *"Push to main and production"*; PR #126 rebase-merged as `035fdb2`,
+deploy run #589, image `main-035fdb2`. **migrate-sql applied MIGRATION 97**
+(recovery point recorded first, pre-migration schema kept 30 days), then Go live
+health-checked the new backend and shifted traffic at 14:01 UTC 2026-09-08.
+`build-worker` / `build-etl` / `neo4j-constraints` skipped correctly — this
+change touches none of them. NOTE the ordering that made it safe: the gate
+required Tests + Lint green for the commit BEFORE migrate-sql ran, so a red
+suite could not have reached the database.)
 
 **THE BLOCKER WAS ONE LINE AND THE FIX IS NOT.** `tableCatalog.ts` filtered
 every product read with `.where('dp.connection_id', connectionId)`, so a
