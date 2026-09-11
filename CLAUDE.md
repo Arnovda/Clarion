@@ -31,7 +31,30 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-09-10 (B1 DECIDED ON A MEASUREMENT, AND THE TOPIC
+**Last updated:** 2026-09-11 (B1 IS IN PRODUCTION — owner: *"You merge and
+promote pls"*. PR #140 rebase-merged (`ea6a669`); Build & Deploy run #600
+gated on Tests + Lint for the rebased sha, built the backend and ETL images
+as `main-ea6a669`, skipped `migrate-sql` correctly (this slice adds no
+migration), deployed the jobs-worker on the same image — **which is where
+the topic sidecar actually runs, so that step is the one that matters** —
+and Go live health-checked the new backend and shifted traffic at
+**15:20:45 UTC**. Frontend, worker and `neo4j-constraints` skipped, all
+correctly.)
+
+**WHAT TO WATCH NOW THAT IT IS LIVE, in order.** (1) The first topic refresh
+must log **`delta write complete`** (prod-logs signature `delta-write`); its
+ABSENCE over a window with refreshes means the old sidecar still runs, i.e.
+the image built without the venv — a `sidecar exited` error naming
+`deltalake` is the same finding said out loud. (2) On a SECOND refresh of
+the same table, `countsMeasured: true` is the DuckDB diff working; `false`
+means the previous state was unreadable and everything read as inserted.
+(3) The first Sunday 03:00 `runMaintenance` must log **`delta maintenance
+done`** per tenant with a non-zero `compacted` the first time — nothing has
+ever compacted or vacuumed a topic table, so those first numbers may be
+large. (4) ONE all-updated spike per table on its first refresh is the known
+hash-formula change, not a regression.
+
+**Prior last updated:** 2026-09-10 (B1 DECIDED ON A MEASUREMENT, AND THE TOPIC
 SIDECAR NO LONGER HOLDS THE TABLE — owner: *"Okey let's implement this"*,
 after the Delta-everywhere recommendation. The recommendation's centre
 piece, delta-rs MERGE, was measured first and REJECTED by the numbers;
