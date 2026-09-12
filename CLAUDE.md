@@ -31,7 +31,199 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-09-11 (B1 IS IN PRODUCTION — owner: *"You merge and
+**Last updated:** 2026-09-11 (THE THREE SQL DATABASES ARE FRAMEWORK CONNECTORS
+NOW, AND THE INGESTION LOOP EXISTS ONCE — owner: *"implement the connectors for
+Postgres/MySQL/MSSQL correctly so that afterwards we can test the ingestion and
+transformation on one of these sources"*, then *"make it as consistent and
+logical as possible across all connectors... where it makes sense -> uniform
+and consistent to each other"*. The second instruction is what shaped the
+build: not three new connectors, but one shared engine plus one SQL kit, with
+Exact Online and Odoo migrated onto the same engine.)
+
+**THE DUPLICATION WAS ALREADY THERE, AND A FOURTH AND FIFTH COPY WERE ABOUT TO
+JOIN IT.** `ExactOnlineConnector.sync` and `OdooConnector.sync` each carried
+~90 lines of the SAME loop — resolve entities, check the time budget, pull,
+warn on an empty batch, advance the cursor only on a strictly-greater value,
+isolate a per-entity failure, report incomplete entities, and a near-identical
+`reconcile`. Two copies is a style problem; at the 200 connectors this
+framework is meant to host it is a correctness problem, because every rule the
+platform learned the hard way has to be re-implemented correctly by each new
+connector author, and one that gets a rule subtly wrong looks exactly like one
+that got it right.
+- **NEW `packages/connectors/src/syncEngine.ts` is the ONE ingestion loop.**
+  `runEntitySync` + `runReconcile` + `resolveSyncEntities`. A connector now
+  supplies only `pull()` (fetch this entity's rows and write them) and
+  `listKeys()` (the cheap key-only listing a reconcile runs on).
+- **THE GENUINE DIFFERENCE IS A DECLARATION, NOT A SECOND CODE PATH.**
+  `EntitySyncSource.canCheckpoint(entity)`: Exact Online pages by KEY in
+  `Modified asc` order, so a partially-pulled entity HAS a valid resume point
+  and its incomplete entry carries the checkpoint cursor; Odoo pages by OFFSET,
+  so it must not, and is re-pulled from its prior cursor (idempotent under
+  merge-by-key). That was the only real behavioural difference between the two
+  copies. It is now a boolean with the reasoning on it, required with no
+  default — declaring it wrong in the permissive direction SKIPS ROWS SILENTLY.
+- **`pull()` RETURNS its warnings instead of pushing into a shared array.** EO's
+  `syncOneEntity` mutated a `warnings` array passed down from its caller; the
+  engine copies its seed list up front, so those three full-re-sync tombstone
+  messages would have been silently lost. Found by reading the call, not by a
+  test — the warnings would simply have stopped appearing.
+- **Proof the extraction preserved behaviour: both connectors' existing suites,
+  untouched, still pass** — including `OdooConnector.sync.test.ts`, which drives
+  a full sync through nock into real Parquet and reads it back with DuckDB.
+
+**NEW `packages/connectors/src/sql/` — ONE KIT, THREE DIALECTS.** Postgres,
+MySQL and SQL Server are three dialects of one source SHAPE, so a new SQL
+source is a dialect file (~200 lines), not a connector. The kit owns the
+behaviour; `SqlDialect` supplies connect/quote/placeholders/catalog SQL/type
+overrides. Files: `types.ts` (contract) · `catalog.ts` (introspection →
+entities + relationships + `toEntityDescriptor`) · `typeMap.ts` · `pagination.ts`
+· `configSchema.ts` (one config form for all three) · `SqlSourceConnector.ts`
+(the abstract connector). Connectors: `postgres/`, `mysql/`, `mssql/`.
+- **A SQL DATABASE IS THE BEST-DOCUMENTED SOURCE CLARION HAS, and the tier
+  table says why** (`sql/README.md`): relationships **Tier 1** — a FOREIGN KEY
+  is not a vendor *describing* its model, it is the engine *enforcing* one, so
+  there is nothing to verify and nothing to review; types Tier 1; business keys
+  Tier 1 (PRIMARY KEY); descriptions Tier 1 where comments exist and Tier 3
+  otherwise (most schemas have none — exactly the gap the AI pass is for, and
+  the connector stays silent rather than inventing docs at the trusted rung).
+- **THE ENTITY CATALOG IS INTROSPECTED, WHICH BREAKS TWO PLAYBOOK RULES ON
+  PURPOSE** (recorded in the README as the playbook demands): Phase A.6's
+  "curate 15–25 entities" has nothing to curate — the tables ARE the customer's;
+  and Phase C's "description on every entity" is met by STATING THE READING
+  ("incremental on `updated_at`", "no single-column primary key — read in full
+  each sync") rather than restating the table's name, because every property
+  here is inferred from the customer's schema and the picker is the last place
+  a wrong reading can be caught. `getStarSchemaTemplate()` returns null — a
+  bespoke schema has no universal star design, so the AI designer runs.
+- **`getKnownRelationships` / `getBusinessKeys` are deliberately NOT
+  implemented**: both are synchronous and config-free by contract, and neither
+  question can be answered without a connection to this customer's database.
+  Both facts travel on `describeEntities` instead, at the same `declared` rung.
+- **PAGING IS KEYSET, AND ORDERED BY `(cursor, key)` EVEN ON THE FIRST FULL
+  LOAD.** That load is the one most likely to meet the worker's 30-minute
+  ceiling, and ordering it by cursor from the start is what makes it RESUMABLE
+  instead of restarting — so `canCheckpoint` is true whenever the table has a
+  detected cursor. OFFSET is the fallback only for a composite key or no key,
+  and the sync warns when there is nothing stable to order by. The tuple
+  comparison is written out as `cursor > ? OR (cursor = ? AND key > ?)` because
+  SQL Server has no row-value comparison and one shape everywhere beats a
+  shorter query on two of three dialects.
+- **CURSOR DETECTION REFUSES MORE THAN IT ACCEPTS.** A NOT NULL date/time
+  column whose name is conventional (`updated_at`, `modified_date`,
+  `write_date`, …). **`created_at` is excluded by design** — it does not move on
+  update, so it would sync inserts and silently miss every edit, which is the
+  worst outcome available because the table looks fresh and is wrong. **A
+  NULLABLE cursor is refused**: `WHERE updated_at >= x` never matches a NULL,
+  so a row inserted without a stamp after the first sync would be invisible to
+  every later one. No cursor, or no single-column PK → full sync, never a faked
+  watermark. `incrementalDetection: 'off'` turns detection off entirely.
+- **READ-ONLY IS STRUCTURAL FIRST.** Every statement is built by the kit from
+  introspected, quoted identifiers, and `SqlConnection` exposes no method that
+  runs caller-supplied text — so there is no path from a user, a prompt or a
+  config value to a write. Session-level read-only is applied where the engine
+  has it (Postgres `default_transaction_read_only`, MySQL `SET SESSION
+  TRANSACTION READ ONLY`); **SQL Server has no equivalent**, so there the
+  structural guarantee carries the whole weight and the config asks for a
+  `db_datareader` login.
+- **TYPES ARE EXPLICIT, AND THE ALLOW-LIST IS LOAD-BEARING.** An unlisted
+  DuckDB type is not rejected by the writer — the column is silently FILTERED
+  OUT of the read — so a single unmapped type makes a column disappear with
+  nothing saying so. A test maps every type every dialect can produce and
+  asserts `isSafeSqlType` on all of them. **That test found a real bug**:
+  `varbinary(max)` escaped the binary exclusion because the modifier stripper
+  only handled digits, i.e. SQL Server's largest-blob case was the one getting
+  through. Binary columns are excluded (NDJSON staging would embed a base64
+  copy of every attachment twice) and REPORTED per table, never silent.
+- **Dialect disagreements, each with the reason in code**: Postgres `bit` is a
+  bit STRING (→ VARCHAR) while MySQL/SQL Server mean a boolean; MySQL
+  `tinyint(1)` is a boolean and needs `COLUMN_TYPE` to tell it from a small
+  integer; MySQL `BIT` arrives as a Buffer and would be dropped as binary, so a
+  `typeCast` converts it at the driver; MySQL BIGINT needs
+  `supportBigNumbers`/`bigNumberStrings` or large ids round through a float;
+  Postgres `money` returns LOCALISED (`$1,234.56`) so it stays VARCHAR while
+  SQL Server's is an exact DECIMAL(19,4). Unsigned MySQL integers widen one
+  size; `bigint unsigned` stays BIGINT so an impossible value fails the cast
+  LOUDLY rather than being silently rounded by a DOUBLE.
+- **Identifier rules are IMPORTED from the spreadsheet kit** (`sanitiseIdentifier`,
+  `dedupeIdentifiers`, `sanitiseEntityName`), so a column called `Order Date`
+  lands as `Order_Date` whether it arrived from a CSV, an Excel sheet or a
+  Postgres table. Both names are kept per column — the SELECT quotes the real
+  one, the Parquet carries the safe one. Names are deterministic and the input
+  is sorted before deduping, because an entity name is persisted in
+  `selected_entities` and IS the warehouse table name: a name that moved
+  between syncs would orphan everything built on it.
+
+**THE PRIMARY KEY NOW REACHES THE PROFILER — a small platform addition that
+every future runtime-introspected source inherits.** `declaredBusinessKeys`
+reads keys through the SYNCHRONOUS, config-free `getBusinessKeys()` accessor,
+which an introspected source cannot answer. Left alone, every SQL table would
+fall through to guessing the key from the data — the defect that put a
+`Created` timestamp on Exact Online's BankEntryLines, where a timestamp is
+unique and complete on an append-only table so the scores read 100% while
+identifying nothing.
+- **NEW `EntityDocs.businessKey`** (types.ts): same rung, different delivery —
+  the docs channel is already async and already carries the config.
+- **`SchemaProfiler` overlays it onto `declaredBks`**, and it WINS over the
+  static map because it was read from this customer's own schema.
+- **The declared key is now PERSISTED to `source_tables.business_key_column`**
+  so the standalone "Run profile" button (a static catalog lookup, which can
+  learn nothing about an introspected schema) stops guessing — **and the
+  read-back drops a stored key that MATCHES the current declaration**, because
+  otherwise our own persisted value would harden into a fake curator override
+  and a customer who later changed their primary key would score against the
+  old column forever. A genuine override differs from the declaration by
+  definition.
+
+**THE STATIC TILES FOR POSTGRES, MYSQL AND SQL SERVER ARE DELETED.** That file's
+own comment already states the rule — *"a connector belongs in exactly one of
+the two lists"* — written after Exact Online drew twice, once greyed out and
+once live. `staticConnectors` auto-filters ids the registry now serves, which
+covers `postgres`/`mysql`, but the legacy tile id is `sqlserver` while the
+registry type is `mssql`, so that one had to go by hand or the page would have
+drawn SQL Server twice with two different behaviours. **SQLite stays on the
+legacy path** — it is the one direct database with no framework connector.
+`CONNECTOR_MARKS.mssql` is ALIASED to `sqlserver` rather than copied.
+**No namespace collision**: framework connections store `type: 'duckdb'` with
+the product in `connector_type`, and every framework lookup reads
+`connector_type` while the legacy `ConnectorFactory` reads `type` — verified,
+not assumed.
+- Validation: connectors **28 files / 403 passed** (was 24/333 — +70: 16
+  catalog, 12 pagination, 22 typeMap, 17 end-to-end sync, +3 conformance); the
+  end-to-end suite drives a fake DRIVER but the real engine, real chunked
+  writer, real Parquet and DuckDB read-back, covering the six Phase G scenarios
+  plus checkpoint/reconcile/tombstone/boundary; connectors `tsc` clean, dist
+  rebuilt; backend `tsc` clean and **93 files / 879 passed / 10 skipped** (was
+  92/877 — +1 file, `sql-source-business-keys.test.ts`); **all TWELVE ratchets
+  green from the repo root**; frontend `tsc` clean, `next build` green 46/46,
+  touched files carry only the four documented PRE-EXISTING findings in
+  `sources/page.tsx` (verified by re-linting HEAD).
+- **SANDBOX, and it cost a wrong diagnosis**: a first full backend run reported
+  **14 failed files**. All of it was my own setup — `better-sqlite3`'s native
+  binding was missing (I had installed with `--ignore-scripts`) and the suite
+  raced itself against one database. With the binding fetched and
+  `--no-file-parallelism`, 93/93 pass. Read one failure's text before believing
+  the count.
+- **CORRECTING A STALE CLAIM IN THIS FILE: `npm.duckdb.org` is NOT egress-blocked
+  here.** CLAUDE.md has said since 2026-08-29 that the host is 403 and DuckDB
+  must be compiled (15–40 min). In this environment
+  `npm install --ignore-scripts` followed by
+  `npx node-pre-gyp install --directory=node_modules/duckdb` fetched the
+  prebuilt binary in seconds. Use that recipe; do not budget for a native build.
+- **NOT DONE, deliberately**: **no SQLite connector** — it is a local file, not
+  a server, and stays on the legacy path; no per-table cursor override (a
+  schema with an unconventional modified-column name syncs in full); no
+  cross-schema foreign keys (one connection reads one schema); SQL Server
+  DECIMAL precision is whatever the driver returns as a JS number; and the
+  legacy ETL path is untouched — superseded as the DOOR, not yet deleted.
+- **NOT RUN AGAINST A LIVE SERVER OF ANY DIALECT — this is the one thing owed.**
+  The sync is proven end to end against a fake driver, and the catalog SQL is
+  written from each vendor's documentation, but the playbook's Phase G live
+  validation is outstanding. **The introspection queries are what to watch on a
+  first real connection**, and `testConnection` is built to make that readable:
+  it reports tables found, how many have a primary key, how many will sync
+  incrementally, and the relationship count. A `0 of N` on either of the first
+  two is the signal that a catalog query is wrong for that server version.
+**Prior last updated:** 2026-09-11 (B1 IS IN PRODUCTION — owner: *"You merge and
 promote pls"*. PR #140 rebase-merged (`ea6a669`); Build & Deploy run #600
 gated on Tests + Lint for the rebased sha, built the backend and ETL images
 as `main-ea6a669`, skipped `migrate-sql` correctly (this slice adds no
@@ -53,6 +245,7 @@ done`** per tenant with a non-zero `compacted` the first time — nothing has
 ever compacted or vacuumed a topic table, so those first numbers may be
 large. (4) ONE all-updated spike per table on its first refresh is the known
 hash-formula change, not a regression.
+
 
 **Prior last updated:** 2026-09-10 (B1 DECIDED ON A MEASUREMENT, AND THE TOPIC
 SIDECAR NO LONGER HOLDS THE TABLE — owner: *"Okey let's implement this"*,

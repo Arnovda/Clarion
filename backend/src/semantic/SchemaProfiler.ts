@@ -488,6 +488,19 @@ async function runSchemaProfilerBody(
   //   • what a curator has chosen — read BEFORE the wipe-and-reinsert below,
   //     which would otherwise drop it
   const declaredBks = declaredBusinessKeys(connectorType);
+  // A source whose catalog is INTROSPECTED — any SQL database — cannot answer
+  // the synchronous, config-free `getBusinessKeys()` accessor, so it declares
+  // its PRIMARY KEY on the docs channel instead. Same rung on the playbook's
+  // ladder, different delivery, and it wins over the static map because it was
+  // read from THIS customer's own schema rather than from a shipped catalog.
+  //
+  // Without this every SQL table would fall through to guessing the key from
+  // the data, which is the defect that put a `Created` timestamp on Exact
+  // Online's BankEntryLines: unique and complete on an append-only table, so
+  // the scores read 100% while identifying nothing.
+  for (const d of connectorDocs) {
+    if (d.businessKey) declaredBks.set(d.entityName.toLowerCase(), d.businessKey);
+  }
   const userBusinessKeys = new Map<string, string>();
   try {
     const rows = await semanticDb.transaction(async (trx) => {
@@ -498,7 +511,15 @@ async function runSchemaProfilerBody(
         .select('table_name', 'business_key_column');
       return found;
     });
-    for (const r of rows) userBusinessKeys.set(r.table_name, r.business_key_column);
+    for (const r of rows) {
+      // A stored key that MATCHES what the source declares was written by a
+      // previous profile run, not chosen by a person. Treating it as a
+      // curator's pick would freeze it: a customer who later changes the
+      // primary key would keep scoring against the old column forever.
+      // A genuine override differs from the declaration by definition.
+      if (declaredBks.get(r.table_name.toLowerCase()) === r.business_key_column) continue;
+      userBusinessKeys.set(r.table_name, r.business_key_column);
+    }
   } catch (err) {
     log.warn({ err }, 'could not read existing business keys — re-profile proceeds without them');
   }
@@ -1058,7 +1079,16 @@ async function runSchemaProfilerBody(
           // A curator's business-key choice is theirs, and the wipe-and-
           // reinsert above would otherwise discard it on every Analyse —
           // silently sending the table back to a guessed key.
-          business_key_column: userBusinessKeys.get(table.tableName) ?? null,
+          //
+          // The SOURCE'S declaration is persisted too, so the standalone
+          // "Run profile" button (which does a static catalog lookup and can
+          // therefore learn nothing about an introspected schema) reads the
+          // real primary key instead of guessing. Re-reading it above is what
+          // keeps that from hardening into a fake curator override.
+          business_key_column:
+            userBusinessKeys.get(table.tableName)
+            ?? declaredBks.get(table.tableName.toLowerCase())
+            ?? null,
         })
         .returning('id');
 

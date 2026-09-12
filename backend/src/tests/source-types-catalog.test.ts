@@ -47,6 +47,19 @@ describe('source-types catalog', () => {
     expect(listed).toContain('odoo');
   });
 
+  it('offers the three SQL databases through the connector framework', async () => {
+    // Postgres, MySQL and SQL Server used to be reachable only through the
+    // legacy ETL path, which has none of the connector framework's
+    // behaviour — no resumable loads, no soft deletes, no reconcile, no
+    // declared-rung semantics. They are framework connectors now, and the
+    // static tiles that drove the old path have been removed from the
+    // sources page, so this is the only door.
+    const listed = await types();
+    expect(listed).toContain('postgres');
+    expect(listed).toContain('mysql');
+    expect(listed).toContain('mssql');
+  });
+
   it('ships the config schema each connector needs to render its form', async () => {
     // The wizard AND the edit dialog both read a connection's config schema
     // from this catalog, which is why removing a type from it was never safe

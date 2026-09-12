@@ -86,6 +86,28 @@ export {
   type TabularColumn,
 } from './spreadsheet/tabular';
 
+// ─── SQL source kit ───────────────────────────────────────────────────────
+// The shared machinery behind the Postgres / MySQL / SQL Server connectors.
+// Exported so a future SQL source is a dialect file, not a new connector.
+export { SqlSourceConnector } from './sql/SqlSourceConnector';
+export { buildCatalog, type BuildCatalogInput, type BuiltCatalog } from './sql/catalog';
+export { buildPageQuery, buildKeyPageQuery, qualify, type SqlSyntax } from './sql/pagination';
+export { baseDuckDbType, isExcludedType, normaliseTypeName, normaliseValue } from './sql/typeMap';
+export { sqlConfigSchema, type SqlConfigSchemaOptions } from './sql/configSchema';
+export type {
+  PagePlan, RawColumn, RawForeignKey, RawPrimaryKey, RawTable,
+  SqlColumnInfo, SqlConnection, SqlDialect, SqlEntity, SqlQuery, SqlSourceConfig,
+} from './sql/types';
+
+// ─── Shared sync engine ───────────────────────────────────────────────────
+export {
+  runEntitySync,
+  resolveSyncEntities,
+  type EntityPullResult,
+  type EntitySyncSource,
+  type SyncEntity,
+} from './syncEngine';
+
 // ─── Registry ─────────────────────────────────────────────────────────────
 export {
   registerConnector,
@@ -106,7 +128,10 @@ export {
 import './csv';
 import './excel';
 import './exactonline';
+import './mssql';
+import './mysql';
 import './odoo';
+import './postgres';
 import './sharepoint';
 // import './netsuite';     // future
 // import './quickbooks';   // future
