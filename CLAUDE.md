@@ -31,7 +31,65 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-09-11 (THE THREE SQL DATABASES ARE FRAMEWORK CONNECTORS
+**Last updated:** 2026-09-12 (THE SQL CONNECTORS ARE IN PRODUCTION — owner: *"Merge
+and promote pls"*, after asking whether the work was in main and production and
+being told plainly that it was not: PR #142 had sat as an open draft with green
+CI since the previous afternoon, and nothing merges itself.)
+
+**PR #142 SQUASH-merged (`5ae0824`), NOT rebase-merged, and the reason is worth
+knowing before the next one.** This repo's convention is rebase-merge, and GitHub
+REFUSED it — `405 This branch can't be rebased`. The branch carried a merge commit,
+created when `origin/main` was merged in to resolve a CLAUDE.md conflict against
+`a0948a8`; a branch containing a merge commit cannot be rebased. Squash keeps main
+linear, which is what the convention is actually for, and the internal merge commit
+had no reason to survive on main. **The rule: merge main INTO the branch to resolve a
+conflict and you have given up rebase-merge for that PR.** Rebasing the branch
+instead would have kept the option.
+- **Build & Deploy run #602**: gated on Tests + Lint for `5ae0824` (both ran on the
+  push to main and passed — the gate waited 5m24s for them), built backend, frontend
+  and worker as **`main-5ae0824`**, **skipped `migrate-sql` correctly** (verified,
+  not assumed: `git diff a0948a8 5ae0824 -- backend/src/db/migrations/` is empty —
+  this slice adds no migration), skipped ETL and `neo4j-constraints` correctly,
+  deployed all three at 0% traffic, and **pinned the sync-worker Container Apps Job
+  to this build** — the 2026-07-22 `:main-latest` cache lesson, working.
+- **Go live health-checked and shifted traffic at 15:11 UTC**:
+  `/api/health → 200 {"ok":true, postgres/redis/neo4j/blob/worker_transformation/
+  worker_bus_matrix all "ok"}`, then backend and frontend to `main-5ae0824` at 100%.
+
+**WHAT TO WATCH, and the order matters because only the first item touches existing
+tenants.**
+1. **The sync-engine extraction is the one live change for a tenant that already
+   exists.** Exact Online and Odoo both run through `runEntitySync` now. Their suites
+   pass untouched, but the next real EO or Odoo sync is the first time that loop runs
+   against a live source. Watch for `'<entity> sync complete'` as before; a
+   `'sync run failed'` line with `partial: true`, or an entity reported incomplete
+   that used to finish, is the signal. **`canCheckpoint` is the field to suspect** —
+   EO declares `true`, Odoo `false`, and declaring it wrong in the permissive
+   direction skips rows SILENTLY rather than failing.
+2. **The first real Postgres / MySQL / SQL Server connection.** `testConnection`
+   reports tables found, how many have a primary key, how many will sync
+   incrementally, and the relationship count. **A `0 of N` on either of the first two
+   means a catalog query is wrong for that server version** — that is the whole
+   reason it reports those four numbers instead of just "connected".
+3. **The Sources page** now draws Postgres / MySQL / SQL Server from the registry;
+   the static tiles are deleted. SQLite deliberately still draws from the legacy
+   list. A tile appearing twice would mean the legacy/registry split broke.
+4. **After a SQL source's first Analyse**, `source_tables.business_key_column` should
+   hold the real PRIMARY KEY rather than a guess from the data.
+
+**STILL OWED, unchanged by the deploy: not one dialect has been pointed at a live
+server.** Reaching production is not the same as reaching a customer here — no tenant
+can use these connectors until somebody adds a source of that type — so the promote
+is cheap, but it proves nothing about the catalog SQL. The load test the owner
+originally asked for (*"afterwards we can test the ingestion and transformation on
+one of these sources"*) is the next piece of work and is not started.
+- Rollback if needed: Actions → **Rollback production**.
+- Validation: none re-run here — `5ae0824` is byte-identical in content to the
+  validated `ade9415` (squash of the same tree), and CI re-ran the full suite,
+  the twelve ratchets, the migration rollback and the widget render gate on the
+  squashed sha before the gate let the deploy through.
+
+**Prior last updated:** 2026-09-11 (THE THREE SQL DATABASES ARE FRAMEWORK CONNECTORS
 NOW, AND THE INGESTION LOOP EXISTS ONCE — owner: *"implement the connectors for
 Postgres/MySQL/MSSQL correctly so that afterwards we can test the ingestion and
 transformation on one of these sources"*, then *"make it as consistent and
