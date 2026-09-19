@@ -1,9 +1,22 @@
-7d
+14d
 
 # How far back to look in production logs. Widened 24h -> 7d on 2026-09-10:
 # the 24h window held no `sync-complete` at all, so the four phase-2 sync
 # signals had no denominator and said nothing either way. Narrow it again once
 # a sync has been observed.
+#
+# WIDENED 7d -> 14d on 2026-09-19, and the reason is the deploy boundary. B1
+# (the rewritten topic sidecar: streaming, no pandas, counts from DuckDB) went
+# live 2026-09-11 15:20 UTC. A 7d window read on 09-19 starts at 09-12, so it
+# sits entirely AFTER that boundary and cannot tell "the new sidecar has never
+# written" from "it wrote before the window opened" — the two look identical
+# and only one of them is a fault. 14d reaches 09-05, which carries the whole
+# post-deploy period AND a pre-deploy stretch to contrast it against:
+# `delta write complete` is a line the OLD sidecar could not emit, so finding
+# it only after 09-11 15:20 is what proves the new image shipped with its venv.
+# It also clears the first post-B1 Sunday 03:00 maintenance (2026-09-13) with
+# margin instead of by two days — at 7d that run falls out of the window on
+# 09-21, and nothing has ever compacted or vacuumed a topic table before it.
 #
 # How far back to look in production logs. An OPTIONAL second value line
 # `tenant <id>` narrows every signature to lines carrying that tenantId —
