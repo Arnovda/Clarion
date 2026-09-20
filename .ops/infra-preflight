@@ -1,1 +1,27 @@
-run 6 — confirm live image, DUCKDB_RUNNER=child, and container state after promoting the graph merge-key fix
+run 7 — why has the weekly warehouse maintenance never fired? Read both apps' WORKER_QUEUES.
+
+Run #16 of Production logs (2026-09-20, 14d window) found `maintenance-run`
+ABSENT across a window containing BOTH Sunday 03:00 slots (09-13 and 09-20).
+That line — 'warehouse maintenance start', warehouseMaintenance.ts:169 — is
+logged unconditionally at the top of runMaintenance, before any Delta work, so
+its absence is not "nothing to maintain": the job is not executing.
+
+Registration is already ruled out from the code: loadSchedules() calls
+registerWeeklyMaintenance() immediately before registerDailyBrief(), in the
+same function past the same early return, and `brief-run` demonstrably fires
+in production. So the repeatable is registered and something downstream of
+that is not running it.
+
+The leading candidate is queue ownership. `warehouse-maintenance` is in
+COMPUTE_QUEUES (queueRoles.ts), so startMaintenanceWorker() returns null in
+any process whose WORKER_QUEUES excludes it. The API was pinned to the five
+identity-requiring queues on 2026-09-01; if the jobs-worker's WORKER_QUEUES
+does not include `warehouse-maintenance`, NO process consumes that queue and
+the weekly job sits unpromoted forever — which would match exactly what run
+#16 saw.
+
+This probe is read-only. What settles it is two lines of its output:
+  - backend WORKER_QUEUES
+  - worker  WORKER_QUEUES
+If neither contains `warehouse-maintenance` (and the worker's is not unset,
+which means all), that is the bug and the fix is one env var.
