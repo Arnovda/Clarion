@@ -1,0 +1,54 @@
+# Odoo star-schema template table. `source` is the DuckDB SQL over BARE source entity names; a foreign key is written ONCE on its field (clarion.references) and the template joins are derived from it.
+
+name: dim_journal
+label: Journals
+description: Accounting journals (sales, purchases, bank, cash, miscellaneous).
+source: |-
+  SELECT
+    id          AS journal_id,
+    name        AS journal_name,
+    code        AS journal_code,
+    type        AS journal_type,
+    company_id,
+    currency_id
+  FROM account_journal
+fields:
+  - name: journal_id
+    label: Journal ID
+    description: Odoo journal id (primary key).
+    datatype: BIGINT
+    clarion: { role: natural_key, technical: true, lineage: { dataset: account_journal, field: id } }
+  - name: journal_name
+    label: Journal name
+    description: Name of the journal.
+    datatype: VARCHAR
+    clarion: { role: attribute, lineage: { dataset: account_journal, field: name } }
+  - name: journal_code
+    label: Journal code
+    description: Short code of the journal.
+    datatype: VARCHAR
+    clarion: { role: attribute, lineage: { dataset: account_journal, field: code } }
+  - name: journal_type
+    label: Journal type
+    description: sale, purchase, bank, cash or general.
+    datatype: VARCHAR
+    clarion: { role: attribute, lineage: { dataset: account_journal, field: type } }
+  - name: company_id
+    label: Company
+    description: Company that owns this journal.
+    datatype: BIGINT
+    clarion:
+      role: foreign_key
+      references: { dataset: dim_company, field: company_id }
+      technical: true
+      lineage: { dataset: account_journal, field: company_id }
+  - name: currency_id
+    label: Currency
+    description: Currency of the journal (when set).
+    datatype: BIGINT
+    clarion:
+      role: foreign_key
+      references: { dataset: dim_currency, field: currency_id }
+      technical: true
+      lineage: { dataset: account_journal, field: currency_id }
+clarion: { kind: dimension, product: Core dimensions, sourceEntities: [ account_journal ] }

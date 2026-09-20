@@ -1,0 +1,21 @@
+# Odoo model. `source` is the dotted model name used for RPC; `name` is the warehouse table. Field descriptions are the curated fallback beneath the live fields_get harvest (Odoo 16+ semantics).
+
+name: account_payment_term
+label: Payment terms
+description: Payment terms (e.g. 30 days net) applied to invoices and orders.
+source: account.payment.term
+primary_key: [ id ]
+fields:
+  - name: id
+    description: Technical identifier of the payment term
+  - name: name
+    description: Name of the payment term (e.g. 30 days end of month)
+  - name: active
+    description: False when the payment term has been archived
+  - name: write_date
+    description: When the record was last modified
+clarion:
+  kind: source
+  category: Accounting
+  sync:
+    cursor: { field: write_date, type: timestamp }

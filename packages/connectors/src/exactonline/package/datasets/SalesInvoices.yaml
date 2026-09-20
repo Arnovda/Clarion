@@ -1,0 +1,322 @@
+# Exact Online entity. Field docs are TRANSCRIBED from the vendor REST reference by scripts/generate-eo-docs.ts — do not hand-edit descriptions; edit label/description/clarion freely.
+
+name: SalesInvoices
+label: Sales invoices
+description: Sales invoice headers — what was billed and to whom.
+source: /salesinvoice/SalesInvoices
+primary_key: [ ID ]
+fields:
+  - name: AmountDC
+    description: For the header lines (LineNumber = 0) of an entry this is the SUM(AmountDC) of all lines
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: AmountDiscount
+    description: Discount amount in the default currency of the company
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: AmountDiscountExclVat
+    description: Discount amount exclude VAT in the default currency of the company
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: AmountFC
+    description: For the header this is the sum of all lines, including VAT
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: AmountFCExclVat
+    description: For the header this is the sum of all lines, excluding VAT
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: Created
+    description: Creation date
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: Creator
+    description: User ID of creator
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: CreatorFullName
+    description: Name of creator
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Currency
+    description: Currency for the invoice. Default this is the currency of the administration
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: DeliverTo
+    description: Delivery account for invoice
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: Accounts, field: ID } }
+  - name: DeliverToAddress
+    description: Address of delivery as per invoice delivery account
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: Addresses, field: ID } }
+  - name: DeliverToContactPerson
+    description: Delivery account person for invoice
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: Contacts, field: ID } }
+  - name: DeliverToContactPersonFullName
+    description: Name of delivery account's contact person as per invoice
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: DeliverToName
+    description: Name of the delivery account's customer as per invoice
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Description
+    description: Description. Can be different for header and lines
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Discount
+    description: Discount percentage
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: DiscountType
+    description: Leading field of total discount. 1=Discount percentage, 2=Discount amount excl. VAT, 3=Discount amount incl. VAT, 4=Total amount excl. VAT, 5=Total amount incl. VAT
+    datatype: Edm.Int16
+  - name: Division
+    description: Division code
+    datatype: Edm.Int32
+  - name: Document
+    description: Document that is manually linked to the invoice
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: Documents, field: ID } }
+  - name: DocumentNumber
+    description: Number of the document
+    datatype: Edm.Int32
+  - name: DocumentSubject
+    description: Subject of the document
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: DueDate
+    description: The due date for payments. This date is calculated based on the EntryDate and the Paymentcondition
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: ExtraDutyAmountFC
+    description: Extra duty amount in the currency of the transaction. Both extra duty amount and VAT amount need to be specified in order to differ this property from automatically calculated.
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: GAccountAmountFC
+    description: A positive value of the amount indicates that the amount is to be paid by the customer to your G bank account.In case of a credit invoice the amount should have negative value when retrieved or posted to Exact.
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: IncotermAddress
+    description: Address of Incoterm
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: IncotermCode
+    description: Code of Incoterm
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: IncotermVersion
+    description: "Version of Incoterm Supported version for Incoterms : 2010, 2020"
+    datatype: Edm.Int16
+  - name: InvoiceDate
+    description: Official date for the invoice. When the invoice is entered it's equal to the field 'EntryDate'. During the printing process the invoice date can be entered
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: InvoiceID
+    description: Primary key
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: InvoiceNumber
+    description: Assigned at entry or at printing depending on setting. The number assigned is based on the freenumbers as defined for the Journal. When printing the field InvoiceNumber is copied to the fields EntryNumber and InvoiceNumber of the sales entry
+    datatype: Edm.Int32
+  - name: InvoiceStatusInformation
+    description: Detailed information on the status of the sales invoice in case of collaboration with 3rd parties like Peppol
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: InvoiceTo
+    description: Reference to the Customer who will receive the invoice
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: Accounts, field: ID } }
+  - name: InvoiceToContactPerson
+    description: Reference to the Contact person of the customer who will receive the invoice
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: Contacts, field: ID } }
+  - name: InvoiceToContactPersonFullName
+    description: Name of the contact person of the customer who will receive the invoice
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: InvoiceToName
+    description: Name of the customer who will receive the invoice
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: IsExtraDuty
+    description: Indicates whether the invoice has extra duty
+    datatype: Edm.Boolean
+    clarion: { role: dimension }
+  - name: Journal
+    description: The journal code. Every invoice should be linked to a sales journal
+    datatype: Edm.String
+    clarion: { role: dimension, references: { dataset: Journals, field: ID } }
+  - name: JournalDescription
+    description: Description of Journal
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Modified
+    description: Last modified date
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: Modifier
+    description: User ID of modifier
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: ModifierFullName
+    description: Name of modifier
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: OrderDate
+    description: Order date
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: OrderedBy
+    description: Customer who ordered the invoice
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: Accounts, field: ID } }
+  - name: OrderedByContactPerson
+    description: Contact person of customer who ordered the invoice
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: Contacts, field: ID } }
+  - name: OrderedByContactPersonFullName
+    description: Name of contact person of customer who ordered the invoice
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: OrderedByName
+    description: Name of customer who ordered the invoice
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: OrderNumber
+    description: Number to identify the order. By default the number is based on a setting for the first free number, but you can post your own number.
+    datatype: Edm.Int32
+  - name: PaymentCondition
+    description: The payment condition used for due date and discount calculation
+    datatype: Edm.String
+    clarion: { role: dimension, references: { dataset: PaymentConditions, field: ID } }
+  - name: PaymentConditionDescription
+    description: Description of PaymentCondition
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: PaymentReference
+    description: Payment reference for sales invoice
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Remarks
+    description: Extra remarks
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: SalesChannel
+    description: ID of Sales channel.
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: SalesChannelCode
+    description: Code of Sales channel.
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: SalesChannelDescription
+    description: Description of Sales channel.
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Salesperson
+    description: Sales representative
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: SalespersonFullName
+    description: Name of sales representative
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: SelectionCode
+    description: ID of selection code. Only supported by the Plus, Professional and Premium for Wholesale & Distribution and Manufacturing
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: SelectionCodeCode
+    description: Code of selection code
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: SelectionCodeDescription
+    description: Description of selection code
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: ShippingMethod
+    description: Shipping method ID
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: ShippingMethodCode
+    description: Shipping method code
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: ShippingMethodDescription
+    description: Shipping method description
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: StarterSalesInvoiceStatus
+    description: Starter Sales invoice status (for starter functionality)
+    datatype: Edm.Int16
+  - name: StarterSalesInvoiceStatusDescription
+    description: Description of StarterSalesInvoiceStatus
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Status
+    description: The status of the entry. 10 = draft. During the creation of an invoice draft records occur in the draft modus if during an invoice a new page with lines is triggered. If the user leaves the invoice in an abnormal way the draft invoices can be recovered. Draft invoices are not included in financial reports, balances etc. 20 = open. Open invoices can be changed. New invoices get the status open by default. 50 = processed. Processed invoices can't be changed anymore. Processing is done via printing. Processed invoices can't be reopened
+    datatype: Edm.Int16
+  - name: StatusDescription
+    description: Description of Status
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: TaxSchedule
+    description: Obsolete
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: TaxScheduleCode
+    description: Obsolete
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: TaxScheduleDescription
+    description: Obsolete
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Type
+    description: "Indicates the type of invoice Values: 8020 - Sales invoices, 8021 - Sales credit note, 8023 - Direct sales invoice, 8024 - Direct credit note. Type 8023 and 8024 are only supported by the Plus, Professional and Premium editions for Wholesale & Distribution and Manufacturing"
+    datatype: Edm.Int32
+  - name: TypeDescription
+    description: Description of the type
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: VATAmountDC
+    description: Total VAT amount in the default currency of the company
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: VATAmountFC
+    description: Total VAT amount in the currency of the transaction
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: Warehouse
+    description: Mandatory for direct sales invoice/credit note, cannot be set for normal sales invoice/credit note.
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: WithholdingTaxAmountFC
+    description: Withholding tax amount applied to sales invoice. Not supported in The Netherlands.
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: WithholdingTaxBaseAmount
+    description: Withholding tax base amount to calculate withholding amount. Not supported in The Netherlands.
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: WithholdingTaxPercentage
+    description: Withholding tax percentage applied to sales invoice. Not supported in The Netherlands.
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: YourRef
+    description: The invoice number of the customer
+    datatype: Edm.String
+    clarion: { role: dimension }
+clarion:
+  kind: source
+  category: Sales
+  sync:
+    cursor: { field: Modified, type: timestamp }
+  notes: |-
+    Invoice headers. The header's `AmountDC` / `AmountFC` are the SUM over the invoice's lines (the vendor documents this on `AmountDC`).
+
+    `InvoiceTo`, `OrderedBy` and `DeliverTo` are three ROLES of Accounts — the billed, ordering and delivery party — and each joins to Accounts separately; "the customer" usually means `InvoiceTo`.
+
+    Credit notes are negative; `Type` tells an invoice from a credit note as a numeric code.

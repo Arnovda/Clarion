@@ -1,0 +1,197 @@
+# Exact Online entity. Field docs are TRANSCRIBED from the vendor REST reference by scripts/generate-eo-docs.ts — do not hand-edit descriptions; edit label/description/clarion freely.
+
+name: BankEntryLines
+label: Bank entry lines
+description: Individual lines on bank statements — each booked transaction.
+source: /financialtransaction/BankEntryLines
+primary_key: [ ID ]
+fields:
+  - name: Account
+    description: Reference to Account
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: Accounts, field: ID } }
+  - name: AccountCode
+    description: Code of Account
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: AccountName
+    description: Name of Account
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: AmountDC
+    description: Amount in the default currency of the company
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: AmountFC
+    description: Amount in the currency of the transaction
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: AmountVATFC
+    description: Vat amount in the currency of the transaction
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: Asset
+    description: Reference to an asset
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: AssetCode
+    description: Code of Asset
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: AssetDescription
+    description: Description of Asset
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: CostCenter
+    description: Reference to a cost center
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: CostCenterDescription
+    description: Description of CostCenter
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: CostUnit
+    description: Reference to a cost unit
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: CostUnitDescription
+    description: Description of CostUnit
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Created
+    description: Creation date
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: Creator
+    description: User ID of creator
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: CreatorFullName
+    description: Name of creator
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: CustomField
+    description: Custom field endpoint
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Date
+    description: Date of the statement line
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: Description
+    description: Description
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Division
+    description: Division code
+    datatype: Edm.Int32
+  - name: Document
+    description: Reference to a document
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: Documents, field: ID } }
+  - name: DocumentNumber
+    description: Number of Document
+    datatype: Edm.Int32
+  - name: DocumentSubject
+    description: Subject of Document
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: EntryID
+    description: Reference to the header
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: EntryNumber
+    description: Entry number of the header
+    datatype: Edm.Int32
+  - name: ExchangeRate
+    description: Exchange rate
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: GLAccount
+    description: General ledger account
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: GLAccounts, field: ID } }
+  - name: GLAccountCode
+    description: Code of GLAccount
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: GLAccountDescription
+    description: Description of GLAccount
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: ID
+    description: Primary key
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: LineNumber
+    description: Line number
+    datatype: Edm.Int32
+  - name: Modified
+    description: Last modified date
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: Modifier
+    description: User ID of modifier
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: ModifierFullName
+    description: Name of modifier
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Notes
+    description: Extra remarks
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: OffsetID
+    description: Reference to offset line
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: OurRef
+    description: Invoice number
+    datatype: Edm.Int32
+  - name: Project
+    description: Reference to a project
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: Projects, field: ID } }
+  - name: ProjectCode
+    description: Code of Project
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: ProjectDescription
+    description: Description of Project
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: ProjectWBS
+    description: Reference to Project WBS
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: ProjectWBSDescription
+    description: Description of Project WBS
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Quantity
+    description: Quantity
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: VATCode
+    description: Reference to vat code. If this property is not filled, it will use the default VAT code of the G/L account property
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: VATCodeDescription
+    description: Description of VATCode
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: VATPercentage
+    description: Vat code percentage
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: VATType
+    description: Type of vat code
+    datatype: Edm.String
+    clarion: { role: dimension }
+clarion:
+  kind: source
+  category: Cashflow
+  sync:
+    cursor: { field: Modified, type: timestamp }
+    requiresSelect: true

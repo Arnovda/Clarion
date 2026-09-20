@@ -1,0 +1,161 @@
+# Odoo star-schema template table. `source` is the DuckDB SQL over BARE source entity names; a foreign key is written ONCE on its field (clarion.references) and the template joins are derived from it.
+
+name: fact_invoice_lines
+label: Invoice lines
+description: One row per product line on customer invoices, vendor bills and their credit notes.
+source: |-
+  SELECT
+    aml.id                                 AS invoice_line_id,
+    aml.move_id                            AS invoice_id,
+    am.name                                AS invoice_number,
+    am.move_type                           AS move_type,
+    am.state                               AS state,
+    TRY_CAST(am.invoice_date AS DATE)      AS invoice_date,
+    TRY_CAST(am.invoice_date_due AS DATE)  AS invoice_due_date,
+    am.partner_id                          AS partner_id,
+    aml.product_id                         AS product_id,
+    aml.account_id                         AS account_id,
+    am.journal_id                          AS journal_id,
+    am.company_id                          AS company_id,
+    am.currency_id                         AS currency_id,
+    am.invoice_payment_term_id             AS payment_term_id,
+    aml.quantity                           AS quantity,
+    aml.price_unit                         AS price_unit,
+    aml.price_subtotal                     AS amount_untaxed,
+    aml.price_total                        AS amount_total,
+    CASE WHEN am.move_type IN ('out_refund', 'in_refund') THEN -aml.price_subtotal ELSE aml.price_subtotal END AS amount_signed
+  FROM account_move_line aml
+  JOIN account_move am ON aml.move_id = am.id
+  WHERE am.move_type IN ('out_invoice', 'out_refund', 'in_invoice', 'in_refund')
+    AND (aml.display_type IS NULL OR aml.display_type = 'product')
+fields:
+  - name: invoice_line_id
+    label: Invoice line ID
+    description: Odoo journal item id (primary key).
+    datatype: BIGINT
+    clarion: { role: natural_key, technical: true, lineage: { dataset: account_move_line, field: id } }
+  - name: invoice_id
+    label: Invoice ID
+    description: Odoo id of the invoice header.
+    datatype: BIGINT
+    clarion: { role: attribute, technical: true, lineage: { dataset: account_move_line, field: move_id } }
+  - name: invoice_number
+    label: Invoice number
+    description: Invoice / bill number (e.g. INV/2026/0042).
+    datatype: VARCHAR
+    clarion: { role: degenerate_dimension, lineage: { dataset: account_move, field: name } }
+  - name: move_type
+    label: Document type
+    description: out_invoice, out_refund (customer side), in_invoice, in_refund (vendor side).
+    datatype: VARCHAR
+    clarion: { role: attribute, lineage: { dataset: account_move, field: move_type } }
+  - name: state
+    label: Status
+    description: draft, posted or cancel.
+    datatype: VARCHAR
+    clarion: { role: attribute, lineage: { dataset: account_move, field: state } }
+  - name: invoice_date
+    label: Invoice date
+    description: Date of the invoice.
+    datatype: DATE
+    clarion: { role: attribute, lineage: { dataset: account_move, field: invoice_date } }
+  - name: invoice_due_date
+    label: Due date
+    description: Payment due date.
+    datatype: DATE
+    clarion: { role: attribute, lineage: { dataset: account_move, field: invoice_date_due } }
+  - name: partner_id
+    label: Customer / vendor
+    description: Partner billed or billing.
+    datatype: BIGINT
+    clarion:
+      role: foreign_key
+      references: { dataset: dim_partner, field: partner_id }
+      technical: true
+      lineage: { dataset: account_move, field: partner_id }
+  - name: product_id
+    label: Product
+    description: Product on the line (when set).
+    datatype: BIGINT
+    clarion:
+      role: foreign_key
+      references: { dataset: dim_product, field: product_id }
+      technical: true
+      lineage: { dataset: account_move_line, field: product_id }
+  - name: account_id
+    label: GL account
+    description: GL account the line posts to.
+    datatype: BIGINT
+    clarion:
+      role: foreign_key
+      references: { dataset: dim_account, field: account_id }
+      technical: true
+      lineage: { dataset: account_move_line, field: account_id }
+  - name: journal_id
+    label: Journal
+    description: Journal the invoice is booked in.
+    datatype: BIGINT
+    clarion:
+      role: foreign_key
+      references: { dataset: dim_journal, field: journal_id }
+      technical: true
+      lineage: { dataset: account_move, field: journal_id }
+  - name: company_id
+    label: Company
+    description: Company the invoice belongs to.
+    datatype: BIGINT
+    clarion:
+      role: foreign_key
+      references: { dataset: dim_company, field: company_id }
+      technical: true
+      lineage: { dataset: account_move, field: company_id }
+  - name: currency_id
+    label: Currency
+    description: Currency of the invoice.
+    datatype: BIGINT
+    clarion:
+      role: foreign_key
+      references: { dataset: dim_currency, field: currency_id }
+      technical: true
+      lineage: { dataset: account_move, field: currency_id }
+  - name: payment_term_id
+    label: Payment term
+    description: Payment term on the invoice.
+    datatype: BIGINT
+    clarion:
+      role: foreign_key
+      references: { dataset: dim_payment_term, field: payment_term_id }
+      technical: true
+      lineage: { dataset: account_move, field: invoice_payment_term_id }
+  - name: quantity
+    label: Quantity
+    description: Quantity invoiced on the line.
+    datatype: DOUBLE
+    clarion: { role: measure, additivity: additive, lineage: { dataset: account_move_line, field: quantity } }
+  - name: price_unit
+    label: Unit price
+    description: Price per unit.
+    datatype: DECIMAL(18,4)
+    clarion: { role: measure, additivity: non_additive, lineage: { dataset: account_move_line, field: price_unit } }
+  - name: amount_untaxed
+    label: Amount (untaxed)
+    description: Line amount excluding tax.
+    datatype: DECIMAL(18,4)
+    clarion: { role: measure, additivity: additive, lineage: { dataset: account_move_line, field: price_subtotal } }
+  - name: amount_total
+    label: Amount (incl. tax)
+    description: Line amount including tax.
+    datatype: DECIMAL(18,4)
+    clarion: { role: measure, additivity: additive, lineage: { dataset: account_move_line, field: price_total } }
+  - name: amount_signed
+    label: Amount (signed)
+    description: Untaxed amount, negated for credit notes — sums to net revenue / net cost.
+    datatype: DECIMAL(18,4)
+    clarion: { role: measure, additivity: additive }
+clarion:
+  kind: fact
+  product: Finance
+  sourceEntities: [ account_move_line, account_move ]
+  grain: One row per invoice line
+  factTableType: transaction
+  dimensionsUsed: [ dim_partner, dim_product, dim_account, dim_journal, dim_company, dim_currency, dim_payment_term, dim_date ]

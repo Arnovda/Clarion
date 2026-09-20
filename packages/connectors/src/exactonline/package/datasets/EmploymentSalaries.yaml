@@ -1,0 +1,180 @@
+# Exact Online entity. Field docs are TRANSCRIBED from the vendor REST reference by scripts/generate-eo-docs.ts — do not hand-edit descriptions; edit label/description/clarion freely.
+
+name: EmploymentSalaries
+label: Employment salaries
+description: Salary detail per employment.
+source: /payroll/EmploymentSalaries
+primary_key: [ ID ]
+fields:
+  - name: AmountType
+    description: "Salary Section: Salary type Value: 0 - Gross, 1 - Net."
+    datatype: Edm.Int16
+  - name: AmountTypeDescription
+    description: "Salary Section: Salary type description When AmountType value is 0, return 'Gross' When AmountType value 1, return 'Net'"
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: AutoCorrection
+    description: "Confirmation: Create Auto Correction When the 'payroll run' already finalized and the update is made to the employment salary amount, the system will first block the PUT action with the message below. With the 'PayrollCorrection' right, the error message below will be thrown: &emsp;This change will lead to a recalculation of previous periods. A correction request will be created with the following data: &emsp;&emsp;Activation date: 01-01-2019 &emsp;&emsp;Payroll year: 2019 &emsp;&emsp;Period: 1 &emsp;If you are confirmed want to proceed, set the [AutoCorrection] to True and re-submit the request. Without the 'PayrollCorrection' right, the error message below will be thrown: &emsp;You do not have rights to change data that can influence processed payroll transactions. Note : If you delete this salary in an already calculated period, auto corrections will be created for this employee."
+    datatype: Edm.Boolean
+    clarion: { role: dimension }
+  - name: AverageDaysPerWeek
+    description: The average number of contract days that an employee works per week
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: AverageHoursPerWeek
+    description: The average number of contract hours that an employee works per week
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: BillabilityTarget
+    description: "Schedule Section: Billability target"
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: Created
+    description: Creation date
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: Creator
+    description: User ID of creator
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: CreatorFullName
+    description: Name of creator
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Description
+    description: "General section: Custom description"
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Division
+    description: Division code
+    datatype: Edm.Int32
+  - name: Employee
+    description: Employee ID
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: Employees, field: ID } }
+  - name: EmployeeFullName
+    description: Name of employee
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: EmployeeHID
+    description: Employee number
+    datatype: Edm.Int32
+  - name: Employment
+    description: Employment
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: Employments, field: ID } }
+  - name: EmploymentHID
+    description: Obsolete
+    datatype: Edm.Int32
+  - name: EmploymentNumber
+    description: Employment number
+    datatype: Edm.Int32
+  - name: EmploymentSalaryType
+    description: Salary type of employment. 1 - Periodical (fixed), 2 - Per hour (variable)
+    datatype: Edm.Int32
+  - name: EmploymentSalaryTypeDescription
+    description: Salary type description
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: EndDate
+    description: "Salary record end date Note : This property only supported for successor."
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: ExternalRate
+    description: "Rate Section: External rate"
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: Frequency
+    description: "Frequency: 1 - Yearly, 2 - Quarterly, 3 - Monthly, 4 - 4-weekly, 5 - Weekly, 11 - Yearly (Pro forma), 12 - Quarterly (Pro forma), 13 - Monthly (Pro forma), 14 - 4-Weekly (Pro forma), 15 - Weekly (Pro forma)"
+    datatype: Edm.Int32
+  - name: FrequencyDescription
+    description: Payroll period frequency description
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: FulltimeAmount
+    description: Salary when working fulltime
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: HourlyWage
+    description: Hourly wage
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: ID
+    description: Primary key
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: IntercompanyRate
+    description: "Rate Section: Intercompany rate"
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: InternalRate
+    description: Internal rate for time & billing or professional service user
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: JobLevel
+    description: Employee job level in context of a wage scale
+    datatype: Edm.Int32
+  - name: Modified
+    description: Last modified date
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: Modifier
+    description: User ID of modifier
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: ModifierFullName
+    description: Name of modifier
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: ParttimeAmount
+    description: Salary when working parttime
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: ParttimeFactor
+    description: Contract hours / Fulltime contract hours
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: SalaryBasedType
+    description: "Salary Section: Salary based on. Value: 0 - Manual entry, 1 - Wagescale, 2 - Minimum wage, 3 - Minimum hourly wage"
+    datatype: Edm.Int32
+  - name: SalaryBasedTypeDescription
+    description: When SalaryBasedType value is 0, return 'Manual entry' When SalaryBasedType value 1, return 'Wage scale' When SalaryBasedType value 2, return 'Minimum wage' When SalaryBasedType value 3, return 'Minimum hourly wage'
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Scale
+    description: Employee wage scale
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Schedule
+    description: Employment schedule
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: ScheduleCode
+    description: Employment schedule code
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: ScheduleDescription
+    description: Description of employment schedule
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: StartDate
+    description: "Salary record start date Note : This property only supported for successor."
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: WageScale
+    description: "Salary Section: Wagescale ID"
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: WageScalePeriod
+    description: "Salary Section: Period for automatic step increase"
+    datatype: Edm.Int16
+  - name: WageScaleStep
+    description: "Salary Section: Wagescale Step Code"
+    datatype: Edm.String
+    clarion: { role: dimension }
+clarion:
+  kind: source
+  category: HRM
+  sync:
+    cursor: { field: Modified, type: timestamp }
+    requiresSelect: true

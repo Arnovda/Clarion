@@ -1,0 +1,129 @@
+# Odoo star-schema template table. `source` is the DuckDB SQL over BARE source entity names; a foreign key is written ONCE on its field (clarion.references) and the template joins are derived from it.
+
+name: fact_sales_order_lines
+label: Sales order lines
+description: One row per line on sales orders and quotations.
+source: |-
+  SELECT
+    sol.id                           AS order_line_id,
+    sol.order_id                     AS order_id,
+    so.name                          AS order_reference,
+    TRY_CAST(so.date_order AS DATE)  AS order_date,
+    so.state                         AS state,
+    so.partner_id                    AS partner_id,
+    sol.product_id                   AS product_id,
+    so.company_id                    AS company_id,
+    so.currency_id                   AS currency_id,
+    sol.product_uom_qty              AS quantity_ordered,
+    sol.qty_delivered                AS quantity_delivered,
+    sol.qty_invoiced                 AS quantity_invoiced,
+    sol.price_unit                   AS price_unit,
+    sol.discount                     AS discount_pct,
+    sol.price_subtotal               AS amount_untaxed,
+    sol.price_total                  AS amount_total
+  FROM sale_order_line sol
+  JOIN sale_order so ON sol.order_id = so.id
+fields:
+  - name: order_line_id
+    label: Order line ID
+    description: Odoo sales order line id (primary key).
+    datatype: BIGINT
+    clarion: { role: natural_key, technical: true, lineage: { dataset: sale_order_line, field: id } }
+  - name: order_id
+    label: Order ID
+    description: Odoo id of the sales order header.
+    datatype: BIGINT
+    clarion: { role: attribute, technical: true, lineage: { dataset: sale_order_line, field: order_id } }
+  - name: order_reference
+    label: Order reference
+    description: Sales order number (e.g. S00042).
+    datatype: VARCHAR
+    clarion: { role: degenerate_dimension, lineage: { dataset: sale_order, field: name } }
+  - name: order_date
+    label: Order date
+    description: Date the order was placed.
+    datatype: DATE
+    clarion: { role: attribute, lineage: { dataset: sale_order, field: date_order } }
+  - name: state
+    label: Status
+    description: draft (quotation), sent, sale (confirmed), done or cancel.
+    datatype: VARCHAR
+    clarion: { role: attribute, lineage: { dataset: sale_order, field: state } }
+  - name: partner_id
+    label: Customer
+    description: Customer on the order.
+    datatype: BIGINT
+    clarion:
+      role: foreign_key
+      references: { dataset: dim_partner, field: partner_id }
+      technical: true
+      lineage: { dataset: sale_order, field: partner_id }
+  - name: product_id
+    label: Product
+    description: Product on the line.
+    datatype: BIGINT
+    clarion:
+      role: foreign_key
+      references: { dataset: dim_product, field: product_id }
+      technical: true
+      lineage: { dataset: sale_order_line, field: product_id }
+  - name: company_id
+    label: Company
+    description: Company of the order.
+    datatype: BIGINT
+    clarion:
+      role: foreign_key
+      references: { dataset: dim_company, field: company_id }
+      technical: true
+      lineage: { dataset: sale_order, field: company_id }
+  - name: currency_id
+    label: Currency
+    description: Currency of the order.
+    datatype: BIGINT
+    clarion:
+      role: foreign_key
+      references: { dataset: dim_currency, field: currency_id }
+      technical: true
+      lineage: { dataset: sale_order, field: currency_id }
+  - name: quantity_ordered
+    label: Quantity ordered
+    description: Ordered quantity.
+    datatype: DOUBLE
+    clarion: { role: measure, additivity: additive, lineage: { dataset: sale_order_line, field: product_uom_qty } }
+  - name: quantity_delivered
+    label: Quantity delivered
+    description: Delivered quantity.
+    datatype: DOUBLE
+    clarion: { role: measure, additivity: additive, lineage: { dataset: sale_order_line, field: qty_delivered } }
+  - name: quantity_invoiced
+    label: Quantity invoiced
+    description: Invoiced quantity.
+    datatype: DOUBLE
+    clarion: { role: measure, additivity: additive, lineage: { dataset: sale_order_line, field: qty_invoiced } }
+  - name: price_unit
+    label: Unit price
+    description: Price per unit.
+    datatype: DECIMAL(18,4)
+    clarion: { role: measure, additivity: non_additive, lineage: { dataset: sale_order_line, field: price_unit } }
+  - name: discount_pct
+    label: Discount %
+    description: Line discount percentage.
+    datatype: DOUBLE
+    clarion: { role: measure, additivity: non_additive, lineage: { dataset: sale_order_line, field: discount } }
+  - name: amount_untaxed
+    label: Amount (untaxed)
+    description: Line amount excluding tax.
+    datatype: DECIMAL(18,4)
+    clarion: { role: measure, additivity: additive, lineage: { dataset: sale_order_line, field: price_subtotal } }
+  - name: amount_total
+    label: Amount (incl. tax)
+    description: Line amount including tax.
+    datatype: DECIMAL(18,4)
+    clarion: { role: measure, additivity: additive, lineage: { dataset: sale_order_line, field: price_total } }
+clarion:
+  kind: fact
+  product: Sales
+  sourceEntities: [ sale_order_line, sale_order ]
+  grain: One row per sales order line
+  factTableType: transaction
+  dimensionsUsed: [ dim_partner, dim_product, dim_company, dim_currency, dim_date ]

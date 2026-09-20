@@ -11,7 +11,7 @@
 import { describe, expect, it } from 'vitest';
 import { resolveEntityColumns } from './ExactOnlineConnector';
 import { parseODataMetadata } from './metadata';
-import { EXACT_ONLINE_COLUMN_DOCS } from './docs';
+import { EXACT_ONLINE_COLUMN_DOCS } from './catalog';
 
 const CSDL = `<?xml version="1.0" encoding="utf-8"?>
 <edmx:Edmx Version="1.0" xmlns:edmx="http://schemas.microsoft.com/ado/2007/06/edmx">
@@ -72,7 +72,7 @@ describe('resolveEntityColumns', () => {
   });
 
   it('every catalog entity is covered by the docs fallback (no silent auto-detect)', async () => {
-    const { EXACT_ONLINE_ENTITIES } = await import('./entities');
+    const { EXACT_ONLINE_ENTITIES } = await import('./catalog');
     const uncovered = EXACT_ONLINE_ENTITIES
       .filter((e) => resolveEntityColumns(null, e).source === 'auto-detect')
       .map((e) => e.name);

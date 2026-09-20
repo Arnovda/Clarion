@@ -1,0 +1,45 @@
+# Odoo model. `source` is the dotted model name used for RPC; `name` is the warehouse table. Field descriptions are the curated fallback beneath the live fields_get harvest (Odoo 16+ semantics).
+
+name: sale_order_line
+label: Sales order lines
+description: "Sales order lines: product, quantity and price per line — the sales fact grain."
+source: sale.order.line
+primary_key: [ id ]
+fields:
+  - name: id
+    description: Technical identifier of the order line
+  - name: order_id
+    description: Sales order this line belongs to
+  - name: product_id
+    description: Product variant sold on this line
+  - name: name
+    description: Line description as printed on the order
+  - name: product_uom_qty
+    description: Quantity ordered, in the line unit of measure
+  - name: qty_delivered
+    description: Quantity already delivered
+  - name: qty_invoiced
+    description: Quantity already invoiced
+  - name: product_uom
+    description: Unit of measure of the line quantities
+  - name: price_unit
+    description: Unit price before discount
+  - name: discount
+    description: Discount percentage applied on the line
+  - name: price_subtotal
+    description: Line total before taxes
+  - name: price_total
+    description: Line total including taxes
+  - name: currency_id
+    description: Currency of the line amounts
+  - name: state
+    description: State inherited from the parent order
+  - name: display_type
+    description: "Line kind: product line, section or note (sections and notes carry no amounts)"
+  - name: write_date
+    description: When the record was last modified
+clarion:
+  kind: source
+  category: Sales
+  sync:
+    cursor: { field: write_date, type: timestamp }

@@ -1,0 +1,27 @@
+# Odoo model. `source` is the dotted model name used for RPC; `name` is the warehouse table. Field descriptions are the curated fallback beneath the live fields_get harvest (Odoo 16+ semantics).
+
+name: stock_quant
+label: Stock quants (on-hand)
+description: Current on-hand quantity per product per location — the inventory snapshot.
+source: stock.quant
+primary_key: [ id ]
+fields:
+  - name: id
+    description: Technical identifier of the quant
+  - name: product_id
+    description: Product variant the on-hand quantity is for
+  - name: location_id
+    description: Stock location holding the quantity
+  - name: quantity
+    description: On-hand quantity in the product unit of measure
+  - name: reserved_quantity
+    description: Part of the on-hand quantity reserved for outgoing operations
+  - name: company_id
+    description: Company owning the stock
+  - name: write_date
+    description: When the record was last modified
+clarion:
+  kind: source
+  category: Inventory
+  sync:
+    cursor: { field: write_date, type: timestamp }

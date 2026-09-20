@@ -1,0 +1,158 @@
+# Exact Online entity. Field docs are TRANSCRIBED from the vendor REST reference by scripts/generate-eo-docs.ts — do not hand-edit descriptions; edit label/description/clarion freely.
+
+name: Journals
+label: Journals
+description: Journal definitions (sales, purchases, bank, memo, …).
+source: /financial/Journals
+primary_key: [ Code ]
+fields:
+  - name: AllowVariableCurrency
+    description: Indicates if the journal allows variable currency
+    datatype: Edm.Boolean
+    clarion: { role: dimension }
+  - name: AllowVariableExchangeRate
+    description: Indicates if the journal allows the exchange rate of the currency of the amounts in the journal entry to be changed
+    datatype: Edm.Boolean
+    clarion: { role: dimension }
+  - name: AllowVAT
+    description: Indicates if the journal allows the use of VAT in the financial entry. Applicable only for General Journals
+    datatype: Edm.Boolean
+    clarion: { role: dimension }
+  - name: AutoSave
+    description: Indicates if the journal automatically saves the entries when the amount is in balance with the entry lines. Applicable for all types except cash. In the UI is called 'Exit Automatically'
+    datatype: Edm.Boolean
+    clarion: { role: dimension }
+  - name: Bank
+    description: Reference to bank account. Only Bank journal type will have a value
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: BankAccounts, field: ID } }
+  - name: BankAccountBICCode
+    description: BIC code of the bank where the bank account is held. Only Bank journal type will have a value
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: BankAccountCountry
+    description: Country of bank account. Only Bank journal type will have a value
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: BankAccountDescription
+    description: Description of BankAccount. Only Bank journal type will have a value
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: BankAccountIBAN
+    description: IBAN of the bank account. Only Bank journal type will have a value
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: BankAccountID
+    description: Reference to the Bank Account linked to the Journal. Only Bank journal type will have a value
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: BankAccounts, field: ID } }
+  - name: BankAccountIncludingMask
+    description: Bank account number. Is mandatory for Journals that have Type = Bank
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: BankAccountUseSEPA
+    description: Obsolete. Whether or not use SEPA for the bank account
+    datatype: Edm.Boolean
+    clarion: { role: dimension }
+  - name: BankAccountUseSepaDirectDebit
+    description: Obsolete. Whether or not use SEPA direct debit for the bank account
+    datatype: Edm.Boolean
+    clarion: { role: dimension }
+  - name: BankName
+    description: Name of bank account. Only Bank journal type will have a value
+    datatype: Edm.String
+    clarion: { role: dimension, references: { dataset: Banks, field: ID } }
+  - name: Code
+    description: Primary key
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Created
+    description: Creation date
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: Creator
+    description: User ID of creator
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: CreatorFullName
+    description: Name of creator
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Currency
+    description: Default Currency of the Journal. If AllowVariableCurrency is false this is the only currency that can be used
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: CurrencyDescription
+    description: Description of Currency
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: CustomField
+    description: Custom field endpoint
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Description
+    description: Name of the Journal
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Division
+    description: Division code
+    datatype: Edm.Int32
+  - name: GLAccount
+    description: Suspense general ledger account
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: GLAccounts, field: ID } }
+  - name: GLAccountCode
+    description: Code of GLAccount
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: GLAccountDescription
+    description: Description of GLAccount
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: GLAccountType
+    description: Type of GLAccount
+    datatype: Edm.Int32
+  - name: ID
+    description: Primary Key
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: IsBlocked
+    description: Indicates whether the journal is blocked or not.
+    datatype: Edm.Boolean
+    clarion: { role: dimension }
+  - name: Modified
+    description: Last modified date
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: Modifier
+    description: User ID of modifier
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: ModifierFullName
+    description: Name of modifier
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: PaymentInTransitAccount
+    description: General ledger account for payment in transit
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: GLAccounts, field: ID } }
+  - name: PaymentServiceAccountIdentifier
+    description: Identifier detail of the Payment service account. Ex. EmailID for Paypal type of Payment service account
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: PaymentServiceProvider
+    description: "Type of Payment service provider. The following values are supported: 1 (Adyen), 2 (Paypal), 3 (Stripe). Is mandatory for Journals of Type 16 (Payment service)"
+    datatype: Edm.Int32
+  - name: PaymentServiceProviderName
+    description: Name of the Payment service provider
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Type
+    description: "Type of Journal. The following values are supported: 10 (Cash) 12 (Bank) 16 (Payment service) 20 (Sales) 21 (Return invoice) 22 (Purchase) 23 (Received return invoice) 90 (General journal)"
+    datatype: Edm.Int32
+clarion:
+  kind: source
+  category: Financial
+  sync:
+    cursor: { field: Modified, type: timestamp }
+  notes: "Referenced by `Code` (the primary key here), not by `ID`: TransactionLines carry `JournalCode`. `Type` is a numeric journal-type code (bank, cash, sales, purchase, memorial …), not a label."

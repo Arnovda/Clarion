@@ -1,0 +1,45 @@
+# Odoo model. `source` is the dotted model name used for RPC; `name` is the warehouse table. Field descriptions are the curated fallback beneath the live fields_get harvest (Odoo 16+ semantics).
+
+name: purchase_order
+label: Purchase orders
+description: Purchase orders sent to vendors — one row per order, header level.
+source: purchase.order
+primary_key: [ id ]
+fields:
+  - name: id
+    description: Technical identifier of the purchase order
+  - name: name
+    description: Order number (e.g. P00021)
+  - name: partner_id
+    description: Vendor the order is placed with
+  - name: date_order
+    description: Date the order was created or confirmed
+  - name: date_approve
+    description: Date the order was approved
+  - name: state
+    description: "Lifecycle state: draft RFQ, sent, confirmed purchase, done or cancelled"
+  - name: invoice_status
+    description: "Billing progress: nothing to bill, waiting bills or fully billed"
+  - name: amount_untaxed
+    description: Order total before taxes
+  - name: amount_tax
+    description: Total tax amount on the order
+  - name: amount_total
+    description: Order total including taxes
+  - name: currency_id
+    description: Currency of the order amounts
+  - name: company_id
+    description: Company the order belongs to
+  - name: user_id
+    description: Purchase representative responsible for the order
+  - name: partner_ref
+    description: Vendor reference (their order or quote number)
+  - name: create_date
+    description: When the record was created
+  - name: write_date
+    description: When the record was last modified
+clarion:
+  kind: source
+  category: Purchasing
+  sync:
+    cursor: { field: write_date, type: timestamp }

@@ -1,0 +1,84 @@
+# Odoo star-schema template table. `source` is the DuckDB SQL over BARE source entity names; a foreign key is written ONCE on its field (clarion.references) and the template joins are derived from it.
+
+name: dim_partner
+label: Partners
+description: Customers, vendors and contacts — one row per Odoo partner.
+source: |-
+  SELECT
+    id         AS partner_id,
+    name       AS partner_name,
+    email,
+    phone,
+    city,
+    zip,
+    vat        AS vat_number,
+    is_company,
+    active,
+    parent_id,
+    company_id
+  FROM res_partner
+fields:
+  - name: partner_id
+    label: Partner ID
+    description: Odoo partner id (primary key).
+    datatype: BIGINT
+    clarion: { role: natural_key, technical: true, lineage: { dataset: res_partner, field: id } }
+  - name: partner_name
+    label: Partner name
+    description: Name of the person or organisation.
+    datatype: VARCHAR
+    clarion: { role: attribute, lineage: { dataset: res_partner, field: name } }
+  - name: email
+    label: Email
+    description: Primary email address.
+    datatype: VARCHAR
+    clarion: { role: attribute, lineage: { dataset: res_partner, field: email } }
+  - name: phone
+    label: Phone
+    description: Primary phone number.
+    datatype: VARCHAR
+    clarion: { role: attribute, lineage: { dataset: res_partner, field: phone } }
+  - name: city
+    label: City
+    description: City of the main address.
+    datatype: VARCHAR
+    clarion: { role: attribute, lineage: { dataset: res_partner, field: city } }
+  - name: zip
+    label: Postal code
+    description: Postal code of the main address.
+    datatype: VARCHAR
+    clarion: { role: attribute, lineage: { dataset: res_partner, field: zip } }
+  - name: vat_number
+    label: VAT number
+    description: Tax / VAT identification number.
+    datatype: VARCHAR
+    clarion: { role: attribute, lineage: { dataset: res_partner, field: vat } }
+  - name: is_company
+    label: Is company
+    description: True when the partner is an organisation rather than a person.
+    datatype: BOOLEAN
+    clarion: { role: attribute, lineage: { dataset: res_partner, field: is_company } }
+  - name: active
+    label: Active
+    description: False when the partner is archived.
+    datatype: BOOLEAN
+    clarion: { role: attribute, lineage: { dataset: res_partner, field: active } }
+  - name: parent_id
+    label: Parent partner
+    description: Parent contact (e.g. the company a person works at).
+    datatype: BIGINT
+    clarion:
+      role: foreign_key
+      references: { dataset: dim_partner, field: partner_id }
+      technical: true
+      lineage: { dataset: res_partner, field: parent_id }
+  - name: company_id
+    label: Company
+    description: Internal company this partner record belongs to.
+    datatype: BIGINT
+    clarion:
+      role: foreign_key
+      references: { dataset: dim_company, field: company_id }
+      technical: true
+      lineage: { dataset: res_partner, field: company_id }
+clarion: { kind: dimension, product: Core dimensions, sourceEntities: [ res_partner ] }

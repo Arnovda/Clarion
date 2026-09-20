@@ -1,0 +1,86 @@
+# Exact Online star-schema template table. `source` is the DuckDB SQL over BARE source entity names; a foreign key is written ONCE on its field (clarion.references) and the template joins are derived from it.
+
+name: dim_account
+label: Accounts
+description: Customers, suppliers and prospects — one row per ExactOnline account.
+source: |-
+  SELECT
+    ID          AS account_id,
+    Code        AS account_code,
+    Name        AS account_name,
+    City        AS city,
+    CountryName AS country,
+    Email       AS email,
+    Phone       AS phone,
+    VATNumber   AS vat_number,
+    Status      AS status,
+    IsSales     AS is_customer,
+    IsSupplier  AS is_supplier,
+    Parent      AS parent_id
+  FROM Accounts
+fields:
+  - name: account_id
+    label: Account ID
+    description: ExactOnline account GUID (primary key).
+    datatype: VARCHAR
+    clarion: { role: natural_key, technical: true, lineage: { dataset: Accounts, field: ID } }
+  - name: account_code
+    label: Account code
+    description: Human-readable account code.
+    datatype: VARCHAR
+    clarion: { role: attribute, lineage: { dataset: Accounts, field: Code } }
+  - name: account_name
+    label: Account name
+    description: Name of the customer / supplier.
+    datatype: VARCHAR
+    clarion: { role: attribute, lineage: { dataset: Accounts, field: Name } }
+  - name: city
+    label: City
+    description: City of the visit address.
+    datatype: VARCHAR
+    clarion: { role: attribute, lineage: { dataset: Accounts, field: City } }
+  - name: country
+    label: Country
+    description: Country name of the account.
+    datatype: VARCHAR
+    clarion: { role: attribute, lineage: { dataset: Accounts, field: CountryName } }
+  - name: email
+    label: Email
+    description: Primary email address.
+    datatype: VARCHAR
+    clarion: { role: attribute, lineage: { dataset: Accounts, field: Email } }
+  - name: phone
+    label: Phone
+    description: Primary phone number.
+    datatype: VARCHAR
+    clarion: { role: attribute, lineage: { dataset: Accounts, field: Phone } }
+  - name: vat_number
+    label: VAT number
+    description: Tax / VAT identification number.
+    datatype: VARCHAR
+    clarion: { role: attribute, lineage: { dataset: Accounts, field: VATNumber } }
+  - name: status
+    label: Status
+    description: Account lifecycle status (C = customer, S = supplier, P = prospect, …).
+    datatype: VARCHAR
+    clarion: { role: attribute, lineage: { dataset: Accounts, field: Status } }
+  - name: is_customer
+    label: Is customer
+    description: True when the account buys from you.
+    datatype: BOOLEAN
+    clarion: { role: attribute, lineage: { dataset: Accounts, field: IsSales } }
+  - name: is_supplier
+    label: Is supplier
+    description: True when the account supplies to you.
+    datatype: BOOLEAN
+    clarion: { role: attribute, lineage: { dataset: Accounts, field: IsSupplier } }
+  - name: parent_id
+    label: Parent account
+    description: Parent account (e.g. holding company).
+    datatype: VARCHAR
+    clarion:
+      role: foreign_key
+      references: { dataset: dim_account, field: account_id }
+      technical: true
+      lineage: { dataset: Accounts, field: Parent }
+clarion: { kind: dimension, product: Core dimensions, sourceEntities: [ Accounts ] }

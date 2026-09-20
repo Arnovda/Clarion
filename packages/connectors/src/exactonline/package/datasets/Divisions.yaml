@@ -1,0 +1,252 @@
+# Exact Online entity. Field docs are TRANSCRIBED from the vendor REST reference by scripts/generate-eo-docs.ts — do not hand-edit descriptions; edit label/description/clarion freely.
+
+name: Divisions
+label: Divisions
+description: The administrations / legal entities visible to this OAuth app.
+source: /system/Divisions
+primary_key: [ ID ]
+fields:
+  - name: AddressLine1
+    description: Address line 1
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: AddressLine2
+    description: Address line 2
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: AddressLine3
+    description: Address line 3
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: ArchiveDate
+    description: Date on which the division is archived
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: BlockingStatus
+    description: "Values: 0 = Not blocked, 1 = Backup/restore, 2 = Conversion busy, 3 = Conversion shadow, 4 = Conversion waiting, 5 = Copy data waiting, 6 = Copy data busy"
+    datatype: Edm.Int32
+  - name: BusinessTypeCode
+    description: Business type code
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: BusinessTypeDescription
+    description: Business type description
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: ChamberOfCommerceEstablishment
+    description: Chamber of commerce establishment
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: ChamberOfCommerceNumber
+    description: Chamber of commerce number
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: City
+    description: City
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Class_01
+    description: First division classification. User should have access rights to view division classifications.
+    datatype: Exact.Web.Api.Models.HRM.DivisionClass
+  - name: Class_02
+    description: Second division classification. User should have access rights to view division classifications.
+    datatype: Exact.Web.Api.Models.HRM.DivisionClass
+  - name: Class_03
+    description: Third division classification. User should have access rights to view division classifications.
+    datatype: Exact.Web.Api.Models.HRM.DivisionClass
+  - name: Class_04
+    description: Fourth division classification. User should have access rights to view division classifications.
+    datatype: Exact.Web.Api.Models.HRM.DivisionClass
+  - name: Class_05
+    description: Fifth division classification. User should have access rights to view division classifications.
+    datatype: Exact.Web.Api.Models.HRM.DivisionClass
+  - name: Code
+    description: Primary key
+    datatype: Edm.Int32
+  - name: CompanySizeCode
+    description: Company size code
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: CompanySizeDescription
+    description: Company size description
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Country
+    description: Country of the division. Is used for determination of legislation
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Created
+    description: Creation date
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: Creator
+    description: User ID of creator
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: CreatorFullName
+    description: Name of the creator
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Currency
+    description: Default currency
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Current
+    description: True when this division is most recently used by the API
+    datatype: Edm.Boolean
+    clarion: { role: dimension }
+  - name: Customer
+    description: Owner account of the division
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: Accounts, field: ID } }
+  - name: CustomerCode
+    description: Owner account code of the division
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: CustomerName
+    description: Owner account name of the division
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: DatevAccountantNumber
+    description: Accountant number DATEV (Germany)
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: DatevClientNumber
+    description: Client number DATEV (Germany)
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Description
+    description: Description
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: DivisionHRLinkUnlinkDate
+    description: Date when the division was linked or unlinked to Exact Online HR. Please resync all data when this value changes because value of Timestamp is regenerated.
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: DivisionMoveDate
+    description: Date when the division was moved. Please resync all data when this value changes because value of Timestamp is regenerated.
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: Email
+    description: Email address
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Fax
+    description: Fax number
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Hid
+    description: Company number that is assigned by the customer
+    datatype: Edm.Int64
+  - name: IsDossierDivision
+    description: True if the division is a dossier division
+    datatype: Edm.Boolean
+    clarion: { role: dimension }
+  - name: IsHRDivision
+    description: True if the division is linked to Exact Online HR
+    datatype: Edm.Boolean
+    clarion: { role: dimension }
+  - name: IsMainDivision
+    description: True if the division is the main division
+    datatype: Edm.Boolean
+    clarion: { role: dimension }
+  - name: IsPracticeDivision
+    description: True if the division is a practice division
+    datatype: Edm.Boolean
+    clarion: { role: dimension }
+  - name: Legislation
+    description: Legislation
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Modified
+    description: Last modified date
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: Modifier
+    description: User ID of modifier
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: ModifierFullName
+    description: Name of the last modifier
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: OBNumber
+    description: The soletrader VAT number used for offical returns to tax authority
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Phone
+    description: Phone number
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Postcode
+    description: Postcode
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: SbiCode
+    description: SBI code
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: SbiDescription
+    description: SBI description
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: SectorCode
+    description: Sector code
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: SectorDescription
+    description: Sector description
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: ShareCapital
+    description: the part of the capital of a company that comes from the issue of shares (France)
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: SiretNumber
+    description: An INSEE code which allows the geographic identification of the company. (France)
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: StartDate
+    description: Date on which the division becomes active
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: State
+    description: State/Province code
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Status
+    description: Follow the Division Status 0 for Inactive, 1 for Active and 2 for Archived Divisions
+    datatype: Edm.Int32
+  - name: SubsectorCode
+    description: Subsector code
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: SubsectorDescription
+    description: Subsector description
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: TaxOfficeNumber
+    description: Number of your local tax authority (Germany)
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: TaxReferenceNumber
+    description: Local tax reference number (Germany)
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: TemplateCode
+    description: Division template code
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: VATNumber
+    description: The number under which the account is known at the Value Added Tax collection agency
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Website
+    description: Customer value, hyperlink to external website
+    datatype: Edm.String
+    clarion: { role: dimension }
+clarion:
+  kind: source
+  category: System
+  sync:
+    cursor: { field: Modified, type: timestamp }

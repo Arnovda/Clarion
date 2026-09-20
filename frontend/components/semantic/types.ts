@@ -121,3 +121,50 @@ export interface KpiDefinition {
   approved_at?: string;
   rejection_reason?: string;
 }
+
+// ─── Glossary links ─────────────────────────────────────────────────────────
+// A business term's ADDRESS in the topic layer: a product column, a whole
+// table, or a KPI — stored by NAME so a rebuild that renames the target makes
+// the term visibly point at nothing rather than silently drift.
+export type GlossaryLinkKind = 'column' | 'table' | 'kpi';
+
+export interface GlossaryLink {
+  kind: GlossaryLinkKind;
+  table?: string;
+  column?: string;
+  kpi?: string;
+}
+
+/** A stored link as the API returns it: checked against the catalog. */
+export interface ResolvedGlossaryLink extends GlossaryLink {
+  /** false = the target is no longer in the catalog — "pick it again". */
+  resolved: boolean;
+  topic: string | null;
+  label: string | null;
+}
+
+/** GET /semantic/glossary/link-targets — what a term may be linked to. */
+export interface GlossaryLinkTargets {
+  tables: Array<{
+    topic: string;
+    tableName: string;
+    displayName: string | null;
+    role: string | null;
+    columns: Array<{ name: string; displayName: string | null; role: string | null }>;
+  }>;
+  kpis: Array<{ name: string; topic: string; description: string | null }>;
+}
+
+/** Identity of a link — the same rule the backend uses. */
+export function glossaryLinkKey(l: GlossaryLink): string {
+  if (l.kind === 'column') return `column:${l.table}.${l.column}`;
+  if (l.kind === 'table') return `table:${l.table}`;
+  return `kpi:${l.kpi}`;
+}
+
+/** Strip the resolution fields so a stored link can be sent back unchanged. */
+export function bareGlossaryLink(l: GlossaryLink): GlossaryLink {
+  if (l.kind === 'column') return { kind: 'column', table: l.table, column: l.column };
+  if (l.kind === 'table') return { kind: 'table', table: l.table };
+  return { kind: 'kpi', kpi: l.kpi };
+}

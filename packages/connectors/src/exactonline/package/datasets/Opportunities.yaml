@@ -1,0 +1,219 @@
+# Exact Online entity. Field docs are TRANSCRIBED from the vendor REST reference by scripts/generate-eo-docs.ts — do not hand-edit descriptions; edit label/description/clarion freely.
+
+name: Opportunities
+label: Opportunities
+description: Sales pipeline opportunities (active + won + lost).
+source: /crm/Opportunities
+primary_key: [ ID ]
+fields:
+  - name: Account
+    description: Lead to which the opportunity applies
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: Accounts, field: ID } }
+  - name: Accountant
+    description: Accountant linked to the opportunity
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: AccountantCode
+    description: Code of the Accountant
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: AccountantName
+    description: Name of the Accountant
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: AccountCode
+    description: Code of Account
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: AccountName
+    description: Name of Account
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: ActionDate
+    description: Indicates the date before/on the NextAction is supposed to be done
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: AmountDC
+    description: Amount in the default currency of the company. AmountDC = AmountFC * RateFC
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: AmountFC
+    description: Amount in the currency of the transaction
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: Campaign
+    description: Reference to the campaign opportunity is related to
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: CampaignDescription
+    description: Description of Campaign
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Channel
+    description: Reference to the channel opportunity is related to
+    datatype: Edm.Int16
+  - name: ChannelDescription
+    description: Description of Channel
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: CloseDate
+    description: The date when the opportunity is expected to be closed
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: Contact
+    description: Contact ID of main contact person
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: Contacts, field: ID } }
+  - name: ContactFullName
+    description: Name of the main contact person
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Created
+    description: Creation date
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: Creator
+    description: User ID of creator
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: CreatorFullName
+    description: Name of the creator
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Currency
+    description: Currency code
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: CustomField
+    description: Custom field endpoint. Provided only for the Exact Online Premium users.
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Division
+    description: Division code
+    datatype: Edm.Int32
+  - name: ID
+    description: Primary key
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: LeadSource
+    description: The source of the lead/opportunity
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: LeadSourceDescription
+    description: Description of LeadSource
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Modified
+    description: Last modified date
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: Modifier
+    description: User ID of modifier
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: ModifierFullName
+    description: Name of the last modifier
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Name
+    description: Name of the opportunity
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: NextAction
+    description: Indicates what follow up action is to be undertaken to move the opportunity towards a deal. Is used in combination with ActionDate
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Notes
+    description: Notes of the opportunity
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Number
+    description: Internal number of the opportunity
+    datatype: Edm.Int32
+  - name: OpportunityDepartmentCode
+    description: Code of Opportunity Department
+    datatype: Edm.Int16
+  - name: OpportunityDepartmentDescription
+    description: Description of Opportunity Department
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: OpportunityStage
+    description: The stage of the opportunity. This is a list defined by the user
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: OpportunityStageDescription
+    description: Description of OpportunityStage
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: OpportunityStatus
+    description: "Status: 1=Open, 2=Closed won, 3=Closed lost"
+    datatype: Edm.Int32
+  - name: OpportunityType
+    description: Code of Opportunity Type
+    datatype: Edm.Int16
+  - name: OpportunityTypeDescription
+    description: Description of Opportunity Type
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Owner
+    description: The resource who owns the opportunity and is responsible to close the opportunity (either won or lost)
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: OwnerFullName
+    description: Name of Owner
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Probability
+    description: The chance that the opportunity will be closed and won. The default for the probability depends on the default from the opportunity stage
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: Project
+    description: Reference to project
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: Projects, field: ID } }
+  - name: ProjectCode
+    description: Code of Project
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: ProjectDescription
+    description: Description of Project
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: RateFC
+    description: Exchange rate from original to division currency
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: ReasonCode
+    description: Indicates the reason why the opportunity was lost.
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: ReasonCodeDescription
+    description: Description of ReasonCode
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Reseller
+    description: Reseller linked to the opportunity
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: ResellerCode
+    description: Code of the Reseller
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: ResellerName
+    description: Name of the Reseller
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: SalesType
+    description: Reference to Sales type
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: SalesTypeDescription
+    description: Description of SalesType
+    datatype: Edm.String
+    clarion: { role: dimension }
+clarion:
+  kind: source
+  category: CRM
+  sync:
+    cursor: { field: Modified, type: timestamp }

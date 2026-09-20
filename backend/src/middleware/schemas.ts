@@ -228,12 +228,25 @@ export const createKpiSchema = z.object({
 // POST /semantic/glossary — examples/tags accept an array OR a JSON string
 // (the handler's parseJsonArray handles both). Whitespace-only term/meaning is
 // still rejected by the handler's own trim check (kept — stricter than this).
+// A glossary link names WHERE a term lives in the topic layer — a product
+// column, a whole table or a KPI (services/glossaryLinks.ts). Table and column
+// names are warehouse identifiers, so the same strict pattern the managed-grid
+// links use; a KPI name is the free text a curator gave it. The route then
+// checks every link against the catalog and refuses one that does not resolve.
+const glossaryLinkIdent = z.string().min(1).max(128).regex(/^[A-Za-z_][A-Za-z0-9_]*$/);
+export const glossaryLinkSchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('column'), table: glossaryLinkIdent, column: glossaryLinkIdent }),
+  z.object({ kind: z.literal('table'), table: glossaryLinkIdent }),
+  z.object({ kind: z.literal('kpi'), kpi: z.string().min(1).max(200) }),
+]);
+
 export const createGlossarySchema = z.object({
   body: z.object({
     term: z.string(),
     meaning: z.string(),
     examples: z.union([z.array(z.unknown()), z.string()]).nullable().optional(),
     tags: z.union([z.array(z.unknown()), z.string()]).nullable().optional(),
+    links: z.array(glossaryLinkSchema).max(8).optional(),
   }).passthrough(),
 });
 
@@ -244,6 +257,7 @@ export const updateGlossarySchema = z.object({
     meaning: optionalString,
     examples: z.union([z.array(z.unknown()), z.string()]).nullable().optional(),
     tags: z.union([z.array(z.unknown()), z.string()]).nullable().optional(),
+    links: z.array(glossaryLinkSchema).max(8).optional(),
     ai_draft: z.boolean().optional(),
   }).passthrough(),
 });

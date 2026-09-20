@@ -1,0 +1,277 @@
+# Exact Online entity. Field docs are TRANSCRIBED from the vendor REST reference by scripts/generate-eo-docs.ts — do not hand-edit descriptions; edit label/description/clarion freely.
+
+name: Quotations
+label: Quotations
+description: Sales quotations — pre-order pricing offers to customers.
+source: /crm/Quotations
+primary_key: [ QuotationID ]
+fields:
+  - name: AmountDC
+    description: Amount in the default currency of the company
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: AmountDiscount
+    description: Discount Amount in the currency of the transaction
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: AmountDiscountExclVat
+    description: Discount Amount excluding VAT in the currency of the transaction
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: AmountFC
+    description: Amount in the currency of the transaction
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: CloseDate
+    description: Date on which the customer accepted or rejected the quotation version
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: ClosingDate
+    description: Date on which you expect to close/win the deal
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: Created
+    description: Date and time on which the quotation was created
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: Creator
+    description: User ID of the creator
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: CreatorFullName
+    description: Name of the creator
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Currency
+    description: The currency of the quotation
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: DeliveryAccount
+    description: The account where the items should delivered
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: Accounts, field: ID } }
+  - name: DeliveryAccountCode
+    description: The code of the delivery account
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: DeliveryAccountContact
+    description: The contact person of the delivery account
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: Contacts, field: ID } }
+  - name: DeliveryAccountContactFullName
+    description: Full name of the delivery account contact person
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: DeliveryAccountName
+    description: The name of the delivery account
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: DeliveryAddress
+    description: The id of the delivery address
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: Addresses, field: ID } }
+  - name: DeliveryDate
+    description: The date of the delivery
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: Description
+    description: The description of the quotation
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Division
+    description: Division code
+    datatype: Edm.Int32
+  - name: Document
+    description: Document linked to the quotation
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: Documents, field: ID } }
+  - name: DocumentSubject
+    description: The subject of the document
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: DueDate
+    description: Date after which the quotation is no longer valid
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: IncotermAddress
+    description: Address of Incoterm
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: IncotermCode
+    description: Code of Incoterm
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: IncotermVersion
+    description: "Version of Incoterm Supported version for Incoterms : 2010, 2020"
+    datatype: Edm.Int16
+  - name: InvoiceAccount
+    description: The account to which the invoice is sent
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: Accounts, field: ID } }
+  - name: InvoiceAccountCode
+    description: The code of the invoice account
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: InvoiceAccountContact
+    description: The contact person of the invoice account
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: Contacts, field: ID } }
+  - name: InvoiceAccountContactFullName
+    description: Full name of the invoice account contact person
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: InvoiceAccountName
+    description: The name of the invoice account
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Modified
+    description: Date and time on which the quotation was last modified
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: Modifier
+    description: User ID of the modifier
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: ModifierFullName
+    description: Name of the modifier
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Opportunity
+    description: Opportunity linked to the quotation
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: Opportunities, field: ID } }
+  - name: OpportunityName
+    description: The name of the opportunity
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: OrderAccount
+    description: The account that requested the quotation
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: Accounts, field: ID } }
+  - name: OrderAccountCode
+    description: The code of the order account
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: OrderAccountContact
+    description: The contact person of the order account
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: Contacts, field: ID } }
+  - name: OrderAccountContactFullName
+    description: Full name of the order account contact person
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: OrderAccountName
+    description: The name of the order account
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: PaymentCondition
+    description: Payment condition code
+    datatype: Edm.String
+    clarion: { role: dimension, references: { dataset: PaymentConditions, field: ID } }
+  - name: PaymentConditionDescription
+    description: Payment condition description
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Project
+    description: The project linked to the quotation
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: Projects, field: ID } }
+  - name: ProjectCode
+    description: The code of the project
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: ProjectDescription
+    description: The description of the project
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: QuotationDate
+    description: Date on which the quotation version is entered or printed. Both during entering and printing this date can be adjusted
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: QuotationID
+    description: Identifier of the quotation
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: QuotationNumber
+    description: Unique number to indentify the quotation. By default this number is based on the setting for first available number
+    datatype: Edm.Int32
+  - name: Remarks
+    description: Extra text that can be added to the quotation
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: SalesChannel
+    description: ID of Sales channel.
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: SalesChannelCode
+    description: Code of Sales channel.
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: SalesChannelDescription
+    description: Description of Sales channel.
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: SalesPerson
+    description: The user that is responsible for the quotation version
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: SalesPersonFullName
+    description: Full name of the sales person
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: SelectionCode
+    description: ID of selection code. Only supported by the Plus, Professional and Premium for Wholesale & Distribution and Manufacturing
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: SelectionCodeCode
+    description: Code of selection code
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: SelectionCodeDescription
+    description: Description of selection code
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: ShippingMethod
+    description: Shipping method ID
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: ShippingMethodDescription
+    description: Shipping method description
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Status
+    description: The status of the quotation version. 5 = Rejected, 6 = Reviewed and closed, 10 = Recovery, 20 = Draft, 25 = Open, 35 = Processing... , 40 = Printed, 50 = Accepted, 60 = Awaiting online acceptance, 70 = Accepted but an error occurred during processing
+    datatype: Edm.Int16
+  - name: StatusDescription
+    description: The description of the status
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: VATAmountFC
+    description: Total VAT amount in the currency of the transaction
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: VersionNumber
+    description: Number indicating the different reviews which are made for the quotation
+    datatype: Edm.Int32
+  - name: WarehouseCode
+    description: Code of Warehouse
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: WarehouseDescription
+    description: Description of Warehouse
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: WarehouseID
+    description: Warehouse. Only supported by the Plus, Professional and Premium editions for Wholesale & Distribution and Manufacturing
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: Warehouses, field: ID } }
+  - name: YourRef
+    description: The number by which this quotation is identified by the order account
+    datatype: Edm.String
+    clarion: { role: dimension }
+clarion:
+  kind: source
+  category: CRM
+  sync:
+    cursor: { field: Modified, type: timestamp }
+    requiresSelect: true

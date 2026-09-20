@@ -512,7 +512,7 @@ router.post('/refine', requireAuth, validate(refineDashboardSchema), async (req:
     const semanticCtx = productCtx
       ? { semanticContext: productCtx.semanticContext, relationshipContext: productCtx.relationshipContext }
       : await buildSemanticContext(connectionId, req.user!.tenantId);
-    const result: RefinementOutput = await generateDashboardRefinement(request, semanticCtx.semanticContext, semanticCtx.relationshipContext);
+    const result: RefinementOutput = await generateDashboardRefinement(request, semanticCtx.semanticContext, semanticCtx.relationshipContext, { productLayer: !!productCtx });
 
     res.json({ ok: true, data: result });
   } catch (err) {
@@ -564,6 +564,7 @@ router.post('/refine-spec', requireAuth, validate(refineSpecSchema), async (req:
       semanticCtx.semanticContext,
       semanticCtx.relationshipContext,
       productCtx?.kpiFormulas ?? '',
+      { productLayer: !!productCtx },
     );
 
     // Deterministic carryover: user-arranged layout survives the full-spec
@@ -741,6 +742,7 @@ router.post('/refine-spec-stream', requireAuth, validate(refineSpecSchema), asyn
         refinement, specForAI as DashboardSpec,
         semanticCtx.semanticContext, semanticCtx.relationshipContext,
         productCtx?.kpiFormulas ?? '',
+        { productLayer: !!productCtx },
       );
       spec = preserveSpecCarryover(currentSpec, spec);
       const before = new Map(currentSpec.widgets.map((w) => [w.id, w]));

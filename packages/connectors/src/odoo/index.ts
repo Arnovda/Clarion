@@ -8,6 +8,6 @@ import { OdooConnector } from './OdooConnector';
 
 export { OdooConnector } from './OdooConnector';
 export { odooConfigSchema, type OdooConfig } from './schema';
-export { ODOO_ENTITIES, ODOO_KNOWN_RELATIONSHIPS, ODOO_ALLOWLIST } from './entities';
+export { ODOO_ENTITIES, ODOO_KNOWN_RELATIONSHIPS, ODOO_ALLOWLIST } from './catalog';
 
 registerConnector(OdooConnector);

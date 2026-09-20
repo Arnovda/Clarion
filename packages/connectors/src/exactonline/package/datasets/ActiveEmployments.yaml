@@ -1,0 +1,183 @@
+# Exact Online entity. Field docs are TRANSCRIBED from the vendor REST reference by scripts/generate-eo-docs.ts — do not hand-edit descriptions; edit label/description/clarion freely.
+
+name: ActiveEmployments
+label: Active employments
+description: Currently-active employment contracts only.
+source: /payroll/ActiveEmployments
+primary_key: [ ID ]
+fields:
+  - name: AverageDaysPerWeek
+    description: The average number of contract days that an employee works per week
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: AverageHoursPerWeek
+    description: The average number of contract hours that an employee works per week
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: Contract
+    description: Employment contract ID
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: EmploymentContracts, field: ID } }
+  - name: ContractDocument
+    description: Document ID of the employment contract
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: Documents, field: ID } }
+  - name: ContractEndDate
+    description: End date of employment contract
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: ContractProbationEndDate
+    description: Employment probation end date
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: ContractProbationPeriod
+    description: Employment probation period
+    datatype: Edm.Int32
+  - name: ContractStartDate
+    description: Start date of employment contract
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: ContractType
+    description: Type of employment contract. 1 - Definite, 2 - Indefinite, 3 - External
+    datatype: Edm.Int32
+  - name: ContractTypeDescription
+    description: Description of employment contract type
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Created
+    description: Creation date
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: Creator
+    description: User ID of creator
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: CreatorFullName
+    description: Name of creator
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Department
+    description: Department of employee
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: DepartmentCode
+    description: Department code of employee
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: DepartmentDescription
+    description: Description of department
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Division
+    description: Division code
+    datatype: Edm.Int32
+  - name: Employee
+    description: Employee ID
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: Employees, field: ID } }
+  - name: EmployeeFullName
+    description: Name of employee
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: EmployeeHID
+    description: Numeric number of Employee
+    datatype: Edm.Int32
+  - name: EmploymentOrganization
+    description: Organization of employment
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: EmploymentOrganizations, field: ID } }
+  - name: EndDate
+    description: End date of employment
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: HID
+    description: Numeric ID of the employment
+    datatype: Edm.Int32
+  - name: HourlyWage
+    description: Hourly wage
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: ID
+    description: Primary key
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: InternalRate
+    description: Internal rate for time & billing or professional service user
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: Jobtitle
+    description: Job title of employee
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: JobtitleDescription
+    description: Description of job title
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Modified
+    description: Last modified date
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: Modifier
+    description: User ID of modifier
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: ModifierFullName
+    description: Name of modifier
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: ReasonEnd
+    description: ID of employment ended
+    datatype: Edm.Int32
+  - name: ReasonEndDescription
+    description: Reason of end of employment
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: ReasonEndFlex
+    description: Reason of ended flexible employment
+    datatype: Edm.Int32
+  - name: ReasonEndFlexDescription
+    description: Other reason for end of employment
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Salary
+    description: Employment salary
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: EmploymentSalaries, field: ID } }
+  - name: Schedule
+    description: Work schedule
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: ScheduleAverageHours
+    description: Average hours per week in a schedule.
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: ScheduleCode
+    description: Work schedule code
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: ScheduleDays
+    description: Number of days of work per week
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: ScheduleDescription
+    description: Description of work schedule
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: ScheduleHours
+    description: Number of work hours per week.
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: StartDate
+    description: Start date of employment
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: StartDateOrganization
+    description: Start date of the employee in the organization. This field is used to count the years in service.
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+clarion:
+  kind: source
+  category: HRM
+  sync:
+    cursor: { field: Modified, type: timestamp }
+    requiresSelect: true

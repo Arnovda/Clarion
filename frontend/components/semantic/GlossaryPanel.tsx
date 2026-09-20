@@ -1,9 +1,17 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { Plus, Pencil, Trash2, BookOpen, Check, X, Search } from 'lucide-react';
+import { Plus, Pencil, Trash2, BookOpen, Check, X, Search, Link2, AlertTriangle } from 'lucide-react';
 import api from '@/lib/api';
 import { useToast } from '@/components/ui/Toast';
+import GlossaryLinkPicker, { describeGlossaryLink } from './GlossaryLinkPicker';
+import {
+  bareGlossaryLink,
+  glossaryLinkKey,
+  type GlossaryLink,
+  type GlossaryLinkTargets,
+  type ResolvedGlossaryLink,
+} from './types';
 
 export interface GlossaryEntry {
   id: number;
@@ -11,19 +19,25 @@ export interface GlossaryEntry {
   meaning: string;
   examples: string[];
   tags: string[];
+  /** Where the term lives in the data — checked against the catalog by the API. */
+  links: ResolvedGlossaryLink[];
   ai_draft: boolean;
   created_at?: string;
   updated_at?: string;
 }
 
-const BLANK = { term: '', meaning: '', examplesText: '', tagsText: '' };
+/** A term that means eight different columns is not a definition. */
+const MAX_LINKS = 8;
 
 interface DraftForm {
   term: string;
   meaning: string;
   examplesText: string; // newline-separated for editing
   tagsText: string;     // comma-separated for editing
+  links: GlossaryLink[];
 }
+
+const BLANK: DraftForm = { term: '', meaning: '', examplesText: '', tagsText: '', links: [] };
 
 function parseLines(text: string): string[] {
   return text
@@ -48,12 +62,18 @@ export default function GlossaryPanel({ canEdit }: { canEdit: boolean }) {
   const [form, setForm]       = useState<DraftForm>(BLANK);
   const [saving, setSaving]   = useState(false);
   const [search, setSearch]   = useState('');
+  // The picker's list — fetched the first time a form opens, not on every
+  // page view (viewers never open a form and never pay for it).
+  const [targets, setTargets] = useState<GlossaryLinkTargets | null>(null);
 
   async function load() {
     try {
       setLoading(true);
       const { data } = await api.get('/semantic/glossary');
-      if (data?.ok) setEntries(data.data ?? []);
+      if (data?.ok) {
+        const rows = (data.data ?? []) as Array<Omit<GlossaryEntry, 'links'> & { links?: ResolvedGlossaryLink[] }>;
+        setEntries(rows.map((r) => ({ ...r, links: Array.isArray(r.links) ? r.links : [] })));
+      }
     } catch {
       toast.error('Failed to load glossary');
     } finally {
@@ -62,6 +82,16 @@ export default function GlossaryPanel({ canEdit }: { canEdit: boolean }) {
   }
 
   useEffect(() => { void load(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const formOpen = canEdit && (adding || editingId != null);
+  useEffect(() => {
+    if (!formOpen || targets !== null) return;
+    let cancelled = false;
+    api.get('/semantic/glossary/link-targets')
+      .then((r) => { if (!cancelled) setTargets((r.data?.data as GlossaryLinkTargets) ?? { tables: [], kpis: [] }); })
+      .catch(() => { if (!cancelled) setTargets({ tables: [], kpis: [] }); });
+    return () => { cancelled = true; };
+  }, [formOpen, targets]);
 
   function startAdd() {
     setEditingId(null);
@@ -77,6 +107,8 @@ export default function GlossaryPanel({ canEdit }: { canEdit: boolean }) {
       meaning: e.meaning,
       examplesText: e.examples.join('\n'),
       tagsText: e.tags.join(', '),
+      // Send links back exactly as stored — resolution fields are the API's.
+      links: e.links.map(bareGlossaryLink),
     });
   }
 
@@ -98,6 +130,7 @@ export default function GlossaryPanel({ canEdit }: { canEdit: boolean }) {
       meaning,
       examples: parseLines(form.examplesText),
       tags:     parseTags(form.tagsText),
+      links:    form.links,
     };
     setSaving(true);
     try {
@@ -134,7 +167,8 @@ export default function GlossaryPanel({ canEdit }: { canEdit: boolean }) {
     ? entries.filter((e) =>
         e.term.toLowerCase().includes(q) ||
         e.meaning.toLowerCase().includes(q) ||
-        e.tags.some((t) => t.toLowerCase().includes(q)),
+        e.tags.some((t) => t.toLowerCase().includes(q)) ||
+        e.links.some((l) => describeGlossaryLink(l).toLowerCase().includes(q)),
       )
     : entries;
 
@@ -145,11 +179,12 @@ export default function GlossaryPanel({ canEdit }: { canEdit: boolean }) {
         <div className="flex items-start justify-between gap-4">
           <div>
             <p className="font-mono text-[10.5px] uppercase tracking-[0.1em] text-muted">Tenant glossary</p>
-            <h2 className="font-serif text-[22px] text-ink leading-tight mt-0.5">Business definitions & abbreviations</h2>
+            <h2 className="font-serif text-[22px] text-ink leading-tight mt-0.5">Business definitions &amp; abbreviations</h2>
             <p className="text-[13px] text-muted mt-1.5 max-w-xl">
               Company-specific terms, abbreviations, and jargon. The AI uses these as extra context when generating
               SQL, dashboards, and definitions — so &ldquo;QTD revenue&rdquo; or &ldquo;Net New ARR&rdquo; resolves
-              to whatever you mean by it.
+              to whatever you mean by it. Link a term to the column, table or KPI it means and the AI stops guessing
+              which one you meant.
             </p>
           </div>
           {canEdit && (
@@ -170,7 +205,7 @@ export default function GlossaryPanel({ canEdit }: { canEdit: boolean }) {
               type="text"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              placeholder="Search terms, meanings, tags…"
+              placeholder="Search terms, meanings, tags, linked columns…"
               className="w-full pl-9 pr-3 py-2 text-[13px] bg-raised border border-line rounded-md text-ink placeholder:text-muted-2 focus:outline-none focus:border-ocean focus:shadow-[0_0_0_3px_var(--ocean-soft)] transition-colors"
             />
           </div>
@@ -185,6 +220,7 @@ export default function GlossaryPanel({ canEdit }: { canEdit: boolean }) {
             onSave={save}
             onCancel={cancelEdit}
             mode="new"
+            targets={targets}
           />
         )}
 
@@ -212,6 +248,7 @@ export default function GlossaryPanel({ canEdit }: { canEdit: boolean }) {
                   onSave={save}
                   onCancel={cancelEdit}
                   mode="edit"
+                  targets={targets}
                 />
               ) : (
                 <div
@@ -237,6 +274,25 @@ export default function GlossaryPanel({ canEdit }: { canEdit: boolean }) {
                           {e.examples.map((ex, i) => (
                             <li key={i} className="text-[12px] text-muted">
                               <span className="text-muted-2">·</span> <span className="italic">{ex}</span>
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                      {e.links.length > 0 && (
+                        <ul className="mt-2 space-y-0.5">
+                          {e.links.map((l) => (
+                            <li
+                              key={glossaryLinkKey(l)}
+                              className={`flex items-start gap-1.5 text-[12px] leading-snug ${l.resolved ? 'text-ink-3' : 'text-warn'}`}
+                            >
+                              {l.resolved
+                                ? <Link2 className="w-3.5 h-3.5 shrink-0 mt-[1px] text-ocean" strokeWidth={2} aria-hidden />
+                                : <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-[1px]" strokeWidth={2} aria-hidden />}
+                              <span>
+                                {l.resolved
+                                  ? <>In your data: <span className="text-ink-2">{describeGlossaryLink(l)}</span></>
+                                  : <>Points at <span className="font-mono">{describeGlossaryLink(l)}</span>, which is no longer in your topics — pick it again.</>}
+                              </span>
                             </li>
                           ))}
                         </ul>
@@ -278,6 +334,7 @@ function EntryForm({
   onSave,
   onCancel,
   mode,
+  targets,
 }: {
   form: DraftForm;
   setForm: (f: DraftForm) => void;
@@ -285,7 +342,11 @@ function EntryForm({
   onSave: () => void;
   onCancel: () => void;
   mode: 'new' | 'edit';
+  targets: GlossaryLinkTargets | null;
 }) {
+  const removeLink = (key: string) =>
+    setForm({ ...form, links: form.links.filter((l) => glossaryLinkKey(l) !== key) });
+
   return (
     <div className="bg-raised border border-ocean/40 rounded-lg p-4 space-y-3 shadow-sm">
       <p className="font-mono text-[10.5px] uppercase tracking-[0.1em] text-muted">
@@ -310,6 +371,48 @@ function EntryForm({
           rows={2}
           className="w-full px-3 py-1.5 text-[13px] bg-bg border border-line rounded-md text-ink focus:outline-none focus:border-ocean focus:shadow-[0_0_0_3px_var(--ocean-soft)] transition-colors resize-none"
         />
+      </div>
+      <div>
+        <label className="block font-mono text-[10.5px] uppercase tracking-[0.1em] text-muted mb-1.5">
+          Where it lives in your data <span className="lowercase tracking-normal">(optional)</span>
+        </label>
+        <p className="text-[12px] text-muted mb-2">
+          Pick the column, table or KPI this term means. The AI then uses exactly that one instead of guessing
+          between similar names, and the catalog shows your word next to the column.
+        </p>
+        {form.links.length > 0 && (
+          <div className="flex flex-wrap gap-1.5 mb-2">
+            {form.links.map((l) => {
+              const key = glossaryLinkKey(l);
+              const stored = targets ? resolveAgainstTargets(l, targets) : null;
+              return (
+                <span
+                  key={key}
+                  className="inline-flex items-center gap-1.5 rounded-md bg-ocean-softer border border-line px-2 py-1 text-[12px] text-ink-2"
+                >
+                  <Link2 className="w-3 h-3 text-ocean shrink-0" strokeWidth={2} aria-hidden />
+                  <span>{describeGlossaryLink({ ...l, ...(stored ?? {}) })}</span>
+                  <button
+                    type="button"
+                    onClick={() => removeLink(key)}
+                    className="ml-0.5 rounded p-0.5 text-muted hover:text-err hover:bg-softer"
+                    title="Remove link"
+                    aria-label={`Remove link ${describeGlossaryLink(l)}`}
+                  >
+                    <X className="w-3 h-3" strokeWidth={2} />
+                  </button>
+                </span>
+              );
+            })}
+          </div>
+        )}
+        {form.links.length < MAX_LINKS && (
+          <GlossaryLinkPicker
+            targets={targets}
+            exclude={form.links}
+            onPick={(l) => setForm({ ...form, links: [...form.links, l] })}
+          />
+        )}
       </div>
       <div>
         <label className="block font-mono text-[10.5px] uppercase tracking-[0.1em] text-muted mb-1.5">
@@ -352,4 +455,21 @@ function EntryForm({
       </div>
     </div>
   );
+}
+
+/**
+ * Give a bare link (as stored / as just picked) its topic and label from the
+ * picker's list, so the chip reads "Finance · Receivables › Outstanding
+ * amount" rather than "fact_receivables › outstanding_amount".
+ */
+function resolveAgainstTargets(l: GlossaryLink, targets: GlossaryLinkTargets): { topic: string; label: string } | null {
+  if (l.kind === 'kpi') {
+    const k = targets.kpis.find((x) => x.name === l.kpi);
+    return k ? { topic: k.topic, label: k.name } : null;
+  }
+  const t = targets.tables.find((x) => x.tableName === l.table);
+  if (!t) return null;
+  if (l.kind === 'table') return { topic: t.topic, label: t.displayName ?? t.tableName };
+  const c = t.columns.find((x) => x.name === l.column);
+  return c ? { topic: t.topic, label: c.displayName ?? c.name } : null;
 }

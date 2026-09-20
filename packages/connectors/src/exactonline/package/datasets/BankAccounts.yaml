@@ -1,0 +1,108 @@
+# Exact Online entity. Field docs are TRANSCRIBED from the vendor REST reference by scripts/generate-eo-docs.ts — do not hand-edit descriptions; edit label/description/clarion freely.
+
+name: BankAccounts
+label: Bank accounts
+description: Bank account definitions per customer/supplier (IBAN, BIC, etc.). Lives under /crm/ in the EO API.
+source: /crm/BankAccounts
+primary_key: [ ID ]
+fields:
+  - name: Account
+    description: Account (customer, supplier) to which the bank account belongs
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: Accounts, field: ID } }
+  - name: AccountName
+    description: The name of the account
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Bank
+    description: Obsolete
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: BankAccount
+    description: The bank account number
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: BankAccountHolderName
+    description: Name of the holder of the bank account, as known by the bank
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: BankDescription
+    description: Obsolete
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: BankName
+    description: Obsolete
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: BICCode
+    description: BIC code of the bank where the bank account is held
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Blocked
+    description: Indicates if the bank account is blocked
+    datatype: Edm.Boolean
+    clarion: { role: dimension }
+  - name: Created
+    description: Creation date
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: Creator
+    description: User ID of creator
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: CreatorFullName
+    description: Name of creator
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Description
+    description: Description of the bank account
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Division
+    description: Division code
+    datatype: Edm.Int32
+  - name: Format
+    description: Format that belongs to the bank account number
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: IBAN
+    description: Obsolete
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: ID
+    description: Primary key
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: Main
+    description: Indicates if the bank account is the main bank account
+    datatype: Edm.Boolean
+    clarion: { role: dimension }
+  - name: Modified
+    description: Last modified date
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: Modifier
+    description: User ID of modifier
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: ModifierFullName
+    description: Name of modifier
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: PaymentServiceAccount
+    description: ID of the Payment service account. Used when Type is 'P' (Payment service)
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: Type
+    description: The type indicates what entity the bank account is used for. A = Account (default), E = Employee, K = Cash, P = Payment service, R = Bank, S = Student, U = Unknown. Currently it's only possible to create 'Account' type bank accounts.
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: TypeDescription
+    description: Description of the Type
+    datatype: Edm.String
+    clarion: { role: dimension }
+clarion:
+  kind: source
+  category: CRM
+  sync:
+    cursor: { field: Modified, type: timestamp }

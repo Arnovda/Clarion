@@ -1,0 +1,202 @@
+# Exact Online entity. Field docs are TRANSCRIBED from the vendor REST reference by scripts/generate-eo-docs.ts — do not hand-edit descriptions; edit label/description/clarion freely.
+
+name: SalesEntries
+label: Sales entries
+description: Light-weight sales journal entries — used by accountants who book sales as a journal entry rather than as a full invoice.
+source: /salesentry/SalesEntries
+primary_key: [ ID ]
+fields:
+  - name: AmountDC
+    description: Amount in the default currency of the company. For the header lines (LineNumber = 0) of an entry this is the SUM(AmountDC) of all lines
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: AmountFC
+    description: Amount in the currency of the transaction. For the header this is the sum of all lines, including VAT
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: BatchNumber
+    description: "The number of the batch of entries. Normally a batch consists of multiple entries. Batchnumbers are filled for invoices created by: - Fixed entries - Prolongation (only available with module hosting)"
+    datatype: Edm.Int32
+  - name: Created
+    description: Creation date
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: Creator
+    description: User ID of creator
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: CreatorFullName
+    description: Name of creator
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Currency
+    description: Currency for the invoice. By default this is the currency of the administration
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Customer
+    description: Reference to customer (account)
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: Accounts, field: ID } }
+  - name: CustomerName
+    description: Name of customer
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: CustomField
+    description: Custom field endpoint
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Description
+    description: Description of the entry. Can be different for the sales entry lines
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Division
+    description: Division code
+    datatype: Edm.Int32
+  - name: Document
+    description: Document that is manually linked to the invoice
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: Documents, field: ID } }
+  - name: DocumentNumber
+    description: Number of the document
+    datatype: Edm.Int32
+  - name: DocumentSubject
+    description: Subject of the document
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: DueDate
+    description: The due date for payments. This date is calculated based on the EntryDate and the Paymentcondition
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: EntryDate
+    description: Invoice date
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: EntryID
+    description: The unique ID of the entry. Via this ID all transaction lines of a single entry can be retrieved
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: EntryNumber
+    description: Entry number, for sales invoices this is the invoice number
+    datatype: Edm.Int32
+  - name: ExternalLinkDescription
+    description: Description of ExternalLink
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: ExternalLinkReference
+    description: Reference of ExternalLink
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: GAccountAmountFC
+    description: A positive value of the amount indicates that the amount is to be paid by the customer to your G bank account.In case of a credit invoice the amount should have negative value when retrieved or posted to Exact.
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: InvoiceNumber
+    description: Assigned at entry or at printing depending on setting. The number assigned is based on the freenumbers as defined for the Journal. When printing the field InvoiceNumber is copied to the fields EntryNumber and InvoiceNumber of the sales entry
+    datatype: Edm.Int32
+  - name: InvoiceStatusInformation
+    description: Detailed information on the status of the sales invoice in case of collaboration with 3rd parties like Peppol
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: IsExtraDuty
+    description: Indicates whether the invoice has extra duty
+    datatype: Edm.Boolean
+    clarion: { role: dimension }
+  - name: Journal
+    description: The journal code. Every invoice should be linked to a sales journal
+    datatype: Edm.String
+    clarion: { role: dimension, references: { dataset: Journals, field: ID } }
+  - name: JournalDescription
+    description: Description of Journal
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Modified
+    description: Last modified date
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: Modifier
+    description: User ID of modifier
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: ModifierFullName
+    description: Name of modifier
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: OrderNumber
+    description: Number to indentify the invoice. Order numbers are not unique. Default the number is based on a setting for the first free number
+    datatype: Edm.Int32
+  - name: PaymentCondition
+    description: The payment condition used for due date and discount calculation
+    datatype: Edm.String
+    clarion: { role: dimension, references: { dataset: PaymentConditions, field: ID } }
+  - name: PaymentConditionDescription
+    description: Description of PaymentCondition
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: PaymentConditionPaymentMethod
+    description: "Payment method of Payment condition. Values: B = On credit, I = Collection, K = Cash"
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: PaymentReference
+    description: The payment reference used for bank imports, VAT return and Tax reference
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: ProcessNumber
+    description: Internal processing number, only relevant for Germany
+    datatype: Edm.Int32
+  - name: Rate
+    description: Foreign currency rate
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: ReportingPeriod
+    description: The period of the transaction lines. The period should exist in the period date table
+    datatype: Edm.Int16
+  - name: ReportingYear
+    description: The financial year to which the entry belongs. The financial year should exist in the period date table
+    datatype: Edm.Int16
+  - name: Reversal
+    description: Indicates if amounts are reversed
+    datatype: Edm.Boolean
+    clarion: { role: dimension }
+  - name: Status
+    description: "Status: 20 = Open, 50 = Processed"
+    datatype: Edm.Int16
+  - name: StatusDescription
+    description: Description of Status
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Type
+    description: "Type: 20 = Sales entry, 21 = Sales credit note"
+    datatype: Edm.Int32
+  - name: TypeDescription
+    description: Description of Type
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: VATAmountDC
+    description: Vat amount in the default currency of the company
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: VATAmountFC
+    description: Vat amount in the currency of the transaction
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: WithholdingTaxAmountDC
+    description: Withholding tax amount, Spanish legislation only
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: WithholdingTaxBaseAmount
+    description: Withholding tax base amount to calculate withholding amount, Spanish legislation only
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: WithholdingTaxPercentage
+    description: Withholding tax percentage, Spanish legislation only
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: YourRef
+    description: Reference of the customer, like order number
+    datatype: Edm.String
+    clarion: { role: dimension }
+clarion:
+  kind: source
+  category: Sales
+  sync:
+    cursor: { field: Modified, type: timestamp }

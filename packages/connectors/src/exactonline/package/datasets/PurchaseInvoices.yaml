@@ -1,0 +1,123 @@
+# Exact Online entity. Field docs are TRANSCRIBED from the vendor REST reference by scripts/generate-eo-docs.ts — do not hand-edit descriptions; edit label/description/clarion freely.
+
+name: PurchaseInvoices
+label: Purchase invoices
+description: Supplier invoices booked into purchase ledger.
+source: /purchase/PurchaseInvoices
+primary_key: [ ID ]
+fields:
+  - name: Amount
+    description: The amount including VAT in the foreign currency.
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: AmountDC
+    description: The amount including VAT in the default currency.
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: AmountDiscount
+    description: Discount amount in the default currency of the company
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: AmountDiscountExclVat
+    description: Discount amount excluding VAT in the default currency of the company
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: AmountFCExclVat
+    description: Amount exclude VAT in the currency of the transaction.
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: ContactPerson
+    description: Guid identifying the contact person of the supplier.
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: Contacts, field: ID } }
+  - name: Currency
+    description: The code of the currency of the invoiced amount.
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Description
+    description: The description of the invoice.
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Discount
+    description: Discount percentage
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: Document
+    description: Guid identifying a document that is attached to the invoice.
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: Documents, field: ID } }
+  - name: DueDate
+    description: The date before which the invoice has to be paid. This by default will be set according to the payment condition.
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: EntryNumber
+    description: The unique number of the purchase invoice. The entry number is based on a setting in the purchase journal and incremented for each new purchase invoice.
+    datatype: Edm.Int32
+  - name: ExchangeRate
+    description: The exchange rate between the invoice currency and the default currency of the division.
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: FinancialPeriod
+    description: The financial period in which the invoice is entered.
+    datatype: Edm.Int16
+  - name: FinancialYear
+    description: The financial year in which the invoice is entered.
+    datatype: Edm.Int16
+  - name: ID
+    description: A guid that is the unique identifier of the purchase invoice.
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: InvoiceDate
+    description: The date on which the supplier entered the invoice.
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: Journal
+    description: The code of the purchase journal in which the invoice is entered.
+    datatype: Edm.String
+    clarion: { role: dimension, references: { dataset: Journals, field: ID } }
+  - name: Modified
+    description: The date and time the invoice was last modified.
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: PaymentCondition
+    description: The code of the payment condition that is used to calculate the due date and discount.
+    datatype: Edm.String
+    clarion: { role: dimension, references: { dataset: PaymentConditions, field: ID } }
+  - name: PaymentReference
+    description: Unique reference to match payments and invoices.
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Remarks
+    description: The user can enter remarks related to the invoice here.
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Source
+    description: Indicates the origin of the invoice. 1 Manual entry, 3 Purchase invoice, 4 Purchase order, 5 Web service.
+    datatype: Edm.Int16
+  - name: Status
+    description: The status of the invoice. 10 Draft, 20 Open, 50 Processed.
+    datatype: Edm.Int16
+  - name: Supplier
+    description: Guid that identifies the supplier.
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: Accounts, field: ID } }
+  - name: Type
+    description: Indicates the type of the purchase invoice. 8030 Direct purchase invoice, 8031 Direct purchase invoice (Credit), 8033 Purchase invoice, 8034 Purchase invoice (Credit)
+    datatype: Edm.Int16
+  - name: VATAmount
+    description: The total VAT amount of the purchase invoice.
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: Warehouse
+    description: Guid that identifies the warehouse that will receive the purchased goods. This is mandatory for creating a direct purchase invoice except for Exact Online Projects.
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: Warehouses, field: ID } }
+  - name: YourRef
+    description: The invoice number provided by the supplier.
+    datatype: Edm.String
+    clarion: { role: dimension }
+clarion:
+  kind: source
+  category: Purchase
+  sync:
+    cursor: { field: Modified, type: timestamp }

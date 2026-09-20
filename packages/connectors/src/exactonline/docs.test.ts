@@ -10,8 +10,7 @@
 
 import { describe, expect, it } from 'vitest';
 import { ExactOnlineConnector } from './ExactOnlineConnector';
-import { EXACT_ONLINE_COLUMN_DOCS } from './docs';
-import { ENTITIES_BY_NAME, EXACT_ONLINE_ENTITIES } from './entities';
+import { ENTITIES_BY_NAME, EXACT_ONLINE_COLUMN_DOCS, EXACT_ONLINE_ENTITIES } from './catalog';
 import { validateDocumentedRelationships } from '../conformance';
 import { typesJoinable } from '../columnTypes';
 import { createNoopLogger } from '../logging';
@@ -155,6 +154,31 @@ describe('ExactOnlineConnector.describeEntities', () => {
       expect(d.provenance).toBe('curated');
       expect(Array.isArray(d.columns)).toBe(true);
     }
+  });
+});
+
+describe('source-package notes — soft context, never a fact', () => {
+  it('describeEntities carries a dataset\'s `clarion.notes` as EntityDocs.notes, separate from the description', async () => {
+    const connector = new ExactOnlineConnector();
+    const docs = await connector.describeEntities(config, ['TransactionLines', 'Accounts'], probeCtx);
+    const tl = docs.find((d) => d.entityName === 'TransactionLines');
+    expect(tl?.notes).toContain('`AmountDC`');
+    expect(tl?.notes).toContain('`JournalCode` references Journals by `Code`');
+    // The note is context for the model, not the table's description: the two
+    // never collapse into one field.
+    expect(tl?.description).toBeTruthy();
+    expect(tl?.description).not.toBe(tl?.notes);
+    // An entity without notes carries none — absence, not an empty string.
+    const acc = docs.find((d) => d.entityName === 'Accounts');
+    expect(acc?.notes).toBeUndefined();
+  });
+
+  it('getSourceNotes returns the manifest\'s source-wide caveats, synchronously and config-free', () => {
+    const connector = new ExactOnlineConnector();
+    const notes = connector.getSourceNotes();
+    expect(notes).toContain('`DC`');
+    expect(notes).toContain('`FC`');
+    expect(notes).toContain('Credit notes are natively NEGATIVE');
   });
 });
 

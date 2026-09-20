@@ -13,9 +13,7 @@
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { Database } from 'duckdb-async';
-import { EXACT_ONLINE_STAR_SCHEMA_TEMPLATE } from './starSchemaTemplate';
-import { EXACT_ONLINE_ENTITIES } from './entities';
-import { EXACT_ONLINE_COLUMN_DOCS } from './docs';
+import { EXACT_ONLINE_COLUMN_DOCS, EXACT_ONLINE_ENTITIES, EXACT_ONLINE_STAR_SCHEMA_TEMPLATE } from './catalog';
 import { instantiateStarSchemaTemplate, validateStarSchemaTemplate } from '../starSchema';
 
 const CATALOG = EXACT_ONLINE_ENTITIES.map((e) => e.name);

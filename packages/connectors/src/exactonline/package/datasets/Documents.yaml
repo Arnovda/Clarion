@@ -1,0 +1,221 @@
+# Exact Online entity. Field docs are TRANSCRIBED from the vendor REST reference by scripts/generate-eo-docs.ts — do not hand-edit descriptions; edit label/description/clarion freely.
+
+name: Documents
+label: Documents
+description: Business documents (invoices, receipts, contracts) attached to accounts. High volume on active divisions but no built-in filter — full history ingested.
+source: /documents/Documents
+primary_key: [ ID ]
+fields:
+  - name: Account
+    description: ID of the related account of this document
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: Accounts, field: ID } }
+  - name: AccountCode
+    description: Code of Account
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: AccountName
+    description: Name of Account
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: ActionRegenerateEntryProposal
+    description: ActionRegenerateEntryProposal
+    datatype: Edm.Boolean
+    clarion: { role: dimension }
+  - name: AmountFC
+    description: Amount in the currency of the transaction
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: Body
+    description: Body of this document
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Category
+    description: ID of the category of this document
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: CategoryDescription
+    description: Description of Category
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Contact
+    description: ID of the related contact of this document
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: Contacts, field: ID } }
+  - name: ContactFullName
+    description: Contact full name
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: ContractID
+    description: The contract linked to the document
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: ContractNumber
+    description: Contract Number
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: CostcenterCode
+    description: CostCenter Code
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: CostcenterDescription
+    description: CostCenter Description
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: CostunitCode
+    description: CostUnit Code
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: CostunitDescription
+    description: CostUnit Description
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Created
+    description: Creation date
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: Creator
+    description: User ID of creator
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: CreatorFullName
+    description: Name of creator
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Currency
+    description: Currency code
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Division
+    description: Division code
+    datatype: Edm.Int32
+  - name: DocumentDate
+    description: Entry date of the incoming document
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: DocumentFolder
+    description: The Id of document folder
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: DocumentFolderCode
+    description: The Code of document folder
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: DocumentFolderDescription
+    description: The Decsription of document folder
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: DocumentViewUrl
+    description: Url to view the document
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: EntryStatusDescription
+    description: EntryStatusDescription
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: ExpiryDate
+    description: Expiry date of this document
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: FinancialTransactionEntryID
+    description: Reference to the transaction lines of the financial entry. For a document of type sales invoice it will return the InvoiceID of the sales invoice (SalesInvoices API).
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: TransactionLines, field: ID } }
+  - name: HasEmptyBody
+    description: Indicates that the document body is empty
+    datatype: Edm.Boolean
+    clarion: { role: dimension }
+  - name: HID
+    description: Human-readable ID, formatted as xx.xxx.xxx. Unique. May not be equal to zero
+    datatype: Edm.Int32
+  - name: ID
+    description: Primary key
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: InheritShare
+    description: InheritShare value
+    datatype: Edm.Boolean
+    clarion: { role: dimension }
+  - name: Item
+    description: The item linked to the document
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: Items, field: ID } }
+  - name: ItemCode
+    description: Code of Item
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: ItemDescription
+    description: Description of Item
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Language
+    description: The language code of the document
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Modified
+    description: Last modified date
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: Modifier
+    description: User ID of modifier
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: ModifierFullName
+    description: Name of modifier
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Opportunity
+    description: The opportunity linked to the document
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: Opportunities, field: ID } }
+  - name: Project
+    description: The project linked to the document
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: Projects, field: ID } }
+  - name: ProjectCode
+    description: Code of project
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: ProjectDescription
+    description: Description of project
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: ProposedEntryStatus
+    description: ProposedEntryStatus, 0 = Void, 5 = Rejected, 20 = Open, 50 = Processed
+    datatype: Edm.Int16
+  - name: SalesInvoiceNumber
+    description: "'Our reference' of the transaction that belongs to this document"
+    datatype: Edm.Int32
+  - name: SalesOrderNumber
+    description: Number of the sales order
+    datatype: Edm.Int32
+    clarion: { references: { dataset: SalesOrders, field: OrderID } }
+  - name: ScanServiceStatus
+    description: Obsolete
+    datatype: Edm.Int16
+  - name: SendMethod
+    description: Send method
+    datatype: Edm.Int32
+  - name: ShopOrderNumber
+    description: Number of the shop order
+    datatype: Edm.Int32
+  - name: Subject
+    description: Subject of this document
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: TeamsMeetingId
+    description: Teams meeting id
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Type
+    description: ID of the type of this document
+    datatype: Edm.Int32
+  - name: TypeDescription
+    description: Description of Type
+    datatype: Edm.String
+    clarion: { role: dimension }
+clarion:
+  kind: source
+  category: Financial
+  sync:
+    cursor: { field: Modified, type: timestamp }

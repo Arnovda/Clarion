@@ -1,0 +1,136 @@
+# Exact Online entity. Field docs are TRANSCRIBED from the vendor REST reference by scripts/generate-eo-docs.ts — do not hand-edit descriptions; edit label/description/clarion freely.
+
+name: StockCountLines
+label: Stock count lines
+description: Per-item count detail for each stock count run.
+source: /inventory/StockCountLines
+primary_key: [ ID ]
+fields:
+  - name: CostPrice
+    description: Cost price of the item that is used to create the stock count
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: CountedBy
+    description: Counted by
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: Created
+    description: Creation date
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: Creator
+    description: User ID of creator
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: CreatorFullName
+    description: Name of creator
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Division
+    description: Division code
+    datatype: Edm.Int32
+  - name: ID
+    description: Primary key
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: Item
+    description: Reference to the item for which the stock is counted
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: Items, field: ID } }
+  - name: ItemBarcode
+    description: Item Barcode
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: ItemCode
+    description: Item code
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: ItemCostPrice
+    description: Current standard/actual item cost price
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: ItemDescription
+    description: Description of item
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: ItemDivisable
+    description: Indicates if fractional quantities of the item can be used, for example quantity = 0.4
+    datatype: Edm.Boolean
+    clarion: { role: dimension }
+  - name: LineNumber
+    description: Line number
+    datatype: Edm.Int32
+  - name: Modified
+    description: Last modified date
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: Modifier
+    description: User ID of modifier
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: ModifierFullName
+    description: Name of modifier
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: QuantityDifference
+    description: The difference between the current quantity in stock and the new quantity in stock. For example specify -1 for this field to correct the quantity if one item in stock is broken.
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: QuantityInStock
+    description: The current quantity available in stock
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: QuantityNew
+    description: The new quantity in stock. Use this field to correct the quantity when the items in stock are physically counted.
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: ReasonCode
+    description: Reason code for logistics
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: ReasonCodeDescription
+    description: Reason code for logistics description
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: ReasonCodeID
+    description: Reason code for logistics id
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: Source
+    description: "Source of stock count entry: 1-Manual entry, 2-Import, 3-Stock count, 4-Web service"
+    datatype: Edm.Int16
+  - name: Status
+    description: "Stock count status: 12-Draft, 21-Processed"
+    datatype: Edm.Int16
+  - name: StockCountID
+    description: Identifies the stock count. All the lines of a stock count have the same StockCountID
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: StockCounts, field: StockCountID } }
+  - name: StockKeepingUnit
+    description: Stock item's unit description
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: StorageLocation
+    description: This property is package specific (Stock count can have multiple lines for the same item only if it is for multiple storage locations).
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: StorageLocationCode
+    description: Storage location code
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: StorageLocationDescription
+    description: Storage location description
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: StorageLocationSequenceNumber
+    description: Sequence number for stock count (Premium Only)
+    datatype: Edm.Int32
+  - name: Warehouse
+    description: Warehouse
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+clarion:
+  kind: source
+  category: Inventory
+  sync:
+    cursor: { field: Modified, type: timestamp }

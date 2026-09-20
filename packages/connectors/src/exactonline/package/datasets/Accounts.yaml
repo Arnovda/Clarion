@@ -1,0 +1,649 @@
+# Exact Online entity. Field docs are TRANSCRIBED from the vendor REST reference by scripts/generate-eo-docs.ts — do not hand-edit descriptions; edit label/description/clarion freely.
+
+name: Accounts
+label: Accounts
+description: Customers, suppliers, prospects — the master account list.
+source: /crm/Accounts
+primary_key: [ ID ]
+fields:
+  - name: Accountant
+    description: "Reference to the accountant of the customer. Conditions: The referred accountant must have value > 0 in the field IsAccountant"
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: Accounts, field: ID } }
+  - name: AccountManager
+    description: ID of the account manager
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: AccountManagerFullName
+    description: Name of the account manager
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: AccountManagerHID
+    description: Number of the account manager
+    datatype: Edm.Int32
+  - name: ActivitySector
+    description: Reference to Activity sector of the account
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: ActivitySubSector
+    description: Reference to Activity sub-sector of the account
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: AddressLine1
+    description: Visit address first line
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: AddressLine2
+    description: Visit address second line
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: AddressLine3
+    description: Visit address third line
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: AddressSource
+    description: CRM creation source
+    datatype: Edm.Byte
+  - name: AutomaticProcessProposedEntry
+    description: Automatically create entries for complete entry proposals
+    datatype: Edm.Byte
+  - name: Blocked
+    description: Indicates if the account is blocked
+    datatype: Edm.Boolean
+    clarion: { role: dimension }
+  - name: BRIN
+    description: Obsolete
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: BSN
+    description: Citizen Service Number for the Netherlands
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: BusinessType
+    description: Reference to the business type of the account
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: CanDropShip
+    description: Indicates the default for the possibility to drop ship when an item is linked to a supplier
+    datatype: Edm.Boolean
+    clarion: { role: dimension }
+  - name: ChamberOfCommerce
+    description: Chamber of commerce number
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: City
+    description: Visit address City
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Classification
+    description: Obsolete
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Classification1
+    description: Account classification 1
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: AccountClassifications, field: ID } }
+  - name: Classification2
+    description: Account classification 2
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: AccountClassifications, field: ID } }
+  - name: Classification3
+    description: Account classification 3
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: AccountClassifications, field: ID } }
+  - name: Classification4
+    description: Account classification 4
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: AccountClassifications, field: ID } }
+  - name: Classification5
+    description: Account classification 5
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: AccountClassifications, field: ID } }
+  - name: Classification6
+    description: Account classification 6
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: AccountClassifications, field: ID } }
+  - name: Classification7
+    description: Account classification 7
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: AccountClassifications, field: ID } }
+  - name: Classification8
+    description: Account classification 8
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: AccountClassifications, field: ID } }
+  - name: ClassificationDescription
+    description: Obsolete
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: ClientGroup
+    description: ID of the client group
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: ClientGroupDescription
+    description: Description of the client group
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Code
+    description: "Unique key, fixed length numeric string with leading spaces, length 18. IMPORTANT: When you use OData $filter on this field you have to make sure the filter parameter contains the leading spaces"
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: CodeAtSupplier
+    description: Code under which your own company is known at the account
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: CompanySize
+    description: Reference to Company size of the account
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: ConsolidationScenario
+    description: "Consolidation scenario (Time & Billing). Values: 0 = No consolidation, 1 = Item, 2 = Item + Project, 3 = Item + Employee, 4 = Item + Employee + Project, 5 = Project + WBS + Item, 6 = Project + WBS + Item + Employee. Item means in this case including Unit and Price, these also have to be the same to consolidate"
+    datatype: Edm.Byte
+  - name: ControlledDate
+    description: Date of the latest control of account data with external web service
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: Costcenter
+    description: Obsolete
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: CostcenterDescription
+    description: Obsolete
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: CostPaid
+    description: Obsolete
+    datatype: Edm.Byte
+  - name: Country
+    description: Country code
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: CountryName
+    description: Country name
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Created
+    description: Creation date
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: Creator
+    description: User ID of creator
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: CreatorFullName
+    description: Name of creator
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: CreditLinePurchase
+    description: Maximum amount of credit for Purchase. If no value has been defined, there is no credit limit
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: CreditLineSales
+    description: Maximum amount of credit for sales. If no value has been defined, there is no credit limit
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: Currency
+    description: Obsolete
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: CustomerSince
+    description: Obsolete
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: CustomField
+    description: Custom field endpoint. Provided only for the Exact Online Premium users.
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: DatevCreditorCode
+    description: DATEV creditor code for Germany legislation
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: DatevDebtorCode
+    description: DATEV debtor code for Germany legislation
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: DeliveryAdvice
+    description: "Indicates how deliveries are handled. Values: 0 = Partial, orders can be delivered partial, 1 = Complete the order needs to be complete to deliver, 2 = Partial without backorder when deliver partially the remainder of the order is completed without delivery"
+    datatype: Edm.Byte
+  - name: DiscountPurchase
+    description: Default discount percentage for purchase. This is stored as a fraction. ie 5.5% is stored as .055
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: DiscountSales
+    description: Default discount percentage for sales. This is stored as a fraction. ie 5.5% is stored as .055
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: Division
+    description: Division code
+    datatype: Edm.Int32
+  - name: Document
+    description: Obsolete
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: DunsNumber
+    description: Obsolete
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Email
+    description: E-Mail address of the account
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: EnableSalesPaymentLink
+    description: Indicates whether payment link is activated for sales
+    datatype: Edm.Boolean
+    clarion: { role: dimension }
+  - name: EndDate
+    description: Determines in combination with the start date if the account is active. If the current date is > end date the account is inactive
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: EORINumber
+    description: EORI number
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: EstablishedDate
+    description: RegistrationDate
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: Fax
+    description: Fax number
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: GLAccountPurchase
+    description: Default (corporate) GL offset account for purchase (cost)
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: GLAccounts, field: ID } }
+  - name: GLAccountSales
+    description: Default (corporate) GL offset account for sales (revenue)
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: GLAccounts, field: ID } }
+  - name: GLAP
+    description: Default GL account for Accounts Payable
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: GLAccounts, field: ID } }
+  - name: GLAR
+    description: Default GL account for Accounts Receivable
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: GLAccounts, field: ID } }
+  - name: GlnNumber
+    description: Global Location Number can be used by companies to identify their locations, giving them complete flexibility to identify any type or level of location required
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: HasWithholdingTaxSales
+    description: Indicates whether a customer has withholding tax on sales
+    datatype: Edm.Boolean
+    clarion: { role: dimension }
+  - name: ID
+    description: Primary key
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: IgnoreDatevWarningMessage
+    description: Suppressed warning message when there is duplication on the DATEV code
+    datatype: Edm.Boolean
+    clarion: { role: dimension }
+  - name: IncotermAddressPurchase
+    description: Address of Incoterm for Purchase
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: IncotermAddressSales
+    description: Address of Incoterm for Sales
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: IncotermCodePurchase
+    description: Code of Incoterm for Purchase
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: IncotermCodeSales
+    description: Code of Incoterm for Sales
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: IncotermVersionPurchase
+    description: "Version of Incoterm for Purchase Supported version for Incoterms : 2010, 2020"
+    datatype: Edm.Int16
+  - name: IncotermVersionSales
+    description: "Version of Incoterm for Sales Supported version for Incoterms : 2010, 2020"
+    datatype: Edm.Int16
+  - name: IntraStatArea
+    description: Intrastat Area
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: IntraStatDeliveryTerm
+    description: Intrastat delivery method
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: IntraStatSystem
+    description: System for Intrastat
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: IntraStatTransactionA
+    description: Transaction type A for Intrastat
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: IntraStatTransactionB
+    description: Transaction type B for Intrastat
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: IntraStatTransportMethod
+    description: Transport method for Intrastat
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: InvoiceAccount
+    description: ID of account to be invoiced instead of this account
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: Accounts, field: ID } }
+  - name: InvoiceAccountCode
+    description: Code of InvoiceAccount
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: InvoiceAccountName
+    description: Name of InvoiceAccount
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: InvoiceAttachmentType
+    description: Indicates which attachment types should be sent when a sales invoice is printed. Only values in related table with Invoice=1 are allowed
+    datatype: Edm.Int32
+  - name: InvoicingMethod
+    description: "Method of sending for sales invoices. Values: 1: Paper, 2: EMail, 4: Mailbox (electronic exchange), 8: Send and track, 32: Send via Peppol Take notes: To use the '4 - Mailbox (electronic exchange)' option, the 'Mailbox' feature set is required in the licence. To use the '32 - Send via Peppol' option, e-invoicing via Peppol must be activated"
+    datatype: Edm.Int32
+  - name: IsAccountant
+    description: "Indicates whether the account is an accountant. Values: 0 = No accountant, 1 = True, but accountant doesn't want his name to be published in the list of accountants, 2 = True, and accountant is published in the list of accountants"
+    datatype: Edm.Byte
+  - name: IsAgency
+    description: Indicates whether the accounti is an agency
+    datatype: Edm.Byte
+  - name: IsAnonymised
+    description: Indicates whtether the account is anonymised.
+    datatype: Edm.Byte
+  - name: IsBank
+    description: Obsolete
+    datatype: Edm.Boolean
+    clarion: { role: dimension }
+  - name: IsCompetitor
+    description: Indicates whether the account is a competitor
+    datatype: Edm.Byte
+  - name: IsExtraDuty
+    description: Indicates whether a customer is eligible for extra duty
+    datatype: Edm.Boolean
+    clarion: { role: dimension }
+  - name: IsMailing
+    description: Indicates if the account is excluded from mailing marketing information
+    datatype: Edm.Byte
+  - name: IsMember
+    description: Obsolete
+    datatype: Edm.Boolean
+    clarion: { role: dimension }
+  - name: IsPilot
+    description: Indicates whether the account is a pilot account
+    datatype: Edm.Boolean
+    clarion: { role: dimension }
+  - name: IsPurchase
+    description: Obsolete
+    datatype: Edm.Boolean
+    clarion: { role: dimension }
+  - name: IsReseller
+    description: Indicates whether the account is a reseller
+    datatype: Edm.Boolean
+    clarion: { role: dimension }
+  - name: IsSales
+    description: Indicates whether the account is allowed for sales
+    datatype: Edm.Boolean
+    clarion: { role: dimension }
+  - name: IsSupplier
+    description: Indicates whether the account is a supplier
+    datatype: Edm.Boolean
+    clarion: { role: dimension }
+  - name: Language
+    description: Language code
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: LanguageDescription
+    description: Language description
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Latitude
+    description: Latitude (used by Google maps)
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: LeadPurpose
+    description: Reference to Lead purpose of an account
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: LeadSource
+    description: Reference to Lead source of an account
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: Logo
+    description: Bytes of the logo image
+    datatype: Edm.Binary
+  - name: LogoFileName
+    description: The file name (without path, but with extension) of the image
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: LogoThumbnailUrl
+    description: Thumbnail url of the logo
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: LogoUrl
+    description: Url to retrieve the logo
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Longitude
+    description: Longitude (used by Google maps)
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: MainContact
+    description: Reference to main contact person
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: Contacts, field: ID } }
+  - name: Modified
+    description: Last modified date
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: Modifier
+    description: User ID of modifier
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: ModifierFullName
+    description: Name of modifier
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Name
+    description: Account name
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: OINNumber
+    description: Dutch government identification number
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Parent
+    description: ID of the parent account
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: Accounts, field: ID } }
+  - name: PayAsYouEarn
+    description: Indicates the loan repayment plan for UK legislation
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: PaymentConditionPurchase
+    description: Code of default payment condition for purchase
+    datatype: Edm.String
+    clarion: { role: dimension, references: { dataset: PaymentConditions, field: ID } }
+  - name: PaymentConditionPurchaseDescription
+    description: Description of PaymentConditionPurchase
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: PaymentConditionSales
+    description: Code of default payment condition for sales
+    datatype: Edm.String
+    clarion: { role: dimension, references: { dataset: PaymentConditions, field: ID } }
+  - name: PaymentConditionSalesDescription
+    description: Description of PaymentConditionSales
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: PeppolIdentifier
+    description: Peppol identifier user entered manually, corresponds to picked peppol adress
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: PeppolIdentifierType
+    description: Peppol identifier type that user picked manually - GLN, COC, etc
+    datatype: Edm.Int32
+  - name: Phone
+    description: Phone number
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: PhoneExtension
+    description: Phone number extention
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Postcode
+    description: Visit address postcode
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: PriceList
+    description: Default sales price list for account
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: PurchaseCurrency
+    description: "Currency of purchase Take notes: If the currency code input is not in the active currencies, the value will be set to empty."
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: PurchaseCurrencyDescription
+    description: Description of PurchaseCurrency
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: PurchaseLeadDays
+    description: Indicates number of days required to receive a purchase. Acts as a default
+    datatype: Edm.Int32
+  - name: PurchaseVATCode
+    description: Default VAT code used for purchase entries
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: PurchaseVATCodeDescription
+    description: Description of PurchaseVATCode
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: RecepientOfCommissions
+    description: Define the relation that should be taken in the official document of the rewarding fiscal fiches Belcotax
+    datatype: Edm.Boolean
+    clarion: { role: dimension }
+  - name: Remarks
+    description: Remarks
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Reseller
+    description: "ID of the reseller account. Conditions: the target account must have the property IsReseller turned on"
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: Accounts, field: ID } }
+  - name: ResellerCode
+    description: Code of Reseller
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: ResellerName
+    description: Name of Reseller
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: RSIN
+    description: Fiscal number for NL legislation
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: SalesCurrency
+    description: "Currency of Sales used for Time & Billing Take notes: If the currency code input is not in the active currencies, the value will be set to empty."
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: SalesCurrencyDescription
+    description: Description of SalesCurrency
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: SalesTaxSchedule
+    description: Obsolete
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: SalesTaxScheduleCode
+    description: Obsolete
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: SalesTaxScheduleDescription
+    description: Obsolete
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: SalesVATCode
+    description: Default VAT code for a sales entry
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: SalesVATCodeDescription
+    description: Description of SalesVATCode
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: SearchCode
+    description: Search code
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: SecurityLevel
+    description: Security level (0 - 100)
+    datatype: Edm.Int32
+  - name: SeparateInvPerProject
+    description: Separate invoice per project (Time & Billing)
+    datatype: Edm.Byte
+  - name: SeparateInvPerSubscription
+    description: Indicates how invoices are generated from subscriptions. 0 = subscriptions belonging to the same customer are combined in a single invoice. 1 = each subscription results in one invoice. In both cases, each individual subscription line results in one invoice line
+    datatype: Edm.Byte
+  - name: ShippingLeadDays
+    description: Indicates the number of days it takes to send goods to the customer. Acts as a default
+    datatype: Edm.Int32
+  - name: ShippingMethod
+    description: Default shipping method
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: ShowRemarkForSales
+    description: Indicates whether to display Ordered by account's remarks when creating a new sales order
+    datatype: Edm.Boolean
+    clarion: { role: dimension }
+  - name: Source
+    description: CRM creation source
+    datatype: Edm.Byte
+  - name: StartDate
+    description: Indicates in combination with the end date if the account is active
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: State
+    description: State/Province/County code When changing the Country and the State is filled, the State must be assigned with a valid value from the selected country or set to empty
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: StateName
+    description: Name of State
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Status
+    description: "If the status field is filled this means the account is a customer. The value indicates the customer status. Possible values: A=None, S=Suspect, P=Prospect, C=Customer"
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: StatusSince
+    description: Obsolete
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: TradeName
+    description: Trade name can be registered and shown with the client (for all legislations)
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Type
+    description: "Account type: Values: A = Relation, D = Division"
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: UniqueTaxpayerReference
+    description: Unique taxpayer reference for UK legislation
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: VATLiability
+    description: Indicates the VAT status of an account to be able to identify the relation that should be selected in the VAT debtor listing in Belgium
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: VATNumber
+    description: The number under which the account is known at the Value Added Tax collection agency
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Website
+    description: Website of the account
+    datatype: Edm.String
+    clarion: { role: dimension }
+clarion:
+  kind: source
+  category: CRM
+  sync:
+    cursor: { field: Modified, type: timestamp }

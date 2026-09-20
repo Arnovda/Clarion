@@ -1,0 +1,103 @@
+# Exact Online star-schema template table. `source` is the DuckDB SQL over BARE source entity names; a foreign key is written ONCE on its field (clarion.references) and the template joins are derived from it.
+
+name: fact_purchase_order_lines
+label: Purchase order lines
+description: One row per line on purchase orders.
+source: |-
+  SELECT
+    pol.ID                            AS order_line_id,
+    pol.PurchaseOrderID               AS order_id,
+    po.OrderNumber                    AS order_number,
+    TRY_CAST(po.OrderDate AS DATE)    AS order_date,
+    po.Supplier                       AS supplier_id,
+    pol.Item                          AS item_id,
+    po.Currency                       AS currency,
+    pol.Description                   AS line_description,
+    pol.Quantity                      AS quantity,
+    pol.ReceivedQuantity              AS quantity_received,
+    pol.InvoicedQuantity              AS quantity_invoiced,
+    pol.NetPrice                      AS net_price,
+    pol.AmountDC                      AS amount_dc
+  FROM PurchaseOrderLines pol
+  JOIN PurchaseOrders po ON pol.PurchaseOrderID = po.PurchaseOrderID
+fields:
+  - name: order_line_id
+    label: Order line ID
+    description: ExactOnline purchase order line GUID (primary key).
+    datatype: VARCHAR
+    clarion: { role: natural_key, technical: true, lineage: { dataset: PurchaseOrderLines, field: ID } }
+  - name: order_id
+    label: Order ID
+    description: GUID of the purchase order header.
+    datatype: VARCHAR
+    clarion: { role: attribute, technical: true, lineage: { dataset: PurchaseOrderLines, field: PurchaseOrderID } }
+  - name: order_number
+    label: Order number
+    description: Human-readable purchase order number.
+    datatype: BIGINT
+    clarion: { role: degenerate_dimension, lineage: { dataset: PurchaseOrders, field: OrderNumber } }
+  - name: order_date
+    label: Order date
+    description: Date of the purchase order.
+    datatype: DATE
+    clarion: { role: attribute, lineage: { dataset: PurchaseOrders, field: OrderDate } }
+  - name: supplier_id
+    label: Supplier
+    description: Supplier the order was placed with.
+    datatype: VARCHAR
+    clarion:
+      role: foreign_key
+      references: { dataset: dim_account, field: account_id }
+      technical: true
+      lineage: { dataset: PurchaseOrders, field: Supplier }
+  - name: item_id
+    label: Item
+    description: Item on the line.
+    datatype: VARCHAR
+    clarion:
+      role: foreign_key
+      references: { dataset: dim_item, field: item_id }
+      technical: true
+      lineage: { dataset: PurchaseOrderLines, field: Item }
+  - name: currency
+    label: Currency
+    description: Document currency code.
+    datatype: VARCHAR
+    clarion: { role: attribute, lineage: { dataset: PurchaseOrders, field: Currency } }
+  - name: line_description
+    label: Line description
+    description: Description of the ordered line.
+    datatype: VARCHAR
+    clarion: { role: attribute, lineage: { dataset: PurchaseOrderLines, field: Description } }
+  - name: quantity
+    label: Quantity ordered
+    description: Ordered quantity.
+    datatype: DOUBLE
+    clarion: { role: measure, additivity: additive, lineage: { dataset: PurchaseOrderLines, field: Quantity } }
+  - name: quantity_received
+    label: Quantity received
+    description: Received quantity.
+    datatype: DOUBLE
+    clarion: { role: measure, additivity: additive, lineage: { dataset: PurchaseOrderLines, field: ReceivedQuantity } }
+  - name: quantity_invoiced
+    label: Quantity invoiced
+    description: Invoiced quantity.
+    datatype: DOUBLE
+    clarion: { role: measure, additivity: additive, lineage: { dataset: PurchaseOrderLines, field: InvoicedQuantity } }
+  - name: net_price
+    label: Net price
+    description: Net price per unit.
+    datatype: DOUBLE
+    clarion: { role: measure, additivity: non_additive, lineage: { dataset: PurchaseOrderLines, field: NetPrice } }
+  - name: amount_dc
+    label: Amount (default currency)
+    description: Line amount excl. VAT in the division currency.
+    datatype: DOUBLE
+    clarion: { role: measure, additivity: additive, lineage: { dataset: PurchaseOrderLines, field: AmountDC } }
+clarion:
+  kind: fact
+  product: Purchasing
+  sourceEntities: [ PurchaseOrderLines, PurchaseOrders ]
+  grain: One row per purchase order line
+  factTableType: transaction
+  dimensionsUsed: [ dim_account, dim_item, dim_date ]

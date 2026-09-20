@@ -1,0 +1,25 @@
+# Odoo model. `source` is the dotted model name used for RPC; `name` is the warehouse table. Field descriptions are the curated fallback beneath the live fields_get harvest (Odoo 16+ semantics).
+
+name: res_company
+label: Companies
+description: Legal entities configured in this Odoo instance (multi-company setups have several).
+source: res.company
+primary_key: [ id ]
+fields:
+  - name: id
+    description: Technical identifier of the company
+  - name: name
+    description: Legal name of the company
+  - name: currency_id
+    description: Main currency the company keeps its books in
+  - name: partner_id
+    description: Partner record holding the company address and contact details
+  - name: create_date
+    description: When the record was created
+  - name: write_date
+    description: When the record was last modified
+clarion:
+  kind: source
+  category: Contacts
+  sync:
+    cursor: { field: write_date, type: timestamp }

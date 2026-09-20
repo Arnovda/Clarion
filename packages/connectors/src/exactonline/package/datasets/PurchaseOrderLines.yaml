@@ -1,0 +1,255 @@
+# Exact Online entity. Field docs are TRANSCRIBED from the vendor REST reference by scripts/generate-eo-docs.ts — do not hand-edit descriptions; edit label/description/clarion freely.
+
+name: PurchaseOrderLines
+label: Purchase order lines
+description: Line items on purchase orders.
+source: /purchaseorder/PurchaseOrderLines
+primary_key: [ ID ]
+fields:
+  - name: AmountDC
+    description: Amount in the default currency of the company
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: AmountFC
+    description: Amount in the currency of the transaction
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: CostCenter
+    description: Reference to Cost center
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: CostCenterDescription
+    description: Description of CostCenter
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: CostUnit
+    description: Reference to Cost unit
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: CostUnitDescription
+    description: Description of CostUnit
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Created
+    description: Creation date
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: Creator
+    description: User ID of creator
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: CreatorFullName
+    description: Name of creator
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: CustomField
+    description: Custom field endpoint. Provided only for the Exact Online Premium users.
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Description
+    description: Description of the purchase order line
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Discount
+    description: Discount in percentage for item
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: Division
+    description: Division code
+    datatype: Edm.Int32
+  - name: Expense
+    description: Expense related to the Work Breakdown Structure of the selected project. Only available with a professional service license
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: ExpenseDescription
+    description: Description of expense. Only available with a professional service license
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: From
+    description: The date which the purchase order line starts
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: ID
+    description: Primary key
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: InStock
+    description: The current stock level of items shown in stock unit. The information is displayed only for items with the stock property selected.
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: InvoicedQuantity
+    description: Quantity of item that has been invoiced
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: IsBatchNumberItem
+    description: Indicates that an Item is an batch item
+    datatype: Edm.Byte
+  - name: IsSerialNumberItem
+    description: Indicates that an Item is an serial item
+    datatype: Edm.Byte
+  - name: Item
+    description: Reference to the item for purchase order
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: Items, field: ID } }
+  - name: ItemBarcode
+    description: Barcode of the item (numeric string)
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: ItemBarcodeAdditional
+    description: This is the barcode for the unit other than standard unit of the item. Only supported by the Premium for Wholesale & Distribution and Manufacturing
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: ItemCode
+    description: Item code
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: ItemDescription
+    description: Description of item
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: ItemDivisable
+    description: Indicates if fractional quantities of the item can be used, for example quantity = 0.4
+    datatype: Edm.Boolean
+    clarion: { role: dimension }
+  - name: LineNumber
+    description: Line number
+    datatype: Edm.Int32
+  - name: Modified
+    description: Last modified date
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: Modifier
+    description: User ID of modifier
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: ModifierFullName
+    description: Name of modifier
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: NetPrice
+    description: The net price is the unit price (VAT code taken into account) with any discount applied
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: Notes
+    description: Notes
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Project
+    description: Reference to project. Only available with a professional service license
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: Projects, field: ID } }
+  - name: ProjectCode
+    description: Project code. Only available with a professional service license
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: ProjectDescription
+    description: Description of the project. Only available with a professional service license
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: ProjectedStock
+    description: The current stock level + the planned quantity to be received - the planned quantity to deliver shown in stock unit.
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: PurchaseOrderID
+    description: Identifies the purchase order. All the lines of a purchase order have the same PurchaseOrderID
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: PurchaseOrders, field: PurchaseOrderID } }
+  - name: Quantity
+    description: Quantity in item units
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: QuantityInPurchaseUnits
+    description: Quantity in purchase units. Use this field when creating a purchase order
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: Rebill
+    description: Indicates whether the purchase order line needs to be rebilled. Only available with a professional service license
+    datatype: Edm.Boolean
+    clarion: { role: dimension }
+  - name: ReceiptDate
+    description: Date the goods are expected to be received
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: ReceivedQuantity
+    description: Quantity of goods received
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: SalesOrder
+    description: Sales order that is linked to a back to back sales order in purchase order. Show NULL if more than one sales order is linked to the purchase order line.
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: SalesOrders, field: OrderID } }
+  - name: SalesOrderLine
+    description: Sales order line of the sales order that Is linked to a back to back sales order in purchase order. Show NULL if more than one sales order is linked to the purchase order line.
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: SalesOrderLines, field: ID } }
+  - name: SalesOrderLineNumber
+    description: Number of the sales order line. Show NULL if more than one sales order is linked to the purchase order line.
+    datatype: Edm.Int32
+  - name: SalesOrderNumber
+    description: Number of the sales order. Show NULL if more than one sales order is linked to the purchase order line.
+    datatype: Edm.Int32
+  - name: ShopOrder
+    description: Obsolete. Please use "ShopOrderMaterialPlans" or "ShopOrderRoutingStepPlans" property.
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: ShopOrderMaterialPlan
+    description: Obsolete. Please use "ShopOrderMaterialPlans" property.
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: ShopOrderMaterialPlanLineNumber
+    description: Obsolete. Please use "ShopOrderMaterialPlans" property.
+    datatype: Edm.Int32
+  - name: ShopOrderNumber
+    description: Obsolete. Please use "ShopOrderMaterialPlans" or "ShopOrderRoutingStepPlans" property.
+    datatype: Edm.Int32
+  - name: ShopOrderRoutingStepPlan
+    description: Obsolete. Please use "ShopOrderRoutingStepPlans" property.
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: ShopOrderRoutingStepPlanLineNumber
+    description: Obsolete. Please use "ShopOrderRoutingStepPlans" property.
+    datatype: Edm.Int32
+  - name: SupplierItemCode
+    description: Code the supplier uses for this item
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: SupplierItemCopyRemarks
+    description: "Indicate if the notes content should be copied from SupplierItem's remarks. The default follows the CopyRemarks value from SupplierItem. Values: 0 = Do not copy remark, 1 = Copy remark"
+    datatype: Edm.Byte
+  - name: To
+    description: The date which the purchase order line ends
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: Unit
+    description: Code of item unit
+    datatype: Edm.String
+    clarion: { role: dimension, references: { dataset: Units, field: ID } }
+  - name: UnitDescription
+    description: Description of unit
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: UnitPrice
+    description: Item price per purchase unit
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: VATAmount
+    description: Amount of VAT charges calculated from total amount and vat percentage
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: VATCode
+    description: The VAT code used when the invoice was registered
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: VATDescription
+    description: Description of vat code
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: VATPercentage
+    description: The VAT percentage of the VAT code. This is the percentage at the moment the invoice is created. It's also used by the default calculation of VAT amounts and VAT base amounts
+    datatype: Edm.Double
+    clarion: { role: measure }
+clarion:
+  kind: source
+  category: Purchase
+  sync:
+    cursor: { field: Modified, type: timestamp }

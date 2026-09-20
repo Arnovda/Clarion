@@ -31,7 +31,161 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-09-20 (PRODUCTION WAS READ FOR THE FIRST TIME SINCE B1 WENT
+**Last updated:** 2026-09-20 (TWO THINGS FROM THE CONTEXT-ENGINEERING READ, BUILT —
+owner, after pasting an essay on hard/soft semantics, files-in-git, graph
+linking and Apache Ossie and asking what it means for Clarion: *"Laten we deze
+zaken implementeren"*. Item A: a glossary term now has an ADDRESS in the topic
+layer. Item B: a connector's knowledge is a declarative SOURCE PACKAGE in
+Ossie-aligned YAML, and the ~5,800 lines of TypeScript data it replaces are
+deleted. Draft PR on `claude/gallant-faraday-9ccrhq`.)
+
+**A — GLOSSARY LINKS: a term points at a column, a table or a KPI, and the
+model is told so as a FACT.** `business_glossary` was free text pasted into
+every prompt (`glossaryContext.ts`) with no connection to any column — the
+ingestion-chain assessment named it. "Net revenue" could not say WHICH column
+carries it, so the model matched on name similarity, which is how a plausible
+wrong total gets made.
+- **Migration 100**: `business_glossary.links jsonb NOT NULL DEFAULT '[]'`.
+  `GlossaryLink = {kind:'column',table,column} | {kind:'table',table} |
+  {kind:'kpi',kpi}` — **stored BY NAME, the managed-grid rule**: a rebuild
+  that renames a column becomes a visible "pick it again", never a silent
+  break to a wrong id. Max 8 per term; Zod `discriminatedUnion` + identifier
+  regex on the wire.
+- **NEW `services/glossaryLinks.ts`**: `resolveGlossaryLinks` (three queries,
+  every one with an explicit `tenant_id` filter, owner-first over shared-dim
+  stubs), `listGlossaryLinkTargets` (**non-technical columns only — the
+  `is_technical` firewall applies here too**; KPIs included),
+  `formatLinksForPrompt`. `POST`/`PATCH /semantic/glossary` REFUSE an
+  unresolvable link with a 400 naming it (*"… is not in your topics — pick it
+  again"*) and store nothing; `GET /glossary` returns each link with
+  `resolved` and its topic; new `GET /semantic/glossary/link-targets`
+  (admin+analyst).
+- **THE PROMPT GETS AN ADDRESS, ON THE PRODUCT LAYER ONLY.** Beside the
+  definition: `In the data: \`fact_sales.net_amount\` (topic Finance)`, plus
+  the rule *"use EXACTLY that table, column or KPI — never a similarly named
+  one"*. Rendered only when `dialect === 'duckdb'` / `opts.productLayer`: a
+  source-layer prompt has no product tables, so an address there would name
+  something the session cannot see. `refineDashboardSpec` and
+  `generateDashboardRefinement` gained `opts.productLayer`; the three
+  dashboards refine sites pass `!!productCtx`.
+- **`loadGlossary` moved from the bare pool to `tenantQuery`** — under
+  `databridge_app` the bare-pool read returned ZERO rows silently (the P0-2
+  shape, one more time: the glossary has been ABSENT from every production
+  prompt on the paths that did not happen to carry the session variable).
+  Ratchet `lint-no-session-tenant-set` baseline **19 → 17**.
+- **Frontend**: `GlossaryPanel` edits links through a searchable grouped
+  picker (`GlossaryLinkPicker.tsx` — KPIs first, then topic · table with "the
+  whole table" and its columns), chips with remove, an amber *"Points at …,
+  which is no longer in your topics — pick it again"* state;
+  `ProductTableDetailPanel` shows **"Your team calls this …"** on the table
+  header and per column.
+- Validation: NEW `tests/glossary-links.test.ts` **10 green** — a resolved
+  link carries its topic, unknown target 400 with nothing stored, another
+  tenant's table 400, viewer 403, the technical `customer_key` excluded from
+  targets while a KPI is listed, PATCH replaces links only when the body
+  carries them, the prompt line present on the product layer and absent on
+  the source layer, a vanished column → `resolved:false`.
+
+**B — THE SOURCE PACKAGE: a connector's knowledge is DATA, in the vocabulary
+the industry is converging on.** Per connector there were three or four
+TypeScript files of DATA — `entities.ts` (catalog + curated FKs), `docs.ts`
+(EO: 2,763 generated lines; Odoo: a different shape), `starSchemaTemplate.ts`
+— the "one source in four structures" defect the ingestion-chain assessment
+§E1 named. A non-developer or a generator could not write it; source #50
+would have needed TypeScript, `tsc` and a dist publish.
+- **NEW `packages/connectors/src/sourcePackage/` — the format.** `package.yaml`
+  (manifest) + `datasets/<Entity>.yaml` (`clarion.kind: source`) +
+  `model/<table>.yaml` (`kind: dimension | fact`). **Vocabulary verified
+  against Apache Ossie's own `core-spec/ossie-schema.json`** (const
+  `0.2.0.dev0`), not recalled: dataset `name/source/primary_key/description/
+  fields`, field `name/expression/label/description/datatype`, relationship
+  `from/to/from_columns/to_columns`, metric `name/expression/description/
+  datatype`; EVERYTHING Clarion-specific under a `clarion` block; exactly
+  THREE documented superset keys (`label` on a dataset, `description` and
+  `cardinality` on a relationship — Ossie has no cardinality). JSON Schema
+  (draft-07, `additionalProperties: false` everywhere) plus cross-reference
+  checks, run at load AND in the conformance suite, with a negative case
+  proving the validator is not a no-op.
+- **AUTHOR ONCE**: `supportsIncremental` is DERIVED from `clarion.sync.cursor`
+  (never written), `businessKey` from `primary_key[0]`, template
+  relationships from the FK fields' `clarion.references`, `dimensionsUsed`
+  derived unless a fact lists it, products from `clarion.product`, the
+  wizard order from the manifest's `categories`. **`fieldCoverage: complete
+  | partial`** says honestly whether every field is listed; the "must be a
+  documented field" checks on lineage and relationship endpoints run only
+  when `complete` — Exact Online is `complete` (2,613 fields), Odoo `partial`
+  (its docs are harvested live from `fields_get`; the package holds the 242
+  curated ones).
+- **THE MIGRATION WAS PROVEN BEFORE THE DELETE.** A one-off generator wrote
+  both packages from the TypeScript data; a deep-equal round trip of all 11
+  projections (entities, column docs, known relationships, templates, the
+  Odoo allowlist and model→table map) against the old exports passed; THEN
+  the generator and the TS data were deleted. Two things the round trip
+  caught that a type-check could not: **ORDER** (the loader read files
+  alphabetically while the catalog carried a curated category order — hence
+  `categories` on the manifest + `canonicalOrder` in the loader), and Odoo's
+  partial field lists failing the documented-field checks (hence
+  `fieldCoverage`).
+- **`catalog.ts` per connector is the loader** (`EXACT_ONLINE_PACKAGE`,
+  `ODOO_PACKAGE`, and the SAME exported names the connectors and tests
+  already used, so the switch was import lines); `odoo/entities.ts` is RULES
+  only (field-type excludes, `odooTypeToDuckDb`, `odooFieldRole`). Build is
+  `tsc` + `scripts/copy-package-data.mjs` (111 YAML files into `dist/`) —
+  **both Dockerfiles gained `COPY packages/connectors/scripts`**, without
+  which the image build fails at that step; caught by reading the
+  Dockerfiles, not by CI. `generate-eo-docs.ts` now rewrites each dataset's
+  `fields` in place (canonical key order) and stamps `transcribed:` on the
+  manifest.
+- **SOFT CONTEXT IS A SEPARATE FIELD, NOT A LONGER DESCRIPTION.** `notes`
+  (Markdown) on the manifest and on a dataset. New contract
+  **`SourceConnector.getSourceNotes?()`** (synchronous, config-free — the
+  `getKnownRelationships` shape) + **`EntityDocs.notes`**; the profiler
+  renders a **VENDOR NOTES** block — the whole-source line first, then only
+  the tables in scope, flattened, capped at 1200/700 chars — into Pass B and
+  EVERY Pass C batch. **Prompt only, never a stored description, never a fact
+  at the trusted rung.** Exact Online ships them: the `DC`/`FC` currency rule
+  (additive vs not), credit notes natively negative (never add a sign flip),
+  ISO dates, Journals and PaymentConditions referenced by `Code`; dataset
+  notes on TransactionLines, SalesInvoices, SalesInvoiceLines, Journals,
+  PaymentConditions. Rule, written into the playbook: a fact goes in
+  `description`; a caveat the model must read first goes in `notes`.
+- Docs: `docs/SOURCE_ONBOARDING.md` Phase C is the package now, Phase F the
+  `model/` datasets, the DoD and §8 item 6 record it; `sourcePackage/
+  README.md` is the format document; `docs/exactonline-entities.md` points
+  at the package.
+- **DELIBERATELY NOT BUILT**: an Ossie import/export adapter (the vocabulary
+  is aligned precisely so that it is a small job the day a customer or tool
+  asks); verified queries as an eval set (the saved-questions Verified tier
+  already exists — an eval harness is its own slice); moving TENANT semantics
+  (glossary, human edits) to git — those are CONTENT in Postgres with RLS,
+  and the essay's "files in git" applies to what WE ship, not to what a
+  customer edits.
+- Validation: connectors `tsc` clean, **29 files / 427 passed** (was 28/403:
+  NEW `sourcePackage.test.ts` — validator both directions, every projection,
+  loader ordering, `toYaml` round trip incl. the flow/block rule;
+  conformance +3 incl. the negative case; EO docs +2 pinning that dataset
+  notes and source-wide notes reach the docs channel and never become the
+  description), dist rebuilt; the two DuckDB template suites MATERIALISE the
+  package-loaded templates and run every KPI, so the migration is confirmed
+  against execution; backend `npm run check` clean, **96 files / 940 passed
+  / 10 skipped** (was 95/932 — NEW glossary suite + 3 prompt tests on the
+  notes block); worker `tsc` clean; frontend `tsc` clean, touched files
+  lint-clean, `next build` green; **all TWELVE ratchets green from the repo
+  root** (bare-pool baseline lowered to 17). Migration 100 applied on a
+  fresh database (101 total). No new env vars.
+- **WATCH AFTER DEPLOY**: the next Analyse of the Exact Online tenant is the
+  first profile with the VENDOR NOTES block in the prompt — its
+  `describeEntities(exactonline): 61 entities` line should be unchanged and a
+  `getSourceNotes(exactonline) failed` WARN would be new; and the first
+  glossary save with a link should land `resolved: true` with its topic.
+- SANDBOX: a script importing `yaml` must run from INSIDE `packages/
+  connectors` (module resolution) — the notes writer was copied into
+  `scripts/`, run, deleted. The worker lockfile refresh in this commit
+  records the connectors package's CURRENT deps (`mssql`, `mysql2`, `pg`,
+  `yaml`) under the `file:` link — it had been stale since the SQL
+  connectors landed.
+
+**Prior last updated:** 2026-09-20 (PRODUCTION WAS READ FOR THE FIRST TIME SINCE B1 WENT
 LIVE, AND THE READER COULD NOT ANSWER ITS OWN QUESTION — owner: *"Is there
 anything left for us today? Open points we still have to tackle?"*, then
 *"Let's finish this and clean up"*. Workflow + docs only; no product code.)
@@ -11161,6 +11315,38 @@ clarion/                              ← on disk: databridge/
 │   ├── test.yml                      ← Run vitest + security audit on PR
 │   └── dependabot.yml                ← Weekly dependency updates
 │
+├── packages/connectors/              ← the SourceConnector framework (`@databridge/connectors`)
+│   ├── package.json                  ← build = tsc + scripts/copy-package-data.mjs (YAML → dist)
+│   ├── scripts/
+│   │   ├── copy-package-data.mjs     ← copies every src/**/package/**/*.yaml into dist/ after tsc
+│   │   └── generate-eo-docs.ts       ← Exact Online transcriber: refreshes package/datasets/*.yaml `fields`
+│   └── src/
+│       ├── types.ts                  ← SourceConnector contract (describeEntities, getKnownRelationships, getBusinessKeys, getSourceNotes, …)
+│       ├── syncEngine.ts             ← the ONE ingestion loop (runEntitySync / runReconcile)
+│       ├── starSchema.ts             ← StarSchemaTemplate contract + instantiate/validate
+│       ├── conformance.ts            ← catalog / relationship / template invariants (merge gate)
+│       ├── sourcePackage/            ← THE SOURCE PACKAGE FORMAT (Ossie-aligned YAML, `clarion` extension)
+│       │   ├── README.md             ← format doc: manifest + datasets/ + model/, derivations, superset keys
+│       │   ├── types.ts              ← SourcePackage / PackageDataset / PackageField / clarion blocks
+│       │   ├── schema.json           ← draft-07 JSON Schema, additionalProperties:false everywhere
+│       │   ├── validate.ts           ← ajv shape check + cross-reference checks (fieldCoverage-gated)
+│       │   ├── load.ts               ← loadSourcePackage(dir): merge + validate + canonical order + memoise
+│       │   ├── project.ts            ← package → EntityDescriptor[] / ColumnDoc / KnownRelationship[] / StarSchemaTemplate
+│       │   ├── write.ts              ← toYaml(): flow style for the small always-together maps
+│       │   └── index.ts
+│       ├── exactonline/
+│       │   ├── package/              ← package.yaml + datasets/ (61) + model/ (12) — the connector's KNOWLEDGE, as data
+│       │   ├── catalog.ts            ← loads ./package; exports EXACT_ONLINE_ENTITIES / _KNOWN_RELATIONSHIPS / _COLUMN_DOCS / _STAR_SCHEMA_TEMPLATE
+│       │   └── ExactOnlineConnector.ts (+ schema, oauth, http, tests)
+│       ├── odoo/
+│       │   ├── package/              ← package.yaml + datasets/ (21) + model/ (15); fieldCoverage: partial
+│       │   ├── catalog.ts            ← loads ./package; ODOO_ENTITIES / ODOO_ALLOWLIST / MODEL_TO_TABLE / …
+│       │   ├── entities.ts           ← RULES only (field-type excludes, odooTypeToDuckDb, odooFieldRole)
+│       │   └── OdooConnector.ts (+ transports, tests)
+│       ├── sql/ postgres/ mysql/ mssql/  ← the SQL kit + three dialects
+│       ├── spreadsheet/ excel/ csv/ sharepoint/
+│       └── registry.ts / index.ts
+│
 ├── backend/
 │   ├── package.json
 │   ├── tsconfig.json
@@ -11250,6 +11436,8 @@ clarion/                              ← on disk: databridge/
 │       │   ├── legal.ts                    ← in-force flag, acceptance status + record (P0-7)
 │       │   ├── tenantExport.ts             ← the streamed ZIP export (P0-7)
 │       │   ├── notificationService.ts      ← notify(), notifyTenant()
+│       │   ├── glossaryLinks.ts            ← glossary term → product column / table / KPI, by NAME; resolve + link-targets + prompt line
+│       │   ├── glossaryContext.ts          ← tenant glossary block for prompts (resolved links only on product-layer prompts)
 │       │   ├── schemaLoss.ts               ← pure: is a bind failure the source losing a column, or a slip? (D3)
 │       │   ├── warehouse/views.ts          ← createScanView + parquetSelect: hides soft-deleted rows and _clarion_* columns (phase 2)
 │       │   ├── queryScope.ts              ← WHICH data a question may reach (tenant + connections + products)
@@ -11424,7 +11612,9 @@ clarion/                              ← on disk: databridge/
     │   │   ├── KpiPanel.tsx          ← KPI definitions management
     │   │   ├── PathFinderPanel.tsx   ← relationship path finder
     │   │   ├── TableDetailPanel.tsx  ← source-layer table detail panel
-    │   │   ├── ProductTableDetailPanel.tsx ← product-layer table detail panel
+    │   │   ├── ProductTableDetailPanel.tsx ← product-layer table detail panel (+ "Your team calls this …" glossary chips)
+    │   │   ├── GlossaryPanel.tsx     ← the tenant glossary editor: terms, definitions, LINKS to product columns/tables/KPIs
+    │   │   ├── GlossaryLinkPicker.tsx ← searchable grouped picker over GET /semantic/glossary/link-targets
     │   │   ├── shared.tsx            ← de-duplicated helpers: parseDomains/parseExamples/classifyType/completenessBucket/PreviewTable
     │   │   └── types.ts             ← shared TypeScript types for semantic components
     │   ├── notebooks/
@@ -11450,7 +11640,7 @@ clarion/                              ← on disk: databridge/
             └── useDebounce.ts       ← custom debounce hook
 ```
 
-### Database Migrations (100 files on disk)
+### Database Migrations (101 files on disk)
 
 ```
 20260328000001  create_connections
@@ -11495,6 +11685,7 @@ clarion/                              ← on disk: databridge/
 20260907000097  cross_source_scope                (notebooks + saved_questions.cross_source)
 20260909000098  ingestion_phase1                  (source_columns.source_data_type; product_tables.degraded_reason/_at; provenance on product_relationships + column_lineage)
 20260910000099  ingestion_phase2                  (entity_sync_cursors: nullable cursor, rows_total, 'incomplete'; source_sync_runs.resumed_from_run_id + incomplete_entities)
+20260920000100  glossary_links                    (business_glossary.links jsonb — a term's address in the topic layer)
 ```
 
 ---

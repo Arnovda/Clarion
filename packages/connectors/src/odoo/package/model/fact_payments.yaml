@@ -1,0 +1,98 @@
+# Odoo star-schema template table. `source` is the DuckDB SQL over BARE source entity names; a foreign key is written ONCE on its field (clarion.references) and the template joins are derived from it.
+
+name: fact_payments
+label: Payments
+description: One row per customer or vendor payment.
+source: |-
+  SELECT
+    ap.id                        AS payment_id,
+    TRY_CAST(ap.date AS DATE)    AS payment_date,
+    ap.payment_type              AS payment_type,
+    ap.partner_type              AS partner_type,
+    ap.state                     AS state,
+    ap.partner_id                AS partner_id,
+    ap.journal_id                AS journal_id,
+    ap.company_id                AS company_id,
+    ap.currency_id               AS currency_id,
+    ap.amount                    AS amount,
+    CASE WHEN ap.payment_type = 'inbound' THEN ap.amount ELSE -ap.amount END AS amount_signed
+  FROM account_payment ap
+fields:
+  - name: payment_id
+    label: Payment ID
+    description: Odoo payment id (primary key).
+    datatype: BIGINT
+    clarion: { role: natural_key, technical: true, lineage: { dataset: account_payment, field: id } }
+  - name: payment_date
+    label: Payment date
+    description: Date of the payment.
+    datatype: DATE
+    clarion: { role: attribute, lineage: { dataset: account_payment, field: date } }
+  - name: payment_type
+    label: Direction
+    description: inbound (money received) or outbound (money sent).
+    datatype: VARCHAR
+    clarion: { role: attribute, lineage: { dataset: account_payment, field: payment_type } }
+  - name: partner_type
+    label: Partner type
+    description: customer or supplier.
+    datatype: VARCHAR
+    clarion: { role: attribute, lineage: { dataset: account_payment, field: partner_type } }
+  - name: state
+    label: Status
+    description: Payment lifecycle state.
+    datatype: VARCHAR
+    clarion: { role: attribute, lineage: { dataset: account_payment, field: state } }
+  - name: partner_id
+    label: Partner
+    description: Customer / vendor the payment is with.
+    datatype: BIGINT
+    clarion:
+      role: foreign_key
+      references: { dataset: dim_partner, field: partner_id }
+      technical: true
+      lineage: { dataset: account_payment, field: partner_id }
+  - name: journal_id
+    label: Journal
+    description: Bank / cash journal of the payment.
+    datatype: BIGINT
+    clarion:
+      role: foreign_key
+      references: { dataset: dim_journal, field: journal_id }
+      technical: true
+      lineage: { dataset: account_payment, field: journal_id }
+  - name: company_id
+    label: Company
+    description: Company of the payment.
+    datatype: BIGINT
+    clarion:
+      role: foreign_key
+      references: { dataset: dim_company, field: company_id }
+      technical: true
+      lineage: { dataset: account_payment, field: company_id }
+  - name: currency_id
+    label: Currency
+    description: Currency of the payment.
+    datatype: BIGINT
+    clarion:
+      role: foreign_key
+      references: { dataset: dim_currency, field: currency_id }
+      technical: true
+      lineage: { dataset: account_payment, field: currency_id }
+  - name: amount
+    label: Amount
+    description: Payment amount (always positive).
+    datatype: DECIMAL(18,4)
+    clarion: { role: measure, additivity: additive, lineage: { dataset: account_payment, field: amount } }
+  - name: amount_signed
+    label: Amount (signed)
+    description: Positive for money received, negative for money sent.
+    datatype: DECIMAL(18,4)
+    clarion: { role: measure, additivity: additive }
+clarion:
+  kind: fact
+  product: Finance
+  sourceEntities: [ account_payment ]
+  grain: One row per payment
+  factTableType: transaction
+  dimensionsUsed: [ dim_partner, dim_journal, dim_company, dim_currency, dim_date ]

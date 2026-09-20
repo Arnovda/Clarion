@@ -1,6 +1,7 @@
 /**
  * generate-eo-docs — deterministic transcription of ExactOnline's REST API
- * reference into `src/exactonline/docs.ts`.
+ * reference into the Exact Online SOURCE PACKAGE (`src/exactonline/package/
+ * datasets/<Entity>.yaml`, the `fields` list of each dataset).
  *
  * Sources (vendor-published, no model in the loop — verbatim by construction):
  *   • Index:   https://start.exactonline.nl/docs/HlpRestAPIResources.aspx
@@ -13,18 +14,26 @@
  *                <td> is the description.
  *
  * Captured per column: description (verbatim), role hint (from the Edm
- * type), the Edm type itself, and — new since 2026-07-20 — the FK target
- * (`references`) resolved from the docs hyperlink to our entity catalog,
- * with `toColumn` taken from the target's key-marked (data-key="True")
- * property. Navigation properties are skipped.
+ * type), the Edm type itself (`datatype`), and the FK target
+ * (`clarion.references`) resolved from the docs hyperlink to our entity
+ * catalog, with the target field taken from the target's key-marked
+ * (data-key="True") property. Navigation properties are skipped.
  *
- * Run from packages/connectors:  npx tsx scripts/generate-eo-docs.ts
- * Then: review the diff, run `npm test`, commit docs.ts together with this
- * script. Network access to start.exactonline.nl required (public pages).
+ * Only `fields` is rewritten: a dataset's label, description, source,
+ * primary_key and `clarion` block are hand-curated and kept as they are.
+ *
+ * Run from packages/connectors:  npx --yes tsx@4.22 scripts/generate-eo-docs.ts
+ * Then: review the diff, run `npm test`, commit the package together with
+ * this script. Network access to start.exactonline.nl required (public pages).
  */
 import * as fs from 'fs/promises';
 import * as path from 'path';
-import { EXACT_ONLINE_ENTITIES } from '../src/exactonline/entities';
+import { parse as parseYaml } from 'yaml';
+import { EXACT_ONLINE_ENTITIES } from '../src/exactonline/catalog';
+import { toYaml } from '../src/sourcePackage/write';
+
+/** The header every generated dataset file carries (kept in step with the package). */
+const DATASET_HEADER = 'Exact Online entity. Field docs are TRANSCRIBED from the vendor REST reference by scripts/generate-eo-docs.ts — do not hand-edit descriptions; edit label/description/clarion freely.';
 
 const BASE = 'https://start.exactonline.nl/docs';
 
@@ -183,70 +192,56 @@ async function main() {
     if (key) keyColByEntity.set(entity, key);
   }
 
-  // Emit docs.ts.
+  // Emit: rewrite each dataset file's `fields` in the source package.
+  const pkgDir = path.resolve(__dirname, '../src/exactonline/package');
   let totalCols = 0;
   let totalRefs = 0;
   const entityNames = [...parsedByEntity.keys()].sort();
-  const chunks: string[] = [];
   for (const entity of entityNames) {
+    const file = path.join(pkgDir, 'datasets', `${entity}.yaml`);
+    let existing: Record<string, unknown>;
+    try {
+      existing = parseYaml(await fs.readFile(file, 'utf8')) as Record<string, unknown>;
+    } catch {
+      throw new Error(`no dataset file for ${entity} at ${file} — add the entity to the package first (name, label, description, source, primary_key, clarion), then re-run`);
+    }
     const cols = [...parsedByEntity.get(entity)!].sort((a, b) => a.name.localeCompare(b.name));
-    const lines: string[] = [];
+    const fields: Array<Record<string, unknown>> = [];
     for (const c of cols) {
       if (!c.description) continue; // undocumented → AI pipeline handles it
       totalCols++;
-      const parts = [`name: ${JSON.stringify(c.name)}`, `description: ${JSON.stringify(c.description)}`];
+      const ext: Record<string, unknown> = {};
       const role = roleFor(c.edmType);
-      if (role) parts.push(`role: ${JSON.stringify(role)}`);
-      parts.push(`dataType: ${JSON.stringify(c.edmType)}`);
+      if (role) ext.role = role;
       // FK reference — only when the docs hyperlink resolves to an entity
       // in OUR catalog (targets we don't sync can't be relationship ends),
       // and never for the primary key itself (its docs link is self-noise).
       if (c.targetDocsName && !c.isKey) {
         const targetEntity = entityByDocsName.get(c.targetDocsName);
         if (targetEntity) {
-          const toColumn = keyColByEntity.get(targetEntity) ?? 'ID';
-          parts.push(`references: { table: ${JSON.stringify(targetEntity)}, column: ${JSON.stringify(toColumn)} }`);
+          ext.references = { dataset: targetEntity, field: keyColByEntity.get(targetEntity) ?? 'ID' };
           totalRefs++;
         }
       }
-      lines.push(`    { ${parts.join(', ')} },`);
+      const field: Record<string, unknown> = { name: c.name, description: c.description, datatype: c.edmType };
+      if (Object.keys(ext).length > 0) field.clarion = ext;
+      fields.push(field);
     }
-    chunks.push(`  ${entity}: [\n${lines.join('\n')}\n  ],`);
+    // Canonical key order; everything but `fields` is kept verbatim.
+    const updated: Record<string, unknown> = {};
+    for (const k of ['name', 'label', 'description', 'source', 'primary_key']) if (existing[k] !== undefined) updated[k] = existing[k];
+    if (fields.length > 0) updated.fields = fields;
+    updated.clarion = existing.clarion;
+    await fs.writeFile(file, toYaml(updated, DATASET_HEADER), 'utf8');
   }
 
+  // Stamp the transcription date on the manifest.
+  const manifestPath = path.join(pkgDir, 'package.yaml');
+  const manifestText = await fs.readFile(manifestPath, 'utf8');
   const today = new Date().toISOString().slice(0, 10);
-  const header = `/**
- * ExactOnline column documentation — transcribed from the vendor's REST API
- * reference (https://start.exactonline.nl/docs/HlpRestAPIResources.aspx),
- * one details page per entity. GENERATED — do not hand-edit individual
- * descriptions; regenerate with \`npx tsx scripts/generate-eo-docs.ts\`
- * (see docs/SOURCE_ONBOARDING.md Phase E2, Tier 2 curation).
- *
- * Consumed by \`ExactOnlineConnector.describeEntities\` at the \`curated\`
- * provenance rung: the schema profiler stores these approved and skips the
- * AI description pass for covered columns. Columns absent here (or added
- * by EO after transcription) simply fall back to the AI pipeline.
- *
- * Role hints are derived from the OData Edm type at generation time:
- * Double/Decimal → measure; Guid/String/Boolean/DateTime → dimension;
- * integers → no hint (a line number and a quantity look the same).
- *
- * \`dataType\` is the vendor-declared Edm type (informational). \`references\`
- * is the vendor-documented FK target — the docs pages hyperlink every FK
- * property to its target entity's page — resolved to OUR entity names and
- * key columns, and emitted as declared relationships by describeEntities.
- *
- * Transcribed ${today}. Entities: ${entityNames.length}, documented columns: ${totalCols}, FK references: ${totalRefs}.
- */
+  await fs.writeFile(manifestPath, manifestText.replace(/transcribed: \d{4}-\d{2}-\d{2}/, `transcribed: ${today}`), 'utf8');
 
-import type { ColumnDoc } from '../types';
-
-export const EXACT_ONLINE_COLUMN_DOCS: Readonly<Record<string, readonly ColumnDoc[]>> = {
-`;
-  const out = header + chunks.join('\n') + '\n};\n';
-  const outPath = path.resolve(__dirname, '../src/exactonline/docs.ts');
-  await fs.writeFile(outPath, out, 'utf8');
-  console.log(`\nwrote ${outPath}`);
+  console.log(`\nrewrote ${entityNames.length} dataset files under ${pkgDir}`);
   console.log(`entities: ${entityNames.length}, documented columns: ${totalCols}, FK references: ${totalRefs}`);
   if (totalCols < 1000) throw new Error('sanity check failed: fewer than 1000 documented columns');
 }

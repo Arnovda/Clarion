@@ -36,6 +36,8 @@ COPY worker/tsconfig.json ./worker/tsconfig.json
 # goes into packages/connectors/dist which the worker resolves via
 # the file: dependency.
 COPY packages/connectors/src ./packages/connectors/src
+# The build copies the source-package YAML into dist (scripts/copy-package-data.mjs).
+COPY packages/connectors/scripts ./packages/connectors/scripts
 RUN cd packages/connectors && npm install --no-audit --no-fund && npm run build
 
 # Now install + build the worker. The worker's `file:../packages/connectors`

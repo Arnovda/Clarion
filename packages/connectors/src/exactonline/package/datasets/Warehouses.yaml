@@ -1,0 +1,78 @@
+# Exact Online entity. Field docs are TRANSCRIBED from the vendor REST reference by scripts/generate-eo-docs.ts — do not hand-edit descriptions; edit label/description/clarion freely.
+
+name: Warehouses
+label: Warehouses
+description: Physical or logical stock locations.
+source: /inventory/Warehouses
+primary_key: [ ID ]
+fields:
+  - name: Code
+    description: Code of the warehouse
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Created
+    description: Creation date
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: Creator
+    description: User ID of creator
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: CreatorFullName
+    description: Name of creator
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: DefaultStorageLocation
+    description: The default storage location of this warehouse. Warehouses can have a default storage location in packages Manufacturing Professional & Premium or Wholesale Professional & Premium
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: DefaultStorageLocationCode
+    description: Default storage location's code
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: DefaultStorageLocationDescription
+    description: Default storage location's description
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Description
+    description: The description of the warehouse
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Division
+    description: Division code
+    datatype: Edm.Int32
+  - name: EMail
+    description: Email address
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: ID
+    description: A guid that is the unique identifier of the warehouse
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: Main
+    description: Indicates if this is the main warehouse. There's always exactly one main warehouse per administration
+    datatype: Edm.Byte
+  - name: ManagerUser
+    description: User reponsible for the warehouse
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: Modified
+    description: Last modified date
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: Modifier
+    description: User ID of modifier
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: ModifierFullName
+    description: Name of modifier
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: UseStorageLocations
+    description: Indicates if this warehouse is using storage locations. The storage locations will not be removed when when this is deactivated
+    datatype: Edm.Byte
+clarion:
+  kind: source
+  category: Inventory
+  sync:
+    cursor: { field: Modified, type: timestamp }

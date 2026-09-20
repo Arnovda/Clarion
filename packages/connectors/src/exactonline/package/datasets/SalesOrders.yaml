@@ -1,0 +1,293 @@
+# Exact Online entity. Field docs are TRANSCRIBED from the vendor REST reference by scripts/generate-eo-docs.ts — do not hand-edit descriptions; edit label/description/clarion freely.
+
+name: SalesOrders
+label: Sales orders
+description: Sales order headers — customer purchase orders captured.
+source: /salesorder/SalesOrders
+primary_key: [ ID ]
+fields:
+  - name: AmountDC
+    description: Amount in the default currency of the company
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: AmountDiscount
+    description: Discount amount in the default currency of the company
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: AmountDiscountExclVat
+    description: Discount amount excluding VAT in the default currency of the company
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: AmountFC
+    description: Amount in the currency of the transaction
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: AmountFCExclVat
+    description: Amount exclude VAT in the currency of the transaction
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: ApprovalStatus
+    description: Approval status of sales order. 0=Awaiting approval, 1=Automatically, 2=Approved. Approve a new sales order by giving value 2 if user has SalesOrderApproval right.
+    datatype: Edm.Int16
+  - name: ApprovalStatusDescription
+    description: Description of ApprovalStatus
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Approved
+    description: Approval datetime
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: Approver
+    description: User who approved the sales order
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: ApproverFullName
+    description: Name of approver
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Created
+    description: Creation date
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: Creator
+    description: User ID of creator
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: CreatorFullName
+    description: Name of creator
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Currency
+    description: Currency code
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: CustomField
+    description: Custom field endpoint. Provided only for the Exact Online Premium users.
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: DeliverTo
+    description: Reference to the delivery customer. For an existing sales order this value can not be changed.
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: Accounts, field: ID } }
+  - name: DeliverToContactPerson
+    description: Reference to contact person of delivery customer
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: Contacts, field: ID } }
+  - name: DeliverToContactPersonFullName
+    description: Name of contact person of delivery customer
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: DeliverToName
+    description: Name of delivery customer
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: DeliveryAddress
+    description: Delivery address
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: DeliveryDate
+    description: Delivery date
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: DeliveryStatus
+    description: Shipping status
+    datatype: Edm.Int16
+  - name: DeliveryStatusDescription
+    description: Description of DeliveryStatus
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Description
+    description: Description
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Discount
+    description: Discount percentage
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: Division
+    description: Division code
+    datatype: Edm.Int32
+  - name: Document
+    description: Document that is manually linked to the sales order
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: Documents, field: ID } }
+  - name: DocumentNumber
+    description: Number of the document
+    datatype: Edm.Int32
+  - name: DocumentSubject
+    description: Subject of the document
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: IncotermAddress
+    description: Address of Incoterm
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: IncotermCode
+    description: Code of Incoterm
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: IncotermVersion
+    description: "Version of Incoterm Supported version for Incoterms : 2010, 2020"
+    datatype: Edm.Int16
+  - name: InvoiceStatus
+    description: Invoice status
+    datatype: Edm.Int16
+  - name: InvoiceStatusDescription
+    description: Description of InvoiceStatus
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: InvoiceTo
+    description: Reference to the customer who will receive the invoice. For an existing sales order this value can not be changed.
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: Accounts, field: ID } }
+  - name: InvoiceToContactPerson
+    description: Reference to the contact person of the customer who will receive the invoice
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: Contacts, field: ID } }
+  - name: InvoiceToContactPersonFullName
+    description: Name of the contact person of the customer who will receive the invoice
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: InvoiceToName
+    description: Name of the customer who will receive the invoice
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Modified
+    description: Last modified date
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: Modifier
+    description: User ID of modifier
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: ModifierFullName
+    description: Name of modifier
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: OrderDate
+    description: Order date
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: OrderedBy
+    description: Customer who ordered the sales order. For an existing sales order this value can not be changed.
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: Accounts, field: ID } }
+  - name: OrderedByContactPerson
+    description: Contact person of the customer who ordered the sales order
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: Contacts, field: ID } }
+  - name: OrderedByContactPersonFullName
+    description: Name of contact person of the customer who ordered the sales order
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: OrderedByName
+    description: Name of the customer who ordered the sales order
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: OrderID
+    description: Primary key
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: OrderNumber
+    description: Number of sales order
+    datatype: Edm.Int32
+  - name: PaymentCondition
+    description: The payment condition used for due date and discount calculation
+    datatype: Edm.String
+    clarion: { role: dimension, references: { dataset: PaymentConditions, field: ID } }
+  - name: PaymentConditionDescription
+    description: Description of PaymentCondition
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: PaymentReference
+    description: Payment reference for sales order
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Remarks
+    description: Extra remarks
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: SalesChannel
+    description: ID of Sales channel.
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: SalesChannelCode
+    description: Code of Sales channel
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: SalesChannelDescription
+    description: Description of Sales channel
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Salesperson
+    description: Sales representative
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: SalespersonFullName
+    description: Name of sales representative
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: SelectionCode
+    description: ID of selection code. Only supported by the Plus, Professional and Premium for Wholesale & Distribution and Manufacturing
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: SelectionCodeCode
+    description: Code of selection code
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: SelectionCodeDescription
+    description: Description of selection code
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: ServicePoint
+    description: Service point for delivery. Only supported for Exact Online E-commerce
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: ShippingMethod
+    description: ShippingMethod
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: ShippingMethodDescription
+    description: Description of ShippingMethod
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Status
+    description: The status of the sales order. 12 = Open, 20 = Partial, 21 = Complete, 45 = Cancelled.
+    datatype: Edm.Int16
+  - name: StatusDescription
+    description: Description of Status
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: TaxSchedule
+    description: Obsolete
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: TaxScheduleCode
+    description: Obsolete
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: TaxScheduleDescription
+    description: Obsolete
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: WarehouseCode
+    description: Code of Warehouse
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: WarehouseDescription
+    description: Description of Warehouse
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: WarehouseID
+    description: Warehouse. Only supported by the Plus, Professional and Premium editions for Wholesale & Distribution and Manufacturing
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: Warehouses, field: ID } }
+  - name: YourRef
+    description: The reference number of the customer
+    datatype: Edm.String
+    clarion: { role: dimension }
+clarion:
+  kind: source
+  category: Sales
+  sync:
+    cursor: { field: Modified, type: timestamp }

@@ -1,0 +1,53 @@
+# Exact Online entity. Field docs are TRANSCRIBED from the vendor REST reference by scripts/generate-eo-docs.ts — do not hand-edit descriptions; edit label/description/clarion freely.
+
+name: Banks
+label: Banks
+description: Master list of banks recognised by the division.
+source: /cashflow/Banks
+primary_key: [ ID ]
+fields:
+  - name: BankName
+    description: The name of the bank
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: BICCode
+    description: The bank identification code of the bank
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Country
+    description: The country in which the bank is based
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Created
+    description: Creation date
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: Description
+    description: The extended description of the bank
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Format
+    description: The account format used by the bank
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: HomePageAddress
+    description: The website of the bank
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: ID
+    description: Primary key
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: Modified
+    description: Last modified date
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: Status
+    description: The status of the bank. A = Active, P = Passive
+    datatype: Edm.String
+    clarion: { role: dimension }
+clarion:
+  kind: source
+  category: Cashflow
+  sync:
+    cursor: { field: Modified, type: timestamp }

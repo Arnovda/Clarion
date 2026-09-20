@@ -1,0 +1,161 @@
+# Exact Online star-schema template table. `source` is the DuckDB SQL over BARE source entity names; a foreign key is written ONCE on its field (clarion.references) and the template joins are derived from it.
+
+name: fact_sales_invoice_lines
+label: Sales invoice lines
+description: One row per line on sales invoices and credit notes (credit-note amounts are natively negative).
+source: |-
+  SELECT
+    sil.ID                              AS invoice_line_id,
+    sil.InvoiceID                       AS invoice_id,
+    si.InvoiceNumber                    AS invoice_number,
+    TRY_CAST(si.InvoiceDate AS DATE)    AS invoice_date,
+    TRY_CAST(si.DueDate AS DATE)        AS due_date,
+    si.StatusDescription                AS status,
+    si.TypeDescription                  AS document_type,
+    si.InvoiceTo                        AS invoice_to_id,
+    si.OrderedBy                        AS ordered_by_id,
+    sil.Item                            AS item_id,
+    sil.GLAccount                       AS gl_account_id,
+    si.Journal                          AS journal_code,
+    si.PaymentCondition                 AS payment_condition_code,
+    si.Currency                         AS currency,
+    sil.Description                     AS line_description,
+    sil.Quantity                        AS quantity,
+    sil.NetPrice                        AS net_price,
+    sil.AmountDC                        AS amount_dc,
+    sil.AmountFC                        AS amount_fc,
+    sil.VATAmountDC                     AS vat_amount_dc
+  FROM SalesInvoiceLines sil
+  JOIN SalesInvoices si ON sil.InvoiceID = si.InvoiceID
+fields:
+  - name: invoice_line_id
+    label: Invoice line ID
+    description: ExactOnline invoice line GUID (primary key).
+    datatype: VARCHAR
+    clarion: { role: natural_key, technical: true, lineage: { dataset: SalesInvoiceLines, field: ID } }
+  - name: invoice_id
+    label: Invoice ID
+    description: GUID of the invoice header.
+    datatype: VARCHAR
+    clarion: { role: attribute, technical: true, lineage: { dataset: SalesInvoiceLines, field: InvoiceID } }
+  - name: invoice_number
+    label: Invoice number
+    description: Human-readable invoice number.
+    datatype: BIGINT
+    clarion: { role: degenerate_dimension, lineage: { dataset: SalesInvoices, field: InvoiceNumber } }
+  - name: invoice_date
+    label: Invoice date
+    description: Date of the invoice.
+    datatype: DATE
+    clarion: { role: attribute, lineage: { dataset: SalesInvoices, field: InvoiceDate } }
+  - name: due_date
+    label: Due date
+    description: Payment due date.
+    datatype: DATE
+    clarion: { role: attribute, lineage: { dataset: SalesInvoices, field: DueDate } }
+  - name: status
+    label: Status
+    description: Invoice status (open, processed, …).
+    datatype: VARCHAR
+    clarion: { role: attribute, lineage: { dataset: SalesInvoices, field: StatusDescription } }
+  - name: document_type
+    label: Document type
+    description: Sales invoice or credit note.
+    datatype: VARCHAR
+    clarion: { role: attribute, lineage: { dataset: SalesInvoices, field: TypeDescription } }
+  - name: invoice_to_id
+    label: Invoiced customer
+    description: Customer being billed.
+    datatype: VARCHAR
+    clarion:
+      role: foreign_key
+      references: { dataset: dim_account, field: account_id }
+      technical: true
+      lineage: { dataset: SalesInvoices, field: InvoiceTo }
+  - name: ordered_by_id
+    label: Ordering customer
+    description: Customer who placed the order.
+    datatype: VARCHAR
+    clarion:
+      role: foreign_key
+      references: { dataset: dim_account, field: account_id }
+      technical: true
+      lineage: { dataset: SalesInvoices, field: OrderedBy }
+  - name: item_id
+    label: Item
+    description: Item on the line (when set).
+    datatype: VARCHAR
+    clarion:
+      role: foreign_key
+      references: { dataset: dim_item, field: item_id }
+      technical: true
+      lineage: { dataset: SalesInvoiceLines, field: Item }
+  - name: gl_account_id
+    label: GL account
+    description: Revenue GL account of the line.
+    datatype: VARCHAR
+    clarion:
+      role: foreign_key
+      references: { dataset: dim_gl_account, field: gl_account_id }
+      technical: true
+      lineage: { dataset: SalesInvoiceLines, field: GLAccount }
+  - name: journal_code
+    label: Journal
+    description: Sales journal the invoice is booked in.
+    datatype: VARCHAR
+    clarion:
+      role: foreign_key
+      references: { dataset: dim_journal, field: journal_code }
+      technical: true
+      lineage: { dataset: SalesInvoices, field: Journal }
+  - name: payment_condition_code
+    label: Payment condition
+    description: Payment term of the invoice.
+    datatype: VARCHAR
+    clarion:
+      role: foreign_key
+      references: { dataset: dim_payment_condition, field: payment_condition_code }
+      technical: true
+      lineage: { dataset: SalesInvoices, field: PaymentCondition }
+  - name: currency
+    label: Currency
+    description: Document currency code.
+    datatype: VARCHAR
+    clarion: { role: attribute, lineage: { dataset: SalesInvoices, field: Currency } }
+  - name: line_description
+    label: Line description
+    description: Description of the invoiced line.
+    datatype: VARCHAR
+    clarion: { role: attribute, lineage: { dataset: SalesInvoiceLines, field: Description } }
+  - name: quantity
+    label: Quantity
+    description: Quantity invoiced (negative on credit notes).
+    datatype: DOUBLE
+    clarion: { role: measure, additivity: additive, lineage: { dataset: SalesInvoiceLines, field: Quantity } }
+  - name: net_price
+    label: Net price
+    description: Net price per unit after discount.
+    datatype: DOUBLE
+    clarion: { role: measure, additivity: non_additive, lineage: { dataset: SalesInvoiceLines, field: NetPrice } }
+  - name: amount_dc
+    label: Amount (default currency)
+    description: Line amount excl. VAT in the division currency — sums to net revenue.
+    datatype: DOUBLE
+    clarion: { role: measure, additivity: additive, lineage: { dataset: SalesInvoiceLines, field: AmountDC } }
+  - name: amount_fc
+    label: Amount (document currency)
+    description: Line amount excl. VAT in the document currency.
+    datatype: DOUBLE
+    clarion: { role: measure, additivity: additive, lineage: { dataset: SalesInvoiceLines, field: AmountFC } }
+  - name: vat_amount_dc
+    label: VAT amount
+    description: VAT amount in the division currency.
+    datatype: DOUBLE
+    clarion: { role: measure, additivity: additive, lineage: { dataset: SalesInvoiceLines, field: VATAmountDC } }
+clarion:
+  kind: fact
+  product: Sales
+  sourceEntities: [ SalesInvoiceLines, SalesInvoices ]
+  grain: One row per sales invoice line
+  factTableType: transaction
+  dimensionsUsed: [ dim_account, dim_item, dim_gl_account, dim_journal, dim_payment_condition, dim_date ]

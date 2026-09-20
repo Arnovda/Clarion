@@ -202,11 +202,15 @@ import { getTenantAiMode } from '../services/ai/tenantAiMode';
  * the wrapper) or when the glossary is empty. Failures are non-fatal —
  * losing the glossary should never break a query.
  */
-async function loadGlossaryBlock(): Promise<string> {
+async function loadGlossaryBlock(opts: { links?: boolean } = {}): Promise<string> {
   const tenantId = getTenantAiContext();
   if (!tenantId) return '';
   try {
-    return await getGlossaryPromptBlock(tenantId);
+    // `links` renders each term's address in the TOPIC layer ("In the data:
+    // fact_receivables.outstanding_amount"). Only for product-layer prompts —
+    // a source-layer prompt's schema does not contain those tables, so the
+    // callers below pass `dialect === 'duckdb'`.
+    return await getGlossaryPromptBlock(tenantId, opts);
   } catch (err) {
     logger.warn({ err }, 'Failed to load business glossary for AI prompt');
     return '';
@@ -1378,7 +1382,7 @@ export async function generateSql(
   // 100-300 tokens — negligible incremental cost per call.
   dashboardContext?: string,
 ): Promise<NlToSqlOutput> {
-  const glossary = await loadGlossaryBlock();
+  const glossary = await loadGlossaryBlock({ links: dialect === 'duckdb' });
   const systemPrompt = dialect === 'duckdb'
     ? NL_TO_SQL_DUCKDB_SYSTEM(semanticContext, relationshipContext, kpiFormulas, currentDateStr(), glossary)
     : NL_TO_SQL_SYSTEM(semanticContext, relationshipContext, kpiFormulas, currentDateStr(), glossary);
@@ -1477,7 +1481,7 @@ export async function generateSqlStreaming(
   const tenantId = await enforceAiBudget('generate_sql_streaming');
   const streamCallLabel = 'generate_sql_streaming';
   const streamStart = Date.now();
-  const glossary = await loadGlossaryBlock();
+  const glossary = await loadGlossaryBlock({ links: dialect === 'duckdb' });
   const systemPrompt = dialect === 'duckdb'
     ? NL_TO_SQL_DUCKDB_SYSTEM(semanticContext, relationshipContext, kpiFormulas, currentDateStr(), glossary)
     : NL_TO_SQL_SYSTEM(semanticContext, relationshipContext, kpiFormulas, currentDateStr(), glossary);
@@ -1595,8 +1599,10 @@ export async function generateDashboardRefinement(
   request: string,
   semanticContext: string,
   relationshipContext: string,
+  /** Product-layer dashboards get the glossary's "In the data" addresses. */
+  opts: { productLayer?: boolean } = {},
 ): Promise<RefinementOutput> {
-  const glossary = await loadGlossaryBlock();
+  const glossary = await loadGlossaryBlock({ links: !!opts.productLayer });
   const raw = await callClaude(
     REFINEMENT_SYSTEM,
     buildRefinementUser(request, semanticContext, relationshipContext, glossary),
@@ -1615,8 +1621,10 @@ export async function refineDashboardSpec(
   semanticContext: string,
   relationshipContext: string,
   kpiFormulas = '',
+  /** Product-layer dashboards get the glossary's "In the data" addresses. */
+  opts: { productLayer?: boolean } = {},
 ): Promise<DashboardSpec> {
-  const glossary = await loadGlossaryBlock();
+  const glossary = await loadGlossaryBlock({ links: !!opts.productLayer });
   const raw = await callClaude(
     REFINE_SPEC_SYSTEM,
     buildRefineSpecUser(refinement, currentSpec, semanticContext, relationshipContext, glossary, kpiFormulas),
@@ -1713,7 +1721,7 @@ export async function generateDashboardSpec(
   dialect: SqlDialect = 'sqlite',
   kpiFormulas = '',
 ): Promise<DashboardSpec> {
-  const glossary = await loadGlossaryBlock();
+  const glossary = await loadGlossaryBlock({ links: dialect === 'duckdb' });
   const raw = await callClaude(
     getDashboardSystem(dialect),
     buildDashboardUser(request, semanticContext, relationshipContext, glossary, kpiFormulas),

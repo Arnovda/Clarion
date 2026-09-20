@@ -1,0 +1,128 @@
+# Exact Online star-schema template table. `source` is the DuckDB SQL over BARE source entity names; a foreign key is written ONCE on its field (clarion.references) and the template joins are derived from it.
+
+name: fact_transaction_lines
+label: Transaction lines
+description: One row per booked general-ledger line — the complete accounting detail.
+source: |-
+  SELECT
+    ID                            AS transaction_line_id,
+    EntryNumber                   AS entry_number,
+    TRY_CAST(Date AS DATE)        AS entry_date,
+    FinancialYear                 AS financial_year,
+    FinancialPeriod               AS financial_period,
+    JournalCode                   AS journal_code,
+    GLAccount                     AS gl_account_id,
+    Account                       AS account_id,
+    Item                          AS item_id,
+    InvoiceNumber                 AS invoice_number,
+    Description                   AS description,
+    Currency                      AS currency,
+    Quantity                      AS quantity,
+    AmountDC                      AS amount_dc,
+    AmountFC                      AS amount_fc,
+    AmountVATFC                   AS vat_amount_fc
+  FROM TransactionLines
+fields:
+  - name: transaction_line_id
+    label: Transaction line ID
+    description: ExactOnline transaction line GUID (primary key).
+    datatype: VARCHAR
+    clarion: { role: natural_key, technical: true, lineage: { dataset: TransactionLines, field: ID } }
+  - name: entry_number
+    label: Entry number
+    description: Journal entry number.
+    datatype: BIGINT
+    clarion: { role: degenerate_dimension, lineage: { dataset: TransactionLines, field: EntryNumber } }
+  - name: entry_date
+    label: Entry date
+    description: Accounting date of the line.
+    datatype: DATE
+    clarion: { role: attribute, lineage: { dataset: TransactionLines, field: Date } }
+  - name: financial_year
+    label: Financial year
+    description: Fiscal year the line posts to.
+    datatype: BIGINT
+    clarion: { role: attribute, lineage: { dataset: TransactionLines, field: FinancialYear } }
+  - name: financial_period
+    label: Financial period
+    description: Fiscal period the line posts to.
+    datatype: BIGINT
+    clarion: { role: attribute, lineage: { dataset: TransactionLines, field: FinancialPeriod } }
+  - name: journal_code
+    label: Journal
+    description: Journal the line is booked in.
+    datatype: VARCHAR
+    clarion:
+      role: foreign_key
+      references: { dataset: dim_journal, field: journal_code }
+      technical: true
+      lineage: { dataset: TransactionLines, field: JournalCode }
+  - name: gl_account_id
+    label: GL account
+    description: GL account the line posts to.
+    datatype: VARCHAR
+    clarion:
+      role: foreign_key
+      references: { dataset: dim_gl_account, field: gl_account_id }
+      technical: true
+      lineage: { dataset: TransactionLines, field: GLAccount }
+  - name: account_id
+    label: Account
+    description: Customer / supplier on the line (when set).
+    datatype: VARCHAR
+    clarion:
+      role: foreign_key
+      references: { dataset: dim_account, field: account_id }
+      technical: true
+      lineage: { dataset: TransactionLines, field: Account }
+  - name: item_id
+    label: Item
+    description: Item on the line (when set).
+    datatype: VARCHAR
+    clarion:
+      role: foreign_key
+      references: { dataset: dim_item, field: item_id }
+      technical: true
+      lineage: { dataset: TransactionLines, field: Item }
+  - name: invoice_number
+    label: Invoice number
+    description: Invoice number the line belongs to (when applicable).
+    datatype: BIGINT
+    clarion: { role: attribute, lineage: { dataset: TransactionLines, field: InvoiceNumber } }
+  - name: description
+    label: Description
+    description: Description of the booking.
+    datatype: VARCHAR
+    clarion: { role: attribute, lineage: { dataset: TransactionLines, field: Description } }
+  - name: currency
+    label: Currency
+    description: Currency of the line.
+    datatype: VARCHAR
+    clarion: { role: attribute, lineage: { dataset: TransactionLines, field: Currency } }
+  - name: quantity
+    label: Quantity
+    description: Quantity on the line (when applicable).
+    datatype: DOUBLE
+    clarion: { role: measure, additivity: additive, lineage: { dataset: TransactionLines, field: Quantity } }
+  - name: amount_dc
+    label: Amount (default currency)
+    description: Signed amount in the division currency (debit positive, credit negative).
+    datatype: DOUBLE
+    clarion: { role: measure, additivity: additive, lineage: { dataset: TransactionLines, field: AmountDC } }
+  - name: amount_fc
+    label: Amount (document currency)
+    description: Signed amount in the transaction currency.
+    datatype: DOUBLE
+    clarion: { role: measure, additivity: additive, lineage: { dataset: TransactionLines, field: AmountFC } }
+  - name: vat_amount_fc
+    label: VAT amount
+    description: VAT amount in the transaction currency.
+    datatype: DOUBLE
+    clarion: { role: measure, additivity: additive, lineage: { dataset: TransactionLines, field: AmountVATFC } }
+clarion:
+  kind: fact
+  product: Finance
+  sourceEntities: [ TransactionLines ]
+  grain: One row per GL transaction line
+  factTableType: transaction
+  dimensionsUsed: [ dim_gl_account, dim_account, dim_item, dim_journal, dim_date ]

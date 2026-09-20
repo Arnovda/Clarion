@@ -1,0 +1,70 @@
+# Exact Online entity. Field docs are TRANSCRIBED from the vendor REST reference by scripts/generate-eo-docs.ts — do not hand-edit descriptions; edit label/description/clarion freely.
+
+name: ReceivablesList
+label: Receivables list (aging)
+description: Aging view of open receivables — read-only, denormalised for reporting. Pairs with Receivables for cash-flow dashboards.
+source: /read/financial/ReceivablesList
+fields:
+  - name: AccountCode
+    description: Code of Account
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: AccountId
+    description: Reference to the account
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: Accounts, field: ID } }
+  - name: AccountName
+    description: Name of Account
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Amount
+    description: Amount
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: AmountInTransit
+    description: Amount in transit - The amount that you have requested your bank to pay
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: CurrencyCode
+    description: Code of Currency
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Description
+    description: Description
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: DueDate
+    description: Date the invoice is due (This due date is not the discount due date)
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: EntryNumber
+    description: The entry number of this payment term corresponding sales/cashflow entry
+    datatype: Edm.Int32
+  - name: HID
+    description: Primary key, human readable ID
+    datatype: Edm.Int64
+  - name: Id
+    description: Obsolete
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: InvoiceDate
+    description: The date of the invoice or the date when money is collected from the customer
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: InvoiceNumber
+    description: For sales entry, it would be the entrynumber. For the cashflow entry, it will be entrynumber of an invoice which this collection is for
+    datatype: Edm.Int32
+    clarion: { references: { dataset: SalesInvoices, field: InvoiceID } }
+  - name: JournalCode
+    description: Code of Journal
+    datatype: Edm.String
+    clarion: { role: dimension, references: { dataset: Journals, field: ID } }
+  - name: JournalDescription
+    description: Description of Journal
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: YourRef
+    description: Sales invoice Your Reference number. Will be null if it is a cashflow entry
+    datatype: Edm.String
+    clarion: { role: dimension }
+clarion: { kind: source, category: Cashflow }

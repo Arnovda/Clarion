@@ -1,0 +1,34 @@
+# Odoo star-schema template table. `source` is the DuckDB SQL over BARE source entity names; a foreign key is written ONCE on its field (clarion.references) and the template joins are derived from it.
+
+name: dim_account
+label: GL accounts
+description: The chart of accounts — one row per general-ledger account.
+source: |-
+  SELECT
+    id           AS account_id,
+    code         AS account_code,
+    name         AS account_name,
+    account_type AS account_type
+  FROM account_account
+fields:
+  - name: account_id
+    label: Account ID
+    description: Odoo GL account id (primary key).
+    datatype: BIGINT
+    clarion: { role: natural_key, technical: true, lineage: { dataset: account_account, field: id } }
+  - name: account_code
+    label: Account code
+    description: Chart-of-accounts code.
+    datatype: VARCHAR
+    clarion: { role: attribute, lineage: { dataset: account_account, field: code } }
+  - name: account_name
+    label: Account name
+    description: Name of the GL account.
+    datatype: VARCHAR
+    clarion: { role: attribute, lineage: { dataset: account_account, field: name } }
+  - name: account_type
+    label: Account type
+    description: Account classification (receivable, payable, income, expense, …).
+    datatype: VARCHAR
+    clarion: { role: attribute, lineage: { dataset: account_account, field: account_type } }
+clarion: { kind: dimension, product: Core dimensions, sourceEntities: [ account_account ] }

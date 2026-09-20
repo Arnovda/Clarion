@@ -1,0 +1,455 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://clarion.dev/schemas/source-package-1.json",
+  "title": "Clarion source package (format 1)",
+  "description": "One declarative description of a source system. Shared keys follow Apache Ossie (datasets/fields/relationships/metrics); Clarion-specific data sits under `clarion`. See src/sourcePackage/types.ts.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "name",
+    "datasets",
+    "clarion"
+  ],
+  "properties": {
+    "version": {
+      "const": 1
+    },
+    "name": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]*$"
+    },
+    "description": {
+      "type": "string"
+    },
+    "datasets": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/definitions/dataset"
+      }
+    },
+    "relationships": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/relationship"
+      }
+    },
+    "metrics": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/metric"
+      }
+    },
+    "clarion": {
+      "$ref": "#/definitions/packageExt"
+    }
+  },
+  "definitions": {
+    "identifier": {
+      "type": "string",
+      "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+      "maxLength": 128
+    },
+    "nonEmpty": {
+      "type": "string",
+      "minLength": 1
+    },
+    "fieldRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "dataset",
+        "field"
+      ],
+      "properties": {
+        "dataset": {
+          "$ref": "#/definitions/nonEmpty"
+        },
+        "field": {
+          "$ref": "#/definitions/identifier"
+        }
+      }
+    },
+    "packageExt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "provenance",
+        "fieldCoverage"
+      ],
+      "properties": {
+        "vendor": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "name"
+          ],
+          "properties": {
+            "name": {
+              "$ref": "#/definitions/nonEmpty"
+            },
+            "docs": {
+              "type": "string"
+            },
+            "transcribed": {
+              "type": "string"
+            }
+          }
+        },
+        "provenance": {
+          "enum": [
+            "curated",
+            "declared"
+          ]
+        },
+        "template": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "version",
+            "products"
+          ],
+          "properties": {
+            "version": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "products": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "name",
+                  "description",
+                  "buildOrder"
+                ],
+                "properties": {
+                  "name": {
+                    "$ref": "#/definitions/nonEmpty"
+                  },
+                  "description": {
+                    "$ref": "#/definitions/nonEmpty"
+                  },
+                  "buildOrder": {
+                    "type": "integer",
+                    "minimum": 1
+                  }
+                }
+              }
+            }
+          }
+        },
+        "notes": {
+          "type": "string"
+        },
+        "fieldCoverage": {
+          "enum": [
+            "complete",
+            "partial"
+          ]
+        },
+        "categories": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/nonEmpty"
+          }
+        }
+      }
+    },
+    "dataset": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "clarion"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]+$",
+          "maxLength": 128
+        },
+        "label": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "source": {
+          "type": "string"
+        },
+        "primary_key": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 1,
+          "items": {
+            "$ref": "#/definitions/identifier"
+          }
+        },
+        "fields": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/field"
+          }
+        },
+        "clarion": {
+          "$ref": "#/definitions/datasetExt"
+        }
+      }
+    },
+    "datasetExt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind"
+      ],
+      "properties": {
+        "kind": {
+          "enum": [
+            "source",
+            "dimension",
+            "fact"
+          ]
+        },
+        "category": {
+          "type": "string"
+        },
+        "sync": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "cursor": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "field",
+                "type"
+              ],
+              "properties": {
+                "field": {
+                  "$ref": "#/definitions/identifier"
+                },
+                "type": {
+                  "enum": [
+                    "timestamp",
+                    "integer",
+                    "string"
+                  ]
+                }
+              }
+            },
+            "requiresSelect": {
+              "type": "boolean"
+            },
+            "defaultFilter": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "estimatedRowCount": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "product": {
+          "$ref": "#/definitions/nonEmpty"
+        },
+        "sourceEntities": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/definitions/nonEmpty"
+          }
+        },
+        "grain": {
+          "type": "string"
+        },
+        "factTableType": {
+          "enum": [
+            "transaction",
+            "periodic_snapshot",
+            "accumulating_snapshot",
+            "factless"
+          ]
+        },
+        "dimensionsUsed": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/nonEmpty"
+          }
+        },
+        "notes": {
+          "type": "string"
+        }
+      }
+    },
+    "field": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name"
+      ],
+      "properties": {
+        "name": {
+          "$ref": "#/definitions/identifier"
+        },
+        "label": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "datatype": {
+          "type": "string"
+        },
+        "expression": {
+          "type": "string"
+        },
+        "clarion": {
+          "$ref": "#/definitions/fieldExt"
+        }
+      }
+    },
+    "fieldExt": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "role": {
+          "enum": [
+            "measure",
+            "dimension",
+            "surrogate_key",
+            "natural_key",
+            "foreign_key",
+            "attribute",
+            "degenerate_dimension"
+          ]
+        },
+        "references": {
+          "$ref": "#/definitions/fieldRef"
+        },
+        "technical": {
+          "type": "boolean"
+        },
+        "additivity": {
+          "enum": [
+            "additive",
+            "semi_additive",
+            "non_additive"
+          ]
+        },
+        "lineage": {
+          "$ref": "#/definitions/fieldRef"
+        },
+        "notes": {
+          "type": "string"
+        }
+      }
+    },
+    "relationship": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "from",
+        "from_columns",
+        "to",
+        "to_columns"
+      ],
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "from": {
+          "$ref": "#/definitions/nonEmpty"
+        },
+        "from_columns": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 1,
+          "items": {
+            "$ref": "#/definitions/identifier"
+          }
+        },
+        "to": {
+          "$ref": "#/definitions/nonEmpty"
+        },
+        "to_columns": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 1,
+          "items": {
+            "$ref": "#/definitions/identifier"
+          }
+        },
+        "cardinality": {
+          "enum": [
+            "many_to_one",
+            "one_to_many",
+            "many_to_many",
+            "one_to_one"
+          ]
+        },
+        "description": {
+          "type": "string"
+        }
+      }
+    },
+    "metric": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "expression",
+        "clarion"
+      ],
+      "properties": {
+        "name": {
+          "$ref": "#/definitions/nonEmpty"
+        },
+        "description": {
+          "type": "string"
+        },
+        "expression": {
+          "$ref": "#/definitions/nonEmpty"
+        },
+        "datatype": {
+          "type": "string"
+        },
+        "clarion": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "formulaPlainText",
+            "additivity",
+            "product",
+            "requiresTables"
+          ],
+          "properties": {
+            "formulaPlainText": {
+              "$ref": "#/definitions/nonEmpty"
+            },
+            "additivity": {
+              "$ref": "#/definitions/nonEmpty"
+            },
+            "product": {
+              "$ref": "#/definitions/nonEmpty"
+            },
+            "requiresTables": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "$ref": "#/definitions/nonEmpty"
+              }
+            },
+            "notes": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,29 @@
+# Odoo model. `source` is the dotted model name used for RPC; `name` is the warehouse table. Field descriptions are the curated fallback beneath the live fields_get harvest (Odoo 16+ semantics).
+
+name: account_tax
+label: Taxes
+description: Tax definitions (VAT rates etc.) applied on invoice and order lines.
+source: account.tax
+primary_key: [ id ]
+fields:
+  - name: id
+    description: Technical identifier of the tax
+  - name: name
+    description: Name of the tax as shown on documents
+  - name: amount
+    description: Tax rate (percentage) or fixed amount depending on amount_type
+  - name: amount_type
+    description: "How the tax is computed: percentage, fixed, or group"
+  - name: type_tax_use
+    description: Whether the tax applies on sales, purchases or none
+  - name: company_id
+    description: Company this tax belongs to
+  - name: active
+    description: False when the tax has been archived
+  - name: write_date
+    description: When the record was last modified
+clarion:
+  kind: source
+  category: Accounting
+  sync:
+    cursor: { field: write_date, type: timestamp }

@@ -1,0 +1,39 @@
+# Exact Online entity. Field docs are TRANSCRIBED from the vendor REST reference by scripts/generate-eo-docs.ts — do not hand-edit descriptions; edit label/description/clarion freely.
+
+name: Units
+label: Units of measure
+description: Quantity units used on items (piece, kg, hour, …).
+source: /logistics/Units
+primary_key: [ ID ]
+fields:
+  - name: Active
+    description: Indicates whether a unit is in use
+    datatype: Edm.Boolean
+    clarion: { role: dimension }
+  - name: Code
+    description: Unique code for the unit
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Description
+    description: Description
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Division
+    description: Division code
+    datatype: Edm.Int32
+  - name: ID
+    description: Primary key
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: Main
+    description: Indicates the main unit per division. Will be used when creating new item
+    datatype: Edm.Byte
+  - name: TimeUnit
+    description: If Type = 'T' (time) then this fields indicates the type of time frame. yy = Year, mm = Month, wk = Week, dd = Day, hh = Hour, mi = Minute, ss = Second
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Type
+    description: Type of unit. Type 'Time' is especially important for contracts.
+    datatype: Edm.String
+    clarion: { role: dimension }
+clarion: { kind: source, category: Logistics }

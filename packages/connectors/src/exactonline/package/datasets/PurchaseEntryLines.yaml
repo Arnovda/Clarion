@@ -1,0 +1,218 @@
+# Exact Online entity. Field docs are TRANSCRIBED from the vendor REST reference by scripts/generate-eo-docs.ts — do not hand-edit descriptions; edit label/description/clarion freely.
+
+name: PurchaseEntryLines
+label: Purchase entry lines
+description: Line items on purchase journal entries.
+source: /purchaseentry/PurchaseEntryLines
+primary_key: [ ID ]
+fields:
+  - name: AmountDC
+    description: Amount in the default currency of the company
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: AmountFC
+    description: Amount in the currency of the transaction
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: Asset
+    description: Reference to asset
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: AssetDescription
+    description: Asset description
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: CostCenter
+    description: Reference to cost center
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: CostCenterDescription
+    description: Description of CostCenter
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: CostUnit
+    description: Reference to cost unit
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: CostUnitDescription
+    description: Description of CostUnit
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: CustomField
+    description: Custom field endpoint
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Description
+    description: Description
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Division
+    description: Division code
+    datatype: Edm.Int32
+  - name: EntryID
+    description: Reference to header of the purchase entry
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: PurchaseEntries, field: EntryID } }
+  - name: Expense
+    description: Expense related to the Work Breakdown Structure of the selected project. Only available with a professional service license
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: ExpenseDescription
+    description: Description of expense. Only available with a professional service license
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: From
+    description: From date to identify the range for accrued/deferred costs. This is used in combination with the property 'To' that defines the end date
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: GLAccount
+    description: General ledger account
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: GLAccounts, field: ID } }
+  - name: GLAccountCode
+    description: Code of GLAccount
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: GLAccountDescription
+    description: Description of GLAccount
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: ID
+    description: Primary key
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: IntraStatArea
+    description: IntraStat area (only relevant when IntraStat for purchase is enabled in the administration)
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: IntraStatCountry
+    description: IntraStatCountry (only relevant when IntraStat for purchase is enabled in the administration)
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: IntraStatDeliveryTerm
+    description: IntraStat delivery term (only relevant when IntraStat for purchase is enabled in the administration)
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: IntraStatTransactionA
+    description: IntraStat transaction A (only relevant when IntraStat for purchase is enabled in the administration)
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: IntraStatTransactionB
+    description: IntraStat transaction B (only relevant when IntraStat for purchase is enabled in the Belgium, Luxembourg, France & United Kingdom administration)
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: IntraStatTransportMethod
+    description: IntraStat transport method (only relevant when IntraStat for purchase is enabled in the administration)
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: LineNumber
+    description: Line number
+    datatype: Edm.Int32
+  - name: Notes
+    description: Extra remarks
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: PrivateUsePercentage
+    description: Percentage of re-invoice part of a cost to the owner of the company.
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: Project
+    description: Reference to project
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: Projects, field: ID } }
+  - name: ProjectDescription
+    description: Description of Project
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Quantity
+    description: Quantity
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: SerialNumber
+    description: Serial number
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: StatisticalNetWeight
+    description: Statistical NetWeight (only relevant when IntraStat for purchase is enabled in the administration)
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: StatisticalNumber
+    description: Statistical Number (only relevant when IntraStat for purchase is enabled in the administration)
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: StatisticalQuantity
+    description: Statistical Quantity (only relevant when IntraStat for purchase is enabled in the administration)
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: StatisticalValue
+    description: Statistical Value (only relevant when IntraStat for purchase is enabled in the administration)
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: Subscription
+    description: Reference to subscription
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: Subscriptions, field: EntryID } }
+  - name: SubscriptionDescription
+    description: Description of Subscription
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: To
+    description: To date to identify the range for accrued/deferred costs. This is used in combination with the property 'From' that defines the start date
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: TrackingNumber
+    description: Reference to tracking number
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: TrackingNumberDescription
+    description: Description of TrackingNumber
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Type
+    description: "Type: 30 = Purchase entry, 31 = Purchase credit note"
+    datatype: Edm.Int32
+  - name: VATAmountDC
+    description: VAT amount in the default currency of the company
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: VATAmountFC
+    description: VAT amount in the currency of the transaction. Use this property to specify a VAT amount that differs from the VAT amount that is automatically calculated.
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: VATBaseAmountDC
+    description: VAT base amount in the default currency of the company
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: VATBaseAmountFC
+    description: VAT base amount in the currency of the transaction
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: VATCode
+    description: VAT code. If this property is not filled, it will use the default VAT code of the G/L account property
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: VATCodeDescription
+    description: Description of VATCode
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: VATNonDeductiblePercentage
+    description: If not the full amount of the VAT is deductible, you can indicate a percentage for the non deductible part. This is used during the entry of purchase invoices.
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: VATPercentage
+    description: VAT percentage
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: WithholdingAmountDC
+    description: Withholding tax amount for spanish legislation
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: WithholdingTax
+    description: Withholding tax key for spanish legislation
+    datatype: Edm.String
+    clarion: { role: dimension }
+clarion:
+  kind: source
+  category: Purchase
+  sync:
+    requiresSelect: true

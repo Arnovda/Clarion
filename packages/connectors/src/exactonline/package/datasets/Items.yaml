@@ -1,0 +1,466 @@
+# Exact Online entity. Field docs are TRANSCRIBED from the vendor REST reference by scripts/generate-eo-docs.ts — do not hand-edit descriptions; edit label/description/clarion freely.
+
+name: Items
+label: Items
+description: Article master data — what you sell or stock.
+source: /logistics/Items
+primary_key: [ ID ]
+fields:
+  - name: AssembledLeadDays
+    description: Assembly lead days
+    datatype: Edm.Int32
+  - name: AverageCost
+    description: The current average cost price
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: Barcode
+    description: Barcode of the item (numeric string)
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: BatchQuantity
+    description: Batch quantity
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: Class_01
+    description: Item class code referring to ItemClasses with ClassID 1
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Class_02
+    description: Item class code referring to ItemClasses with ClassID 2
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Class_03
+    description: Item class code referring to ItemClasses with ClassID 3
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Class_04
+    description: Item class code referring to ItemClasses with ClassID 4
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Class_05
+    description: Item class code referring to ItemClasses with ClassID 5
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Class_06
+    description: Item class code referring to ItemClasses with ClassID 6
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Class_07
+    description: Item class code referring to ItemClasses with ClassID 7
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Class_08
+    description: Item class code referring to ItemClasses with ClassID 8
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Class_09
+    description: Item class code referring to ItemClasses with ClassID 9
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Class_10
+    description: Item class code referring to ItemClasses with ClassID 10
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Code
+    description: Item code
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: CopyRemarks
+    description: Copy sales remarks to sales lines
+    datatype: Edm.Byte
+  - name: CostPriceCurrency
+    description: The currency of the current and proposed cost price
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: CostPriceNew
+    description: Proposed cost price
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: CostPriceStandard
+    description: The current standard cost price
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: Created
+    description: Creation date
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: Creator
+    description: User ID of creator
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: CreatorFullName
+    description: Name of creator
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: CustomField
+    description: Custom field endpoint. Provided only for the Exact Online Premium users.
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Description
+    description: Description of the item
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Division
+    description: Division code
+    datatype: Edm.Int32
+  - name: EndDate
+    description: Together with StartDate this determines if the item is active
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: ExtraDescription
+    description: Extra description text, slightly longer than the regular description (255 instead of 60)
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: FreeBoolField_01
+    description: Free boolean field 1
+    datatype: Edm.Boolean
+    clarion: { role: dimension }
+  - name: FreeBoolField_02
+    description: Free boolean field 2
+    datatype: Edm.Boolean
+    clarion: { role: dimension }
+  - name: FreeBoolField_03
+    description: Free boolean field 3
+    datatype: Edm.Boolean
+    clarion: { role: dimension }
+  - name: FreeBoolField_04
+    description: Free boolean field 4
+    datatype: Edm.Boolean
+    clarion: { role: dimension }
+  - name: FreeBoolField_05
+    description: Free boolean field 5
+    datatype: Edm.Boolean
+    clarion: { role: dimension }
+  - name: FreeDateField_01
+    description: Free date field 1
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: FreeDateField_02
+    description: Free date field 2
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: FreeDateField_03
+    description: Free date field 3
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: FreeDateField_04
+    description: Free date field 4
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: FreeDateField_05
+    description: Free date field 5
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: FreeNumberField_01
+    description: Free numeric field 1
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: FreeNumberField_02
+    description: Free numeric field 2
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: FreeNumberField_03
+    description: Free numeric field 3
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: FreeNumberField_04
+    description: Free numeric field 4
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: FreeNumberField_05
+    description: Free numeric field 5
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: FreeNumberField_06
+    description: Free numeric field 6
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: FreeNumberField_07
+    description: Free numeric field 7
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: FreeNumberField_08
+    description: Free numeric field 8
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: FreeTextField_01
+    description: Free text field 1
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: FreeTextField_02
+    description: Free text field 2
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: FreeTextField_03
+    description: Free text field 3
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: FreeTextField_04
+    description: Free text field 4
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: FreeTextField_05
+    description: Free text field 5
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: FreeTextField_06
+    description: Free text field 6
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: FreeTextField_07
+    description: Free text field 7
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: FreeTextField_08
+    description: Free text field 8
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: FreeTextField_09
+    description: Free text field 9
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: FreeTextField_10
+    description: Free text field 10
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: GLCosts
+    description: GL account the cost entries will be booked on. This overrules the GL account from the item group. If the license contains 'Intuit integration' this property overrides the value in Settings, not the item group.
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: GLAccounts, field: ID } }
+  - name: GLCostsCode
+    description: Code of GL account for costs
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: GLCostsDescription
+    description: Description of GLCosts
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: GLCostsWorkInProgress
+    description: GL account the work in progress project cost entries will be booked on. This overrules the GL account from the item group.
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: GLAccounts, field: ID } }
+  - name: GLCostsWorkInProgressCode
+    description: Code of GL account for costs Work In Progress
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: GLCostsWorkInProgressDescription
+    description: Description of GLCosts Work In Progress
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: GLRevenue
+    description: GL account the revenue will be booked on. This overrules the GL account from the item group. If the license contains 'Intuit integration' this property overrides the value in Settings, not the item group.
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: GLAccounts, field: ID } }
+  - name: GLRevenueCode
+    description: Code of GLRevenue
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: GLRevenueDescription
+    description: Description of GLRevenue
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: GLRevenueWorkInProgress
+    description: GL account the work in progress project revenue entries will be booked on. This overrules the GL account from the item group.
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: GLAccounts, field: ID } }
+  - name: GLRevenueWorkInProgressCode
+    description: Code of GLRevenue Work In Progress
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: GLRevenueWorkInProgressDescription
+    description: Description of GLRevenue Work In Progress
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: GLStock
+    description: GL account the stock entries will be booked on. This overrules the GL account from the item group. If the license contains 'Intuit integration' this property overrides the value in Settings, not the item group.
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: GLAccounts, field: ID } }
+  - name: GLStockCode
+    description: Code of GL account for stock
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: GLStockDescription
+    description: Description of GLStock
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: GrossWeight
+    description: Gross weight for international goods shipments
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: ID
+    description: A guid that is the unique identifier of the item
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: IsBatchItem
+    description: Indicates if batches are used for this item
+    datatype: Edm.Byte
+  - name: IsBatchNumberItem
+    description: This property is obsolete. Use property 'IsBatchItem' instead.
+    datatype: Edm.Byte
+  - name: IsFractionAllowedItem
+    description: Indicates if fractions (for example 0.35) are allowed for quantities of this item
+    datatype: Edm.Boolean
+    clarion: { role: dimension }
+  - name: IsMakeItem
+    description: Indicates that an Item is produced to Inventory, not purchased
+    datatype: Edm.Byte
+  - name: IsNewContract
+    description: Only used for packages (IsPackageItem=1). To indicate if this package is a new contract type package
+    datatype: Edm.Byte
+  - name: IsOnDemandItem
+    description: Is On demand Item
+    datatype: Edm.Byte
+  - name: IsPackageItem
+    description: Indicates if the item is a package item. Can only be created in the hosting administration
+    datatype: Edm.Boolean
+    clarion: { role: dimension }
+  - name: IsPurchaseItem
+    description: Indicates if the item can be purchased
+    datatype: Edm.Boolean
+    clarion: { role: dimension }
+  - name: IsRegistrationCodeItem
+    description: Indicated if the item is used in voucher functionality
+    datatype: Edm.Byte
+  - name: IsSalesItem
+    description: Indicates if the item can be sold
+    datatype: Edm.Boolean
+    clarion: { role: dimension }
+  - name: IsSerialItem
+    description: Indicates that serial numbers are used for this item
+    datatype: Edm.Boolean
+    clarion: { role: dimension }
+  - name: IsSerialNumberItem
+    description: This property is obsolete. Use property 'IsSerialItem' instead.
+    datatype: Edm.Boolean
+    clarion: { role: dimension }
+  - name: IsStockItem
+    description: If you have the Trade or Manufacturing license and you check this property the item will be shown in the stock positions overview, stock counts and transaction lists. If you have the Invoice module and you check this property you will get a general journal entry based on the Stock and Costs G/L accounts of the item group. If you don’t want the general journal entry to be created you should change the Stock/Costs G/L account on the Item group page to the type Costs instead of Inventory. If you have the CRM Standalone license, the item will not be available.
+    datatype: Edm.Boolean
+    clarion: { role: dimension }
+  - name: IsSubcontractedItem
+    description: Indicates if the item is provided by an outside supplier
+    datatype: Edm.Boolean
+    clarion: { role: dimension }
+  - name: IsTaxableItem
+    description: Indicates if tax needs to be calculated for this item
+    datatype: Edm.Byte
+  - name: IsTime
+    description: Indicates if the item is a time unit item (for example a labor hour item)
+    datatype: Edm.Byte
+  - name: IsWebshopItem
+    description: Indicates if the item can be exported to a web shop. If you have the CRM Standalone license, the item will not be available.
+    datatype: Edm.Byte
+  - name: ItemGroup
+    description: GUID of Item group of the item
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: ItemGroups, field: ID } }
+  - name: ItemGroupCode
+    description: Code of ItemGroup
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: ItemGroupDescription
+    description: Description of ItemGroup
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Modified
+    description: Last modified date
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: Modifier
+    description: User ID of modifier
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: ModifierFullName
+    description: Name of modifier
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: NetWeight
+    description: Net weight for international goods shipments
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: NetWeightUnit
+    description: Net Weight unit for international goods shipment, only available in manufacturing packages
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Notes
+    description: Notes
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Picture
+    description: This field is write-only. The picture can be downloaded through PictureUrl and PictureThumbnailUrl.
+    datatype: Edm.Binary
+  - name: PictureName
+    description: File name of picture
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: PictureThumbnailUrl
+    description: Url where thumbnail picture can be retrieved
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: PictureUrl
+    description: Url where picture can be retrieved
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: SalesVatCode
+    description: Code of SalesVat
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: SalesVatCodeDescription
+    description: Description of SalesVatCode
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: SearchCode
+    description: Search code of the item
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: SecurityLevel
+    description: Security level (0 - 100)
+    datatype: Edm.Int32
+  - name: StandardSalesPrice
+    description: Standard sales price
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: StartDate
+    description: Together with EndDate this determines if the item is active
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: StatisticalCode
+    description: Statistical code
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: StatisticalNetWeight
+    description: Statistical net weight
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: StatisticalUnits
+    description: Statistical units
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: StatisticalValue
+    description: Statistical value
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: Stock
+    description: Quantity that is in stock
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: Unit
+    description: The standard unit of this item
+    datatype: Edm.String
+    clarion: { role: dimension, references: { dataset: Units, field: ID } }
+  - name: UnitDescription
+    description: Description of Unit
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: UnitType
+    description: "Type of unit: A=Area, L=Length, O=Other, T=Time, V=Volume, W=Weight"
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: UseExplosion
+    description: Assemble at delivery
+    datatype: Edm.Byte
+clarion:
+  kind: source
+  category: Logistics
+  sync:
+    cursor: { field: Modified, type: timestamp }

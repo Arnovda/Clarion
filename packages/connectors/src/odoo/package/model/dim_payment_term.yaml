@@ -1,0 +1,22 @@
+# Odoo star-schema template table. `source` is the DuckDB SQL over BARE source entity names; a foreign key is written ONCE on its field (clarion.references) and the template joins are derived from it.
+
+name: dim_payment_term
+label: Payment terms
+description: Payment terms applied to invoices and orders (e.g. 30 days net).
+source: |-
+  SELECT
+    id   AS payment_term_id,
+    name AS payment_term_name
+  FROM account_payment_term
+fields:
+  - name: payment_term_id
+    label: Payment term ID
+    description: Odoo payment term id (primary key).
+    datatype: BIGINT
+    clarion: { role: natural_key, technical: true, lineage: { dataset: account_payment_term, field: id } }
+  - name: payment_term_name
+    label: Payment term
+    description: Name of the payment term.
+    datatype: VARCHAR
+    clarion: { role: attribute, lineage: { dataset: account_payment_term, field: name } }
+clarion: { kind: dimension, product: Core dimensions, sourceEntities: [ account_payment_term ] }

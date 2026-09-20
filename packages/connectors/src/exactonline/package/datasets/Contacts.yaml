@@ -1,0 +1,288 @@
+# Exact Online entity. Field docs are TRANSCRIBED from the vendor REST reference by scripts/generate-eo-docs.ts — do not hand-edit descriptions; edit label/description/clarion freely.
+
+name: Contacts
+label: Contacts
+description: Individual contact persons. Each contact belongs to an account.
+source: /crm/Contacts
+primary_key: [ ID ]
+fields:
+  - name: Account
+    description: The account to which the contact belongs
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: Accounts, field: ID } }
+  - name: AccountIsCustomer
+    description: Indicates if account is a customer
+    datatype: Edm.Boolean
+    clarion: { role: dimension }
+  - name: AccountIsSupplier
+    description: Indicates if account is a supplier
+    datatype: Edm.Boolean
+    clarion: { role: dimension }
+  - name: AccountMainContact
+    description: Reference to the main contact of the account
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: Contacts, field: ID } }
+  - name: AccountName
+    description: Name of the account
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: AddressLine2
+    description: Second address line
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: AddressStreet
+    description: Street name of the address
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: AddressStreetNumber
+    description: Street number of the address
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: AddressStreetNumberSuffix
+    description: Street number suffix of the address
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: AllowMailing
+    description: Obsolete
+    datatype: Edm.Int32
+  - name: BirthDate
+    description: Birth date
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: BirthName
+    description: Obsolete. Please don't use this field anymore as it may overwrite LastName.
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: BirthNamePrefix
+    description: Obsolete. Please don't use this field anymore as it may overwrite MiddleName.
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: BirthPlace
+    description: Birth place
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: BusinessEmail
+    description: Email address of the contact
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: BusinessFax
+    description: Fax of the contact
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: BusinessMobile
+    description: Mobile of the contact
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: BusinessPhone
+    description: Phone of the contact
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: BusinessPhoneExtension
+    description: Phone extension of the contact
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: City
+    description: City
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Code
+    description: Code of the account
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Country
+    description: Country code
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Created
+    description: Creation date
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: Creator
+    description: User ID of the creator
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: CreatorFullName
+    description: Name of the creator
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: CustomField
+    description: Custom field endpoint. Provided only for the Exact Online Premium users.
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Division
+    description: Division code
+    datatype: Edm.Int32
+  - name: Email
+    description: Email address of the contact
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: EndDate
+    description: End date
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: FirstName
+    description: First name. Provide at least first name or last name to create a new contact
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: FullName
+    description: Full name (First name Middle name Last name)
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Gender
+    description: Gender
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: HID
+    description: Contact ID
+    datatype: Edm.Int32
+  - name: ID
+    description: Primary key
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: IdentificationDate
+    description: Identification date
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: IdentificationDocument
+    description: Reference to the identification document of the contact
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: IdentificationUser
+    description: Reference to the user responsible for identification
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: Initials
+    description: Initials
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: IsAnonymised
+    description: Indicates whether the contact is anonymised.
+    datatype: Edm.Byte
+  - name: IsMailingExcluded
+    description: Indicates whether contacts are excluded from the marketing list
+    datatype: Edm.Boolean
+    clarion: { role: dimension }
+  - name: IsMainContact
+    description: Indicates if this is the main contact of the linked account
+    datatype: Edm.Boolean
+    clarion: { role: dimension }
+  - name: JobTitleDescription
+    description: Jobtitle of the contact
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Language
+    description: Language code
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: LastName
+    description: Last name. Provide at least first name or last name to create a new contact
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: LeadPurpose
+    description: Reference to purpose of an contact
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: LeadSource
+    description: Reference to source of an contact
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: MarketingNotes
+    description: The user should be able to do a full text search on these notes to gather contacts for a marketing campaign
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: MiddleName
+    description: Middle name
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Mobile
+    description: Business phone of the contact
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Modified
+    description: Last modified date
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: Modifier
+    description: User ID of modifier
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: ModifierFullName
+    description: Name of the last modifier
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Nationality
+    description: Nationality
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Notes
+    description: Extra remarks
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: PartnerName
+    description: Last name of partner
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: PartnerNamePrefix
+    description: Middlename of partner
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Person
+    description: Reference to the personal information of this contact such as name, gender, address etc.
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: Phone
+    description: Phone of the contact
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: PhoneExtension
+    description: Phone extension of the contact
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Picture
+    description: This field is write-only. The picture can be downloaded through PictureUrl and PictureThumbnailUrl.
+    datatype: Edm.Binary
+  - name: PictureName
+    description: Filename of the picture
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: PictureThumbnailUrl
+    description: Url to retrieve the picture thumbnail
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: PictureUrl
+    description: Url to retrieve the picture
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Postcode
+    description: Postcode
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: SocialSecurityNumber
+    description: Social security number
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: StartDate
+    description: Start date
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: State
+    description: State
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Title
+    description: Title
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: TitleAbbreviation
+    description: TitleAbbreviation
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: TitleDescription
+    description: TitleDescription
+    datatype: Edm.String
+    clarion: { role: dimension }
+clarion:
+  kind: source
+  category: CRM
+  sync:
+    cursor: { field: Modified, type: timestamp }

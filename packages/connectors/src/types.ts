@@ -165,6 +165,18 @@ export interface SourceConnector {
   getBusinessKeys?(selectedEntities: readonly string[]): readonly EntityBusinessKey[];
 
   /**
+   * Optional. SOFT context about the source as a WHOLE, in Markdown — the
+   * caveats that belong to no single entity: "columns ending in DC are in the
+   * division currency and additive, FC columns are not", "credit notes are
+   * natively negative, never add a sign flip". Synchronous and config-free
+   * like `getKnownRelationships`, because it is a compile-time constant (the
+   * source package manifest's `clarion.notes`). It reaches the schema
+   * profiler's PROMPT context only — never a stored description, never a
+   * fact at the trusted rung; per-entity notes travel on `EntityDocs.notes`.
+   */
+  getSourceNotes?(): string | undefined;
+
+  /**
    * Optional. Return the source system's OWN documentation for the selected
    * entities — table/column descriptions, display labels, analytics-role
    * hints, and (for self-describing sources) relationship facts derived from
@@ -362,6 +374,17 @@ export interface EntityDocs {
    * "AI suggestion".
    */
   provenance: 'declared' | 'curated';
+
+  /**
+   * SOFT context about this entity, Markdown, from the connector's source
+   * package (`clarion.notes` on the dataset): the caveats a model should read
+   * before it describes a custom field or judges a relationship — "*DC amounts
+   * are in the division currency and additive across documents; *FC are in
+   * the document currency". The hard facts (description, columns) are what the
+   * profiler PERSISTS; notes reach the profiler's prompt context only and are
+   * never written as a description.
+   */
+  notes?: string;
 }
 
 // ─── Known relationships ──────────────────────────────────────────────────

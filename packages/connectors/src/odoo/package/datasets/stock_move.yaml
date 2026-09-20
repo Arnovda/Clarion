@@ -1,0 +1,41 @@
+# Odoo model. `source` is the dotted model name used for RPC; `name` is the warehouse table. Field descriptions are the curated fallback beneath the live fields_get harvest (Odoo 16+ semantics).
+
+name: stock_move
+label: Stock moves
+description: Individual product movements between locations (receipts, deliveries, internal transfers).
+source: stock.move
+primary_key: [ id ]
+fields:
+  - name: id
+    description: Technical identifier of the stock move
+  - name: name
+    description: Description of the move
+  - name: product_id
+    description: Product variant being moved
+  - name: product_uom_qty
+    description: Planned quantity to move, in the move unit of measure
+  - name: quantity
+    description: Quantity actually moved once the move is done
+  - name: product_uom
+    description: Unit of measure of the move quantities
+  - name: location_id
+    description: Source location the product leaves
+  - name: location_dest_id
+    description: Destination location the product enters
+  - name: state
+    description: "Lifecycle state: draft, waiting, assigned, done or cancelled"
+  - name: date
+    description: Date the move was processed (or is scheduled)
+  - name: reference
+    description: Reference of the transfer document the move belongs to
+  - name: picking_id
+    description: Transfer (delivery, receipt or internal) grouping this move
+  - name: company_id
+    description: Company the move belongs to
+  - name: write_date
+    description: When the record was last modified
+clarion:
+  kind: source
+  category: Inventory
+  sync:
+    cursor: { field: write_date, type: timestamp }

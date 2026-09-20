@@ -1,0 +1,37 @@
+# Odoo model. `source` is the dotted model name used for RPC; `name` is the warehouse table. Field descriptions are the curated fallback beneath the live fields_get harvest (Odoo 16+ semantics).
+
+name: account_payment
+label: Payments
+description: Customer and vendor payments registered against bank or cash journals.
+source: account.payment
+primary_key: [ id ]
+fields:
+  - name: id
+    description: Technical identifier of the payment
+  - name: name
+    description: Payment number
+  - name: payment_type
+    description: "Direction of the payment: inbound (received) or outbound (sent)"
+  - name: partner_type
+    description: Whether the counterparty is a customer or a supplier
+  - name: partner_id
+    description: Customer or vendor the payment is registered against
+  - name: amount
+    description: Payment amount in the payment currency
+  - name: currency_id
+    description: Currency of the payment
+  - name: date
+    description: Date the payment was registered
+  - name: journal_id
+    description: Bank or cash journal the payment went through
+  - name: state
+    description: Lifecycle state of the payment (draft, posted, cancelled)
+  - name: ref
+    description: Memo / communication of the payment
+  - name: write_date
+    description: When the record was last modified
+clarion:
+  kind: source
+  category: Accounting
+  sync:
+    cursor: { field: write_date, type: timestamp }

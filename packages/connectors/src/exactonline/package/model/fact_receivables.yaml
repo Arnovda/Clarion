@@ -1,0 +1,116 @@
+# Exact Online star-schema template table. `source` is the DuckDB SQL over BARE source entity names; a foreign key is written ONCE on its field (clarion.references) and the template joins are derived from it.
+
+name: fact_receivables
+label: Receivables
+description: One row per open receivable item — what customers still owe.
+source: |-
+  SELECT
+    ID                                  AS receivable_id,
+    TRY_CAST(InvoiceDate AS DATE)       AS invoice_date,
+    TRY_CAST(DueDate AS DATE)           AS due_date,
+    TRY_CAST(LastPaymentDate AS DATE)   AS last_payment_date,
+    InvoiceNumber                       AS invoice_number,
+    Account                             AS account_id,
+    GLAccount                           AS gl_account_id,
+    Journal                             AS journal_code,
+    PaymentCondition                    AS payment_condition_code,
+    Currency                            AS currency,
+    Description                         AS description,
+    IsFullyPaid                         AS is_fully_paid,
+    AmountDC                            AS amount_dc,
+    AmountFC                            AS amount_fc
+  FROM Receivables
+fields:
+  - name: receivable_id
+    label: Receivable ID
+    description: ExactOnline receivable GUID (primary key).
+    datatype: VARCHAR
+    clarion: { role: natural_key, technical: true, lineage: { dataset: Receivables, field: ID } }
+  - name: invoice_date
+    label: Invoice date
+    description: Date of the underlying invoice.
+    datatype: DATE
+    clarion: { role: attribute, lineage: { dataset: Receivables, field: InvoiceDate } }
+  - name: due_date
+    label: Due date
+    description: Payment due date.
+    datatype: DATE
+    clarion: { role: attribute, lineage: { dataset: Receivables, field: DueDate } }
+  - name: last_payment_date
+    label: Last payment date
+    description: Date of the most recent payment against this item.
+    datatype: DATE
+    clarion: { role: attribute, lineage: { dataset: Receivables, field: LastPaymentDate } }
+  - name: invoice_number
+    label: Invoice number
+    description: Invoice number of the receivable.
+    datatype: BIGINT
+    clarion: { role: degenerate_dimension, lineage: { dataset: Receivables, field: InvoiceNumber } }
+  - name: account_id
+    label: Customer
+    description: Customer who owes the amount.
+    datatype: VARCHAR
+    clarion:
+      role: foreign_key
+      references: { dataset: dim_account, field: account_id }
+      technical: true
+      lineage: { dataset: Receivables, field: Account }
+  - name: gl_account_id
+    label: GL account
+    description: Receivable GL account.
+    datatype: VARCHAR
+    clarion:
+      role: foreign_key
+      references: { dataset: dim_gl_account, field: gl_account_id }
+      technical: true
+      lineage: { dataset: Receivables, field: GLAccount }
+  - name: journal_code
+    label: Journal
+    description: Journal the receivable is booked in.
+    datatype: VARCHAR
+    clarion:
+      role: foreign_key
+      references: { dataset: dim_journal, field: journal_code }
+      technical: true
+      lineage: { dataset: Receivables, field: Journal }
+  - name: payment_condition_code
+    label: Payment condition
+    description: Payment term of the receivable.
+    datatype: VARCHAR
+    clarion:
+      role: foreign_key
+      references: { dataset: dim_payment_condition, field: payment_condition_code }
+      technical: true
+      lineage: { dataset: Receivables, field: PaymentCondition }
+  - name: currency
+    label: Currency
+    description: Currency of the receivable.
+    datatype: VARCHAR
+    clarion: { role: attribute, lineage: { dataset: Receivables, field: Currency } }
+  - name: description
+    label: Description
+    description: Description of the receivable.
+    datatype: VARCHAR
+    clarion: { role: attribute, lineage: { dataset: Receivables, field: Description } }
+  - name: is_fully_paid
+    label: Fully paid
+    description: True when the item has been settled in full.
+    datatype: BOOLEAN
+    clarion: { role: attribute, lineage: { dataset: Receivables, field: IsFullyPaid } }
+  - name: amount_dc
+    label: Amount (default currency)
+    description: Receivable amount in the division currency.
+    datatype: DOUBLE
+    clarion: { role: measure, additivity: additive, lineage: { dataset: Receivables, field: AmountDC } }
+  - name: amount_fc
+    label: Amount (document currency)
+    description: Receivable amount in the document currency.
+    datatype: DOUBLE
+    clarion: { role: measure, additivity: additive, lineage: { dataset: Receivables, field: AmountFC } }
+clarion:
+  kind: fact
+  product: Finance
+  sourceEntities: [ Receivables ]
+  grain: One row per receivable item
+  factTableType: accumulating_snapshot
+  dimensionsUsed: [ dim_account, dim_gl_account, dim_journal, dim_payment_condition, dim_date ]

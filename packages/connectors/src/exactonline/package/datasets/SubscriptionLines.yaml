@@ -1,0 +1,121 @@
+# Exact Online entity. Field docs are TRANSCRIBED from the vendor REST reference by scripts/generate-eo-docs.ts — do not hand-edit descriptions; edit label/description/clarion freely.
+
+name: SubscriptionLines
+label: Subscription lines
+description: Line items on subscriptions — individual subscribed products.
+source: /subscription/SubscriptionLines
+primary_key: [ ID ]
+fields:
+  - name: AmountDC
+    description: Amount in the default currency of the company
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: AmountFC
+    description: Amount in the currency of the transaction
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: Costcenter
+    description: Cost center linked to the subscription line
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Costunit
+    description: Cost unit linked to the subscription line
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: CustomField
+    description: Custom field endpoint. Provided only for the Exact Online Premium users.
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Description
+    description: Description of the subscription line
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Discount
+    description: Discount percentage of the subscription line
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: Division
+    description: Code of division the subscription line is made
+    datatype: Edm.Int32
+  - name: EntryID
+    description: Entry ID referencing to the subscription
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: Subscriptions, field: EntryID } }
+  - name: FromDate
+    description: The date which the subscription line starts
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: ID
+    description: Primary key
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: Item
+    description: The item that is used by the subscription line for sales details. Reference to Item
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: Items, field: ID } }
+  - name: ItemDescription
+    description: Description of Item used by the subscription line
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: LineNumber
+    description: Line number of the subscription line per subscription
+    datatype: Edm.Int32
+  - name: LineType
+    description: Reference to LineType endpoint
+    datatype: Edm.Int16
+  - name: LineTypeDescription
+    description: Description of LineType
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Modified
+    description: Date and time when the subscription line has been modified
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: NetPrice
+    description: Net price in the currency of the transaction
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: Notes
+    description: To add or retrieve additional information in the subscription line
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Quantity
+    description: Quantity of item used in the subscription line
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: SubscriptionNumber
+    description: Subscription number of the subscription line per subscription
+    datatype: Edm.Int32
+  - name: ToDate
+    description: The date the subscription line ends
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: UnitCode
+    description: "The code of the unit used in the subscription line. E.g: kg, meter"
+    datatype: Edm.String
+    clarion: { role: dimension, references: { dataset: Units, field: ID } }
+  - name: UnitDescription
+    description: Description of Unit used in the subscription line
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: UnitPrice
+    description: Unit price in the currency of the transaction (price * unit factor)
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: VATAmountFC
+    description: Vat Amount in the currency of the transaction
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: VATCode
+    description: VAT code that is used in the subscription line
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: VATCodeDescription
+    description: Description of VAT code that is used in the subscription line
+    datatype: Edm.String
+    clarion: { role: dimension }
+clarion:
+  kind: source
+  category: Subscription
+  sync:
+    cursor: { field: Modified, type: timestamp }

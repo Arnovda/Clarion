@@ -1,0 +1,96 @@
+# Exact Online entity. Field docs are TRANSCRIBED from the vendor REST reference by scripts/generate-eo-docs.ts — do not hand-edit descriptions; edit label/description/clarion freely.
+
+name: GLClassifications
+label: GL classifications
+description: Classification hierarchy of GL accounts for financial reporting.
+source: /financial/GLClassifications
+primary_key: [ ID ]
+fields:
+  - name: Abstract
+    description: Abstract elements are only used in presentation linkbases to group other elements. They are not supposed to be used in instance documents
+    datatype: Edm.Boolean
+    clarion: { role: dimension }
+  - name: Balance
+    description: "Only used for amount concepts: in that case either 'debit' or 'credit'"
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Code
+    description: The Code is unique
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Created
+    description: Creation date
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: Creator
+    description: User ID of creator
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: CreatorFullName
+    description: Name of creator
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Description
+    description: Description of the element. Note that this description is only used for division-specific taxonomies (or reporting schemes).
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Division
+    description: Division is optional. For taxonomies of Taxonomies.Type = 0 (general taxonomies), the Division is empty. For division specific taxonomies it is mandatory
+    datatype: Edm.Int32
+  - name: ID
+    description: Primary key
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: IsTupleSubElement
+    description: Obsolete
+    datatype: Edm.Boolean
+    clarion: { role: dimension }
+  - name: Modified
+    description: Last modified date
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: Modifier
+    description: User ID of modifier
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: ModifierFullName
+    description: Name of modifier
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Name
+    description: The Name is unique in the namespace
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Nillable
+    description: Determines whether usage of the element is mandatory in an instance document
+    datatype: Edm.Boolean
+    clarion: { role: dimension }
+  - name: Parent
+    description: Parent element for reporting schemes. In a reporting scheme, an element can have only one parent. This column is only used for reporting schemes. Note that in a real taxonomy, elements can have multiple parents.
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: PeriodType
+    description: "Only used for item concepts: either 'instant' or 'duration'. 'instant' is used for balance types of concepts, 'duration' is used for P&L types of concepts"
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: SubstitutionGroup
+    description: Mostly import sutstitutiongroup is xbrli:tuple, which makes the element a tuple concept. The default substitutiongroup for item concepts is xbrli:item
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: TaxonomyNamespace
+    description: Namespace of the element
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: TaxonomyNamespaceDescription
+    description: Description of TaxonomyNamespace
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Type
+    description: Type of the element
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+clarion:
+  kind: source
+  category: Financial
+  sync:
+    cursor: { field: Modified, type: timestamp }

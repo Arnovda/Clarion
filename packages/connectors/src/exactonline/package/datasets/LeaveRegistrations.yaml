@@ -1,0 +1,106 @@
+# Exact Online entity. Field docs are TRANSCRIBED from the vendor REST reference by scripts/generate-eo-docs.ts — do not hand-edit descriptions; edit label/description/clarion freely.
+
+name: LeaveRegistrations
+label: Leave registrations
+description: Leave / vacation records per employee.
+source: /hrm/LeaveRegistrations
+primary_key: [ ID ]
+fields:
+  - name: Created
+    description: Creation date
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: Creator
+    description: User ID of creator
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: CreatorFullName
+    description: Name of creator
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Description
+    description: Description of leave
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Division
+    description: Division code
+    datatype: Edm.Int32
+  - name: Employee
+    description: Employee linked to the leave registration
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: Employees, field: ID } }
+  - name: EmployeeFullName
+    description: Employee full name
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: EmployeeHID
+    description: Numeric ID of the employee
+    datatype: Edm.Int32
+  - name: EndDate
+    description: End date of leave
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: EndTime
+    description: End time on the last day of leave stored as DateTime, and the date should be ignored
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: Hours
+    description: Total number of leave hours
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: HoursFirstDay
+    description: Hours of leave on the first day
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: HoursLastDay
+    description: Hours of leave on the last day
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: ID
+    description: Primary key
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: LeaveType
+    description: Type of leave
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: LeaveTypeCode
+    description: Code for type of leave
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: LeaveTypeDescription
+    description: Description for type of leave
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Modified
+    description: Last modified date
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: Modifier
+    description: User ID of modifier
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: ModifierFullName
+    description: Name of modifier
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Notes
+    description: Extra information for leave
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: StartDate
+    description: Start date of leave
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: StartTime
+    description: Start time on the first day of leave stored as DateTime, and the date should be ignored
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: Status
+    description: Status of leave, 1 = Submitted, 2 = Approved, 3 = Rejected
+    datatype: Edm.Int16
+clarion:
+  kind: source
+  category: HRM
+  sync:
+    cursor: { field: Modified, type: timestamp }

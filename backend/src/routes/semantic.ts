@@ -13,6 +13,17 @@ import { reqDb } from '../db/reqDb';
 import { owns, ownedIds } from '../db/tenantOwnership';
 import type { OwnedTable } from '../db/tenantOwnership';
 import { getMatchAssertions } from '../services/matchAssertions';
+import {
+  GLOSSARY_MAX_LINKS,
+  dedupeLinks,
+  describeLink,
+  linkKey,
+  listGlossaryLinkTargets,
+  parseGlossaryLinks,
+  resolveGlossaryLinks,
+  type GlossaryLink,
+  type ResolvedGlossaryLink,
+} from '../services/glossaryLinks';
 import { connectionIdForEntity } from '../db/semanticCacheScope';
 import type { ScopedEntity } from '../db/semanticCacheScope';
 import { generateSchemaDraft, suggestRelationships, improveDescription } from '../ai/AIService';
@@ -976,6 +987,7 @@ function normalizeGlossaryRow(row: Record<string, unknown>) {
     meaning: row.meaning,
     examples: parseJsonArray(row.examples),
     tags: parseJsonArray(row.tags),
+    links: parseGlossaryLinks(row.links),
     ai_draft: row.ai_draft,
     created_by_user_id: row.created_by_user_id,
     created_at: row.created_at,
@@ -983,12 +995,63 @@ function normalizeGlossaryRow(row: Record<string, unknown>) {
   };
 }
 
+/**
+ * Check every entry's links against the catalog in ONE pass (three queries
+ * however many terms) and replace the stored links with their resolved form,
+ * so a reader can tell a live link from one whose target a rebuild removed.
+ */
+async function withResolvedLinks<T extends { links: GlossaryLink[] }>(
+  db: Knex,
+  tenantId: number,
+  entries: T[],
+): Promise<Array<Omit<T, 'links'> & { links: ResolvedGlossaryLink[] }>> {
+  const all = dedupeLinks(entries.flatMap((e) => e.links));
+  const resolved = await resolveGlossaryLinks(db, tenantId, all);
+  const byKey = new Map(resolved.map((r) => [linkKey(r), r]));
+  return entries.map((e) => ({
+    ...e,
+    links: e.links.map((l) => byKey.get(linkKey(l))).filter((l): l is ResolvedGlossaryLink => !!l),
+  }));
+}
+
+/**
+ * Validate + resolve the links on a WRITE. A link whose target is not in the
+ * catalog is refused rather than stored: what is stored must have been true
+ * at the moment of saving, so a later `resolved: false` can only mean the
+ * catalog moved — never that someone typed the wrong name.
+ */
+async function resolveLinksForWrite(
+  db: Knex,
+  tenantId: number,
+  raw: unknown,
+): Promise<{ links: GlossaryLink[]; resolved: ResolvedGlossaryLink[] } | { error: string }> {
+  const links = parseGlossaryLinks(raw ?? []);
+  if (links.length > GLOSSARY_MAX_LINKS) {
+    return { error: `A term can be linked to at most ${GLOSSARY_MAX_LINKS} places.` };
+  }
+  const resolved = await resolveGlossaryLinks(db, tenantId, links);
+  const bad = resolved.find((r) => !r.resolved);
+  if (bad) return { error: `${describeLink(bad)} is not in your topics — pick it again.` };
+  return { links, resolved };
+}
+
 // GET /api/semantic/glossary
 router.get('/glossary', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const db = reqDb(req);
     const rows = await db('business_glossary').orderBy('term', 'asc');
-    res.json({ ok: true, data: rows.map(normalizeGlossaryRow) });
+    const entries = await withResolvedLinks(db, req.user!.tenantId, rows.map(normalizeGlossaryRow));
+    res.json({ ok: true, data: entries });
+  } catch (err) { next(err); }
+});
+
+// GET /api/semantic/glossary/link-targets
+// What a term may be linked to — the picker's list. Curators only: viewers
+// read the glossary, they do not edit it.
+router.get('/glossary/link-targets', requireAuth, requireRole('admin', 'analyst'), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const db = reqDb(req);
+    res.json({ ok: true, data: await listGlossaryLinkTargets(db, req.user!.tenantId) });
   } catch (err) { next(err); }
 });
 
@@ -996,11 +1059,16 @@ router.get('/glossary', requireAuth, async (req: Request, res: Response, next: N
 router.post('/glossary', requireAuth, requireRole('admin', 'analyst'), validate(createGlossarySchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const db = reqDb(req);
-    const { term, meaning, examples, tags } = req.body as Record<string, unknown>;
+    const { term, meaning, examples, tags, links } = req.body as Record<string, unknown>;
     const trimmedTerm = String(term ?? '').trim();
     const trimmedMeaning = String(meaning ?? '').trim();
     if (!trimmedTerm || !trimmedMeaning) {
       res.status(400).json({ ok: false, error: 'term and meaning are required' });
+      return;
+    }
+    const linkCheck = await resolveLinksForWrite(db, req.user!.tenantId, links);
+    if ('error' in linkCheck) {
+      res.status(400).json({ ok: false, error: linkCheck.error });
       return;
     }
     const [row] = await db('business_glossary')
@@ -1010,11 +1078,12 @@ router.post('/glossary', requireAuth, requireRole('admin', 'analyst'), validate(
         meaning: trimmedMeaning,
         examples: JSON.stringify(parseJsonArray(examples)),
         tags: JSON.stringify(parseJsonArray(tags)),
+        links: JSON.stringify(linkCheck.links),
         ai_draft: false,
         created_by_user_id: req.user!.sub,
       })
       .returning('*');
-    res.status(201).json({ ok: true, data: normalizeGlossaryRow(row) });
+    res.status(201).json({ ok: true, data: { ...normalizeGlossaryRow(row), links: linkCheck.resolved } });
   } catch (err: unknown) {
     const e = err as { code?: string };
     if (e.code === '23505') {
@@ -1037,13 +1106,29 @@ router.patch('/glossary/:id', requireAuth, requireRole('admin', 'analyst'), vali
     if (body.examples !== undefined)      update.examples = JSON.stringify(parseJsonArray(body.examples));
     if (body.tags !== undefined)          update.tags = JSON.stringify(parseJsonArray(body.tags));
     if (typeof body.ai_draft === 'boolean') update.ai_draft = body.ai_draft;
+    // Links are REPLACED when sent and left alone when absent — a rename must
+    // not cost a term its address.
+    let resolvedLinks: ResolvedGlossaryLink[] | null = null;
+    if (body.links !== undefined) {
+      const linkCheck = await resolveLinksForWrite(db, req.user!.tenantId, body.links);
+      if ('error' in linkCheck) {
+        res.status(400).json({ ok: false, error: linkCheck.error });
+        return;
+      }
+      update.links = JSON.stringify(linkCheck.links);
+      resolvedLinks = linkCheck.resolved;
+    }
 
     const [row] = await db('business_glossary')
       .where({ id })
       .update(update)
       .returning('*');
     if (!row) { res.status(404).json({ ok: false, error: 'Glossary entry not found' }); return; }
-    res.json({ ok: true, data: normalizeGlossaryRow(row) });
+    const entry = normalizeGlossaryRow(row);
+    const data = resolvedLinks
+      ? { ...entry, links: resolvedLinks }
+      : (await withResolvedLinks(db, req.user!.tenantId, [entry]))[0];
+    res.json({ ok: true, data });
   } catch (err: unknown) {
     const e = err as { code?: string };
     if (e.code === '23505') {
