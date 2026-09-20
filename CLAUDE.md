@@ -212,6 +212,39 @@ minor/patch PRs (#42, #43) as three months stale, which Dependabot regenerates
 fresh, and the npm majors CLAUDE.md already records as deliberately deferred
 (next 16, tailwind 4, typescript 6, eslint 10, react, neo4j-driver 6, …).
 
+**SESSION CLOSE — WHAT LANDED, AND THE PR BACKLOG IS CLEARED.** Main went from
+`5ae0824` to eight commits; **28 open PRs became 5**, and the 5 that remain are
+the ones deliberately kept.
+- **MERGED:** #129 the dashboard readability gate (**the only product code** —
+  rebased onto main after 8 days, conflicts in `prod-logs.yml`, `.ops/prod-logs`
+  and CLAUDE.md all resolved keep-both; **deploy #608 Go live SUCCEEDED**, so it
+  is in production, `migrate-sql` correctly skipped); #143 the SQL-connector
+  load-test fixture + its deploy record; #128 the Odoo raw-tables readiness doc;
+  #127 the deploy-#589 record; plus this session's #144/#145/#146/#148/#149.
+  The three docs PRs each needed a CLAUDE.md rebase, resolved by EXTRACTING the
+  entry and splicing it chronologically rather than taking a side — entry order
+  re-verified after each.
+- **CLOSED 19:** #46 (superseded by `.ops/promote`); #96 (**verified, not
+  assumed** — 10 of its 12 deletions had already landed on main via the
+  2026-09-06 sweep, and `DashboardHeader.tsx` is still imported so deleting it
+  now would be wrong; its branch is untouched and the one unique artefact,
+  `docs/backlog/mcp-vs-in-product-ai.md`, is one `git checkout` away); and 17
+  Dependabot — #42/#43 as three months stale (Dependabot regenerates fresh
+  ones) and the 15 npm majors this file already records as deferred.
+- **KEPT 5 ON PURPOSE:** #2, #3, #5, #6, #33 — the GitHub Actions majors. Every
+  workflow run now warns that **Node 20 is deprecated** and `actions/checkout@v4`
+  and `azure/login@v2` are being forced onto Node 24. They work today on the
+  runner's shim, which will not last. They touch `deploy.yml`, so they want one
+  validated batch, not five separate merges.
+- **A TRAP OF MY OWN, caught and defused:** the `maintenance-worker` log line
+  and its signature shipped in the SAME commit (`656bc16`), so until that build
+  is live and the jobs-worker has restarted, the line CANNOT exist and its
+  absence means only "not deployed yet". There is no auto-firing absence block
+  for it — the MEANING renders only on a hit, so the report itself never lies —
+  but the interpretation text said "ABSENT ⇒ that is the bug" with no timing
+  caveat, which would have had a reader draw that conclusion on the very next
+  run. Caveat added in both the workflow and the control file.
+
 - **NOT done, deliberately**: the window stays 14d rather than narrowing (it
   covers two Sundays and the deploy boundary; narrow it once a sync has been
   observed, per the file's own note). No second signature on `'warehouse
