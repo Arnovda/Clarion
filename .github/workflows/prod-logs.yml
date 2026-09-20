@@ -307,7 +307,7 @@ jobs:
                 readability-repair-broke)
                   MEANING="BAD — the repair turned a readable-but-cluttered chart into one that errors; the pre-repair version was kept. More than one of these is a prompt regression." ;;
               maintenance-worker)
-                  MEANING="GOOD, and the LAST link in the chain to get a signal (added 2026-09-20). The consumer for the warehouse-maintenance queue was actually constructed in this process. By the time this was added, registration, the queue filter and the run itself all had signals and all three had been measured while the sweep still never executed - this was the one step with no positive evidence. ABSENT while queues-configured names warehouse-maintenance means startMaintenanceWorker() took one of its silent return-null paths, and THAT is the bug." ;;
+                  MEANING="GOOD, and the LAST link in the chain to get a signal (added 2026-09-20). The consumer for the warehouse-maintenance queue was actually constructed in this process. By the time this was added, registration, the queue filter and the run itself all had signals and all three had been measured while the sweep still never executed - this was the one step with no positive evidence. ABSENT while queues-configured names warehouse-maintenance means startMaintenanceWorker() took one of its silent return-null paths, and THAT is the bug — but NOT before the deploy carrying this line is live and the jobs-worker has restarted: the log line and this signature shipped in the same commit, so until then absence means only that the code is not out yet." ;;
                 *)
                   MEANING="no interpretation recorded" ;;
               esac

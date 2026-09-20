@@ -195,6 +195,12 @@
 #                     warehouse-maintenance means startMaintenanceWorker()
 #                     took one of its silent return-null paths — that is the
 #                     bug, and it is the only place left for it to hide.
+#                     READ THE DEPLOY FIRST: the log line and this signature
+#                     shipped in the SAME commit (656bc16), so until that
+#                     build is live AND the jobs-worker has restarted, an
+#                     absence means only "not deployed yet". Absence is
+#                     evidence of the bug only after a worker boot on an
+#                     image that carries the line.
 #   source-stale      the hourly freshness sweep (wave B 7-1) finding a source
 #                     whose schedule says data should have landed and it has
 #                     not. Added 2026-09-10 because it is the ONE signal that
