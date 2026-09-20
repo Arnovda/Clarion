@@ -140,6 +140,17 @@
 #   delta-maintenance `'delta maintenance done'` — the weekly compaction +
 #                     vacuum over one tenant's topic tables (added the same day;
 #                     nothing ever did either before). `-failed` is its BAD twin.
+#   maintenance-run  POSITIVE, and the DENOMINATOR for the two above.
+#                     `'warehouse maintenance start'` — the weekly sweep began
+#                     (cron `0 3 * * 0`, jobs-worker). Added 2026-09-20 because
+#                     run #15 could not answer the one question it was widened
+#                     to answer. `maintainProductTables` returns EARLY and
+#                     SILENTLY when no tenant holds a Delta topic table, so
+#                     `delta-maintenance` alone cannot separate "the sweep never
+#                     ran" from "it ran and had nothing to do". This line is
+#                     logged before any Delta work, so the pair disambiguates:
+#                     both present = working; this one alone = ran, nothing to
+#                     maintain; this one ABSENT = the repeatable never fired.
 #   source-stale      the hourly freshness sweep (wave B 7-1) finding a source
 #                     whose schedule says data should have landed and it has
 #                     not. Added 2026-09-10 because it is the ONE signal that
@@ -230,6 +241,34 @@
 # which is what makes this absence readable rather than meaningless. The four
 # phase-2 sync signals are therefore waiting on somebody enabling or
 # triggering a sync, not on this reader and not on a fix.
+#
+# WHAT RUN #15 SETTLED (2026-09-19, the first 14d window). Three signatures
+# over fourteen days and nothing else: rls-write-denied 19, brief-run 12,
+# runner-active 5.
+#   - THE RLS REFUSALS ARE CLOSED. Still exactly 19, still ending
+#     2026-09-09T14:14:08, with the example line's hostname on a PRE-FIX
+#     revision (main-035fdb2). The aiBudget and aiCallLogger fixes deployed at
+#     14:28 and 14:39 that same day; this window extends TEN DAYS past them
+#     with no recurrence. Run #13 could only say "nothing since, same day".
+#     aiBudget and aiCallLogger were the only two sites, and the AI spend cap
+#     and the cost log are genuinely fixed.
+#   - runner-active reports maxRunners 4 / budgetDivisor 6 /
+#     memoryLimitPerRunner 11% — the cgroup-aware division from the phase-2
+#     guardrails fix (70% / 6) confirmed in production for the first time.
+#   - brief-run last fired 2026-09-19T07:47 with tenantsRun 2, briefsCreated 0,
+#     observations 0 — as on every one of its twelve runs. The morning brief has
+#     still never produced anything, and `observations: 0` says why: nothing is
+#     being watched.
+#   - delta-write and delta-maintenance BOTH ABSENT, and run #15 could not say
+#     what that meant — which is why `maintenance-run` exists now.
+#   - No sync worker in the unfiltered source list for a FOURTEENTH day.
+#
+# THE UNIFYING FINDING, and it is worth reading before chasing any of the
+# above: production is healthy and IDLE. No server-error, grant-missing,
+# ownership-refused or source-stale in fourteen days — and also no sync, no
+# topic refresh and nothing being watched. B1's write half, the four phase-2
+# sync signals and live validation of the SQL connectors are not waiting on
+# separate fixes; they are all waiting on one source being turned on.
 #
 # A clean report is only as good as the traffic behind it: no `grant-missing`
 # in a window where nobody used the product proves nothing. The report prints
