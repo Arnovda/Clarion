@@ -245,6 +245,33 @@ the ones deliberately kept.
   caveat, which would have had a reader draw that conclusion on the very next
   run. Caveat added in both the workflow and the control file.
 
+**THE LAST LINK IS VERIFIED, AND IT IS POSITIVE — run #20, minutes after deploy
+#609 put the line live:** `maintenance-worker` **1 occurrence**,
+`2026-09-20T09:33:16`, hostname
+`databridge-prod-jobs-worker--0000122-869765d86d-wbbjs`, `cron: 0 3 * * 0`. The
+consumer for the queue IS constructed, on the jobs-worker, so
+`startMaintenanceWorker()` does not take either silent return-null path.
+- **EVERY LINK IN THE CHAIN IS NOW INDIVIDUALLY PROVEN, AND THE JOB STILL NEVER
+  RUNS.** Registration happens (93). The queue filter includes it (131, plus
+  the env). Exactly one process registers (`RUN_SCHEDULERS=false` on the
+  worker). The worker is always on (`--min-replicas 1`). The worker object is
+  constructed (this run). The cron computes the right next occurrence, and the
+  re-registration churn loses nothing — both measured against real BullMQ and
+  real Redis. And `maintenance-run` is still absent.
+- **THE ONE HONEST CAVEAT ON THIS NEW SIGNAL**: it has exactly one occurrence
+  because the log line is minutes old. It proves the worker exists NOW; it says
+  nothing about the previous fortnight.
+- **SO THE DECISIVE TEST IS SUNDAY 2026-09-27 03:00 UTC**, and the conditions
+  could not be cleaner: deploy #609 restarted both containers, so the
+  repeatable was re-registered fresh and every component is proven present.
+  Read `.ops/prod-logs` after it. **`maintenance-run` present** → something in
+  the prior Redis state was stale and the redeploy cleared it; the sweep works
+  and `delta-maintenance` then depends on a tenant actually having a
+  materialised Delta topic table (none does today). **`maintenance-run` absent**
+  → the bug is live with every link separately verified, which is a far
+  narrower problem than the one this started as: the next place to look is the
+  delayed-job state in Redis itself, which nothing in this session could see.
+
 - **NOT done, deliberately**: the window stays 14d rather than narrowing (it
   covers two Sundays and the deploy boundary; narrow it once a sync has been
   observed, per the file's own note). No second signature on `'warehouse
