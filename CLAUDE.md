@@ -2748,11 +2748,11 @@ clarion/                              ← on disk: databridge/
 
 ### Database Migrations
 
-**89 migrations**, in `backend/src/db/migrations/`, newest
-`20260901000088_auth_lookup_policies`.
+**90 migrations**, in `backend/src/db/migrations/`, newest
+`20260901000089_email_verification`.
 
 The list that used to live here was hand-kept, stopped at 30 while the
-directory grew to 89, and told anyone reading it that the next
+directory grew to 90, and told anyone reading it that the next
 migration number was 39. **Do not restore it** — `ls backend/src/db/migrations/`
 is the only version that cannot go stale. Migrations are applied with
 `npx knex migrate:latest` from `backend/`; the suite needs them run before
