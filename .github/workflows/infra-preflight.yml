@@ -147,12 +147,25 @@ jobs:
             say "- worker image: \`${W_IMG:-unknown}\`"
             say "- worker runningStatus: \`${W_RUN:-unknown}\`"
             say "- worker WORKER_QUEUES: \`${W_Q:-<unset = all>}\`"
+            W_ROLE=$(az containerapp show -n "$WORKER_APP" -g "$RG" --query "properties.template.containers[0].env[?name=='ROLE'].value | [0]" -o tsv 2>/dev/null || echo "")
+            W_SCHED=$(az containerapp show -n "$WORKER_APP" -g "$RG" --query "properties.template.containers[0].env[?name=='RUN_SCHEDULERS'].value | [0]" -o tsv 2>/dev/null || echo "")
+            say "- worker ROLE: \`${W_ROLE:-<unset, runs API + workers>}\`"
+            say "- worker RUN_SCHEDULERS: \`${W_SCHED:-<unset = this process ALSO registers schedules>}\`"
+            # Both processes registering the same repeatables is a live hazard, not
+            # a style point: registerWeeklyMaintenance REMOVES the existing entry and
+            # re-adds it, so two registrars can delete each other's pending run. This
+            # is the check that says whether that is happening.
+            if [ -z "$W_SCHED" ] || [ "$W_SCHED" != "false" ]; then
+              say "  - **⚠️ the worker does not have RUN_SCHEDULERS=false** — both containers register the same repeatables, and the registrar removes-then-re-adds."
+            fi
             if [ "$B_IMG" != "$W_IMG" ]; then
               say "- ⚠️ **image mismatch** — worker is not on the same build as the backend"
             fi
           fi
           B_RUNNER=$(az containerapp show -n "$APP" -g "$RG" --query "properties.template.containers[0].env[?name=='DUCKDB_RUNNER'].value | [0]" -o tsv 2>/dev/null || echo "")
           say "- backend DUCKDB_RUNNER: \`${B_RUNNER:-<unset = in-process>}\`"
+          B_SCHED=$(az containerapp show -n "$APP" -g "$RG" --query "properties.template.containers[0].env[?name=='RUN_SCHEDULERS'].value | [0]" -o tsv 2>/dev/null || echo "")
+          say "- backend RUN_SCHEDULERS: \`${B_SCHED:-<unset = this process registers schedules>}\`"
 
           # ── 5. Warehouse storage reality ───────────────────────────────────
           #

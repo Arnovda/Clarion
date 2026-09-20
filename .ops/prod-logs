@@ -151,6 +151,24 @@
 #                     logged before any Delta work, so the pair disambiguates:
 #                     both present = working; this one alone = ran, nothing to
 #                     maintain; this one ABSENT = the repeatable never fired.
+#   maintenance-registered
+#                     DIAGNOSTIC, added 2026-09-20 to find out WHY the sweep
+#                     never fires. `'Weekly warehouse maintenance registered'`,
+#                     logged at the END of registerWeeklyMaintenance — so one
+#                     occurrence is one boot of the scheduler-owning process
+#                     that removed the repeatable and re-added it. A HIGH count
+#                     makes the remove-then-re-add churn real and measured
+#                     rather than theorised. ABSENT would OVERTURN the
+#                     inference that registration happens at all (that was
+#                     drawn indirectly, from brief-run firing while
+#                     registerDailyBrief is called immediately after it).
+#   queues-configured DIAGNOSTIC, same day. `'WORKER_QUEUES'` — one line per
+#                     process boot naming the queues that process serves. The
+#                     direct evidence that the jobs-worker starts its workers
+#                     at all: the example line's hostname says which container
+#                     and its `queues` array says what it consumes. Preflight
+#                     run 7 proved the ENV VAR lists warehouse-maintenance;
+#                     this proves the PROCESS acted on it.
 #   source-stale      the hourly freshness sweep (wave B 7-1) finding a source
 #                     whose schedule says data should have landed and it has
 #                     not. Added 2026-09-10 because it is the ONE signal that
