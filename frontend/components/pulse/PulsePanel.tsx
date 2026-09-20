@@ -17,7 +17,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import {
-  Activity, Plus, Sparkles, Trash2, Loader2, Pencil, X, Check,
+  Activity, Plus, Sparkles, Trash2, Loader2, X, Check,
   AlertCircle, Lightbulb,
 } from 'lucide-react';
 import api from '@/lib/api';
@@ -67,7 +67,6 @@ interface Suggestion {
 // ───────────────────────────────────────────────────────────────────────────
 
 export default function PulsePanel() {
-  const toast = useToast();
   // Two parallel loads. /pulse/state drives the tile rendering with
   // live values + comparisons + sparkline. /pulse remains the source
   // for edit forms which need the raw entry shape (kpi_id, etc).
@@ -643,64 +642,6 @@ function PulseList({
         </div>
       )}
     </Section>
-  );
-}
-
-function DisplayRow({
-  entry, onEdit, onDelete, disabled,
-}: {
-  entry: PulseEntry;
-  onEdit: () => void;
-  onDelete: () => void;
-  disabled: boolean;
-}) {
-  const labelText = entry.label
-    ?? (entry.kpi_name && entry.dimension_column
-        ? `${entry.kpi_name} × ${entry.dimension_column}`
-        : entry.kpi_name)
-    ?? entry.theme_text
-    ?? 'Untitled entry';
-
-  const sliceText = entry.kind === 'slice' && entry.dimension_column
-    ? `by ${entry.dimension_column}` : null;
-
-  return (
-    <div className="group flex items-start gap-3 p-3 rounded-md border border-line bg-bg hover:bg-soft transition-colors">
-      <div className="flex-1 min-w-0">
-        <div className="flex items-center gap-2 flex-wrap">
-          <span className="text-[13px] font-medium text-ink">{labelText}</span>
-          {sliceText && <span className="text-[11px] text-muted-2">{sliceText}</span>}
-          {entry.product_name && (
-            <span className="text-[10.5px] font-mono uppercase tracking-[0.1em] text-muted-2">
-              {entry.product_name}
-            </span>
-          )}
-        </div>
-        <div className="flex items-center gap-1.5 mt-1">
-          <SensitivityPill value={entry.sensitivity} />
-          <FrequencyPill value={entry.frequency} />
-        </div>
-      </div>
-
-      <div className="flex items-start gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-        <button
-          onClick={onEdit}
-          disabled={disabled}
-          title="Edit"
-          className="p-1.5 rounded hover:bg-soft text-muted hover:text-ink disabled:opacity-30"
-        >
-          <Pencil className="w-3 h-3" strokeWidth={1.75} />
-        </button>
-        <button
-          onClick={onDelete}
-          disabled={disabled}
-          title="Stop watching"
-          className="p-1.5 rounded hover:bg-soft text-muted hover:text-red-500 disabled:opacity-30"
-        >
-          <Trash2 className="w-3 h-3" strokeWidth={1.75} />
-        </button>
-      </div>
-    </div>
   );
 }
 

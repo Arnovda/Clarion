@@ -1,6 +1,12 @@
 # RFC-001 — Replace `transformationRunner.ts` with dbt-duckdb
 
-Status: **Proposed** (not implemented)
+Status: **Withdrawn** (2026-09-20). The dbt engine was built behind `USE_DBT_TRANSFORMATIONS`,
+never switched on, refused from 2026-09-10 because its hook SQL bypassed the soft-delete
+firewall (`parquetSelect` in `backend/src/services/warehouse/views.ts`), and deleted on
+2026-09-20 (`dbtRunner.ts`, `dbtProjectBuilder.ts`, `etl/dbt_runner.py`, the ETL `/dbt/*`
+endpoints, the activation guide and the cutover playbook). Kept as the record of the
+reasoning; the live materialiser is `transformationRunner.ts` + the Delta sidecar
+(`etl/scd2/commit_table.py`). The text below is the original proposal, unchanged.
 Author: architecture review, 2026-04-18
 
 ---

@@ -1,10 +1,12 @@
 /**
- * AI prompts for Kimball star schema design + SQL generation (single AI call).
+ * Star-schema building blocks shared by the bus-matrix designer and the
+ * connector templates: the ColumnDesign / ColumnLineage shapes, and the
+ * dim_date template — hardcoded, never AI-generated, injected by the runner.
  *
- * Optimized for token efficiency: one call produces schema, columns, AND
- * transformation SQL. dim_date is auto-injected by the runner (never AI-generated).
- *
- * Recommended thinking budget: 4000 tokens.
+ * The single-call star-schema design prompt and the column-edit prompt that
+ * used to live here were deleted on 2026-09-20 with the routes that called
+ * them (the propose/design flow retired on 2026-09-07). The live designer is
+ * ai/prompts/busMatrixPrompt.ts.
  */
 
 // ---------------------------------------------------------------------------
@@ -46,80 +48,6 @@ export interface ColumnDesign {
   scd_type: number;
   sort_order: number;
   lineage: ColumnLineage[];
-}
-
-export interface TableDesign {
-  table_name: string;
-  display_name: string;
-  description: string;
-  table_role: 'fact' | 'dimension' | 'bridge' | 'junk';
-  dag_order: number;
-  transformation_sql?: string;
-  columns: ColumnDesign[];
-}
-
-export interface RelationshipDesign {
-  from_table_name: string;
-  from_column_name: string;
-  to_table_name: string;
-  to_column_name: string;
-  relationship_type: 'fact_to_dim' | 'dim_to_dim';
-}
-
-export interface StarSchemaDesign {
-  name: string;
-  description: string;
-  grain: string;
-  fact_table_type: 'transaction' | 'periodic_snapshot' | 'accumulating_snapshot' | 'factless';
-  tables: TableDesign[];
-  relationships: RelationshipDesign[];
-}
-
-export interface ProposedKpi {
-  name: string;
-  description: string;
-  formula_plain_text: string;
-  formula_sql: string;
-  additivity: string;
-}
-
-/** Output from the combined design + SQL call. */
-export interface StarSchemaDesignOutput {
-  star_schema: StarSchemaDesign;         // singular — exactly 1 schema per product
-  proposed_kpis: ProposedKpi[];
-  dim_date_range: { start: string; end: string };
-}
-
-// Legacy compat — callers that still reference star_schemas (array) can adapt
-export type { StarSchemaDesignOutput as StarSchemaDesignResult };
-
-
-// ---------------------------------------------------------------------------
-// Column Edit (surgical) — unchanged
-// ---------------------------------------------------------------------------
-
-export const COLUMN_EDIT_SYSTEM =
-`You are a DuckDB SQL expert. The user wants to modify a single column's transformation expression in a star schema table. Return ONLY the updated transformation_expression — nothing else, no JSON wrapping, no explanation.
-
-Rules:
-- Output must be a valid DuckDB SQL expression
-- It will be used inside a SELECT clause: SELECT {your_expression} AS {column_name}
-- Use DuckDB syntax: strftime(col, fmt), CAST, extract, ILIKE, TRY_CAST, etc.
-- Do NOT use SQLite functions`;
-
-export function buildColumnEditUser(
-  columnName: string,
-  currentExpression: string,
-  editRequest: string,
-  tableContext: string,
-): string {
-  return `Column: ${columnName}
-Current expression: ${currentExpression}
-Table context: ${tableContext}
-
-User's edit request: "${editRequest}"
-
-Return ONLY the updated SQL expression.`;
 }
 
 // ---------------------------------------------------------------------------

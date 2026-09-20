@@ -1,11 +1,10 @@
 /**
  * Unified DuckDB view registration for warehouse tables.
  *
- * Replaces four near-duplicate implementations:
+ * Replaces three near-duplicate implementations:
  *   • transformationRunner.createScanView
  *   • DuckDBConnector.createDeltaView
  *   • routes/notebooks.ts inline createView
- *   • dbtProjectBuilder inline read_parquet calls
  *
  * The fallback chain handles every shape of table the platform writes:
  *   - Delta Lake tables (source-connector ingestion writes these)

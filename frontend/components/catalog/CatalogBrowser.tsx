@@ -139,7 +139,7 @@ export default function CatalogBrowser({ selected, selectedSchema, onSelectTable
   const toggleProductBucket = (key: string) => {
     setClosedProductBuckets((s) => {
       const n = new Set(s);
-      n.has(key) ? n.delete(key) : n.add(key);
+      if (n.has(key)) n.delete(key); else n.add(key);
       return n;
     });
   };
@@ -221,7 +221,7 @@ export default function CatalogBrowser({ selected, selectedSchema, onSelectTable
   const toggleCatalog = (id: CatalogId) => {
     setOpenCatalogs((s) => {
       const n = new Set(s);
-      n.has(id) ? n.delete(id) : n.add(id);
+      if (n.has(id)) n.delete(id); else n.add(id);
       return n;
     });
   };

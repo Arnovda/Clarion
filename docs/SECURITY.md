@@ -1,6 +1,8 @@
 # Security Posture — Clarion
 
-> Last updated: 2026-05-12 (post-Sprint 1 hardening)
+> Last updated: 2026-09-20 (rows refreshed against the code; the 2026-05-12 sprint
+> plan that used to close this file is superseded by the market-readiness work —
+> `docs/backlog/market-readiness-assessment-v2.md` — and by the runbooks)
 >
 > This document is the source of truth for "what are Clarion's security
 > controls today?" Used internally for security questionnaires, audits,
@@ -35,9 +37,14 @@ This is the **shared-compute, hard-isolated-data** model. Used by Stripe, Notion
 | Password reset tokens | sha256-hashed at rest, 1h expiry |
 | Reset URL logging | Dev only (`NODE_ENV === 'development'`); never logged in staging/prod |
 
+| MFA | TOTP (`/auth/mfa/*`, backup codes) and WebAuthn passkeys (`/auth/webauthn/*`), per user; org-wide enforcement is not built |
+| Account status | `requireAuth` re-checks the tenant and user status every 30 s (`AUTH_STATUS_TTL_MS`), so a suspension bites within that window, not at token expiry |
+| Auth events | register, login success/fail/refused, MFA challenge, logout, password reset and email verification land in `audit_events` (`recordAuthEvent`) |
+| Machine auth | Excel add-in API tokens: sha256 at rest, owner's role resolved live, accepted on `/api/addin` only |
+
 **Gaps still open:**
 
-- No MFA. Planned as Sprint 3 when first enterprise customer asks.
+- MFA is per user; a tenant cannot require it for everyone.
 - Refresh tokens stored in localStorage (not httpOnly cookies). XSS protection is therefore not absolute — partially mitigated by short access-token lifetime + server-side revocation. httpOnly cookies are a follow-up.
 
 ---
@@ -46,15 +53,17 @@ This is the **shared-compute, hard-isolated-data** model. Used by Stripe, Notion
 
 | Control | Implementation |
 |---|---|
-| RLS on every tenant table | 27+ tables enabled originally; migration `20260512000056_force_rls_audit.ts` enforces FORCE on all tables with a `tenant_id` column |
+| RLS on every tenant table | migration `20260512000056_force_rls_audit.ts` enforces ENABLE + FORCE on every table with a `tenant_id` column; `20260804000074` backfilled the `tenant_isolation` policy on all of them and `20260901000088` added the `auth_lookup` carve-out for the unauthenticated paths |
+| Non-bypass role | Production connects as `databridge_app` (NOBYPASSRLS) since 2026-08-06 (`.ops/db-role`); the `rls-isolation` CI job runs the API as that role. Before the flip a superuser connection made every policy inert. |
 | Per-request transaction | `requireAuth` opens a `SET LOCAL`-scoped transaction; routes use `req.dbTrx` for guaranteed-isolated queries |
 | Tenant context propagation | JWT → `req.user.tenantId` → `SET LOCAL app.current_tenant` inside transaction |
-| Warehouse path isolation | Default `WAREHOUSE_LAYOUT_VERSION=v2` (tenant-prefixed). Per-tenant blob path prefixes. |
-| DuckDB query scope | Each DuckDB session receives URIs from the (tenant-RLS-filtered) catalog only |
+| Warehouse isolation | Per-tenant blob **containers** in production (`WAREHOUSE_CONTAINER_MODE=per-tenant`, since 2026-07-26): the worker's SAS is scoped to one tenant's container. Layout v2 is tenant-prefixed inside it. |
+| DuckDB query scope | Each DuckDB session receives URIs from the (tenant-RLS-filtered) catalog only; every user- or model-authored query passes `assertSafeReadQuery` (SELECT-only, no external reads, quoted-name denylist) and the data policies (`prepareUserRead`) |
+| Semantic graph | Every Neo4j `MATCH` on a tenant-owned label carries a `tenantId` predicate, held by the `lint-graph-tenant-predicate` ratchet; request-supplied ids pass the `owns()` gate (404, never 403) |
 
 **Gaps still open:**
 
-- Many older routes still use global `semanticDb` instead of `req.dbTrx`. They fall back to the session-level `SET app.current_tenant` which has a known pool-leak race condition. Routes are being migrated incrementally; **mutation endpoints and security-sensitive reads have been migrated first**.
+- 17 bare-pool reads outside the request path remain (`lint-no-session-tenant-set` baseline, only ever lowered); the request-path fallback `SET` in `middleware/auth.ts` stays until that count is zero.ndition. Routes are being migrated incrementally; **mutation endpoints and security-sensitive reads have been migrated first**.
 
 ---
 
@@ -62,9 +71,9 @@ This is the **shared-compute, hard-isolated-data** model. Used by Stripe, Notion
 
 | Control | Implementation |
 |---|---|
-| Connection credentials | AES-256-GCM with random IV, packed `iv:authTag:ciphertext` base64. Key sourced from `CREDENTIALS_ENCRYPTION_KEY` env / Azure Key Vault. |
+| Connection credentials | AES-256-GCM with random IV, packed `iv:authTag:ciphertext` base64. Key sourced from `CREDENTIALS_ENCRYPTION_KEY`, delivered as a Container App secret. |
 | Production safety guard | Backend refuses to encrypt or decrypt when key is missing in `NODE_ENV=production` |
-| Secret store | Azure Key Vault (`db-prod-kv-*`). Backend reads via managed identity. |
+| Secret store | Secrets reach the containers as Container App secrets (Terraform / GitHub secrets). A Key Vault exists in `infra/main.tf` and holds copies, but nothing in the application reads it — the Key Vault SDK client was removed on 2026-09-20 as dead code. |
 | Soft-delete | 90 days on Key Vault |
 | Purge protection | Enabled — vault cannot be permanently deleted |
 | Key rotation | Manual; key sha256-derived from env var → rotation requires re-encrypting all credential rows. Tracked as Sprint 2. |
@@ -79,12 +88,13 @@ This is the **shared-compute, hard-isolated-data** model. Used by Stripe, Notion
 | AI query log | `query_log` — every NL query, its generated SQL, confidence score, was-flagged status |
 | AI cost log | `ai_call_log` — per-tenant, per-user spend |
 | HTTP request log | Pino structured logs, redacted (password, token, Authorization header, API keys) |
-| Currently audited actions | `user.invite`, `user.update`, `user.deactivate`, `user.reactivate`, `connection.delete`, `product.delete` |
+| Audited actions | user/role/invite mutations, connection and product deletes, tenant customer-record changes, operator actions (support sessions, suspend/resume, budgets — written into the TARGET tenant's trail), legal acceptance, exports, every auth event |
+| Retention + export | `audit_events` kept 730 days (`RETENTION_AUDIT_EVENTS_DAYS`); `GET /users/audit/export.csv` (admin, itself audited); the UI lives on `/users → Audit log` |
+| Failed writes | an audit write that fails logs `'audit write failed'` at ERROR with a metric — never a swallowed warning |
 
 **Gaps still open:**
 
-- Audit log UI on `/users` for admins (planned Sprint 2)
-- Some mutation endpoints not yet wired to `recordAudit` — incremental migration
+- Some mutation endpoints are still not wired to `recordAudit` — incremental.
 
 ---
 
@@ -94,7 +104,9 @@ This is the **shared-compute, hard-isolated-data** model. Used by Stripe, Notion
 |---|---|
 | TLS | Azure Container Apps + Front Door, TLS 1.2 minimum on storage account |
 | Postgres firewall | Allows Azure services only + explicit local IPs for migration runs |
-| Container Apps egress | Default Azure egress (no explicit firewall) |
+| Container Apps egress | Default Azure egress (no explicit firewall); connector HTTP goes through `HttpClient` with a per-connector egress allow-list (SSRF guard) |
+| Compute isolation | DuckDB sessions are bounded (memory, threads, per-tenant concurrency); `DUCKDB_RUNNER=child` runs each query in a killable child process; the sync worker runs one Container Apps Job execution per sync with a tenant-scoped SAS and no database credentials |
+| Alerting | Azure Monitor rules from `.ops/alerts` (5xx, restarts, Postgres, failed syncs, brute force, stale sources, SQL-guard refusals, queue depth); the promote gate curls the deep `/api/health` before shifting traffic |
 | Image registry | Private ACR (`databridgeacr`) |
 | Managed identity | Backend → Blob Storage via system-assigned MI |
 | Compute isolation | Single backend deployment shared across tenants. Worker jobs are per-execution. |
@@ -112,10 +124,12 @@ This is the **shared-compute, hard-isolated-data** model. Used by Stripe, Notion
 | Key Vault soft-delete | 90 days |
 | Neo4j data | Azure File Share, single-region |
 
+| Neo4j recovery point | daily Azure Backup snapshots of the file share + 30-day share soft-delete (`infra/main.tf`; applied on the owner's next `terraform apply`) |
+
 **Gaps still open:**
 
-- Neo4j data on file share without cross-region replication. Lower-priority because Neo4j is rebuildable from Postgres state (`migrateSemanticToNeo4j.ts`).
-- No documented RTO/RPO commitments. Tracked for Sprint 3.
+- RTO/RPO per store are written down in `docs/runbooks/disaster-recovery.md`, but **no restore has been rehearsed** — the numbers are not quotable to a customer until the §6 checklist there is ticked.
+- Neo4j is rebuildable from Postgres state (`migrateSemanticToNeo4j.ts`) — the un-mirrored graph-only edits are the residual exposure.
 
 ---
 
@@ -123,9 +137,10 @@ This is the **shared-compute, hard-isolated-data** model. Used by Stripe, Notion
 
 | Control | Implementation |
 |---|---|
-| Dependency vulnerability scan | `npm audit --audit-level=high` on every PR (backend fails build; frontend warns) |
-| Type-check gate | Strict `tsconfig.build.json` compile in CI |
-| Test gate | Vitest suite runs against a Postgres service container |
+| Dependency vulnerability scan | `scripts/audit-gate.mjs` on every PR and push, for backend, connectors AND frontend — fails on any high/critical not in its reasoned allowlist |
+| Type-check gate | Strict `tsconfig.build.json` compile (backend, connectors) and `tsc --noEmit` (frontend) in the Tests workflow |
+| Test gate | Vitest (backend against a Postgres service container, connectors, frontend), the RLS isolation suite as `databridge_app`, a migration rollback round trip and the widget render gate — and `deploy.yml` will not migrate or deploy a commit whose Tests and Lint workflows are not green |
+| Ratchets | twelve `lint-*.ts` scripts in the Lint workflow (session-level tenant SET, dynamic imports, validation coverage, warehouse scans, graph tenant predicates, …) whose baselines only ever go down |
 | Image signing | Not yet — planned |
 | SBOM | Not yet — planned for Sprint 3 |
 | Dependabot | Weekly updates for backend, frontend, GitHub Actions |
@@ -136,27 +151,28 @@ This is the **shared-compute, hard-isolated-data** model. Used by Stripe, Notion
 
 These are real gaps. Listed so we're transparent with customers and ourselves.
 
-### Short-term (Sprint 2 — partially shipped)
+### Done since this file was first written
 
 - ✅ **JWT refresh tokens + revocation** — 15-min access + 30-day refresh; revokeAll on password change / role change / deactivate
-- ✅ **Audit log UI** — `/users → Audit log` (admin only)
+- ✅ **Audit log UI** — `/users → Audit log` (admin only), plus CSV export
 - ✅ **Public `/security` page**
-- ⚠️ **Migrate remaining routes to `req.dbTrx`** — incremental migration. Done so far: every mutation on `users.ts`, `connections.ts`, `policies.ts`; `dashboards.ts` POST + DELETE; `products.ts` POST. The remaining read endpoints + non-critical mutations still use the session-level SET fallback (which IS racy under concurrency). Helper at `db/reqDb.ts` (`const db = reqDb(req)`) is the migration pattern.
+- ✅ **MFA** — TOTP + WebAuthn passkeys, per user
+- ✅ **Incident response runbook** — `docs/runbooks/incident-response.md` (severity ladder, first hour, breach path, evidence preservation)
+- ✅ **DR runbook with RTO/RPO per store** — `docs/runbooks/disaster-recovery.md` (rehearsal still owed)
+- ✅ **DPA / ToS / privacy / subprocessor DRAFTS** — `docs/legal/`, rendered at `/legal/*`, not in force until counsel reviews (`LEGAL_IN_FORCE`)
+- ✅ **Tenant data export** — `GET /settings/export.zip`; erasure via `purgeTenant`
+- ⚠️ **Migrate remaining bare-pool reads to `tenantQuery`** — 17 left (the ratchet baseline). Done so far: every mutation on `users.ts`, `connections.ts`, `policies.ts`; `dashboards.ts` POST + DELETE; `products.ts` POST. The remaining read endpoints + non-critical mutations still use the session-level SET fallback (which IS racy under concurrency). Helper at `db/reqDb.ts` (`const db = reqDb(req)`) is the migration pattern.
 - 🟦 **Penetration test** — budget allocated, vendor TBD.
 
-### Medium-term (Sprint 3 — 1-2 months)
+### Still open
 
-5. **DPA template + sub-processor list** (legal).
-6. **Public security page** at `clarion.io/security` summarising the above.
-7. **GDPR formal review** + data residency commitment (EU-only deployment).
-8. **Incident response runbook** + breach notification SLA.
-
-### Long-term (Sprint 4 — when first enterprise asks)
-
-9. **SOC 2 Type I gap assessment → Type II observation period** (~12-18 months total).
-10. **ISO 27001** alongside SOC 2 (~30% overlap).
-11. **MFA**.
-12. **Per-tenant database option** ("Dedicated Instance" tier) for customers who explicitly request stricter isolation.
+1. **Legal review** of the drafts, then `LEGAL_IN_FORCE` (owner + counsel).
+2. **GDPR formal review** + a written data-residency commitment (the deployment is EU-only today).
+3. **A rehearsed restore** for Postgres and Neo4j (`docs/runbooks/disaster-recovery.md` §6).
+4. **Penetration test** — vendor TBD.
+5. **SOC 2 Type I gap assessment → Type II observation period** (~12-18 months total); **ISO 27001** alongside (~30% overlap).
+6. **Org-wide MFA policy** and httpOnly cookie storage for tokens.
+7. **Per-tenant database option** ("Dedicated Instance" tier) for customers who explicitly request stricter isolation.
 
 ---
 
@@ -170,7 +186,7 @@ These are real gaps. Listed so we're transparent with customers and ourselves.
 6. Post-mortem: blameless within 7 days, published internally + summary to affected customers
 7. Track: every incident logged in `audit_events` with `action='incident.*'`
 
-**Runbook not yet formalised. Tracked Sprint 3.**
+The runbook is `docs/runbooks/incident-response.md`; the quarterly rehearsal it asks for has not happened yet.
 
 ---
 
@@ -179,4 +195,4 @@ These are real gaps. Listed so we're transparent with customers and ourselves.
 Security issues → `security@clarion.io` (configure when domain ready)
 PGP key → TBD
 
-Responsible disclosure policy → TBD (template in `docs/responsible-disclosure.md` once created)
+Responsible disclosure policy → TBD (not yet written)

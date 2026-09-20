@@ -131,7 +131,7 @@ export default function QualityOverview() {
         <p className="text-[10px] font-mono tracking-[0.14em] uppercase text-muted mb-0.5">Catalog</p>
         <h1 className="font-display text-[28px] text-ink leading-tight tracking-[-0.02em] mb-1">Trust</h1>
         <p className="text-[12.5px] text-muted leading-relaxed max-w-2xl">
-          How healthy your data is — completeness, validity and freshness across every table. Click a table to see what's driving its score.
+          How healthy your data is — completeness, validity and freshness across every table. Click a table to see what&rsquo;s driving its score.
         </p>
       </div>
 

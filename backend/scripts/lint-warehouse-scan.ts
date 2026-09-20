@@ -54,13 +54,6 @@ const ALLOWED: Record<string, string> = {
     "needs every row it is merging, DESCRIBE needs the real column list, and the " +
     'rollup count counts what was just written. Product tables carry no ' +
     '_clarion_* columns — the source rows reached them through createScanView.',
-
-  'backend/src/services/dbtProjectBuilder.ts':
-    'Generates on-run-start hook SQL for the dbt engine, which executes in dbt\'s ' +
-    'own DuckDB process and therefore cannot call parquetSelect. Allowlisted as ' +
-    'UNREACHABLE, not as safe: runProductTransformation refuses to start when ' +
-    'USE_DBT_TRANSFORMATIONS is set, pinned by tests/ingestion-firewall.test.ts. ' +
-    'Reviving the engine means teaching this builder the firewall first.',
 };
 
 /**

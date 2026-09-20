@@ -79,8 +79,6 @@ import {
 } from './prompts/dashboardEditPlanPrompt';
 import { REQUIRED_WIDGET_COLUMNS } from '../shared/widgetContracts';
 import {
-  COLUMN_EDIT_SYSTEM,
-  buildColumnEditUser,
 } from './prompts/starSchemaPrompt';
 import { AI_OUTPUT_SCHEMAS, DASHBOARD_SPEC_JSON_SCHEMA } from './outputSchemas';
 import { restoreDroppedWidgets } from '../services/dashboardSpecMerge';
@@ -1985,24 +1983,6 @@ export async function respondBuildChat(
     messages,
   );
   return parseJson(raw, BuildChatResponseSchema);
-}
-
-// ---------------------------------------------------------------------------
-// Column Edit — surgical edit of one column's transformation expression
-// ---------------------------------------------------------------------------
-
-export async function editColumnExpression(
-  columnName: string,
-  currentExpression: string,
-  editRequest: string,
-  tableContext: string,
-): Promise<string> {
-  return callClaude(
-    COLUMN_EDIT_SYSTEM,
-    buildColumnEditUser(columnName, currentExpression, editRequest, tableContext),
-    // temperature 0: same edit request → same SQL expression.
-    { temperature: 0 },
-  );
 }
 
 // ---------------------------------------------------------------------------

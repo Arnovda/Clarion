@@ -34,7 +34,6 @@ export default function IngestionWizard({
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [error, setError] = useState<string | null>(null);
   const [progress, setProgress] = useState(0);
-  const [currentTable, setCurrentTable] = useState<string>('');
   const [ingestionMessage, setIngestionMessage] = useState('');
   const [tableResults, setTableResults] = useState<Array<{ table: string; status: string; rows?: number }>>([]);
   const abortRef = useRef<AbortController | null>(null);
@@ -85,7 +84,6 @@ export default function IngestionWizard({
     if (selected.size === 0) return;
     setStep('ingesting');
     setProgress(0);
-    setCurrentTable('');
     setIngestionMessage(`Ingesting ${selected.size} table(s)...`);
     setTableResults([]);
 
@@ -110,7 +108,6 @@ export default function IngestionWizard({
               setStep('error');
             } else if (evt.phase === 'ingesting') {
               setIngestionMessage(evt.message);
-              if (evt.table) setCurrentTable(evt.table);
               if (evt.progress) setProgress(evt.progress);
               if (evt.table && (evt.message?.includes('done') || evt.message?.includes('error'))) {
                 setTableResults((prev) => [

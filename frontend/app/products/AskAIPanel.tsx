@@ -73,7 +73,6 @@ export default function AskAIPanel({
   open,
   onClose,
   product,
-  connections,
   products,
   onRefineApplied,
   embedded = false,

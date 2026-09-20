@@ -1,7 +1,14 @@
 # Handoff — security & platform hardening
 
+> **Historical (2026-05-12).** This was the hardening handoff for the May 2026
+> sprint. The current state of every control it describes lives in `CLAUDE.md`
+> (Current State), `docs/SECURITY.md`, `docs/backlog/market-readiness-assessment-v2.md`
+> and the runbooks under `docs/runbooks/`. Read it for the reasoning behind the May
+> decisions, not for what is true today — the DB role flip it plans happened on
+> 2026-08-06, MFA and WebAuthn shipped, and the audit trail now records auth events.
+>
 > Single source of truth for "what's done, what's next, why each piece
-> matters." Updated 2026-05-12.
+> matters" *as of 2026-05-12*.
 >
 > Read this first before touching auth, the catalog, or the data
 > warehouse. Several decisions here are deliberate trade-offs that look

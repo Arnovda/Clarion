@@ -2,6 +2,21 @@
 
 Step-by-step guide to deploy Clarion on Azure for the first time.
 
+> **Read this first.** Production has been running since mid-2026, and two things
+> this guide cannot know are recorded elsewhere:
+>
+> - **Day-to-day operation is GitOps, not the CLI.** Pushing to `main` builds every
+>   image (tagged `main-<sha>`), runs the migrations behind a gate that requires the
+>   Tests and Lint workflows to be green, deploys at 0% traffic and promotes only
+>   after `/api/health` answers 200 (`.github/workflows/deploy.yml`). Production
+>   settings are files under `.ops/` — see `.ops/README.md`. Rollback is the
+>   **Rollback production** workflow.
+> - **Terraform is not the whole picture.** Its state lives on the machine that last
+>   applied it (no remote backend), the `jobs-worker` Container App was provisioned by
+>   `az` from a workflow rather than by Terraform, and several controls have since
+>   set values Terraform does not know about. Before any `terraform apply`, read
+>   `docs/runbooks/jobs-worker-apply.md` and `docs/runbooks/disaster-recovery.md`.
+
 ---
 
 ## Prerequisites
@@ -67,22 +82,27 @@ az acr login --name $ACR
 
 # Build and push backend
 cd ../backend
-docker build -t $ACR/databridge-backend:main-latest .
-docker push $ACR/databridge-backend:main-latest
+docker build -t $ACR/databridge-backend:main-bootstrap .
+docker push $ACR/databridge-backend:main-bootstrap
 
 # Build and push frontend (set API URL to backend FQDN)
 cd ../frontend
 BACKEND_URL=$(cd ../infra && terraform output -raw backend_url)
 docker build \
   --build-arg NEXT_PUBLIC_API_URL=${BACKEND_URL}/api \
-  -t $ACR/databridge-frontend:main-latest .
-docker push $ACR/databridge-frontend:main-latest
+  -t $ACR/databridge-frontend:main-bootstrap .
+docker push $ACR/databridge-frontend:main-bootstrap
 
 # Build and push ETL
 cd ../etl
-docker build -t $ACR/databridge-etl:main-latest .
-docker push $ACR/databridge-etl:main-latest
+docker build -t $ACR/databridge-etl:main-bootstrap .
+docker push $ACR/databridge-etl:main-bootstrap
 ```
+
+Use an explicit, immutable tag for a manual push — never a mutable `:main-latest`.
+Container Apps job executions serve from a node image cache, so a mutable tag once
+left the sync worker running weeks-old code while every build succeeded. The CI
+deploy pins every app and the sync-worker job to the per-commit `main-<sha>` tag.
 
 After pushing, restart the Container Apps to pick up the images:
 
@@ -137,9 +157,12 @@ psql "$DATABASE_URL" -c "UPDATE users SET role = 'admin' WHERE email = 'admin@yo
 BACKEND_URL=$(cd ../infra && terraform output -raw backend_url)
 FRONTEND_URL=$(cd ../infra && terraform output -raw frontend_url)
 
-# Health check
+# Deep health check — every dependency the promote gate looks at
 curl $BACKEND_URL/api/health
-# Expected: {"ok":true,"checks":{"postgres":"ok"},...}
+# Expected: {"ok":true,"checks":{"postgres":"ok","redis":"ok","neo4j":"ok","blob":"ok",
+#            "worker_transformation":"ok","worker_bus_matrix":"ok"},"uptime":...}
+# A missing dependency answers 503 and names the component; an unconfigured one
+# reports "skipped" (dev/CI) and does not fail the check.
 
 # Open frontend in browser
 echo "Open: $FRONTEND_URL"
@@ -161,10 +184,14 @@ Configure these GitHub repository secrets:
 | `BACKEND_APP_NAME` | `databridge-prod-backend` |
 | `FRONTEND_APP_NAME` | `databridge-prod-frontend` |
 | `ETL_APP_NAME` | `databridge-prod-etl` |
-| `DATABASE_URL` | `postgres_connection_string` output |
+| `DATABASE_URL` | `postgres_connection_string` output — **the `databridge_app` (NOBYPASSRLS) login**, not the admin one; see `docs/runbooks/db-role-flip.md` |
 | `PROD_API_URL` | `backend_url` output + `/api` |
 | `NEO4J_URI` | `bolt://databridge-prod-neo4j:7687` |
 | `NEO4J_PASSWORD` | Your neo4j_password from tfvars |
+
+The workflows under `.github/workflows/` read further secrets for the GitOps
+controls (alerts, prod-logs, db-role, …); each workflow lists the ones it needs at
+the top of its file.
 
 ### Create Azure Service Principal
 
@@ -195,30 +222,38 @@ Then uncomment the `backend "azurerm"` block in `infra/main.tf` and run `terrafo
 
 ---
 
-## Monthly Cost Estimate (West Europe)
+## What runs in production
 
-| Resource | SKU | Estimate |
-|----------|-----|----------|
-| PostgreSQL Flexible | B_Standard_B1ms | ~25 EUR |
-| Redis Cache | Basic C0 | ~15 EUR |
-| Container Apps (backend) | 0.5 vCPU, 1 GB | ~20 EUR |
-| Container Apps (frontend) | 0.25 vCPU, 0.5 GB | ~10 EUR |
-| Container Apps (neo4j) | 0.5 vCPU, 1 GB | ~20 EUR |
-| Container Apps (etl) | Scale-to-zero | ~2 EUR |
-| Container Registry | Basic | ~5 EUR |
-| Storage (Blob + File Share) | Standard LRS | ~2 EUR |
-| Application Insights | Pay-as-you-go | ~5 EUR |
-| **Total** | | **~105 EUR/month** |
+| Component | Kind | Always on? |
+|-----------|------|------------|
+| `databridge-prod-backend` | Container App — API + the identity-requiring queues | scale-to-zero (`min_replicas 0`) |
+| `databridge-prod-jobs-worker` | Container App — transformation / maintenance queues (`ROLE=worker`) | yes, 1 replica (BullMQ needs a running worker to fire scheduled jobs) |
+| `databridge-prod-sync-worker` | Container Apps **Job** — one execution per source sync | per execution |
+| `databridge-prod-frontend` | Container App — Next.js | scale-to-zero |
+| `databridge-prod-neo4j` | Container App — knowledge graph, internal ingress only | yes |
+| `databridge-prod-redis` | Container App — BullMQ + caches (`noeviction`, ephemeral by design) | yes |
+| `databridge-prod-etl` | Container App — legacy Python ETL for the direct-database path | scale-to-zero |
+| PostgreSQL Flexible Server | B_Standard_B1ms, 14-day PITR | yes |
+| Blob Storage + File Share | warehouse (per-tenant containers) + Neo4j data | — |
+
+Costs: the measured bill and the decisions taken on it are in `docs/AZURE_COSTS.md`;
+the always-on containers are where the money goes.
 
 ---
 
 ## Onboarding a New Customer (Tenant)
 
-1. Log in as admin at the frontend URL
-2. Go to **Users** > **Invite** to create the customer's admin account
-3. Customer logs in, goes to **Setup** to connect their database
-4. Admin reviews and approves the AI-generated semantic layer
-5. Customer can now query their data via the chat interface
+1. The customer self-registers at `/register` (email verification is enforced when an
+   email provider is configured), which creates their tenant with the default seat,
+   source and AI-token caps — or a platform operator invites them from `/admin/tenants`.
+2. Their admin connects a source on **Sources**, syncs it and clicks **Analyse**.
+3. **Build** creates the topics (star schemas) from the connector's template or the
+   AI designer; definitions are confirmed on **Review** / the **Catalog**.
+4. Everyone can then ask questions on **Ask**, and dashboards, subjects and the
+   morning brief work from the same data.
+
+Operators (`PLATFORM_OPERATOR_EMAILS`, set through `.ops/operators`) manage tenants,
+caps, suspension and support sessions on `/admin/tenants` and `/admin/ops`.
 
 ---
 
@@ -248,3 +283,7 @@ psql "$DATABASE_URL"
 
 ### Check Application Insights
 Go to Azure Portal > Application Insights > `databridge-prod-insights` > Live Metrics
+
+### Read production logs without a laptop
+Edit `.ops/prod-logs` on `main` (see `.ops/README.md`): the workflow runs the
+signature queries against Log Analytics and writes the report into the run summary.

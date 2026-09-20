@@ -1,8 +1,11 @@
 # Clarion UX/IA redesign — business-data-owner first
 
-> Status: **in progress.** Phase 1 (navigation IA) shipped 2026-06-14. Later
-> phases are proposed and gated on user feedback. Everything is on a feature
-> branch and revertible via git.
+> Status: **superseded as a plan, kept as the brief.** Phase 1 (navigation IA)
+> shipped 2026-06-14; the rail was rebuilt again on 2026-08-18 (Uncover · Subjects ·
+> Studio · Settings) and the topic-first front door landed on 2026-08-06. The later
+> phases proposed below were absorbed by `docs/backlog/platform-coherence-review.md`
+> and `docs/backlog/data-experience-consolidation.md`; the goal and the five jobs
+> still describe what Clarion is for.
 
 ## Goal
 Clarion should be a joy for a **non-technical business data-owner** who is "in

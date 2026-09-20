@@ -182,12 +182,6 @@ export default function NotebookEditorPage() {
     }
   };
 
-  // ── Connection change ──────────────────────────────────────────────
-  const changeConnection = async (connId: number) => {
-    await api.patch(`/notebooks/${notebookId}`, { connectionId: connId });
-    setNotebook((prev) => prev ? { ...prev, connection_id: connId } : prev);
-  };
-
   // Persisted on the notebook rather than held in page state: a notebook is a
   // durable artefact, and its cells' SQL is written against whatever tables
   // were registered. If the setting did not survive a reload, reopening one
@@ -538,8 +532,6 @@ export default function NotebookEditorPage() {
   }
 
   if (!notebook) return null;
-
-  const connName = connections.find((c) => c.id === notebook.connection_id)?.name;
 
   return (
     <div className="flex-1 flex flex-col bg-surface overflow-hidden">
@@ -1037,11 +1029,9 @@ function CellOutput({ output, cellType }: { output: CellOutput; cellType: string
 
 /* ── Add Cell Button ──────────────────────────────────────────────────── */
 function AddCellButton({ onAdd }: { onAdd: (type: 'sql' | 'python' | 'markdown') => void }) {
-  const [open, setOpen] = useState(false);
-
   return (
     <div className="flex justify-center py-1 relative">
-      <div className={`flex items-center gap-1 transition-opacity ${open ? 'opacity-100' : 'opacity-0 hover:opacity-100'}`}>
+      <div className="flex items-center gap-1 transition-opacity opacity-0 hover:opacity-100">
         <button
           onClick={() => onAdd('sql')}
           className="text-[10px] font-semibold text-blue-600 bg-blue-50 hover:bg-blue-100 px-2.5 py-1 rounded-md transition-colors"

@@ -45,7 +45,6 @@ function ProductsPageInner() {
   const [tab, setTab] = useState<ActiveTab>(initialTab);
   const [connections, setConnections] = useState<Connection[]>([]);
   const [products, setProducts] = useState<DataProduct[]>([]);
-  const [loading, setLoading] = useState(true);
 
   // Full product details cache: productId -> FullDataProduct
   const [details, setDetails] = useState<Map<number, FullDataProduct>>(new Map());
@@ -93,7 +92,6 @@ function ProductsPageInner() {
       const res = await api.get('/products');
       setProducts(res.data.data ?? []);
     } catch { /* ignore */ }
-    setLoading(false);
   }, []);
 
   const loadConnections = useCallback(async () => {
@@ -245,9 +243,7 @@ function ProductsPageInner() {
   // the existing SSE / cancel / active-job endpoints work unchanged.
   // syncSource=true triggers the source connection sync first; the worker
   // waits for sync completion before running the product's transformations.
-  const [refreshMenuFor, setRefreshMenuFor] = useState<number | null>(null);
   const handleRefreshProduct = useCallback(async (productId: number, productName: string, syncSource: boolean) => {
-    setRefreshMenuFor(null);
     setBuilding(true);
     setBuildDone(false);
     setBuildSuccess(false);

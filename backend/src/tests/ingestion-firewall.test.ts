@@ -11,9 +11,10 @@
  *   1. `createScanView`'s `*.parquet` glob fallbacks (local and Azure)
  *      registered the file raw, so any table not written under the
  *      `data.parquet` convention served its tombstones.
- *   2. The dbt transformation engine builds its source views as hook SQL that
- *      runs in dbt's own DuckDB process, where the rule cannot be applied.
- *      Its entry point now refuses.
+ *   2. The dbt transformation engine built its source views as hook SQL that
+ *      ran in dbt's own DuckDB process, where the rule could not be applied.
+ *      Its entry point refused from 2026-09-10 and the engine was deleted on
+ *      2026-09-20 — there is no second door left to pin.
  *
  * The structural half of the same guarantee is the `warehouse-scan` ratchet
  * (backend/scripts/lint-warehouse-scan.ts), which fails the merge on a new
@@ -101,38 +102,5 @@ describe('createScanView — the *.parquet glob fallback', () => {
       await db.close();
       await fs.rm(root, { recursive: true, force: true });
     }
-  });
-});
-
-describe('the dbt transformation engine refuses while it cannot honour the firewall', () => {
-  it('throws before any work, naming the flag and where the rule lives', async () => {
-    const prev = process.env.USE_DBT_TRANSFORMATIONS;
-    process.env.USE_DBT_TRANSFORMATIONS = 'true';
-    try {
-      // A product row that would fail hard if the guard did not fire first:
-      // the refusal has to happen before the connection, the warehouse path
-      // and the SQL are ever touched.
-      await expect(
-        runProductTransformation({ id: -1, name: 'nope', connection_id: -1 } as never, [], 1),
-      ).rejects.toThrow(/USE_DBT_TRANSFORMATIONS/);
-      await expect(
-        runProductTransformation({ id: -1, name: 'nope', connection_id: -1 } as never, [], 1),
-      ).rejects.toThrow(/views\.ts/);
-    } finally {
-      if (prev === undefined) delete process.env.USE_DBT_TRANSFORMATIONS;
-      else process.env.USE_DBT_TRANSFORMATIONS = prev;
-    }
-  });
-
-  it('has no second dispatch that could reach the dbt runner anyway', () => {
-    // A refusal at the top of one function is only a guarantee while it is the
-    // ONLY door. `runProductTransformationDbt` must not be reachable from the
-    // runner at all — otherwise a later refactor reintroduces the bypass while
-    // the guard above still passes.
-    const src = readFileSync(
-      path.join(__dirname, '..', 'services', 'transformationRunner.ts'),
-      'utf8',
-    );
-    expect(src).not.toMatch(/runProductTransformationDbt/);
   });
 });

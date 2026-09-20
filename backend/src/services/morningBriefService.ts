@@ -12,7 +12,7 @@
  * constraints. Safe to manually retrigger from a route.
  *
  * Email delivery is a separate phase. Today the brief lives on Home
- * (MorningBriefCard reads /api/briefs/today) and in the notification bell.
+ * (Home's movement cards read /api/briefs/today) and in the notification bell.
  */
 
 import { semanticDb } from '../db/knex';

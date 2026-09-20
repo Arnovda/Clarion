@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import { cn } from '@/lib/cn';
-import { AlertCircle, CheckCircle2, BarChart3, Table2, Sparkles, ChevronDown, ChevronRight } from 'lucide-react';
+import { AlertCircle, CheckCircle2, BarChart3, Sparkles, ChevronDown, ChevronRight } from 'lucide-react';
 
 export interface CellOutputData {
   rows?: Record<string, unknown>[];

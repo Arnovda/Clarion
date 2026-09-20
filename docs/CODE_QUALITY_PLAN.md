@@ -36,7 +36,7 @@ Highest-risk first:
 1. **No runtime shape-check on AI outputs** — `parseJson<T>` ends in a blind cast; malformed model output flows into the DB (Phase 1).
 2. **No async safety net** — Express 4, no asyncHandler, no `unhandledRejection` handler; an uncaught async throw can crash the process (Phase 1).
 3. **~7% validation adoption** — 205 mutating routes, 15 validated; finished schemas left unattached; 264 raw `req.body as {...}` casts (Phase 4).
-4. **No API contract** — `shared/types.ts` unused; `Connection` declared 7× on the frontend; `WidgetSpec`/`DashboardSpec` already drifted (Phase 4).
+4. **No API contract** — root `shared/types.ts` unused (deleted 2026-09-20; the contract is the lint-locked pair `backend/src/shared/contract.ts` ↔ `frontend/lib/contract.ts`); `Connection` declared 7× on the frontend; `WidgetSpec`/`DashboardSpec` already drifted (Phase 4).
 5. **Config sprawl** — `process.env` in 41 files/128 sites; 3 names for the frontend URL (Phase 2).
 6. **Fat routes + one circular dep** — `products.ts` (4590) etc.; `connections.ts ↔ SyncOrchestrator` via `await import()` (Phases 3 & 6).
 7. **Frontend: design system bypassed** (613 raw buttons vs `ui/Button`), SSE copy-pasted 9× without unmount cancel, 48-useState pages (Phase 5).

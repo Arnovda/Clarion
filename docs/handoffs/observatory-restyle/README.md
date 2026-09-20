@@ -1,5 +1,12 @@
 # Clarion · Observatory restyle — Claude Code handoff
 
+> **Executed (April 2026).** This is the design handoff the Observatory design system
+> was built from; it lived at the repository root as `handoff/` until 2026-09-20 and the
+> paths inside still say so. The screen list below predates the topic-first front door
+> (2026-08-06) and the Subjects/Studio rail (2026-08-18); the tokens and component specs
+> are still the reference for the look. The current design tokens live in
+> `frontend/app/globals.css` and `frontend/lib/observatory.ts`.
+
 This folder is the **single source of truth** Claude Code should work from. Hand it this entire folder.
 
 ## What's in here

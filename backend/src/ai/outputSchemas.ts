@@ -3,8 +3,8 @@
  *
  * `parseJson<T>` in AIService trusts the model to return the right shape — it
  * ends in `JSON.parse(...) as T`, a compile-time cast with zero runtime
- * checking. For outputs that flow straight into the database (star-schema
- * designs, dashboard specs, schema drafts), a syntactically-valid but
+ * checking. For outputs that flow straight into the database (dashboard
+ * specs, schema drafts), a syntactically-valid but
  * semantically-wrong response would be written as-is and fail deep downstream
  * (or corrupt a product/dashboard). These Zod schemas are the guard: the
  * consumer validates before persisting, and a mismatch throws a clear error
@@ -24,7 +24,6 @@ import { z } from 'zod';
 import { REQUIRED_WIDGET_COLUMNS } from '../shared/widgetContracts';
 import type { DashboardSpec } from './prompts/dashboardPrompt';
 import type { SchemaDraftOutput } from './prompts/schemaDraftPrompt';
-import type { StarSchemaDesignOutput } from './prompts/starSchemaPrompt';
 
 // ─── Dashboard spec ─────────────────────────────────────────────────────────
 const filterSpecSchema = z.object({
@@ -77,53 +76,16 @@ export const schemaDraftSchema = z.object({
   }).passthrough()),
 }).passthrough();
 
-// ─── Star-schema design ─────────────────────────────────────────────────────
-const columnDesignSchema = z.object({
-  column_name: z.string().min(1),
-  data_type: z.string(),
-  display_name: z.string(),
-  column_role: z.enum([
-    'surrogate_key', 'natural_key', 'foreign_key',
-    'measure', 'attribute', 'degenerate_dimension',
-  ]),
-}).passthrough();
-
-const tableDesignSchema = z.object({
-  table_name: z.string().min(1),
-  display_name: z.string(),
-  table_role: z.enum(['fact', 'dimension', 'bridge', 'junk']),
-  columns: z.array(columnDesignSchema).min(1),
-}).passthrough();
-
-export const starSchemaDesignSchema = z.object({
-  star_schema: z.object({
-    name: z.string(),
-    tables: z.array(tableDesignSchema).min(1),
-    relationships: z.array(z.object({
-      from_table_name: z.string(),
-      from_column_name: z.string(),
-      to_table_name: z.string(),
-      to_column_name: z.string(),
-    }).passthrough()).default([]),
-  }).passthrough(),
-  proposed_kpis: z.array(z.object({
-    name: z.string(),
-    formula_sql: z.string(),
-  }).passthrough()).default([]),
-}).passthrough();
-
 // Compile-time guarantee that each schema is assignable to its interface — if a
 // prompt interface changes shape incompatibly, this fails the build.
 const _dash: z.ZodType<unknown> = dashboardSpecSchema;
 const _draft: z.ZodType<unknown> = schemaDraftSchema;
-const _star: z.ZodType<unknown> = starSchemaDesignSchema;
-void _dash; void _draft; void _star;
+void _dash; void _draft;
 
 // Typed re-exports so callers get the interface type back, not `unknown`.
 export const AI_OUTPUT_SCHEMAS = {
   dashboardSpec: dashboardSpecSchema as unknown as z.ZodType<DashboardSpec>,
   schemaDraft: schemaDraftSchema as unknown as z.ZodType<SchemaDraftOutput>,
-  starSchemaDesign: starSchemaDesignSchema as unknown as z.ZodType<StarSchemaDesignOutput>,
 };
 
 // ─── JSON Schema for Anthropic structured outputs (constrained decoding) ────
