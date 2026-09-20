@@ -107,6 +107,56 @@ highest-value act available, and it is the owner's.
   rather than "no interpretation recorded", absent fires the absence block, and
   a present `runner-active` correctly suppresses its own. No product code
   touched (`git status`), so no suite applies.
+**THE NEW SIGNATURE FOUND A LIVE FAULT ON ITS FIRST RUN. Run #16 (`6a7a005`):
+`maintenance-run` NEVER APPEARED, across a window holding BOTH Sunday 03:00
+slots (09-13 and 09-20).** That line is unconditional at the top of
+`runMaintenance`, so this is not the benign "ran, nothing to maintain" branch —
+**the weekly warehouse sweep is not executing, and has not since the feature
+shipped.** Nothing has ever compacted or vacuumed a topic table.
+- **Two candidate causes were ruled out from the code, not assumed.**
+  Registration happens: `loadSchedules()` calls `registerWeeklyMaintenance()`
+  IMMEDIATELY BEFORE `registerDailyBrief()`, past the same early return, and
+  `brief-run` demonstrably fires — so the first cannot have thrown. And the
+  registrar is not queue-gated; the `shouldRunQueue` guard sits on
+  `startMaintenanceWorker`, the consumer.
+- **MY LEADING HYPOTHESIS WAS WRONG, and the probe refuted it.** I proposed
+  that the Fase-2 queue split had left `warehouse-maintenance` owned by nobody.
+  `.ops/infra-preflight` run 7 says otherwise: **worker `WORKER_QUEUES` =
+  `transformation,scheduled-transformation,warehouse-maintenance,security-maintenance`**.
+  The jobs-worker owns it, is `Running`, on the same image
+  (`main-5ae0824`), and `startMaintenanceWorker()` is genuinely called
+  (`workers.ts:593`). Registered, consumed, and still never fires — so the
+  cause is none of the three obvious ones, and the next person should not
+  re-check them.
+- **THE REMAINING THEORY, with its evidence, NOT established:**
+  `registerWeeklyMaintenance` REMOVES and RE-ADDS its repeatable on every boot
+  of the scheduler-owning process, and re-adding a cron recomputes the next
+  occurrence from now. The backend runs at `min_replicas: 0`, so it cold-starts
+  often. A WEEKLY job has one narrow slot to survive to; a DAILY one has seven
+  times the chance — and `brief-run` fired **11 times in 14 days, not 14**,
+  which is exactly the shape that theory predicts. **What would settle it** is
+  one more signature on `'Weekly warehouse maintenance registered'`
+  (`warehouseMaintenance.ts`, end of the registrar): a high count over 14 days
+  means the process re-registers constantly and the weekly slot is being pushed
+  out of reach. That is the next diagnostic; it was deliberately not taken in
+  this session.
+- Also read off preflight run 7, worth knowing: backend `ROLE` is **unset**
+  (it runs API + workers, restricted only by `WORKER_QUEUES`) — the Terraform
+  `backend_role=api` has still never been applied; `DUCKDB_RUNNER=child`;
+  `WAREHOUSE_CONTAINER_MODE=per-tenant` with **one** tenant container
+  (`tenant-9`) that HAS data, so the per-tenant write path is confirmed working
+  for that tenant; and Terraform state is still local to someone's machine.
+- **NEW OPEN POINT, surfaced by the runs themselves: GitHub is deprecating
+  Node 20 for Actions.** Every run now warns that `actions/checkout@v4` and
+  `azure/login@v2` are being forced onto Node 24. It works today via the
+  runner's shim. Five open Dependabot PRs address exactly this (#5 checkout
+  4→6, #6 azure/login 2→3, #2 setup-node 4→6, #3 docker/login-action 3→4,
+  #33 docker/build-push-action 5→7) and are worth taking as ONE validated
+  batch, because they touch `deploy.yml`, the production path.
+- **PR #46 closed as superseded** — it proposed a `promote-production` marker
+  branch to work around the `workflow_dispatch` 403; `.ops/promote` on main
+  already does that job, verified present before closing.
+
 - **NOT done, deliberately**: the window stays 14d rather than narrowing (it
   covers two Sundays and the deploy boundary; narrow it once a sync has been
   observed, per the file's own note). No second signature on `'warehouse
