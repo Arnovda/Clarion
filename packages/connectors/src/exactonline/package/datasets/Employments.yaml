@@ -1,0 +1,88 @@
+# Exact Online entity. Field docs are TRANSCRIBED from the vendor REST reference by scripts/generate-eo-docs.ts — do not hand-edit descriptions; edit label/description/clarion freely.
+
+name: Employments
+label: Employments
+description: Employment contracts — each employee may have multiple over time.
+source: /payroll/Employments
+primary_key: [ ID ]
+fields:
+  - name: Created
+    description: Creation date
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: Creator
+    description: User ID of creator
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: CreatorFullName
+    description: Name of creator
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Division
+    description: Division code
+    datatype: Edm.Int32
+  - name: Employee
+    description: Employee ID
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: Employees, field: ID } }
+  - name: EmployeeFullName
+    description: Name of employee
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: EmployeeHID
+    description: Numeric number of Employee
+    datatype: Edm.Int32
+  - name: EmploymentNumber
+    description: Employment number
+    datatype: Edm.Int32
+  - name: EndDate
+    description: End date of employment
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: HID
+    description: Obsolete
+    datatype: Edm.Int32
+  - name: ID
+    description: Primary key
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: Modified
+    description: Last modified date
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: Modifier
+    description: User ID of modifier
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: ModifierFullName
+    description: Name of modifier
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: ReasonEnd
+    description: ID of employment ended
+    datatype: Edm.Int32
+  - name: ReasonEndDescription
+    description: Reason of end of employment
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: ReasonEndFlex
+    description: Reason of ended flexible employment
+    datatype: Edm.Int32
+  - name: ReasonEndFlexDescription
+    description: Other reason for end of employment
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: StartDate
+    description: Start date of employment
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: StartDateOrganization
+    description: "Start date of the employee in the organization. This field is used to count the years in service. Note: For PUT, this property will update the start date years in service for all employments of this employee"
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+clarion:
+  kind: source
+  category: HRM
+  sync:
+    cursor: { field: Modified, type: timestamp }
+    requiresSelect: true

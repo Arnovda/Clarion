@@ -1,0 +1,23 @@
+# Odoo model. `source` is the dotted model name used for RPC; `name` is the warehouse table. Field descriptions are the curated fallback beneath the live fields_get harvest (Odoo 16+ semantics).
+
+name: product_category
+label: Product categories
+description: Hierarchical product categories used for grouping and accounting defaults.
+source: product.category
+primary_key: [ id ]
+fields:
+  - name: id
+    description: Technical identifier of the category
+  - name: name
+    description: Category name
+  - name: parent_id
+    description: Parent category in the hierarchy
+  - name: complete_name
+    description: Full category path (parent / child)
+  - name: write_date
+    description: When the record was last modified
+clarion:
+  kind: source
+  category: Products
+  sync:
+    cursor: { field: write_date, type: timestamp }

@@ -1,0 +1,25 @@
+# Odoo model. `source` is the dotted model name used for RPC; `name` is the warehouse table. Field descriptions are the curated fallback beneath the live fields_get harvest (Odoo 16+ semantics).
+
+name: product_product
+label: Product variants
+description: Sellable / purchasable product variants — the row that order lines and stock moves reference.
+source: product.product
+primary_key: [ id ]
+fields:
+  - name: id
+    description: Technical identifier of the product variant
+  - name: product_tmpl_id
+    description: Product template this variant belongs to
+  - name: default_code
+    description: Internal reference (SKU) of the variant
+  - name: barcode
+    description: Barcode (EAN/UPC) of the variant
+  - name: active
+    description: False when the variant has been archived
+  - name: write_date
+    description: When the record was last modified
+clarion:
+  kind: source
+  category: Products
+  sync:
+    cursor: { field: write_date, type: timestamp }

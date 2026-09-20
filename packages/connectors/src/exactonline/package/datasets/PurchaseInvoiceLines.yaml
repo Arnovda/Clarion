@@ -1,0 +1,135 @@
+# Exact Online entity. Field docs are TRANSCRIBED from the vendor REST reference by scripts/generate-eo-docs.ts — do not hand-edit descriptions; edit label/description/clarion freely.
+
+name: PurchaseInvoiceLines
+label: Purchase invoice lines
+description: Line items on supplier invoices.
+source: /purchase/PurchaseInvoiceLines
+primary_key: [ ID ]
+fields:
+  - name: Amount
+    description: In a GET request the line amount is always returned excluding VAT in foreign currency. In a POST request the line amount has to be submitted either including or excluding the VAT amount. This depends on the type (including or excluding) of the VAT code.
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: AmountDC
+    description: Amount excluding VAT in default currency.
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: CostCenter
+    description: The code of the cost center that is linked to this invoice line.
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: CostUnit
+    description: The code of the cost unit that is linked to this invoice line.
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Currency
+    description: The currency of the line amount. The total invoice amount and all individual line amounts are in the same currency.
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: CustomField
+    description: Custom field endpoint. Provided only for the Exact Online Premium users.
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Description
+    description: Description of the invoice line.
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Discount
+    description: The discount given on the default price. A value of 0.1 translates to 10% discount.
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: Expense
+    description: Expense related to the Work Breakdown Structure of the selected project. Only available with a professional service license
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: ExpenseDescription
+    description: Description of expense. Only available with a professional service license
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: From
+    description: The date which the purchase invoice line starts
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: ID
+    description: A guid that uniquely identifies the purchase invoice line.
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: InvoiceID
+    description: The unique identifier of the purchase invoice this line belongs to.
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: PurchaseInvoices, field: ID } }
+  - name: InvoiceType
+    description: Purchase invoice type.
+    datatype: Edm.Int16
+  - name: Item
+    description: Guid that identifies the purchase item. In a POST request either the Item or the PurchaseOrderLine has to be supplied.
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: Items, field: ID } }
+  - name: ItemUnit
+    description: The default unit of the purchased item.
+    datatype: Edm.String
+    clarion: { role: dimension, references: { dataset: Units, field: ID } }
+  - name: LineNumber
+    description: The sequence number of the line.
+    datatype: Edm.Int32
+  - name: Modified
+    description: The date and time the invoice line was last modified.
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: NetPrice
+    description: The net price that has to be paid per unit. NetPrice = UnitPrice * (1.0 - Discount). Depending on the type of the VAT code the net price is including or excluding VAT.
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: Notes
+    description: The user can enter notes related to the invoice line here.
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Project
+    description: The project linked to the purchase invoice line. This field is only applicable for Manufacturing and Professional Services.
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: Projects, field: ID } }
+  - name: PurchaseOrderLine
+    description: Guid that identifies the purchase order line that is being invoiced. When doing a POST either the Item or the PurchaseOrderLine has to be supplied. The values of the purchase order line such as Quantity, Item and Amount will be copied to the purchase invoice line.
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: PurchaseOrderLines, field: ID } }
+  - name: Quantity
+    description: The number of purchased items in purchase units. The purchase unit is defined on the item card and it can also be found using the logistics/SupplierItem api endpoint.For divisible items the quantity can be a fractional number, otherwise it is an integer.
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: QuantityInDefaultUnits
+    description: The number of purchased items in default units. An item has both a default unit and a purchase unit, for example piece and box with a box containing 12 pieces. The multiplication factor (12 in this example) between the default unit and purchase unit is maintained on the item card. When you GET a purchase invoice line for 1 box of items the field Quantity = 1 and QuantityInDefaultUnits = 12.
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: Rebill
+    description: Indicates whether the purchase invoice line needs to be rebilled. Only available with a professional service license
+    datatype: Edm.Boolean
+    clarion: { role: dimension }
+  - name: To
+    description: The date which the purchase invoice line ends
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: Unit
+    description: The code of the unit in which the item is purchased. For example piece, box or kg. The value is taken from the purchase unit in the item card.
+    datatype: Edm.String
+    clarion: { role: dimension, references: { dataset: Units, field: ID } }
+  - name: UnitPrice
+    description: The default purchase price per unit. Depending on the type of the VAT code the unit price is including or excluding VAT.
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: VATAmount
+    description: The VAT amount of the invoice line.
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: VATCode
+    description: The VAT code used for the invoice line.
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: VATPercentage
+    description: The VAT percentage.
+    datatype: Edm.Double
+    clarion: { role: measure }
+clarion:
+  kind: source
+  category: Purchase
+  sync:
+    cursor: { field: Modified, type: timestamp }

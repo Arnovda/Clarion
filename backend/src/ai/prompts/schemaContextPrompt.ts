@@ -179,14 +179,54 @@ export interface VendorDocsContext {
   tableDescriptions: Record<string, string>;
   /** table name → vendor-documented sibling columns (descriptions truncated). */
   columnsByTable: Record<string, Array<{ name: string; description: string }>>;
+  /**
+   * table name → SOFT context from the connector's source package
+   * (`EntityDocs.notes`, Markdown): the caveats a model should read before it
+   * infers a type, a join or a meaning — "*DC amounts are in the division
+   * currency; *FC in the document currency". Prompt-only; never persisted.
+   */
+  tableNotes?: Record<string, string>;
+  /**
+   * SOFT context about the source as a WHOLE (the package manifest's
+   * `clarion.notes`, via `SourceConnector.getSourceNotes`): the caveats that
+   * belong to no single table. Rendered once, first, in every notes block —
+   * including every Pass C batch, because a batch of amount columns needs the
+   * currency rule whichever table it came from. Prompt-only; never persisted.
+   */
+  sourceNotes?: string;
 }
 
 /** Caps applied when rendering VendorDocsContext into a prompt. */
 const VENDOR_SIBLINGS_MAX_PER_TABLE = 40;
 const VENDOR_DESC_MAX_CHARS = 120;
+const VENDOR_NOTES_MAX_CHARS = 700;
+const VENDOR_SOURCE_NOTES_MAX_CHARS = 1200;
 
 function truncateDesc(s: string): string {
   return s.length > VENDOR_DESC_MAX_CHARS ? `${s.slice(0, VENDOR_DESC_MAX_CHARS - 1)}…` : s;
+}
+
+/** Notes are Markdown paragraphs; flatten to one line per table and cap. */
+function truncateNotes(s: string, max = VENDOR_NOTES_MAX_CHARS): string {
+  const flat = s.replace(/\s*\n\s*/g, ' ').trim();
+  return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
+}
+
+/**
+ * The VENDOR NOTES block for the tables in scope, or null when there is
+ * nothing to say. The source-wide note leads; per-table notes follow, only
+ * for tables actually in scope — a note about a table the batch does not
+ * contain is noise.
+ */
+function vendorNotesBlock(vendorDocs: VendorDocsContext | undefined, tableNames: ReadonlySet<string>): string | null {
+  const lines: string[] = [];
+  const whole = vendorDocs?.sourceNotes?.trim();
+  if (whole) lines.push(`- Whole source: ${truncateNotes(whole, VENDOR_SOURCE_NOTES_MAX_CHARS)}`);
+  for (const [name, notes] of Object.entries(vendorDocs?.tableNotes ?? {})) {
+    if (tableNames.has(name) && notes.trim()) lines.push(`- ${name}: ${truncateNotes(notes)}`);
+  }
+  if (lines.length === 0) return null;
+  return `VENDOR NOTES (caveats from the source system's documentation — read before inferring types, joins or meaning):\n${lines.join('\n')}`;
 }
 
 export function buildTableContextUser(
@@ -212,6 +252,8 @@ export function buildTableContextUser(
   if (vendorTableLines.length > 0) {
     parts.push(`VENDOR-DOCUMENTED TABLES (the source system's own definitions — treat as authoritative):\n${vendorTableLines.join('\n')}`);
   }
+  const notesForAll = vendorNotesBlock(vendorDocs, new Set(tables.map((t) => t.tableName)));
+  if (notesForAll) parts.push(notesForAll);
 
   if (conventions) {
     parts.push(`Detected schema conventions:
@@ -398,6 +440,8 @@ export function buildColumnDescriptionsUser(
   // the vendor's own Classification1..8. Capped per table; descriptions
   // truncated — vocabulary anchoring, not full recall.
   if (vendorDocs) {
+    const notesForBatch = vendorNotesBlock(vendorDocs, batchNames);
+    if (notesForBatch) parts.push(notesForBatch);
     const siblingBlocks: string[] = [];
     for (const t of batch) {
       const sibs = (vendorDocs.columnsByTable[t.tableName] ?? [])

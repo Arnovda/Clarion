@@ -13,8 +13,7 @@
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { Database } from 'duckdb-async';
-import { ODOO_STAR_SCHEMA_TEMPLATE } from './starSchemaTemplate';
-import { ODOO_ENTITIES } from './entities';
+import { ODOO_ENTITIES, ODOO_STAR_SCHEMA_TEMPLATE } from './catalog';
 import { instantiateStarSchemaTemplate, validateStarSchemaTemplate } from '../starSchema';
 
 const CATALOG = ODOO_ENTITIES.map((e) => e.name);

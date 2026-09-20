@@ -23,7 +23,7 @@ relationships); classify each metadata kind separately.
 | Tier | Definition | Examples | Semantic strategy |
 |------|-----------|----------|-------------------|
 | **1 — Self-describing** | The source exposes machine-readable metadata *at runtime*: field labels/descriptions, types, relations. | Odoo (`fields_get` returns `string`, `help`, `type`, `relation` per field), OData `$metadata` (EO partially), GraphQL introspection, SQL sources with `information_schema` + column comments | Harvest metadata during profiling. Covers **custom fields** and per-instance translations that static docs never can. Highest trust. |
-| **2 — Documented** | The vendor publishes a stable, human-readable data-model reference, but there is no (complete) runtime metadata API. | ExactOnline REST reference, Stripe API docs, Salesforce object reference | **Build-time curation**: descriptions + relationships are hand-transcribed from the docs into the connector package (`entities.ts`), reviewed once, conformance-tested, shipped to every customer. |
+| **2 — Documented** | The vendor publishes a stable, human-readable data-model reference, but there is no (complete) runtime metadata API. | ExactOnline REST reference, Stripe API docs, Salesforce object reference | **Build-time curation**: descriptions + relationships are hand-transcribed from the docs into the connector's SOURCE PACKAGE (`src/<type>/package/`, YAML — Phase C), reviewed once, conformance-tested, shipped to every customer. |
 | **3 — Undocumented** | No vendor docs exist — the schema is bespoke per customer. | A customer's own Postgres/MySQL/SQL Server/SQLite database, CSV drops | AI pipeline is the primary mechanism (3-pass profiler + heuristic FK detection + value-overlap verification). Everything lands as `ai_draft` for human review. |
 
 Rules that follow from the tier:
@@ -153,26 +153,58 @@ directory, e.g. `packages/connectors/src/<type>/README.md`) answering:
 - `configSchema` is a strict JSON Schema; it gates every config write
   (`validateConnectorConfig` runs on `PATCH /source-config`).
 
-### Phase C — Entity catalog (`entities.ts`)
+### Phase C — Source package (`src/<type>/package/`)
 
-Every entity in the allowlist gets an `EntityDescriptor` with:
+Everything the connector KNOWS about the source — the entity catalog, the
+transcribed column docs, the curated relationships and the star-schema
+template — is DATA, not TypeScript: a **source package** of YAML files,
+loaded by `src/<type>/catalog.ts` (`loadSourcePackage`) and validated at
+import time and again in the conformance suite. Format, JSON Schema and
+worked examples: `packages/connectors/src/sourcePackage/README.md`. The
+vocabulary is Apache Ossie's for the shared part (`datasets`, `fields`,
+`relationships`, `metrics`; `source`, `primary_key`, `expression`,
+`datatype`) and everything Clarion-specific sits under a `clarion` block,
+so a package stays exportable the day an interchange adapter is wanted.
 
-- `name` — warehouse-safe (`^[A-Za-z0-9_-]+$`); map source naming to
-  safe names in the connector (Odoo's `account.move.line` →
-  `account_move_line`).
-- `displayName`, `category`, `description` — REQUIRED for new
-  connectors (Tier 1: may be filled/overridden at runtime; Tier 2:
-  transcribed from docs). An empty description on a documented source
-  is a review blocker.
-- `incrementalCursor` + `businessKey` — declare incremental wherever
-  the source supports it. The conformance suite enforces
-  `supportsIncremental === !!incrementalCursor` and
-  `incrementalCursor ⇒ businessKey` (the table-wipe invariant).
-- **Explicit column schema:** new connectors MUST pass
-  `WriteTableOptions.columns` (source types mapped to stable DuckDB
-  types) instead of relying on `auto_detect`. Sample-based inference
-  causes type drift between syncs; only Tier 3 sources with no type
-  metadata may fall back to inference.
+- `package.yaml` — the manifest: `vendor` (+ docs link and transcription
+  date), `provenance` (`curated` for a Tier 2 transcription, `declared`
+  when a runtime metadata API is the source), **`fieldCoverage:
+  complete | partial`** — say honestly whether every field of every
+  entity is listed; the documented-field cross-checks (lineage and
+  relationship endpoints) run only when `complete` — the wizard
+  `categories` order, the curated `relationships` the vendor does not
+  document, the template's `products` and `metrics`, optional `notes`.
+- `datasets/<Entity>.yaml` (`clarion.kind: source`) — one per entity:
+  `name` (warehouse-safe, `^[A-Za-z0-9_-]+$`; map source naming to safe
+  names — Odoo's `account.move.line` → `account_move_line`), `source`
+  (API path / model name), `label`, `description` (REQUIRED for Tier
+  1/2 — an empty description on a documented source is a review
+  blocker), `primary_key` (→ `businessKey`), `clarion.sync.cursor` (→
+  `incrementalCursor`; `supportsIncremental` is DERIVED from it and never
+  written), `clarion.category`, and `fields` carrying the vendor's own
+  `datatype` verbatim, a `description` and a `clarion.role` hint.
+- `model/<table>.yaml` (`clarion.kind: dimension | fact`) — the
+  star-schema template, one table per file (Phase F).
+- **`notes` (Markdown) is SOFT context**, on the manifest (source-wide
+  caveats — "`*DC` amounts are additive, `*FC` are not", "credit notes
+  are natively negative") or on one dataset. It reaches the schema
+  profiler's PROMPT only, via `getSourceNotes()` and `EntityDocs.notes`
+  — never a stored description, never a fact at the trusted rung. A fact
+  goes in `description`; a caveat the model must read first goes in
+  `notes`.
+- **Explicit column schema on writes:** new connectors MUST pass
+  `WriteTableOptions.columns` (the package's `datatype`s mapped to stable
+  DuckDB types) instead of relying on `auto_detect`. Sample-based
+  inference causes type drift between syncs; only Tier 3 sources with no
+  type metadata may fall back to inference.
+
+What stays in TypeScript is BEHAVIOUR a package cannot express: transport,
+auth, flattening, type mapping (`odoo/entities.ts` is rules only now).
+`catalog.ts` projects the package into the platform contracts
+(`EntityDescriptor[]`, `ColumnDoc`s, `KnownRelationship[]`,
+`StarSchemaTemplate`) and the conformance suite still enforces
+`supportsIncremental === !!incrementalCursor` and `incrementalCursor ⇒
+businessKey` (the table-wipe invariant) on the projection.
 
 ### Phase D — Sync correctness (the non-negotiables)
 
@@ -277,8 +309,10 @@ prose-derived link is **manual**, never source-laid.
 - Tier 1: harvest labels/descriptions during profiling from the
   metadata endpoint using the customer's own credentials. This covers
   custom fields (`x_...` in Odoo) automatically.
-- Tier 2: ship a curated per-column docs map in the connector package
-  alongside `entities.ts`.
+- Tier 2: ship the curated per-field docs in the package's
+  `datasets/<Entity>.yaml` (`fields[].description`, vendor `datatype`
+  verbatim). The Exact Online transcriber (`scripts/generate-eo-docs.ts`)
+  regenerates exactly those `fields` and nothing else.
 - Either way, they enter the profiler at the `declared`/`curated` rung:
   stored approved, skipped by the AI passes, immune to AI overwrite.
 - The AI's 3-pass pipeline then runs ONLY over the uncovered remainder
@@ -300,14 +334,23 @@ is the "what if the descriptions don't exist" contract):
 ### Phase F — Deterministic star schema (the destination)
 
 For Tier 1/2 sources the fact/dimension design is a property of the
-*source system*, not of the customer. Once the platform's template
-contract exists (§8), every new connector ships:
+*source system*, not of the customer. Every new connector ships its
+template AS PART OF THE SOURCE PACKAGE — one `model/<table>.yaml` per
+dimension and fact, `products` and `metrics` on the manifest — and
+`getStarSchemaTemplate()` returns `toStarSchemaTemplate(pkg)`. The
+platform contract (`starSchema.ts`, instantiation, validation) is
+unchanged; only where the template is authored moved.
 
-- `getStarSchemaTemplate(selectedEntities)` — a versioned, hand-written
-  template: fact tables, dimensions, grain, tested transformation SQL,
-  and the KPIs that make sense for that source (e.g. Odoo →
-  `fact_invoice_lines`, `fact_sale_order_lines`, `dim_partner`,
-  `dim_product`, `dim_account`, `dim_date`).
+- A `model/` dataset carries `clarion.kind`, `clarion.product`,
+  `clarion.sourceEntities`, `clarion.grain` (facts also `factTableType`),
+  the tested transformation SQL as a literal block, and per field the
+  `clarion.role`, `technical`, `references` (FK → template table.field)
+  and `lineage` (→ source dataset.field). **Author once:** template
+  relationships are DERIVED from the FK fields' `references`, and
+  `dimensionsUsed` is derived unless a fact lists it.
+- Every `lineage` and relationship endpoint must name a field the
+  package documents when `fieldCoverage: complete` ("no guessed field
+  names" — a conformance error, not a runtime drop).
 - **Graceful degradation:** the template instantiates only the tables
   whose upstream entities were actually synced; a missing dimension
   degrades that FK to a plain column rather than failing the build.
@@ -315,14 +358,10 @@ contract exists (§8), every new connector ships:
   Tier 3 sources, for customer-specific derived measures, and for
   extending a template with custom fields. A customer can always fork
   from the template.
-- **Versioned:** templates carry a version; existing customers stay on
-  their materialised version until an explicit upgrade (same
-  incremental-migration philosophy as the warehouse layout v1→v2).
-
-Until the template contract ships, Phase F for a new connector means:
-document the intended star schema in the connector README (facts, dims,
-grain, measures) so the AI-designed products can be checked against it
-and the template can be written later without re-research.
+- **Versioned:** the manifest's `version`; existing customers stay on
+  their materialised version (`data_products.template_version`) until an
+  explicit upgrade (same incremental-migration philosophy as the
+  warehouse layout v1→v2).
 
 ### Phase G — Tests & conformance
 
@@ -361,7 +400,7 @@ and the template can be written later without re-research.
 - [ ] `configSchema` strict; OAuth spec if applicable; token-rotation hook wired if the provider rotates
 - [ ] `egressAllowList` minimal and enforced via shared `HttpClient`
 - [ ] Read-only enforced by construction where the API shape allows it
-- [ ] Entity catalog: warehouse-safe names, descriptions on every entity, incremental + businessKey wherever supported
+- [ ] Source package (Phase C): warehouse-safe names, descriptions on every entity, `primary_key` + cursor wherever supported; `validateSourcePackage` clean (the conformance suite runs it); `fieldCoverage` declared honestly; caveats in `notes`, facts in `description`
 - [ ] Explicit `columns` schema on writes (no `auto_detect` for Tier 1/2)
 - [ ] Cursor filter `>=` + merge-by-key; type-aware flattening; stable pagination order; streaming + cancellation
 - [ ] `getKnownRelationships` with descriptions (Tier 1/2)
@@ -401,7 +440,9 @@ The playbook above assumes a few extension points. Status:
    catalog entities transcribed DETERMINISTICALLY from the EO REST
    reference (an HTML-table parser over the details pages — no model in
    the transcription loop, verbatim by construction): 2,613 documented
-   columns in the generated `exactonline/docs.ts`, served statically by
+   columns — since 2026-09-20 the `fields` of
+   `exactonline/package/datasets/*.yaml`, regenerated by
+   `scripts/generate-eo-docs.ts` — served statically by
    `ExactOnlineConnector.describeEntities` at `provenance: 'curated'`.
    Role hints derived from Edm types (Double/Decimal → measure;
    Guid/String/Boolean/DateTime → dimension; integers → no hint).
@@ -447,8 +488,27 @@ The playbook above assumes a few extension points. Status:
    lineage points at a field present in the vendor-docs transcription
    ("no guessed field names", enforced in code).
 
-**ExactOnline template v1 notes** (authored 2026-07-14 from the docs.ts
-transcription): 6 conformed dims (account, item, item_group, gl_account,
+6. **Source package format.** ✅ SHIPPED 2026-09-20. A connector's
+   knowledge is YAML under `src/<type>/package/` (manifest + one file per
+   dataset + one per template table), loaded by `catalog.ts`, validated by
+   JSON Schema + cross-reference checks (`src/sourcePackage/`), and held
+   to the format by the conformance suite. Vocabulary aligned with Apache
+   Ossie (`datasets`/`fields`/`relationships`/`metrics`, `source`,
+   `primary_key`, `expression`, `datatype`) with everything of ours under
+   `clarion`; three documented superset keys (`label` on a dataset,
+   `description` and `cardinality` on a relationship). `fieldCoverage`
+   says whether the field lists are complete (Exact Online: yes; Odoo: a
+   curated subset — its docs are harvested live). `notes` is Markdown soft
+   context, prompt-only, via `getSourceNotes()` / `EntityDocs.notes`. Both
+   existing connectors were migrated by a generator with a deep-equal
+   round trip against the old TypeScript data before that data was
+   deleted (~5,800 lines of TS became data). Deliberately NOT built: an
+   Ossie import/export adapter — the vocabulary is aligned so that it is
+   a small job when a customer or tool asks for it.
+
+**ExactOnline template v1 notes** (authored 2026-07-14 from the vendor-docs
+transcription; since 2026-09-20 the template lives in
+`exactonline/package/model/`): 6 conformed dims (account, item, item_group, gl_account,
 journal [code-keyed], payment_condition [code-keyed]), 6 facts
 (fact_sales_invoice_lines, fact_transaction_lines, fact_sales_order_lines,
 fact_purchase_order_lines, fact_receivables, fact_payables), 4 products

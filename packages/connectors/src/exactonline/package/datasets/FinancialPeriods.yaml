@@ -1,0 +1,58 @@
+# Exact Online entity. Field docs are TRANSCRIBED from the vendor REST reference by scripts/generate-eo-docs.ts — do not hand-edit descriptions; edit label/description/clarion freely.
+
+name: FinancialPeriods
+label: Financial periods
+description: Open / closed accounting periods per fiscal year.
+source: /financial/FinancialPeriods
+primary_key: [ ID ]
+fields:
+  - name: Created
+    description: Creation date
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: Creator
+    description: User ID of creator
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: CreatorFullName
+    description: Name of creator
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Division
+    description: Division code
+    datatype: Edm.Int32
+  - name: EndDate
+    description: The end date of the period
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: FinPeriod
+    description: The financial period. Usually the period is a month or quarter with period 1 starting on the first of January.
+    datatype: Edm.Int16
+  - name: FinYear
+    description: The financial year. The financial year and calendar year are not always aligned.
+    datatype: Edm.Int16
+  - name: ID
+    description: Primary key
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: Modified
+    description: Last modified date
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: Modifier
+    description: User ID of modifier
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: ModifierFullName
+    description: Name of modifier
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: StartDate
+    description: The start date of a period. A start date should always succeed a previous end date. Except for the first year/period combination
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+clarion:
+  kind: source
+  category: Financial
+  sync:
+    cursor: { field: Modified, type: timestamp }

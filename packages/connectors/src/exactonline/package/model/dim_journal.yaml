@@ -1,0 +1,28 @@
+# Exact Online star-schema template table. `source` is the DuckDB SQL over BARE source entity names; a foreign key is written ONCE on its field (clarion.references) and the template joins are derived from it.
+
+name: dim_journal
+label: Journals
+description: Journal definitions (sales, purchases, bank, memo). Code-keyed — facts reference journals by code.
+source: |-
+  SELECT
+    Code        AS journal_code,
+    Description AS journal_name,
+    Type        AS journal_type
+  FROM Journals
+fields:
+  - name: journal_code
+    label: Journal code
+    description: Journal code (natural key — facts reference this).
+    datatype: VARCHAR
+    clarion: { role: natural_key, lineage: { dataset: Journals, field: Code } }
+  - name: journal_name
+    label: Journal name
+    description: Description of the journal.
+    datatype: VARCHAR
+    clarion: { role: attribute, lineage: { dataset: Journals, field: Description } }
+  - name: journal_type
+    label: Journal type
+    description: Numeric journal type (10 = sales, 20 = purchase, 12 = bank, …).
+    datatype: BIGINT
+    clarion: { role: attribute, technical: true, lineage: { dataset: Journals, field: Type } }
+clarion: { kind: dimension, product: Core dimensions, sourceEntities: [ Journals ] }

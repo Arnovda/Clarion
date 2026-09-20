@@ -1,0 +1,125 @@
+# Exact Online entity. Field docs are TRANSCRIBED from the vendor REST reference by scripts/generate-eo-docs.ts — do not hand-edit descriptions; edit label/description/clarion freely.
+
+name: QuotationLines
+label: Quotation lines
+description: Line items on quotations.
+source: /crm/QuotationLines
+primary_key: [ ID ]
+fields:
+  - name: AmountDC
+    description: Amount in the default currency of the company
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: AmountFC
+    description: Amount in the currency of the transaction
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: CostCenter
+    description: Reference to Cost center
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: CostCenterDescription
+    description: Description of CostCenter
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: CostUnit
+    description: Reference to Cost unit
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: CostUnitDescription
+    description: Description of CostUnit
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: CustomerItemCode
+    description: Code the customer uses for this item
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: CustomField
+    description: Custom field endpoint
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Description
+    description: By default this contains the item description
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Discount
+    description: Discount given on the default price. This is stored as a fraction. ie 5.5% is stored as .055
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: Division
+    description: Division code
+    datatype: Edm.Int32
+  - name: ID
+    description: Primary key
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: Item
+    description: Reference to the item that is sold in this quotation line
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: Items, field: ID } }
+  - name: ItemDescription
+    description: Description of the item
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: LineNumber
+    description: Indicates the sequence of the lines within one quotation
+    datatype: Edm.Int32
+  - name: NetPrice
+    description: Net price of the quotation line
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: Notes
+    description: Extra notes
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Optional
+    description: Indicates the optional line
+    datatype: Edm.Boolean
+    clarion: { role: dimension }
+  - name: Quantity
+    description: The number of items sold in default units. The quantity shown in the entry screen is Quantity * UnitFactor
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: QuotationID
+    description: Identifies the quotation. All the lines of a quotation have the same QuotationID
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: Quotations, field: QuotationID } }
+  - name: QuotationNumber
+    description: Unique number to indentify the quotation. By default this number is based on the setting for first available number
+    datatype: Edm.Int32
+  - name: UnitCode
+    description: Code of the item unit
+    datatype: Edm.String
+    clarion: { role: dimension, references: { dataset: Units, field: ID } }
+  - name: UnitDescription
+    description: Description of the item unit
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: UnitPrice
+    description: Price per item unit
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: VATAmountFC
+    description: VAT amount of the line in the currency of the transaction
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: VATCode
+    description: The VAT code that is used when the quotation is invoiced
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: VATDescription
+    description: Description of the VAT code
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: VATPercentage
+    description: The VAT percentage of the VAT code
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: VersionNumber
+    description: Number indicating the different reviews which are made for the quotation
+    datatype: Edm.Int32
+clarion:
+  kind: source
+  category: CRM
+  sync:
+    requiresSelect: true

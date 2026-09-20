@@ -1,0 +1,170 @@
+# Exact Online entity. Field docs are TRANSCRIBED from the vendor REST reference by scripts/generate-eo-docs.ts — do not hand-edit descriptions; edit label/description/clarion freely.
+
+name: ItemWarehouses
+label: Item × warehouse stock
+description: Current stock levels per item per warehouse — the snapshot table for "how many do we have right now."
+source: /inventory/ItemWarehouses
+fields:
+  - name: CountingCycle
+    description: Indicates the number of days for next cycle count.
+    datatype: Edm.Int16
+  - name: Created
+    description: Creation date
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: Creator
+    description: User ID of creator
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: CreatorFullName
+    description: Name of creator
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: CurrentStock
+    description: Quantity that is currently in stock, included the stock committed to sales order
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: DefaultStorageLocation
+    description: This is a default storage location
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: DefaultStorageLocationCode
+    description: Default storage location's code
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: DefaultStorageLocationDescription
+    description: Default storage location's description
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Division
+    description: Division code
+    datatype: Edm.Int32
+  - name: ID
+    description: A guid that is the unique identifier of the linkage between item and warehouse
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: Item
+    description: Item ID
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: Items, field: ID } }
+  - name: ItemBarcode
+    description: Barcode of item
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: ItemCode
+    description: Code of item
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: ItemDescription
+    description: Description of item
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: ItemEndDate
+    description: Together with ItemStartDate this determines if the item is active
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: ItemIsFractionAllowedItem
+    description: Indicates if fractions (for example 0.35) are allowed for quantities of this item
+    datatype: Edm.Boolean
+    clarion: { role: dimension }
+  - name: ItemIsStockItem
+    description: Indicates if this is a stock item
+    datatype: Edm.Boolean
+    clarion: { role: dimension }
+  - name: ItemStartDate
+    description: Together with ItemEndDate this determines if the item is active
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: ItemUnit
+    description: The standard unit code of this item
+    datatype: Edm.String
+    clarion: { role: dimension, references: { dataset: Units, field: ID } }
+  - name: ItemUnitDescription
+    description: Description of item's unit
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: MaximumStock
+    description: Maximum quantity of items that you want in warehouse
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: Modified
+    description: Last modified date
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: Modifier
+    description: User ID of modifier
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: ModifierFullName
+    description: Name of modifier
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: NextCountingCycle
+    description: Indicates the date for next cycle count
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: OrderPolicy
+    description: "Order Policy options: 1-Lot for lot, 2-Fixed order quantity, 3-Min / Max, 4-Order"
+    datatype: Edm.Int16
+  - name: Period
+    description: Period that work together with replenishment in MRP
+    datatype: Edm.Int16
+  - name: PlannedStockIn
+    description: The quantity still open to be received based on i.e. purchase orders and assembly orders.
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: PlannedStockOut
+    description: The quantity still open to be delivered based on i.e. sales orders and assembly orders.
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: PlanningDetailsUrl
+    description: URL of the stock planning details of this record
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: ProjectedStock
+    description: The quantity of stock projected given all planned future stock changes
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: ReorderPoint
+    description: Quantity of items as an indication of when you need to reorder more stock for the warehouse
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: ReorderQuantity
+    description: Reorder quantity that work together with replenishment in MRP
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: ReplenishmentType
+    description: "Replenishment options: 1-Purchase, 2-Assemble, 3-Make, 4-Transfer, 5-No replenishment advice"
+    datatype: Edm.Int16
+  - name: ReservedStock
+    description: The quantity in a back to back order process which is already received from the purchase order, but not yet delivered for the sales order.
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: SafetyStock
+    description: Minimum quantity of items you must have in stock
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: StorageLocationSequenceNumber
+    description: Sequence number of the item (Premium Only)
+    datatype: Edm.Int32
+  - name: StorageLocationUrl
+    description: URL pointing to details of which storage locations this ItemWarehouse's stock is located
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Warehouse
+    description: Warehouse ID
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: Warehouses, field: ID } }
+  - name: WarehouseCode
+    description: Code of warehouse
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: WarehouseDescription
+    description: Description of warehouse
+    datatype: Edm.String
+    clarion: { role: dimension }
+clarion:
+  kind: source
+  category: Inventory
+  sync:
+    requiresSelect: true

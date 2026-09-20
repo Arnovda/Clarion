@@ -1,0 +1,40 @@
+# Exact Online star-schema template table. `source` is the DuckDB SQL over BARE source entity names; a foreign key is written ONCE on its field (clarion.references) and the template joins are derived from it.
+
+name: dim_gl_account
+label: GL accounts
+description: The chart of accounts — one row per general-ledger account.
+source: |-
+  SELECT
+    ID              AS gl_account_id,
+    Code            AS gl_account_code,
+    Description     AS gl_account_name,
+    TypeDescription AS gl_account_type,
+    BalanceSide     AS balance_side
+  FROM GLAccounts
+fields:
+  - name: gl_account_id
+    label: GL account ID
+    description: ExactOnline GL account GUID (primary key).
+    datatype: VARCHAR
+    clarion: { role: natural_key, technical: true, lineage: { dataset: GLAccounts, field: ID } }
+  - name: gl_account_code
+    label: GL account code
+    description: Chart-of-accounts code.
+    datatype: VARCHAR
+    clarion: { role: attribute, lineage: { dataset: GLAccounts, field: Code } }
+  - name: gl_account_name
+    label: GL account name
+    description: Name of the GL account.
+    datatype: VARCHAR
+    clarion: { role: attribute, lineage: { dataset: GLAccounts, field: Description } }
+  - name: gl_account_type
+    label: GL account type
+    description: Account classification (revenue, cost, debtors, …).
+    datatype: VARCHAR
+    clarion: { role: attribute, lineage: { dataset: GLAccounts, field: TypeDescription } }
+  - name: balance_side
+    label: Balance side
+    description: D (debit) or C (credit).
+    datatype: VARCHAR
+    clarion: { role: attribute, lineage: { dataset: GLAccounts, field: BalanceSide } }
+clarion: { kind: dimension, product: Core dimensions, sourceEntities: [ GLAccounts ] }

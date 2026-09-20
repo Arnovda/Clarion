@@ -48,7 +48,7 @@ const ROOT_POOL_OK: Record<string, string> = {
   'services/mfaService.ts': 'unauthenticated MFA path: `users` carries the auth_lookup carve-out; writes are SET LOCAL transactions',
   'services/webauthnService.ts': 'unauthenticated WebAuthn path: same carve-out as mfaService',
 };
-const BASELINE = 19;
+const BASELINE = 17;
 
 const SESSION_SET_RE = /SET\s+app\.current_tenant|set_config\(\s*'app\.current_tenant'\s*,\s*[^,]+,\s*false\s*\)/;
 const BARE_POOL_RE = /(?:^|[^.\w])semanticDb\s*\(\s*['"`]/;

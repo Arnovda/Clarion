@@ -1,0 +1,155 @@
+# Exact Online entity. Field docs are TRANSCRIBED from the vendor REST reference by scripts/generate-eo-docs.ts — do not hand-edit descriptions; edit label/description/clarion freely.
+
+name: ItemGroups
+label: Item groups
+description: Item categorisation — typically used for reporting groupings.
+source: /logistics/ItemGroups
+primary_key: [ ID ]
+fields:
+  - name: Code
+    description: Code of the item group
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Created
+    description: Creation date
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: Creator
+    description: User ID of creator
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: CreatorFullName
+    description: Name of creator
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Description
+    description: Description of the item group
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Division
+    description: Division code
+    datatype: Edm.Int32
+  - name: GLCosts
+    description: GL account on which the costs of items of this group will be booked
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: GLAccounts, field: ID } }
+  - name: GLCostsCode
+    description: Code of GLCosts
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: GLCostsDescription
+    description: Description of GLCosts
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: GLCostsWorkInProgress
+    description: GL account on which the work in progress project costs of items of this group will be booked
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: GLAccounts, field: ID } }
+  - name: GLCostsWorkInProgressCode
+    description: Code of GLCosts Work In Progress
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: GLCostsWorkInProgressDescription
+    description: Description of GLCosts Work In Progress
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: GLPurchaseAccount
+    description: GL Purchase account for purchase invoicing according to (non-) perpetual inventory method
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: GLAccounts, field: ID } }
+  - name: GLPurchaseAccountCode
+    description: Code of GLPurchase
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: GLPurchaseAccountDescription
+    description: Description of GLPurchaseAccount
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: GLPurchasePriceDifference
+    description: GL account that will be used for the 'Standard cost price' valuation method to balance the difference between purchase price and cost price
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: GLAccounts, field: ID } }
+  - name: GLPurchasePriceDifferenceCode
+    description: Code of GLPurchasePriceDifference
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: GLPurchasePriceDifferenceDescr
+    description: Description of GLPurchasePriceDifference
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: GLRevenue
+    description: GL account on which the revenue for items of this group will be booked
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: GLAccounts, field: ID } }
+  - name: GLRevenueCode
+    description: Code of GLRevenue
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: GLRevenueDescription
+    description: Description of GLRevenue
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: GLRevenueWorkInProgress
+    description: GL account on which the work in progress project revenue of items of this group will be booked
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: GLAccounts, field: ID } }
+  - name: GLRevenueWorkInProgressCode
+    description: Code of GLRevenue WorkInProgress
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: GLRevenueWorkInProgressDescription
+    description: Description of GLRevenue WorkInProgress
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: GLStock
+    description: GL account on which stock entries will be booked for items of this group
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: GLAccounts, field: ID } }
+  - name: GLStockCode
+    description: Code of GLStock
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: GLStockDescription
+    description: Description of GLStock
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: GLStockVariance
+    description: GL stock variance account for perpetual inventory
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: GLAccounts, field: ID } }
+  - name: GLStockVarianceCode
+    description: Code of GLStockVariance
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: GLStockVarianceDescription
+    description: Description of GLStockVariance
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: ID
+    description: A guid that is the unique identifier of the item group
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: IsDefault
+    description: Indicates if this is the default item group that will be assigned when a new item is created
+    datatype: Edm.Byte
+  - name: Modified
+    description: Last modified date
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: Modifier
+    description: User ID of modifier
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: ModifierFullName
+    description: Name of modifier
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Notes
+    description: Notes
+    datatype: Edm.String
+    clarion: { role: dimension }
+clarion:
+  kind: source
+  category: Logistics
+  sync:
+    cursor: { field: Modified, type: timestamp }

@@ -1,0 +1,270 @@
+# Exact Online entity. Field docs are TRANSCRIBED from the vendor REST reference by scripts/generate-eo-docs.ts — do not hand-edit descriptions; edit label/description/clarion freely.
+
+name: Payments
+label: Payments
+description: Outgoing and incoming payments — useful for AR / AP analysis.
+source: /cashflow/Payments
+primary_key: [ ID ]
+fields:
+  - name: Account
+    description: The supplier to which the payment has to be done.
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: Accounts, field: ID } }
+  - name: AccountBankAccountID
+    description: The bank account of the supplier, to which the payment has to be done.
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: BankAccounts, field: ID } }
+  - name: AccountBankAccountNumber
+    description: The bank account number of the supplier, to which the payment has to be done.
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: AccountCode
+    description: The code of the supplier to which the payment has to be done.
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: AccountContact
+    description: Contact person copied from the purchase invoice linked to the related purchase entry. Used as prefered contact when sending reminders.
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: Contacts, field: ID } }
+  - name: AccountContactName
+    description: Name of the contact person of the supplier.
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: AccountName
+    description: Name of the supplier.
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: AmountDC
+    description: The amount in default currency (division currency). Payments are matched on this amount.
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: AmountDiscountDC
+    description: The amount of the discount in the default currency.
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: AmountDiscountFC
+    description: The amount of the discount. This is in the amount of the selected currency.
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: AmountFC
+    description: The amount of the payment. This is in the amount of the selected currency.
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: BankAccountID
+    description: Own bank account from which the payment must be done.
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: BankAccounts, field: ID } }
+  - name: BankAccountNumber
+    description: Own bank account number from which the payment must be done.
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: CashflowTransactionBatchCode
+    description: When processing payments, all payments with the same processing data are put in a batch. This field contains the code of that batch.
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Created
+    description: Creation date.
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: Creator
+    description: User ID of the creator.
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: CreatorFullName
+    description: Name of the creator.
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Currency
+    description: The currency of the payment. This currency can only deviate from the division currency if the module Currency is in the license.
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Description
+    description: Extra description for the payment that may be included in the bank export file.
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: DiscountDueDate
+    description: Date before which the payment must be done to be eligible for discount.
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: Division
+    description: Division code.
+    datatype: Edm.Int32
+  - name: Document
+    description: Document that is created when processing payments. The bank export file is attached to the document.
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: Documents, field: ID } }
+  - name: DocumentNumber
+    description: Number of the document.
+    datatype: Edm.Int32
+  - name: DocumentSubject
+    description: Subject of the document.
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: DueDate
+    description: Date before which the payment must be done.
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: EndDate
+    description: Date since when the payment is no longer an outstanding item. This is the highest invoice date of all matched payments.
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: EndPeriod
+    description: Period since when the payment is no longer an outstanding item. This is the highest period of all matched payments.
+    datatype: Edm.Int16
+  - name: EndYear
+    description: Year (of period) since when the payment is no longer an outstanding item. This is the highest year of all matched payments. Used in combination with EndPeriod.
+    datatype: Edm.Int16
+  - name: EntryDate
+    description: Processing date of the payment.
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: EntryID
+    description: The unique identifier for a set of payments. A payment can be split so that one part is paid on a different date. In that case the two records get a different EntryID.
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: EntryNumber
+    description: Entry number of the linked transaction.
+    datatype: Edm.Int32
+  - name: GLAccount
+    description: G/L account of the payment. Must be of type 22 (Accounts payable).
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: GLAccounts, field: ID } }
+  - name: GLAccountCode
+    description: Code of the G/L account.
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: GLAccountDescription
+    description: Description of the G/L account.
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: ID
+    description: Identifier of the payment.
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: InvoiceDate
+    description: Invoice date of the linked transaction.
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: InvoiceNumber
+    description: Invoice number of the linked transaction.
+    datatype: Edm.Int32
+  - name: IsBatchBooking
+    description: Boolean indicating whether the payment is part of a batch booking.
+    datatype: Edm.Byte
+  - name: Journal
+    description: Journal of the linked transaction.
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: JournalDescription
+    description: Description of the journal.
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Modified
+    description: Last modified date.
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: Modifier
+    description: User ID of modifier.
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: ModifierFullName
+    description: Name of modifier.
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: PaymentBatchNumber
+    description: Number assigned during the of processing payments. When payments are processed a bank export file is created. This file contains one or more batches that contain one or more payments. Each batch gets a sequence number that is stored for each payment in that batch.
+    datatype: Edm.Int32
+  - name: PaymentCondition
+    description: Payment condition of the linked transaction.
+    datatype: Edm.String
+    clarion: { role: dimension, references: { dataset: PaymentConditions, field: ID } }
+  - name: PaymentConditionDescription
+    description: Description of the payment condition.
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: PaymentDays
+    description: Number of days between invoice date and due date.
+    datatype: Edm.Int32
+  - name: PaymentDaysDiscount
+    description: Number of days between invoice date and due date of the discount.
+    datatype: Edm.Int32
+  - name: PaymentDiscountPercentage
+    description: Payment discount percentage.
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: PaymentMethod
+    description: Method of payment. B = On credit (default) I = Collection K = Cash V = Credit card.
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: PaymentReference
+    description: Payment reference for the payment that may be included in the bank export file.
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: PaymentSelected
+    description: Date and time since when the payment is selected to be paid.
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: PaymentSelector
+    description: User who selected the payment to be paid.
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: PaymentSelectorFullName
+    description: Name of the payment selector.
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: RateFC
+    description: Exchange rate from payment currency to division currency. AmountFC * RateFC = AmountDC.
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: Source
+    description: The source of the payment.
+    datatype: Edm.Int32
+  - name: Status
+    description: The status of the payment. 20 = open 30 = selected - payment is selected to be paid 40 = processed - payment has been done 50 = matched - payment is matched with one or more other outstanding items or financial statement lines
+    datatype: Edm.Int16
+  - name: TransactionAmountDC
+    description: Total amount of the linked transaction in default currency (division currency).
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: TransactionAmountFC
+    description: Total amount of the linked transaction in the selected currency.
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: TransactionDueDate
+    description: Due date of the linked transaction.
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: TransactionEntryID
+    description: Linked transaction. Use this as reference to PurchaseEntries.
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: PurchaseEntries, field: EntryID } }
+  - name: TransactionID
+    description: Linked transaction line. Use this as reference to PurchaseEntryLines
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: TransactionLines, field: ID } }
+  - name: TransactionIsReversal
+    description: Indicates if the linked transaction is a reversal entry.
+    datatype: Edm.Boolean
+    clarion: { role: dimension }
+  - name: TransactionReportingPeriod
+    description: Period of the linked transaction.
+    datatype: Edm.Int16
+  - name: TransactionReportingYear
+    description: Year of the linked transaction.
+    datatype: Edm.Int16
+  - name: TransactionStatus
+    description: Status of the linked transaction.
+    datatype: Edm.Int16
+  - name: TransactionType
+    description: Type of the linked transaction.
+    datatype: Edm.Int32
+  - name: YourRef
+    description: Invoice number of the supplier. In case the payment belongs to a bank entry line and is matched with one invoice, YourRef is filled with the YourRef of this invoice.
+    datatype: Edm.String
+    clarion: { role: dimension }
+clarion:
+  kind: source
+  category: Cashflow
+  sync:
+    cursor: { field: Modified, type: timestamp }
+    requiresSelect: true

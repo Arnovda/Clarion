@@ -1,0 +1,327 @@
+# Clarion source package — Odoo. Format: src/sourcePackage/types.ts.
+# Documented many2one foreign keys and the star-schema template live here; each model is a file under datasets/, each template table under model/.
+
+version: 1
+name: odoo
+description: Odoo — open-source ERP. Read-only over JSON-2 (Odoo 19+/Online) or XML-RPC (older on-prem); one database per connection.
+clarion:
+  vendor: { name: Odoo, docs: https://www.odoo.com/documentation/, transcribed: 2026-07-20 }
+  provenance: declared
+  fieldCoverage: partial
+  categories:
+    - Contacts
+    - Accounting
+    - Products
+    - Sales
+    - Purchasing
+    - Inventory
+  template:
+    version: 1
+    products:
+      - name: Core dimensions
+        description: "Conformed dimensions shared by every Odoo data product: partners, products, accounts, journals, companies, currencies."
+        buildOrder: 1
+      - name: Finance
+        description: "Accounting analytics: general ledger, invoices and bills, payments."
+        buildOrder: 2
+      - name: Sales
+        description: "Sales analytics: orders, quantities, delivery and invoicing progress."
+        buildOrder: 3
+      - name: Purchasing
+        description: "Purchasing analytics: orders placed with vendors, receipts and billing progress."
+        buildOrder: 4
+      - name: Inventory
+        description: "Inventory analytics: product movements over time."
+        buildOrder: 5
+relationships:
+  - from: res_partner
+    from_columns: [ company_id ]
+    to: res_company
+    to_columns: [ id ]
+    description: Company this contact belongs to.
+  - from: res_partner
+    from_columns: [ parent_id ]
+    to: res_partner
+    to_columns: [ id ]
+    description: Parent contact (company a person works at).
+  - from: res_partner
+    from_columns: [ commercial_partner_id ]
+    to: res_partner
+    to_columns: [ id ]
+    description: Commercial entity this contact rolls up to.
+  - from: account_account
+    from_columns: [ company_id ]
+    to: res_company
+    to_columns: [ id ]
+    description: Company that owns this GL account.
+  - from: account_journal
+    from_columns: [ company_id ]
+    to: res_company
+    to_columns: [ id ]
+    description: Company that owns this journal.
+  - from: account_journal
+    from_columns: [ currency_id ]
+    to: res_currency
+    to_columns: [ id ]
+    description: Currency of this journal (when set).
+  - from: account_move
+    from_columns: [ partner_id ]
+    to: res_partner
+    to_columns: [ id ]
+    description: Customer / vendor on this entry.
+  - from: account_move
+    from_columns: [ journal_id ]
+    to: account_journal
+    to_columns: [ id ]
+    description: Journal this entry is posted in.
+  - from: account_move
+    from_columns: [ company_id ]
+    to: res_company
+    to_columns: [ id ]
+    description: Company this entry belongs to.
+  - from: account_move
+    from_columns: [ currency_id ]
+    to: res_currency
+    to_columns: [ id ]
+    description: Currency of this entry.
+  - from: account_move
+    from_columns: [ invoice_payment_term_id ]
+    to: account_payment_term
+    to_columns: [ id ]
+    description: Payment term on this invoice.
+  - from: account_move_line
+    from_columns: [ move_id ]
+    to: account_move
+    to_columns: [ id ]
+    description: Journal entry this line belongs to.
+  - from: account_move_line
+    from_columns: [ account_id ]
+    to: account_account
+    to_columns: [ id ]
+    description: GL account this line posts to.
+  - from: account_move_line
+    from_columns: [ partner_id ]
+    to: res_partner
+    to_columns: [ id ]
+    description: Customer / vendor on this line.
+  - from: account_move_line
+    from_columns: [ product_id ]
+    to: product_product
+    to_columns: [ id ]
+    description: Product on this line (when set).
+  - from: account_move_line
+    from_columns: [ journal_id ]
+    to: account_journal
+    to_columns: [ id ]
+    description: Journal of this line.
+  - from: account_move_line
+    from_columns: [ company_id ]
+    to: res_company
+    to_columns: [ id ]
+    description: Company of this line.
+  - from: account_move_line
+    from_columns: [ currency_id ]
+    to: res_currency
+    to_columns: [ id ]
+    description: Currency of this line.
+  - from: account_payment
+    from_columns: [ partner_id ]
+    to: res_partner
+    to_columns: [ id ]
+    description: Customer / vendor this payment is with.
+  - from: account_payment
+    from_columns: [ journal_id ]
+    to: account_journal
+    to_columns: [ id ]
+    description: Bank / cash journal of this payment.
+  - from: account_payment
+    from_columns: [ company_id ]
+    to: res_company
+    to_columns: [ id ]
+    description: Company this payment belongs to.
+  - from: account_payment
+    from_columns: [ currency_id ]
+    to: res_currency
+    to_columns: [ id ]
+    description: Currency of this payment.
+  - from: account_tax
+    from_columns: [ company_id ]
+    to: res_company
+    to_columns: [ id ]
+    description: Company this tax is defined for.
+  - from: product_product
+    from_columns: [ product_tmpl_id ]
+    to: product_template
+    to_columns: [ id ]
+    description: Template this variant belongs to.
+  - from: product_template
+    from_columns: [ categ_id ]
+    to: product_category
+    to_columns: [ id ]
+    description: Category of this product.
+  - from: product_template
+    from_columns: [ uom_id ]
+    to: uom_uom
+    to_columns: [ id ]
+    description: Default unit of measure.
+  - from: product_template
+    from_columns: [ uom_po_id ]
+    to: uom_uom
+    to_columns: [ id ]
+    description: Purchase unit of measure.
+  - from: product_template
+    from_columns: [ company_id ]
+    to: res_company
+    to_columns: [ id ]
+    description: Company this product belongs to (when set).
+  - from: product_category
+    from_columns: [ parent_id ]
+    to: product_category
+    to_columns: [ id ]
+    description: Parent product category.
+  - from: sale_order
+    from_columns: [ partner_id ]
+    to: res_partner
+    to_columns: [ id ]
+    description: Customer on this sales order.
+  - from: sale_order
+    from_columns: [ company_id ]
+    to: res_company
+    to_columns: [ id ]
+    description: Company this order belongs to.
+  - from: sale_order
+    from_columns: [ currency_id ]
+    to: res_currency
+    to_columns: [ id ]
+    description: Currency of this order.
+  - from: sale_order_line
+    from_columns: [ order_id ]
+    to: sale_order
+    to_columns: [ id ]
+    description: Order this line belongs to.
+  - from: sale_order_line
+    from_columns: [ product_id ]
+    to: product_product
+    to_columns: [ id ]
+    description: Product on this line.
+  - from: sale_order_line
+    from_columns: [ product_uom ]
+    to: uom_uom
+    to_columns: [ id ]
+    description: Unit of measure on this line.
+  - from: sale_order_line
+    from_columns: [ company_id ]
+    to: res_company
+    to_columns: [ id ]
+    description: Company of this line.
+  - from: purchase_order
+    from_columns: [ partner_id ]
+    to: res_partner
+    to_columns: [ id ]
+    description: Vendor on this purchase order.
+  - from: purchase_order
+    from_columns: [ company_id ]
+    to: res_company
+    to_columns: [ id ]
+    description: Company this order belongs to.
+  - from: purchase_order
+    from_columns: [ currency_id ]
+    to: res_currency
+    to_columns: [ id ]
+    description: Currency of this order.
+  - from: purchase_order_line
+    from_columns: [ order_id ]
+    to: purchase_order
+    to_columns: [ id ]
+    description: Order this line belongs to.
+  - from: purchase_order_line
+    from_columns: [ product_id ]
+    to: product_product
+    to_columns: [ id ]
+    description: Product on this line.
+  - from: purchase_order_line
+    from_columns: [ product_uom ]
+    to: uom_uom
+    to_columns: [ id ]
+    description: Unit of measure on this line.
+  - from: purchase_order_line
+    from_columns: [ company_id ]
+    to: res_company
+    to_columns: [ id ]
+    description: Company of this line.
+  - from: stock_move
+    from_columns: [ product_id ]
+    to: product_product
+    to_columns: [ id ]
+    description: Product being moved.
+  - from: stock_move
+    from_columns: [ company_id ]
+    to: res_company
+    to_columns: [ id ]
+    description: Company of this move.
+  - from: stock_quant
+    from_columns: [ product_id ]
+    to: product_product
+    to_columns: [ id ]
+    description: Product this on-hand quantity is for.
+  - from: stock_quant
+    from_columns: [ company_id ]
+    to: res_company
+    to_columns: [ id ]
+    description: Company of this quant.
+  - from: stock_valuation_layer
+    from_columns: [ product_id ]
+    to: product_product
+    to_columns: [ id ]
+    description: Product this valuation layer is for.
+  - from: stock_valuation_layer
+    from_columns: [ stock_move_id ]
+    to: stock_move
+    to_columns: [ id ]
+    description: Stock move that produced this valuation.
+  - from: stock_valuation_layer
+    from_columns: [ company_id ]
+    to: res_company
+    to_columns: [ id ]
+    description: Company of this valuation layer.
+metrics:
+  - name: Invoiced revenue
+    description: Net revenue from posted customer invoices (credit notes subtracted).
+    expression: SELECT SUM(amount_signed) FROM fact_invoice_lines WHERE move_type IN ('out_invoice', 'out_refund') AND state = 'posted'
+    clarion:
+      formulaPlainText: Sum of signed untaxed amounts on posted customer invoices and credit notes
+      additivity: additive
+      product: Finance
+      requiresTables: [ fact_invoice_lines ]
+  - name: Vendor bill spend
+    description: Net spend from posted vendor bills (refunds subtracted).
+    expression: SELECT SUM(amount_signed) FROM fact_invoice_lines WHERE move_type IN ('in_invoice', 'in_refund') AND state = 'posted'
+    clarion:
+      formulaPlainText: Sum of signed untaxed amounts on posted vendor bills and refunds
+      additivity: additive
+      product: Finance
+      requiresTables: [ fact_invoice_lines ]
+  - name: Payments received
+    description: Total inbound payments (excluding drafts and cancellations).
+    expression: SELECT SUM(amount) FROM fact_payments WHERE payment_type = 'inbound' AND state NOT IN ('draft', 'cancel', 'canceled', 'cancelled')
+    clarion:
+      formulaPlainText: Sum of inbound payment amounts, excluding draft and cancelled payments
+      additivity: additive
+      product: Finance
+      requiresTables: [ fact_payments ]
+  - name: Confirmed sales value
+    description: Untaxed value of confirmed sales orders.
+    expression: SELECT SUM(amount_untaxed) FROM fact_sales_order_lines WHERE state IN ('sale', 'done')
+    clarion:
+      formulaPlainText: Sum of untaxed line amounts on confirmed sales orders
+      additivity: additive
+      product: Sales
+      requiresTables: [ fact_sales_order_lines ]
+  - name: Confirmed purchase value
+    description: Untaxed value of confirmed purchase orders.
+    expression: SELECT SUM(amount_untaxed) FROM fact_purchase_order_lines WHERE state IN ('purchase', 'done')
+    clarion:
+      formulaPlainText: Sum of untaxed line amounts on confirmed purchase orders
+      additivity: additive
+      product: Purchasing
+      requiresTables: [ fact_purchase_order_lines ]

@@ -1,0 +1,174 @@
+# Exact Online entity. Field docs are TRANSCRIBED from the vendor REST reference by scripts/generate-eo-docs.ts — do not hand-edit descriptions; edit label/description/clarion freely.
+
+name: Subscriptions
+label: Subscriptions
+description: Recurring billing subscriptions — what customers are subscribed to.
+source: /subscription/Subscriptions
+primary_key: [ ID ]
+fields:
+  - name: BlockEntry
+    description: Indicates if subscription is blocked for time cost entry
+    datatype: Edm.Boolean
+    clarion: { role: dimension }
+  - name: CancellationDate
+    description: Date of cancellation
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: Classification
+    description: Guid ID of classification, to filter the report based on the classification of a subscription
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: ClassificationCode
+    description: Code of classification, to filter the report based on the classification of a subscription
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: ClassificationDescription
+    description: Description of classification, to filter the report based on the classification of a subscription
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Created
+    description: Date when the subscription was created
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: Creator
+    description: The Guid ID of the user that created the subscription
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: CreatorFullName
+    description: The full name of the user that created the subscription
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Currency
+    description: Currency code used in the transactions
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: CustomerPONumber
+    description: Purchase order number of that is linked to customer
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Description
+    description: Description of the subscription
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Division
+    description: Division number of the company that the subscription is linked to
+    datatype: Edm.Int32
+  - name: EndDate
+    description: The date and time when the subscription ends
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: EntryID
+    description: Primary key
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: InvoiceDay
+    description: "For monthly, quaterly, half-year and yearly invoice period, the day number of the month when the invoice of the subscription is sent. While for weekly invoice period, the weekday number of the week when the invoice of the subscription is sent: 0=Monday 1=Tuesday 2=Wednesday 3=Thursday 4=Friday 5=Saturday 6=Sunday"
+    datatype: Edm.Byte
+  - name: InvoicedTo
+    description: The date when the invoice of the subscription is sent
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: InvoiceTo
+    description: The account which the subsciption is invoiced to
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: Accounts, field: ID } }
+  - name: InvoiceToContactPerson
+    description: The ID of the contact person that is linked to the account the subscription is invoice to
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: Contacts, field: ID } }
+  - name: InvoiceToContactPersonFullName
+    description: The name of the contact person that is linked to the account the subscription is invoice to
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: InvoiceToName
+    description: Name of the account to invoice to
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: InvoicingStartDate
+    description: Date to start invoicing the account
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: Modified
+    description: Date and time when the subscription has been modified
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: Modifier
+    description: The ID of the user that modified the subscription
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: ModifierFullName
+    description: The name of the user that modified the subscription
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Notes
+    description: For additional information regarding the subscription
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Number
+    description: Subscription number of the company
+    datatype: Edm.Int32
+  - name: OrderedBy
+    description: Reference to order account, GUID ID of the subscriber
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: Accounts, field: ID } }
+  - name: OrderedByContactPerson
+    description: Reference of contact person of order account, displays the contact name of the subscriber
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: OrderedByContactPersonFullName
+    description: Name of contact person of order account, displays the full contact name of the subscriber
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: OrderedByName
+    description: Name of order account, displays the name of the subscriber
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: PaymentCondition
+    description: Code of subscriptions payment condition
+    datatype: Edm.String
+    clarion: { role: dimension, references: { dataset: PaymentConditions, field: ID } }
+  - name: PaymentConditionDescription
+    description: Description of subscriptions payment condition
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Printed
+    description: Indicates if subscription has been printed
+    datatype: Edm.Boolean
+    clarion: { role: dimension }
+  - name: Project
+    description: The Guid ID of the project, reference to Project endpoint
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: Projects, field: ID } }
+  - name: ReasonCancelled
+    description: Guid ID of the reason of cancellation record linked to the subscription
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: ReasonCancelledCode
+    description: Code of the reason of cancellation record linked to the subscription
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: ReasonCancelledDescription
+    description: Description of the reason of cancellation record linked to the subscription
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: StartDate
+    description: Start date of the subscription
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: SubscriptionType
+    description: The GUID ID of the subscription condition, reference to SubscriptionType endpoint
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: SubscriptionTypes, field: ID } }
+  - name: SubscriptionTypeCode
+    description: The code of the subscription condition record
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: SubscriptionTypeDescription
+    description: The code of the subscription condition description
+    datatype: Edm.String
+    clarion: { role: dimension }
+clarion:
+  kind: source
+  category: Subscription
+  sync:
+    cursor: { field: Modified, type: timestamp }

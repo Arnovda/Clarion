@@ -1,0 +1,53 @@
+# Odoo model. `source` is the dotted model name used for RPC; `name` is the warehouse table. Field descriptions are the curated fallback beneath the live fields_get harvest (Odoo 16+ semantics).
+
+name: res_partner
+label: Contacts / partners
+description: Customers, vendors and contacts — one row per person or organisation Odoo interacts with.
+source: res.partner
+primary_key: [ id ]
+fields:
+  - name: id
+    description: Technical identifier of the partner record
+  - name: name
+    description: Name of the person or organisation
+  - name: display_name
+    description: Full display name including parent company prefix
+  - name: company_id
+    description: Company (in multi-company setups) this contact belongs to
+  - name: parent_id
+    description: Parent company of this contact or address
+  - name: is_company
+    description: True when the record is an organisation rather than an individual
+  - name: customer_rank
+    description: Greater than zero when the partner has been used as a customer
+  - name: supplier_rank
+    description: Greater than zero when the partner has been used as a vendor
+  - name: street
+    description: Street line of the primary address
+  - name: city
+    description: City of the primary address
+  - name: zip
+    description: Postal code of the primary address
+  - name: country_id
+    description: Country of the primary address
+  - name: email
+    description: Primary e-mail address
+  - name: phone
+    description: Primary phone number
+  - name: vat
+    description: Tax / VAT identification number
+  - name: ref
+    description: Internal reference code for the partner
+  - name: lang
+    description: Language used in documents sent to this partner
+  - name: active
+    description: False when the partner has been archived
+  - name: create_date
+    description: When the record was created
+  - name: write_date
+    description: When the record was last modified
+clarion:
+  kind: source
+  category: Contacts
+  sync:
+    cursor: { field: write_date, type: timestamp }

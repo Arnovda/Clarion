@@ -1,0 +1,424 @@
+# Clarion source package — Exact Online. Format: src/sourcePackage/types.ts.
+# Curated relationships and the star-schema template live here; each entity is a file under datasets/, each template table under model/.
+
+version: 1
+name: exactonline
+description: Exact Online — Belgian/Dutch cloud accounting and ERP. REST/OData API, one division per connection.
+clarion:
+  vendor: { name: Exact Online, docs: https://start.exactonline.nl/docs/HlpRestAPIResources.aspx, transcribed: 2026-07-20 }
+  provenance: curated
+  fieldCoverage: complete
+  categories:
+    - CRM
+    - Sales
+    - Purchase
+    - Logistics
+    - Inventory
+    - Financial
+    - Cashflow
+    - HRM
+    - Project
+    - Subscription
+    - System
+  template:
+    version: 1
+    products:
+      - name: Core dimensions
+        description: "Conformed dimensions shared by every ExactOnline data product: accounts, items, GL accounts, journals, payment conditions."
+        buildOrder: 1
+      - name: Finance
+        description: "Accounting analytics: general-ledger detail, open receivables and payables."
+        buildOrder: 2
+      - name: Sales
+        description: "Sales analytics: invoiced revenue and order intake."
+        buildOrder: 3
+      - name: Purchasing
+        description: "Purchasing analytics: orders placed with suppliers, receipt and billing progress."
+        buildOrder: 4
+  notes: |-
+    Amounts: columns ending in `DC` are in the division's default currency and are additive across documents; columns ending in `FC` are in the document currency (`Currency`) and must not be summed across currencies.
+
+    Credit notes are natively NEGATIVE: credit-note lines carry negative quantities and amounts, so a plain SUM is already net. Never add a sign flip.
+
+    Dates arrive as ISO strings (the connector converts OData `/Date()/` epochs at sync time).
+
+    Keys are GUIDs (`ID`), with two lookups the facts reference by CODE rather than GUID: Journals (`Code`) and PaymentConditions (`Code`).
+relationships:
+  - from: SalesInvoiceLines
+    from_columns: [ InvoiceID ]
+    to: SalesInvoices
+    to_columns: [ InvoiceID ]
+    description: Each invoice line belongs to one sales invoice header.
+  - from: SalesInvoices
+    from_columns: [ InvoiceTo ]
+    to: Accounts
+    to_columns: [ ID ]
+    description: Which customer is billed for this invoice.
+  - from: SalesInvoices
+    from_columns: [ OrderedBy ]
+    to: Accounts
+    to_columns: [ ID ]
+    description: Which customer placed the order behind this invoice.
+  - from: SalesInvoices
+    from_columns: [ DeliverTo ]
+    to: Accounts
+    to_columns: [ ID ]
+    description: Which customer/address the goods are delivered to.
+  - from: SalesInvoiceLines
+    from_columns: [ Item ]
+    to: Items
+    to_columns: [ ID ]
+    description: The product or service this line is for.
+  - from: SalesInvoiceLines
+    from_columns: [ GLAccount ]
+    to: GLAccounts
+    to_columns: [ ID ]
+    description: The general ledger account this line posts to.
+  - from: GLClassifications
+    from_columns: [ Parent ]
+    to: GLClassifications
+    to_columns: [ ID ]
+    description: Parent classification in the financial-reporting hierarchy.
+  - from: TransactionLines
+    from_columns: [ GLAccount ]
+    to: GLAccounts
+    to_columns: [ ID ]
+    description: The GL account this ledger line posts to.
+  - from: TransactionLines
+    from_columns: [ Account ]
+    to: Accounts
+    to_columns: [ ID ]
+    description: The customer/supplier whose ledger this line affects.
+  - from: TransactionLines
+    from_columns: [ JournalCode ]
+    to: Journals
+    to_columns: [ Code ]
+    description: The journal (sales / purchases / bank / …) this line posts to.
+  - from: Accounts
+    from_columns: [ Parent ]
+    to: Accounts
+    to_columns: [ ID ]
+    description: Parent account (e.g. holding company over a subsidiary).
+  - from: Contacts
+    from_columns: [ Account ]
+    to: Accounts
+    to_columns: [ ID ]
+    description: The account this contact person belongs to.
+  - from: Addresses
+    from_columns: [ Account ]
+    to: Accounts
+    to_columns: [ ID ]
+    description: The account this address belongs to.
+  - from: BankAccounts
+    from_columns: [ Account ]
+    to: Accounts
+    to_columns: [ ID ]
+    description: The customer / supplier this bank account belongs to.
+  - from: Opportunities
+    from_columns: [ Account ]
+    to: Accounts
+    to_columns: [ ID ]
+    description: The account this opportunity is for.
+  - from: QuotationLines
+    from_columns: [ QuotationID ]
+    to: Quotations
+    to_columns: [ QuotationID ]
+    description: Each quotation line belongs to one quotation header.
+  - from: QuotationLines
+    from_columns: [ Item ]
+    to: Items
+    to_columns: [ ID ]
+    description: The product or service being quoted.
+  - from: SalesOrders
+    from_columns: [ OrderedBy ]
+    to: Accounts
+    to_columns: [ ID ]
+    description: Customer who placed the order.
+  - from: SalesOrders
+    from_columns: [ InvoiceTo ]
+    to: Accounts
+    to_columns: [ ID ]
+    description: Customer who will be billed for this order.
+  - from: SalesOrders
+    from_columns: [ DeliverTo ]
+    to: Accounts
+    to_columns: [ ID ]
+    description: Account / address goods are shipped to.
+  - from: SalesOrderLines
+    from_columns: [ OrderID ]
+    to: SalesOrders
+    to_columns: [ OrderID ]
+    description: Each order line belongs to one sales-order header.
+  - from: SalesOrderLines
+    from_columns: [ Item ]
+    to: Items
+    to_columns: [ ID ]
+    description: The product or service being ordered.
+  - from: SalesEntries
+    from_columns: [ Customer ]
+    to: Accounts
+    to_columns: [ ID ]
+    description: Customer the sales entry is for.
+  - from: SalesEntryLines
+    from_columns: [ EntryID ]
+    to: SalesEntries
+    to_columns: [ EntryID ]
+    description: Each sales-entry line belongs to one entry header.
+  - from: SalesEntryLines
+    from_columns: [ GLAccount ]
+    to: GLAccounts
+    to_columns: [ ID ]
+    description: GL account the sales-entry line posts to.
+  - from: PurchaseOrders
+    from_columns: [ Supplier ]
+    to: Accounts
+    to_columns: [ ID ]
+    description: Supplier the purchase order was placed with.
+  - from: PurchaseOrderLines
+    from_columns: [ PurchaseOrderID ]
+    to: PurchaseOrders
+    to_columns: [ PurchaseOrderID ]
+    description: Each purchase-order line belongs to one purchase-order header.
+  - from: PurchaseOrderLines
+    from_columns: [ Item ]
+    to: Items
+    to_columns: [ ID ]
+    description: The product or service being purchased.
+  - from: PurchaseInvoices
+    from_columns: [ Supplier ]
+    to: Accounts
+    to_columns: [ ID ]
+    description: Supplier who issued the purchase invoice.
+  - from: PurchaseInvoiceLines
+    from_columns: [ Item ]
+    to: Items
+    to_columns: [ ID ]
+    description: The product or service being invoiced.
+  - from: PurchaseEntries
+    from_columns: [ Supplier ]
+    to: Accounts
+    to_columns: [ ID ]
+    description: Supplier the purchase entry is for.
+  - from: PurchaseEntryLines
+    from_columns: [ EntryID ]
+    to: PurchaseEntries
+    to_columns: [ EntryID ]
+    description: Each purchase-entry line belongs to one entry header.
+  - from: PurchaseEntryLines
+    from_columns: [ GLAccount ]
+    to: GLAccounts
+    to_columns: [ ID ]
+    description: GL account the purchase-entry line posts to.
+  - from: Items
+    from_columns: [ ItemGroup ]
+    to: ItemGroups
+    to_columns: [ ID ]
+    description: The reporting / categorisation group this item belongs to.
+  - from: Items
+    from_columns: [ Unit ]
+    to: Units
+    to_columns: [ Code ]
+    description: Primary unit of measure for this item.
+  - from: SupplierItems
+    from_columns: [ Item ]
+    to: Items
+    to_columns: [ ID ]
+    description: The item this supplier code refers to.
+  - from: SupplierItems
+    from_columns: [ Supplier ]
+    to: Accounts
+    to_columns: [ ID ]
+    description: The supplier whose code is being mapped.
+  - from: ItemWarehouses
+    from_columns: [ Item ]
+    to: Items
+    to_columns: [ ID ]
+    description: The item this stock-level row is for.
+  - from: ItemWarehouses
+    from_columns: [ Warehouse ]
+    to: Warehouses
+    to_columns: [ ID ]
+    description: The warehouse holding this stock.
+  - from: StockCounts
+    from_columns: [ Warehouse ]
+    to: Warehouses
+    to_columns: [ ID ]
+    description: The warehouse this physical count covers.
+  - from: StockCountLines
+    from_columns: [ Item ]
+    to: Items
+    to_columns: [ ID ]
+    description: The item being counted on this line.
+  - from: WarehouseTransferLines
+    from_columns: [ TransferID ]
+    to: WarehouseTransfers
+    to_columns: [ TransferID ]
+    description: Each transfer line belongs to one transfer header.
+  - from: WarehouseTransferLines
+    from_columns: [ Item ]
+    to: Items
+    to_columns: [ ID ]
+    description: The item being moved on this transfer line.
+  - from: WarehouseTransfers
+    from_columns: [ WarehouseFrom ]
+    to: Warehouses
+    to_columns: [ ID ]
+    description: Warehouse the stock is moving out of.
+  - from: WarehouseTransfers
+    from_columns: [ WarehouseTo ]
+    to: Warehouses
+    to_columns: [ ID ]
+    description: Warehouse the stock is moving into.
+  - from: BankEntries
+    from_columns: [ JournalCode ]
+    to: Journals
+    to_columns: [ Code ]
+    description: The bank journal this statement is booked in.
+  - from: BankEntryLines
+    from_columns: [ EntryID ]
+    to: BankEntries
+    to_columns: [ EntryID ]
+    description: Each statement line belongs to one bank-statement header.
+  - from: BankEntryLines
+    from_columns: [ GLAccount ]
+    to: GLAccounts
+    to_columns: [ ID ]
+    description: The GL account this booked bank line posts to.
+  - from: BankEntryLines
+    from_columns: [ Account ]
+    to: Accounts
+    to_columns: [ ID ]
+    description: The customer / supplier this booked bank line is matched against.
+  - from: Payments
+    from_columns: [ Account ]
+    to: Accounts
+    to_columns: [ ID ]
+    description: The customer / supplier the payment is with.
+  - from: Receivables
+    from_columns: [ Account ]
+    to: Accounts
+    to_columns: [ ID ]
+    description: The customer who owes this open amount.
+  - from: ReceivablesList
+    from_columns: [ AccountId ]
+    to: Accounts
+    to_columns: [ ID ]
+    description: Customer who owes this open amount (aging view).
+  - from: PayablesList
+    from_columns: [ AccountId ]
+    to: Accounts
+    to_columns: [ ID ]
+    description: Supplier this open amount is owed to (aging view).
+  - from: Documents
+    from_columns: [ Account ]
+    to: Accounts
+    to_columns: [ ID ]
+    description: The customer / supplier this document is filed against.
+  - from: Employments
+    from_columns: [ Employee ]
+    to: Employees
+    to_columns: [ ID ]
+    description: The employee this employment contract belongs to.
+  - from: ActiveEmployments
+    from_columns: [ Employee ]
+    to: Employees
+    to_columns: [ ID ]
+    description: The employee whose currently-active employment this is.
+  - from: EmploymentContracts
+    from_columns: [ Employment ]
+    to: Employments
+    to_columns: [ ID ]
+    description: The employment this contract terms record is for.
+  - from: EmploymentSalaries
+    from_columns: [ Employment ]
+    to: Employments
+    to_columns: [ ID ]
+    description: The employment this salary detail is for.
+  - from: EmploymentOrganizations
+    from_columns: [ Employee ]
+    to: Employees
+    to_columns: [ ID ]
+    description: The employee assigned to this organisation unit.
+  - from: LeaveRegistrations
+    from_columns: [ Employee ]
+    to: Employees
+    to_columns: [ ID ]
+    description: The employee taking leave.
+  - from: TimeTransactions
+    from_columns: [ Project ]
+    to: Projects
+    to_columns: [ ID ]
+    description: The project this time was booked against.
+  - from: TimeTransactions
+    from_columns: [ Employee ]
+    to: Employees
+    to_columns: [ ID ]
+    description: The employee who booked this time.
+  - from: TimeCostTransactions
+    from_columns: [ Project ]
+    to: Projects
+    to_columns: [ ID ]
+    description: The project this time / cost was booked against.
+  - from: TimeCostTransactions
+    from_columns: [ Employee ]
+    to: Employees
+    to_columns: [ ID ]
+    description: The employee who recorded this time / cost.
+  - from: Projects
+    from_columns: [ Account ]
+    to: Accounts
+    to_columns: [ ID ]
+    description: The customer this project is for.
+  - from: Subscriptions
+    from_columns: [ OrderedBy ]
+    to: Accounts
+    to_columns: [ ID ]
+    description: Customer who subscribed.
+  - from: Subscriptions
+    from_columns: [ SubscriptionType ]
+    to: SubscriptionTypes
+    to_columns: [ ID ]
+    description: The plan template this subscription is based on.
+  - from: SubscriptionLines
+    from_columns: [ EntryID ]
+    to: Subscriptions
+    to_columns: [ EntryID ]
+    description: Each subscription line belongs to one subscription.
+  - from: SubscriptionLines
+    from_columns: [ Item ]
+    to: Items
+    to_columns: [ ID ]
+    description: The product / service being subscribed to.
+metrics:
+  - name: Invoiced sales revenue
+    description: Net invoiced revenue excl. VAT (credit notes are natively negative in ExactOnline).
+    expression: SELECT SUM(amount_dc) FROM fact_sales_invoice_lines
+    clarion:
+      formulaPlainText: Sum of invoice line amounts in the division currency
+      additivity: additive
+      product: Sales
+      requiresTables: [ fact_sales_invoice_lines ]
+  - name: Sales order intake
+    description: Untaxed value of sales order lines.
+    expression: SELECT SUM(amount_dc) FROM fact_sales_order_lines
+    clarion:
+      formulaPlainText: Sum of order line amounts in the division currency
+      additivity: additive
+      product: Sales
+      requiresTables: [ fact_sales_order_lines ]
+  - name: Outstanding receivables
+    description: Open amounts customers still owe.
+    expression: SELECT SUM(amount_dc) FROM fact_receivables WHERE is_fully_paid = false
+    clarion:
+      formulaPlainText: Sum of receivable amounts not yet fully paid
+      additivity: additive
+      product: Finance
+      requiresTables: [ fact_receivables ]
+  - name: Purchase order value
+    description: Untaxed value of purchase order lines.
+    expression: SELECT SUM(amount_dc) FROM fact_purchase_order_lines
+    clarion:
+      formulaPlainText: Sum of purchase order line amounts in the division currency
+      additivity: additive
+      product: Purchasing
+      requiresTables: [ fact_purchase_order_lines ]

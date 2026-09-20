@@ -6,8 +6,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { typeClass, typesJoinable } from './columnTypes';
-import { EXACT_ONLINE_COLUMN_DOCS } from './exactonline/docs';
-import { EXACT_ONLINE_KNOWN_RELATIONSHIPS } from './exactonline/entities';
+import { EXACT_ONLINE_COLUMN_DOCS, EXACT_ONLINE_KNOWN_RELATIONSHIPS } from './exactonline/catalog';
 
 describe('typeClass', () => {
   it('reads OData, SQL and plain type names', () => {

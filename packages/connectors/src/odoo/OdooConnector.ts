@@ -4,7 +4,7 @@
  * Implements `SourceConnector` for Odoo's external API:
  *   • testConnection — resolve a transport (JSON-2 preferred, XML-RPC fallback)
  *                      and verify the API key.
- *   • listEntities  — return the curated allowlist (see `entities.ts`).
+ *   • listEntities  — return the allowlist (see `catalog.ts`, loaded from `./package/`).
  *   • probeEntities — `search_count` each allowlisted model so the wizard only
  *                     offers ones that actually exist + are readable on this
  *                     instance (this is how version differences self-resolve —
@@ -45,18 +45,23 @@ import { resolveSyncEntities, runEntitySync, type EntitySyncSource } from '../sy
 import { asOdooConfig, odooConfigSchema } from './schema';
 import {
   ALWAYS_KEEP_FIELDS,
-  ENTITIES_BY_NAME,
   EXCLUDE_FIELD_PREFIXES,
   EXCLUDE_FIELD_TYPES,
-  MODEL_TO_TABLE,
-  ODOO_ENTITIES,
-  ODOO_KNOWN_RELATIONSHIPS,
   PAGE_SIZE,
-  asEntityDescriptors,
   odooFieldRole,
   odooTypeToDuckDb,
-  type OdooEntity,
 } from './entities';
+import {
+  ENTITIES_BY_NAME,
+  MODEL_TO_TABLE,
+  ODOO_COLUMN_DOCS,
+  ODOO_ENTITIES,
+  ODOO_KNOWN_RELATIONSHIPS,
+  ODOO_PACKAGE,
+  ODOO_STAR_SCHEMA_TEMPLATE,
+  asEntityDescriptors,
+  type OdooEntity,
+} from './catalog';
 import {
   OdooAuthError,
   resolveOdooTransport,
@@ -64,8 +69,6 @@ import {
   type OdooTransport,
 } from './transport';
 import type { StarSchemaTemplate } from '../starSchema';
-import { ODOO_STAR_SCHEMA_TEMPLATE } from './starSchemaTemplate';
-import { ODOO_COLUMN_DOCS } from './docs';
 
 export class OdooConnector extends BaseSourceConnector implements SourceConnector {
   readonly type = 'odoo';
@@ -321,9 +324,15 @@ export class OdooConnector extends BaseSourceConnector implements SourceConnecto
   }
 
   // ─── getStarSchemaTemplate ─────────────────────────────────────────────
-  /** Deterministic Kimball design for Odoo — see `starSchemaTemplate.ts`. */
+  /** Deterministic Kimball design for Odoo — the package's `model/` datasets. */
   getStarSchemaTemplate(): StarSchemaTemplate {
     return ODOO_STAR_SCHEMA_TEMPLATE;
+  }
+
+  // ─── getSourceNotes ────────────────────────────────────────────────────
+  /** Source-wide caveats from the package manifest (`clarion.notes`) — prompt context only. */
+  getSourceNotes(): string | undefined {
+    return ODOO_PACKAGE.clarion.notes;
   }
 
   // ─── describeEntities ──────────────────────────────────────────────────
@@ -492,6 +501,8 @@ export function buildEntityDocs(
     entityName: entity.name,
     displayName: entity.displayName,
     description: entity.description,
+    // Soft context from the package — prompt-only, never persisted.
+    ...(entity.notes ? { notes: entity.notes } : {}),
     columns,
     relationships,
     provenance: 'declared',

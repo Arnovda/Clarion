@@ -1,0 +1,28 @@
+# Exact Online star-schema template table. `source` is the DuckDB SQL over BARE source entity names; a foreign key is written ONCE on its field (clarion.references) and the template joins are derived from it.
+
+name: dim_item_group
+label: Item groups
+description: Item categorisation used for reporting groupings.
+source: |-
+  SELECT
+    ID          AS item_group_id,
+    Code        AS item_group_code,
+    Description AS item_group_description
+  FROM ItemGroups
+fields:
+  - name: item_group_id
+    label: Item group ID
+    description: ExactOnline item group GUID (primary key).
+    datatype: VARCHAR
+    clarion: { role: natural_key, technical: true, lineage: { dataset: ItemGroups, field: ID } }
+  - name: item_group_code
+    label: Item group code
+    description: Code of the group.
+    datatype: VARCHAR
+    clarion: { role: attribute, lineage: { dataset: ItemGroups, field: Code } }
+  - name: item_group_description
+    label: Item group
+    description: Description of the group.
+    datatype: VARCHAR
+    clarion: { role: attribute, lineage: { dataset: ItemGroups, field: Description } }
+clarion: { kind: dimension, product: Core dimensions, sourceEntities: [ ItemGroups ] }

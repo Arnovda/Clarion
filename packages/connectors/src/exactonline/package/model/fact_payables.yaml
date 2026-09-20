@@ -1,0 +1,94 @@
+# Exact Online star-schema template table. `source` is the DuckDB SQL over BARE source entity names; a foreign key is written ONCE on its field (clarion.references) and the template joins are derived from it.
+
+name: fact_payables
+label: Payables
+description: One row per outgoing payment obligation — what you owe suppliers.
+source: |-
+  SELECT
+    ID                                  AS payable_id,
+    TRY_CAST(InvoiceDate AS DATE)       AS invoice_date,
+    TRY_CAST(DueDate AS DATE)           AS due_date,
+    InvoiceNumber                       AS invoice_number,
+    Account                             AS account_id,
+    GLAccount                           AS gl_account_id,
+    Journal                             AS journal_code,
+    Currency                            AS currency,
+    Description                         AS description,
+    AmountDC                            AS amount_dc,
+    AmountFC                            AS amount_fc
+  FROM Payments
+fields:
+  - name: payable_id
+    label: Payable ID
+    description: ExactOnline payment obligation GUID (primary key).
+    datatype: VARCHAR
+    clarion: { role: natural_key, technical: true, lineage: { dataset: Payments, field: ID } }
+  - name: invoice_date
+    label: Invoice date
+    description: Date of the underlying supplier invoice.
+    datatype: DATE
+    clarion: { role: attribute, lineage: { dataset: Payments, field: InvoiceDate } }
+  - name: due_date
+    label: Due date
+    description: Payment due date.
+    datatype: DATE
+    clarion: { role: attribute, lineage: { dataset: Payments, field: DueDate } }
+  - name: invoice_number
+    label: Invoice number
+    description: Invoice number of the payable.
+    datatype: BIGINT
+    clarion: { role: degenerate_dimension, lineage: { dataset: Payments, field: InvoiceNumber } }
+  - name: account_id
+    label: Supplier
+    description: Supplier the amount is owed to.
+    datatype: VARCHAR
+    clarion:
+      role: foreign_key
+      references: { dataset: dim_account, field: account_id }
+      technical: true
+      lineage: { dataset: Payments, field: Account }
+  - name: gl_account_id
+    label: GL account
+    description: Payable GL account.
+    datatype: VARCHAR
+    clarion:
+      role: foreign_key
+      references: { dataset: dim_gl_account, field: gl_account_id }
+      technical: true
+      lineage: { dataset: Payments, field: GLAccount }
+  - name: journal_code
+    label: Journal
+    description: Journal the payable is booked in.
+    datatype: VARCHAR
+    clarion:
+      role: foreign_key
+      references: { dataset: dim_journal, field: journal_code }
+      technical: true
+      lineage: { dataset: Payments, field: Journal }
+  - name: currency
+    label: Currency
+    description: Currency of the payable.
+    datatype: VARCHAR
+    clarion: { role: attribute, lineage: { dataset: Payments, field: Currency } }
+  - name: description
+    label: Description
+    description: Description of the payable.
+    datatype: VARCHAR
+    clarion: { role: attribute, lineage: { dataset: Payments, field: Description } }
+  - name: amount_dc
+    label: Amount (default currency)
+    description: Payable amount in the division currency.
+    datatype: DOUBLE
+    clarion: { role: measure, additivity: additive, lineage: { dataset: Payments, field: AmountDC } }
+  - name: amount_fc
+    label: Amount (document currency)
+    description: Payable amount in the document currency.
+    datatype: DOUBLE
+    clarion: { role: measure, additivity: additive, lineage: { dataset: Payments, field: AmountFC } }
+clarion:
+  kind: fact
+  product: Finance
+  sourceEntities: [ Payments ]
+  grain: One row per payable item
+  factTableType: accumulating_snapshot
+  dimensionsUsed: [ dim_account, dim_gl_account, dim_journal, dim_date ]

@@ -1,0 +1,66 @@
+# Odoo star-schema template table. `source` is the DuckDB SQL over BARE source entity names; a foreign key is written ONCE on its field (clarion.references) and the template joins are derived from it.
+
+name: fact_stock_moves
+label: Stock moves
+description: One row per product movement (receipt, delivery, internal transfer).
+source: |-
+  SELECT
+    sm.id                        AS stock_move_id,
+    TRY_CAST(sm.date AS DATE)    AS move_date,
+    sm.state                     AS state,
+    sm.reference                 AS reference,
+    sm.product_id                AS product_id,
+    sm.company_id                AS company_id,
+    sm.product_uom_qty           AS quantity
+  FROM stock_move sm
+fields:
+  - name: stock_move_id
+    label: Stock move ID
+    description: Odoo stock move id (primary key).
+    datatype: BIGINT
+    clarion: { role: natural_key, technical: true, lineage: { dataset: stock_move, field: id } }
+  - name: move_date
+    label: Move date
+    description: Date the move was (or is scheduled to be) done.
+    datatype: DATE
+    clarion: { role: attribute, lineage: { dataset: stock_move, field: date } }
+  - name: state
+    label: Status
+    description: draft, waiting, confirmed, assigned, done or cancel.
+    datatype: VARCHAR
+    clarion: { role: attribute, lineage: { dataset: stock_move, field: state } }
+  - name: reference
+    label: Reference
+    description: Picking / document reference of the move.
+    datatype: VARCHAR
+    clarion: { role: degenerate_dimension, lineage: { dataset: stock_move, field: reference } }
+  - name: product_id
+    label: Product
+    description: Product being moved.
+    datatype: BIGINT
+    clarion:
+      role: foreign_key
+      references: { dataset: dim_product, field: product_id }
+      technical: true
+      lineage: { dataset: stock_move, field: product_id }
+  - name: company_id
+    label: Company
+    description: Company of the move.
+    datatype: BIGINT
+    clarion:
+      role: foreign_key
+      references: { dataset: dim_company, field: company_id }
+      technical: true
+      lineage: { dataset: stock_move, field: company_id }
+  - name: quantity
+    label: Quantity
+    description: Quantity moved (in the product’s unit of measure).
+    datatype: DOUBLE
+    clarion: { role: measure, additivity: additive, lineage: { dataset: stock_move, field: product_uom_qty } }
+clarion:
+  kind: fact
+  product: Inventory
+  sourceEntities: [ stock_move ]
+  grain: One row per stock move
+  factTableType: transaction
+  dimensionsUsed: [ dim_product, dim_company, dim_date ]

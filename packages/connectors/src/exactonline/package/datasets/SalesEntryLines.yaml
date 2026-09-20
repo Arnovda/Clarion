@@ -1,0 +1,214 @@
+# Exact Online entity. Field docs are TRANSCRIBED from the vendor REST reference by scripts/generate-eo-docs.ts — do not hand-edit descriptions; edit label/description/clarion freely.
+
+name: SalesEntryLines
+label: Sales entry lines
+description: Line items on sales journal entries.
+source: /salesentry/SalesEntryLines
+primary_key: [ ID ]
+fields:
+  - name: AmountDC
+    description: "Amount in the default currency of the company. For almost all lines this can be calculated like: AmountDC = AmountFC * RateFC."
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: AmountFC
+    description: For normal lines it's the amount excluding VAT
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: Asset
+    description: Reference to Asset
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: AssetDescription
+    description: Description of Asset
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: CostCenter
+    description: Reference to Cost center
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: CostCenterDescription
+    description: Description of CostCenter
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: CostUnit
+    description: Reference to Cost unit
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: CostUnitDescription
+    description: Description of CostUnit
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: CustomField
+    description: Custom field endpoint
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Description
+    description: Description. Can be different for header and lines
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Division
+    description: Division code
+    datatype: Edm.Int32
+  - name: EntryID
+    description: The unique ID of the entry. Via this ID all transaction lines of a single entry can be retrieved
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: SalesEntries, field: EntryID } }
+  - name: ExtraDutyAmountFC
+    description: Extra duty amount in the currency of the transaction. Both extra duty amount and VAT amount need to be specified in order to differ this property from automatically calculated.
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: ExtraDutyPercentage
+    description: Extra duty percentage for the item
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: From
+    description: From date to identify the range for accrued/deferred revenue. This is used in combination with the property 'To' that defines the end date
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: GLAccount
+    description: The GL Account of the invoice line. This field is generated based on the revenue account of the item (or the related item group). G/L Account is also used to determine whether the costcenter / costunit is mandatory
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: GLAccounts, field: ID } }
+  - name: GLAccountCode
+    description: Code of GLAccount
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: GLAccountDescription
+    description: Description of GLAccount
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: ID
+    description: Primary key
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: IntraStatArea
+    description: IntraStat area (only relevant when IntraStat for sales is enabled in the administration)
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: IntraStatCountry
+    description: IntraStatCountry (only relevant when IntraStat for sales is enabled in the administration)
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: IntraStatDeliveryTerm
+    description: IntraStat delivery term (only relevant when IntraStat for sales is enabled in the administration)
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: IntraStatTransactionA
+    description: IntraStat transaction A (only relevant when IntraStat for sales is enabled in the administration)
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: IntraStatTransactionB
+    description: IntraStat transaction B (only relevant when IntraStat for sales is enabled in the Belgium, Luxembourg, France & United Kingdom administration)
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: IntraStatTransportMethod
+    description: IntraStat transport method (only relevant when IntraStat for sales is enabled in the administration)
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: LineNumber
+    description: Indicates the sequence of the lines within one entry
+    datatype: Edm.Int32
+  - name: Notes
+    description: Extra notes
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Project
+    description: The project to which the sales transaction line is linked. The project can be different per line. Sometimes also the project in the header is filled although this is not really used
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: Projects, field: ID } }
+  - name: ProjectDescription
+    description: Description of Project
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: ProjectWBS
+    description: Reference to Project WBS
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: ProjectWBSDescription
+    description: Description of Project WBS
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Quantity
+    description: The number of items sold in default units. The quantity shown in the entry screen is Quantity * UnitFactor
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: SerialNumber
+    description: Serial number
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: StatisticalNetWeight
+    description: Statistical NetWeight (only relevant when IntraStat for sales is enabled in the administration)
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: StatisticalNumber
+    description: Statistical Number (only relevant when IntraStat for sales is enabled in the administration)
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: StatisticalQuantity
+    description: Statistical Quantity (only relevant when IntraStat for sales is enabled in the administration)
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: StatisticalValue
+    description: Statistical Value (only relevant when IntraStat for sales is enabled in the administration)
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: Subscription
+    description: When generating invoices from subscriptions, this field records the link between invoice lines and subscription lines
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: Subscriptions, field: EntryID } }
+  - name: SubscriptionDescription
+    description: Description of Subscription
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: TaxSchedule
+    description: Obsolete
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: To
+    description: To date to identify the range for accrued/deferred revenue. This is used in combination with the property 'From' that defines the start date
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: TrackingNumber
+    description: Reference to TrackingNumber
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: TrackingNumberDescription
+    description: Description of TrackingNumber
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Type
+    description: "Type: 20 = Sales entry, 21 = Sales credit note"
+    datatype: Edm.Int32
+  - name: VATAmountDC
+    description: VAT amount in the default currency of the company
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: VATAmountFC
+    description: VAT amount in the currency of the transaction. Use this property to specify a VAT amount that differs from the VAT amount that is automatically calculated. However if the transaction uses extra duty, extra duty amount also needs to be specified.
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: VATBaseAmountDC
+    description: The VAT base amount in the default currency of the company. This is calculated based on the VATBaseAmountFC
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: VATBaseAmountFC
+    description: The VAT base amount in invoice currency. This is calculated with the use of VAT codes. It's an internal value
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: VATCode
+    description: The VAT code used when the invoice was registered. If this property is not filled, it will use the default VAT code of the G/L account property
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: VATCodeDescription
+    description: Description of VATCode
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: VATPercentage
+    description: The VAT percentage of the VAT code. This is the percentage at the moment the invoice is created. It's also used by the default calculation of VAT amounts and VAT base amounts
+    datatype: Edm.Double
+    clarion: { role: measure }
+clarion:
+  kind: source
+  category: Sales
+  sync:
+    requiresSelect: true

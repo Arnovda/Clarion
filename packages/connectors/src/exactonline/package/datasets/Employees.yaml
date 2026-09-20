@@ -1,0 +1,283 @@
+# Exact Online entity. Field docs are TRANSCRIBED from the vendor REST reference by scripts/generate-eo-docs.ts — do not hand-edit descriptions; edit label/description/clarion freely.
+
+name: Employees
+label: Employees
+description: Employee master data.
+source: /payroll/Employees
+primary_key: [ ID ]
+fields:
+  - name: ActiveEmployment
+    description: Obsolete
+    datatype: Edm.Byte
+  - name: AddressLine2
+    description: "Second address line Note: The value is only returned if user has any of the following roles: View user Enter variable payroll mutations Manage employees Anonymise employee and user View personal information Of employees"
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: AddressLine3
+    description: "Third address line Note: The value is only returned if user has any of the following roles: View user Enter variable payroll mutations Manage employees Anonymise employee and user View personal information Of employees"
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: AddressStreet
+    description: "Street of address Note: The value is only returned if user has any of the following roles: View user Enter variable payroll mutations Manage employees Anonymise employee and user View personal information Of employees"
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: AddressStreetNumber
+    description: "Street number of address Note: The value is only returned if user has any of the following roles: View user Enter variable payroll mutations Manage employees Anonymise employee and user View personal information Of employees"
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: AddressStreetNumberSuffix
+    description: "Street number suffix of address Note: The value is only returned if user has any of the following roles: View user Enter variable payroll mutations Manage employees Anonymise employee and user View personal information Of employees"
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: BirthDate
+    description: "Birth date Note: The value is only returned if user has any of the following roles: View user Enter variable payroll mutations Manage employees Anonymise employee and user View personal information Of employees"
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: BirthName
+    description: Birth name
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: BirthNamePrefix
+    description: Birth middle name
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: BirthPlace
+    description: "Birth place Note: The value is only returned if user has any of the following roles: View user Enter variable payroll mutations Manage employees Anonymise employee and user View personal information Of employees"
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: BusinessEmail
+    description: Email of the employee at the office
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: BusinessFax
+    description: Fax number of the employee at the office
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: BusinessMobile
+    description: Office mobile number of the employee
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: BusinessPhone
+    description: Phone number of the employee at the office
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: BusinessPhoneExtension
+    description: Phone extension of the employee at the office
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: CASONumber
+    description: Obsolete
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: City
+    description: "City Note: The value is only returned if user has any of the following roles: View user Enter variable payroll mutations Manage employees Anonymise employee and user View personal information Of employees"
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Code
+    description: Code of the employee
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Country
+    description: "Country code Note: The value is only returned if user has any of the following roles: View user Enter variable payroll mutations Manage employees Anonymise employee and user View personal information Of employees"
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Created
+    description: Creation date
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: Creator
+    description: User ID of creator
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: CreatorFullName
+    description: Name of creator
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Customer
+    description: Customer ID
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: CustomField
+    description: Custom field endpoint. Provided only for the Exact Online Premium users.
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Division
+    description: Division code
+    datatype: Edm.Int32
+  - name: Email
+    description: "Page: User maintenance page; Section: Personal E-mail address of a user. If employee is linked to a user, the user email is stored in this property. Note: The value is only returned if user has any of the following roles: View user Enter variable payroll mutations Manage employees Anonymise employee and user View personal information Of employees Users created in Exact Online can access the company or companies in an administration."
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: EmployeeHID
+    description: Employee number
+    datatype: Edm.Int32
+  - name: EndDate
+    description: End date of the employee
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: FirstName
+    description: First name of the employee
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: FullName
+    description: Full name of the employee
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Gender
+    description: Gender
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: HID
+    description: Numeric ID of the employee
+    datatype: Edm.Int32
+  - name: ID
+    description: Primary key
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: Initials
+    description: Initials
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: IsActive
+    description: IsActive
+    datatype: Edm.Boolean
+    clarion: { role: dimension }
+  - name: IsAnonymised
+    description: Indicates whether the employee is anonymised.
+    datatype: Edm.Byte
+  - name: Language
+    description: Language code
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: LastName
+    description: Last name
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: LocationDescription
+    description: Description of the location of the employee (where am I?)
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Manager
+    description: "Direct manager of the employee Note: The manager must be in the same division as the employee The manager should not be subordinate of their employee"
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: MaritalDate
+    description: "Date of marriage Note: The value is only returned if user has any of the following roles: View user Enter variable payroll mutations Manage employees Anonymise employee and user View personal information Of employees"
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: MaritalStatus
+    description: "Marital status Note: The value is only returned if user has any of the following roles: View user Enter variable payroll mutations Manage employees Anonymise employee and user View personal information Of employees"
+    datatype: Edm.Int16
+  - name: MiddleName
+    description: Middle name
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Mobile
+    description: "Mobile phone Note: The value is only returned if user has any of the following roles: View user Enter variable payroll mutations Manage employees Anonymise employee and user View personal information Of employees"
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Modified
+    description: Last modified date
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: Modifier
+    description: User ID of modifier
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: ModifierFullName
+    description: Name of modifier
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Municipality
+    description: Obsolete
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Nationality
+    description: "Nationality Note: The value is only returned if user has any of the following roles: View user Enter variable payroll mutations Manage employees Anonymise employee and user View personal information Of employees"
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: NickName
+    description: Nick name
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Notes
+    description: Additional notes
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: PartnerName
+    description: "Name of partner Note: The value is only returned if user has any of the following roles: View user Enter variable payroll mutations Manage employees Anonymise employee and user View personal information Of employees"
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: PartnerNamePrefix
+    description: "Middle name of partner Note: The value is only returned if user has any of the following roles: View user Enter variable payroll mutations Manage employees Anonymise employee and user View personal information Of employees"
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Person
+    description: Reference to the persons table in which the personal data of the employee is stored
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: Phone
+    description: "Phone number Note: The value is only returned if user has any of the following roles: View user Enter variable payroll mutations Manage employees Anonymise employee and user View personal information Of employees"
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: PhoneExtension
+    description: "Phone number extension Note: The value is only returned if user has any of the following roles: View user Enter variable payroll mutations Manage employees Anonymise employee and user View personal information Of employees"
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Picture
+    description: Bytes of the logo image
+    datatype: Edm.Binary
+  - name: PictureFileName
+    description: Filename of picture
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: PictureThumbnailUrl
+    description: Thumbnail url of the picture
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: PictureUrl
+    description: Url of picture
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Postcode
+    description: "Postcode Note: The value is only returned if user has any of the following roles: View user Enter variable payroll mutations Manage employees Anonymise employee and user View personal information Of employees"
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: PrivateEmail
+    description: "Section: Personal Personal e-mail address of the employee. Note: The value is only returned if user has any of the following roles: View user Enter variable payroll mutations Manage employees Anonymise employee and user View personal information Of employees"
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: SocialSecurityNumber
+    description: "Social security number Note: The value is only returned if user has any of the following roles: View user Enter variable payroll mutations Manage employees Anonymise employee and user View personal information Of employees"
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: StartDate
+    description: Start date of the employee
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: State
+    description: "State Note: The value is only returned if user has any of the following roles: View user Enter variable payroll mutations Manage employees Anonymise employee and user View personal information Of employees"
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: TaxIdentificationNumber
+    description: "Tax identification number Note: The value is only returned if user has any of the following roles: View user Enter variable payroll mutations Manage employees Anonymise employee and user View personal information Of employees"
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Title
+    description: Title
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: User
+    description: User ID of employee
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: UserFullName
+    description: Name of user
+    datatype: Edm.String
+    clarion: { role: dimension }
+clarion:
+  kind: source
+  category: HRM
+  sync:
+    cursor: { field: Modified, type: timestamp }
+    requiresSelect: true

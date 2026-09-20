@@ -1,0 +1,27 @@
+# Odoo model. `source` is the dotted model name used for RPC; `name` is the warehouse table. Field descriptions are the curated fallback beneath the live fields_get harvest (Odoo 16+ semantics).
+
+name: uom_uom
+label: Units of measure
+description: Units of measure (each in a UoM category) used on order and stock lines.
+source: uom.uom
+primary_key: [ id ]
+fields:
+  - name: id
+    description: Technical identifier of the unit of measure
+  - name: name
+    description: Unit name (Units, kg, hour, …)
+  - name: category_id
+    description: UoM category; conversions are only possible within a category
+  - name: factor
+    description: Conversion factor to the reference unit of the category
+  - name: uom_type
+    description: Whether this is the reference unit, bigger or smaller than it
+  - name: active
+    description: False when the unit has been archived
+  - name: write_date
+    description: When the record was last modified
+clarion:
+  kind: source
+  category: Products
+  sync:
+    cursor: { field: write_date, type: timestamp }

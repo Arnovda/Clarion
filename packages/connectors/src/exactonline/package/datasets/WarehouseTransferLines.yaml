@@ -1,0 +1,117 @@
+# Exact Online entity. Field docs are TRANSCRIBED from the vendor REST reference by scripts/generate-eo-docs.ts — do not hand-edit descriptions; edit label/description/clarion freely.
+
+name: WarehouseTransferLines
+label: Warehouse transfer lines
+description: Per-item detail on warehouse transfers.
+source: /inventory/WarehouseTransferLines
+primary_key: [ ID ]
+fields:
+  - name: Created
+    description: Creation date
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: Creator
+    description: User ID of creator
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: CreatorFullName
+    description: Name of creator
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Description
+    description: Description
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Division
+    description: Division code
+    datatype: Edm.Int32
+  - name: ID
+    description: Primary key
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: Item
+    description: Item ID
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: Items, field: ID } }
+  - name: ItemCode
+    description: Code of item
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: ItemDescription
+    description: Description of item
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: LineNumber
+    description: Line number
+    datatype: Edm.Int32
+  - name: Modified
+    description: Last modified date
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: Modifier
+    description: User ID of modifier
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: ModifierFullName
+    description: Name of modifier
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: PickedBy
+    description: Picked by
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: Quantity
+    description: Quantity of transfer
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: StorageLocationFrom
+    description: ID of storage location to transfer item from (Professional and Premium Only)
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: StorageLocationFromCode
+    description: Code of storage location to transfer item from
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: StorageLocationFromDescription
+    description: Description of storage location to transfer item from
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: StorageLocationFromLocationSequence
+    description: Location sequence of storage location to transfer item from (Premium Only)
+    datatype: Edm.Int32
+  - name: StorageLocationTo
+    description: ID of storage location to transfer item to (Professional and Premium Only)
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: StorageLocationToCode
+    description: Code of storage location to transfer item to
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: StorageLocationToDescription
+    description: Description of storage location to transfer item to
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: StorageLocationToLocationSequence
+    description: Location sequence of storage location to transfer item to (Premium Only)
+    datatype: Edm.Int32
+  - name: TransferID
+    description: Entry number of the stock transaction
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: TransferredBy
+    description: Transferred by
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: UnitCode
+    description: The standard unit code of this item
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: UnitDescription
+    description: Description of item's unit
+    datatype: Edm.String
+    clarion: { role: dimension }
+clarion:
+  kind: source
+  category: Inventory
+  sync:
+    cursor: { field: Modified, type: timestamp }

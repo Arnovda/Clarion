@@ -1,0 +1,25 @@
+# Odoo model. `source` is the dotted model name used for RPC; `name` is the warehouse table. Field descriptions are the curated fallback beneath the live fields_get harvest (Odoo 16+ semantics).
+
+name: res_currency
+label: Currencies
+description: Currencies with their rounding precision; referenced by journals, orders and invoices.
+source: res.currency
+primary_key: [ id ]
+fields:
+  - name: id
+    description: Technical identifier of the currency
+  - name: name
+    description: ISO currency code (EUR, USD, …)
+  - name: symbol
+    description: Currency symbol used in amounts
+  - name: rounding
+    description: Smallest rounding unit for amounts in this currency
+  - name: active
+    description: False when the currency is disabled
+  - name: write_date
+    description: When the record was last modified
+clarion:
+  kind: source
+  category: Accounting
+  sync:
+    cursor: { field: write_date, type: timestamp }

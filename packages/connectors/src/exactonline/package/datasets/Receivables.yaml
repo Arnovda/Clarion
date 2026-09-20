@@ -1,0 +1,311 @@
+# Exact Online entity. Field docs are TRANSCRIBED from the vendor REST reference by scripts/generate-eo-docs.ts — do not hand-edit descriptions; edit label/description/clarion freely.
+
+name: Receivables
+label: Receivables
+description: Open receivable items — what customers still owe.
+source: /cashflow/Receivables
+primary_key: [ ID ]
+fields:
+  - name: Account
+    description: The customer from which the receivable will come.
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: Accounts, field: ID } }
+  - name: AccountBankAccountID
+    description: The bank account of the customer, from which the receivable will come.
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: BankAccounts, field: ID } }
+  - name: AccountBankAccountNumber
+    description: The bank account number of the customer, from which the receivable will come.
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: AccountCode
+    description: The code of the customer from which the receivable will come.
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: AccountContact
+    description: Contact person copied from the purchase invoice linked to the related purchase entry.
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: Contacts, field: ID } }
+  - name: AccountContactName
+    description: Name of the contact person of the customer.
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: AccountCountry
+    description: Country code of the customer.
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: AccountName
+    description: Name of the customer.
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: AmountDC
+    description: The amount in default currency (division currency). Receivables are matched on this amount.
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: AmountDiscountDC
+    description: The amount of the discount in the default currency.
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: AmountDiscountFC
+    description: The amount of the discount. This is in the amount of the selected currency.
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: AmountFC
+    description: The amount of the receivable. This is in the amount of the selected currency.
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: BankAccountID
+    description: Own bank account to which the receivable will be done.
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: BankAccounts, field: ID } }
+  - name: BankAccountNumber
+    description: Own bank account number to which the receivable will be done.
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: CashflowTransactionBatchCode
+    description: When processing receivables, all receivable with the same processing data are put in a batch. This field contains the code of that batch.
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Created
+    description: Creation date.
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: Creator
+    description: User ID of the creator.
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: CreatorFullName
+    description: Name of the creator.
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Currency
+    description: The currency of the receivable. This currency can only deviate from the division currency if the module Currency is in the license.
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Description
+    description: Description.
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: DirectDebitMandate
+    description: Direct Debit Mandate used to collect the receivable.
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: DirectDebitMandateDescription
+    description: Description of the mandate.
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: DirectDebitMandatePaymentType
+    description: Payment type of the mandate. 0 = One off payment 1 = Recurrent payment.
+    datatype: Edm.Int16
+  - name: DirectDebitMandateReference
+    description: Unique mandate reference.
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: DirectDebitMandateType
+    description: Type of the mandate. 0 = Core 1 = Business-to-business.
+    datatype: Edm.Int16
+  - name: DiscountDueDate
+    description: Date before which the payment by the customer must be done to be eligible for discount.
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: Division
+    description: Division code.
+    datatype: Edm.Int32
+  - name: Document
+    description: Document that is created when processing collections. The bank export file is attached to the document.
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: Documents, field: ID } }
+  - name: DocumentNumber
+    description: Number of the document.
+    datatype: Edm.Int32
+  - name: DocumentSubject
+    description: Subject of the document.
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: DueDate
+    description: Date before which the payment by the customer must be done.
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: EndDate
+    description: Date since when the receivable is no longer an outstanding item. This is the highest invoice date of all matched receivables.
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: EndPeriod
+    description: Period since when the receivable is no longer an outstanding item. This is the highest period of all matched receivables.
+    datatype: Edm.Int16
+  - name: EndToEndID
+    description: The value of the tag 'EndToEndID' when generating a SEPA file.
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: EndYear
+    description: Year (of period) since when the receivable is no longer an outstanding item. This is the highest year of all matched receivables. Used in combination with EndPeriod.
+    datatype: Edm.Int16
+  - name: EntryDate
+    description: Processing date of the receivable.
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: EntryID
+    description: The unique identifier for a set of receivables. A receivable can be split so that one part is received on a different date. In that case the two records get a different EntryID.
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: EntryNumber
+    description: Entry number of the linked transaction.
+    datatype: Edm.Int32
+  - name: GLAccount
+    description: G/L account of the payment. Must be of type 20 (Accounts receivable).
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: GLAccounts, field: ID } }
+  - name: GLAccountCode
+    description: Code of the G/L account.
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: GLAccountDescription
+    description: Description of the G/L account.
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: ID
+    description: Identifier of the receivable.
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: InvoiceDate
+    description: Invoice date of the linked transaction.
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: InvoiceNumber
+    description: Invoice number of the linked transaction.
+    datatype: Edm.Int32
+  - name: IsBatchBooking
+    description: Boolean indicating whether the receivable is part of a batch booking.
+    datatype: Edm.Byte
+  - name: IsFullyPaid
+    description: Boolean indicating whether the receivable was fully paid by the customer.
+    datatype: Edm.Boolean
+    clarion: { role: dimension }
+  - name: Journal
+    description: Journal of the linked transaction.
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: JournalDescription
+    description: Description of the journal.
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: LastPaymentDate
+    description: Last payment date.
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: Modified
+    description: Last modified date.
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: Modifier
+    description: User ID of modifier.
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: ModifierFullName
+    description: Name of modifier.
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: OrderNumber
+    description: Order number of the linked transaction.
+    datatype: Edm.Int32
+  - name: PaymentCondition
+    description: Payment condition of the linked transaction.
+    datatype: Edm.String
+    clarion: { role: dimension, references: { dataset: PaymentConditions, field: ID } }
+  - name: PaymentConditionDescription
+    description: Description of the payment condition.
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: PaymentDays
+    description: Number of days between invoice date and due date.
+    datatype: Edm.Int32
+  - name: PaymentDaysDiscount
+    description: Number of days between invoice date and due date of the discount.
+    datatype: Edm.Int32
+  - name: PaymentDiscountPercentage
+    description: Payment discount percentage.
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: PaymentInformationID
+    description: PaymentInformationID tag from the SEPA xml file.
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: PaymentMethod
+    description: Method of payment. B = On credit (default) I = Collection K = Cash V = Credit card
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: PaymentReference
+    description: Payment reference for the receivable that may be included In the bank export file
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: RateFC
+    description: Exchange rate from receivable currency to division currency. AmountFC * RateFC = AmountDC.
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: ReceivableBatchNumber
+    description: Number assigned during the processing of receivables.
+    datatype: Edm.Int32
+  - name: ReceivableSelected
+    description: Date and time since when the receivable is selected to be collected.
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: ReceivableSelector
+    description: User who selected the receivable to be collected.
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: ReceivableSelectorFullName
+    description: Name of the receivable selector.
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Source
+    description: The source of the receivable.
+    datatype: Edm.Int32
+  - name: Status
+    description: The status of the receivable. 20 = open 30 = selected - receivable is selected to be collected 40 = processed - collection has been done 50 = matched - receivable is matched with one or more other outstanding items or financial statement lines
+    datatype: Edm.Int16
+  - name: TransactionAmountDC
+    description: Total amount of the linked transaction in default currency (division currency).
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: TransactionAmountFC
+    description: Total amount of the linked transaction in the selected currency.
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: TransactionDueDate
+    description: Due date of the linked transaction.
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: TransactionEntryID
+    description: Linked transaction. Use this as reference to SalesEntries.
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: SalesEntries, field: EntryID } }
+  - name: TransactionID
+    description: Linked transaction line. Use this as reference to SalesEntryLines.
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: TransactionLines, field: ID } }
+  - name: TransactionIsReversal
+    description: Indicates if the linked transaction is a reversal entry.
+    datatype: Edm.Boolean
+    clarion: { role: dimension }
+  - name: TransactionReportingPeriod
+    description: Period of the linked transaction.
+    datatype: Edm.Int16
+  - name: TransactionReportingYear
+    description: Year of the linked transaction.
+    datatype: Edm.Int16
+  - name: TransactionStatus
+    description: Status of the linked transaction.
+    datatype: Edm.Int16
+  - name: TransactionType
+    description: Type of the linked transaction.
+    datatype: Edm.Int32
+  - name: YourRef
+    description: Invoice number. In case the receivable belongs to a bank entry line and is matched with one invoice, YourRef is filled with the YourRef of this invoice.
+    datatype: Edm.String
+    clarion: { role: dimension }
+clarion:
+  kind: source
+  category: Cashflow
+  sync:
+    cursor: { field: Modified, type: timestamp }
+    requiresSelect: true

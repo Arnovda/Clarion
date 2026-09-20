@@ -257,7 +257,22 @@ async function runSchemaProfilerBody(
   // documented siblings for Pass C (so custom fields are described in the
   // vendor's own vocabulary instead of blind). Truncation/caps applied at
   // prompt-render time.
-  const vendorDocsCtx = connectorDocs.length > 0
+  // Source-WIDE soft context: the package manifest's `clarion.notes` — the
+  // caveats that are about the whole system rather than one entity ("*DC
+  // amounts are additive, *FC are not"). Synchronous and config-free like
+  // getKnownRelationships; prompt-only, never persisted. Read even when the
+  // per-entity docs channel is absent, so a source with notes but no
+  // describeEntities still gets them in front of the model.
+  let sourceNotes: string | undefined;
+  if (connectorType) {
+    try {
+      sourceNotes = getSourceConnector(connectorType).getSourceNotes?.()?.trim() || undefined;
+    } catch (err) {
+      log.warn({ err }, `getSourceNotes(${connectorType}) failed`);
+    }
+  }
+
+  const vendorDocsCtx = connectorDocs.length > 0 || sourceNotes
     ? {
         tableDescriptions: Object.fromEntries(
           connectorDocs.filter((d) => d.description).map((d) => [d.entityName, d.description!]),
@@ -268,6 +283,11 @@ async function runSchemaProfilerBody(
             d.columns.filter((c) => c.description).map((c) => ({ name: c.name, description: c.description! })),
           ]),
         ),
+        // Soft context from the source package — prompt-only, never persisted.
+        tableNotes: Object.fromEntries(
+          connectorDocs.filter((d) => d.notes?.trim()).map((d) => [d.entityName, d.notes!]),
+        ),
+        ...(sourceNotes ? { sourceNotes } : {}),
       }
     : undefined;
 

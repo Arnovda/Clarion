@@ -1,0 +1,72 @@
+# Exact Online entity. Field docs are TRANSCRIBED from the vendor REST reference by scripts/generate-eo-docs.ts — do not hand-edit descriptions; edit label/description/clarion freely.
+
+name: AgingReceivablesList
+label: Aging — receivables
+description: Bucketed aging of open receivables (0-30 / 31-60 / …).
+source: /read/financial/AgingReceivablesList
+fields:
+  - name: AccountCode
+    description: Code of Account
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: AccountId
+    description: Primary key
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: AccountName
+    description: Name of Account
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: AgeGroup1
+    description: Age group 1
+    datatype: Edm.Int32
+  - name: AgeGroup1Amount
+    description: Amount of age group 1
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: AgeGroup1Description
+    description: Description of AgeGroup1
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: AgeGroup2
+    description: Age group 2
+    datatype: Edm.Int32
+  - name: AgeGroup2Amount
+    description: Amount of age group 2
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: AgeGroup2Description
+    description: Description of AgeGroup2
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: AgeGroup3
+    description: Age group 3
+    datatype: Edm.Int32
+  - name: AgeGroup3Amount
+    description: Amount of age group 3
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: AgeGroup3Description
+    description: Description of AgeGroup3
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: AgeGroup4
+    description: Age group 4
+    datatype: Edm.Int32
+  - name: AgeGroup4Amount
+    description: Amount of age group 4
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: AgeGroup4Description
+    description: Description of AgeGroup4
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: CurrencyCode
+    description: Code of Currency
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: TotalAmount
+    description: Total amount of all age groups
+    datatype: Edm.Double
+    clarion: { role: measure }
+clarion: { kind: source, category: Cashflow }

@@ -8,7 +8,7 @@ import { ExactOnlineConnector } from './ExactOnlineConnector';
 
 export { ExactOnlineConnector } from './ExactOnlineConnector';
 export { exactOnlineConfigSchema } from './schema';
-export { EXACT_ONLINE_ENTITIES } from './entities';
+export { EXACT_ONLINE_ENTITIES } from './catalog';
 export { AuthRefreshError, refreshAccessToken } from './oauth';
 
 registerConnector(ExactOnlineConnector);

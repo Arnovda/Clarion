@@ -1,0 +1,60 @@
+# Exact Online entity. Field docs are TRANSCRIBED from the vendor REST reference by scripts/generate-eo-docs.ts — do not hand-edit descriptions; edit label/description/clarion freely.
+
+name: AccountClassifications
+label: Account classifications
+description: Customer / supplier segmentation values (e.g. tier, vertical).
+source: /crm/AccountClassifications
+primary_key: [ ID ]
+fields:
+  - name: AccountClassificationName
+    description: Reference to Account classification name
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: AccountClassificationNames, field: ID } }
+  - name: AccountClassificationNameDescription
+    description: Description of AccountClassificationName
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Code
+    description: Account classification code
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Created
+    description: Creation date
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: Creator
+    description: User ID of creator
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: CreatorFullName
+    description: Name of creator
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Description
+    description: Description
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Division
+    description: Division code
+    datatype: Edm.Int32
+  - name: ID
+    description: Primary key
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: Modified
+    description: Last modified date
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: Modifier
+    description: User ID of modifier
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: ModifierFullName
+    description: Name of modifier
+    datatype: Edm.String
+    clarion: { role: dimension }
+clarion:
+  kind: source
+  category: CRM
+  sync:
+    cursor: { field: Modified, type: timestamp }

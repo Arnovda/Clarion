@@ -9,8 +9,10 @@ The catalog is **curated**, not dynamic — every entry maps a stable
 name to a specific REST API path. All paths verified May 2026 against
 ExactOnline's official REST API reference
 (<https://start.exactonline.nl/docs/HlpRestAPIResources.aspx>). Adding
-entries is a one-file change to
-`packages/connectors/src/exactonline/entities.ts`.
+an entry is one new YAML file under
+`packages/connectors/src/exactonline/package/datasets/` (plus its category
+in `package.yaml`); `catalog.ts` loads the package — see
+`docs/SOURCE_ONBOARDING.md` Phase C.
 
 ## Volume policy: full history, no date filter
 
@@ -182,7 +184,8 @@ For a typical Belgian SMB starter set covering full operations:
 
 Beyond entity selection, the connector ships a curated list of
 foreign-key relationships
-(`EXACT_ONLINE_KNOWN_RELATIONSHIPS` in `entities.ts`). The schema profiler
+(`relationships` in `package/package.yaml`, projected as
+`EXACT_ONLINE_KNOWN_RELATIONSHIPS` by `catalog.ts`). The schema profiler
 uses them to generate accurate table descriptions and to feed the
 AI-dashboard prompts.
 

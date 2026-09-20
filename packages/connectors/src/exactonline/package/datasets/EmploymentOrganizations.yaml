@@ -1,0 +1,118 @@
+# Exact Online entity. Field docs are TRANSCRIBED from the vendor REST reference by scripts/generate-eo-docs.ts — do not hand-edit descriptions; edit label/description/clarion freely.
+
+name: EmploymentOrganizations
+label: Employment organizations
+description: Org-unit assignment per employment.
+source: /payroll/EmploymentOrganizations
+primary_key: [ ID ]
+fields:
+  - name: CostCenter
+    description: Cost center code
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: CostCenterDescription
+    description: Description of cost center
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: CostUnit
+    description: Cost unit code
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: CostUnitDescription
+    description: Description of cost unit
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Created
+    description: Creation date
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: Creator
+    description: User ID of creator
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: CreatorFullName
+    description: Name of creator
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Department
+    description: ID of department
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: DepartmentCode
+    description: Department code
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: DepartmentDescription
+    description: Department description for organization
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Division
+    description: Division code
+    datatype: Edm.Int32
+  - name: Employee
+    description: ID of employee
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: Employees, field: ID } }
+  - name: EmployeeFullName
+    description: Name of employee
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: EmployeeHID
+    description: Numeric ID of the employee
+    datatype: Edm.Int32
+  - name: Employment
+    description: Employment ID
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: Employments, field: ID } }
+  - name: EmploymentHID
+    description: Obsolete
+    datatype: Edm.Int32
+  - name: EmploymentNumber
+    description: Employment number
+    datatype: Edm.Int32
+  - name: EndDate
+    description: "Organization end date Note : This property only supported for successor"
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: ID
+    description: Primary key
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: JobTitle
+    description: ID of job title
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: JobTitleCode
+    description: Job title code
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: JobTitleDescription
+    description: Job title description
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Modified
+    description: Last modified date
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: Modifier
+    description: User ID of modifier
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: ModifierFullName
+    description: Name of modifier
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Notes
+    description: Obsolete
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: StartDate
+    description: "Organization start date Note : This property only supported for successor"
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+clarion:
+  kind: source
+  category: HRM
+  sync:
+    cursor: { field: Modified, type: timestamp }
+    requiresSelect: true

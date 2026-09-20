@@ -3,7 +3,7 @@
  *
  * Implements `SourceConnector` for ExactOnline's OData v3 REST API:
  *   • testConnection — refresh token + GET `/system/Me` to verify creds
- *   • listEntities  — return curated catalog (see `entities.ts`)
+ *   • listEntities  — return the catalog (see `catalog.ts`, loaded from `./package/`)
  *   • sync          — refresh token (rotate via `onCredentialRotated`),
  *                     paginate each selected entity, clean OData noise,
  *                     stream rows through `ctx.warehouseWriter`.
@@ -34,10 +34,17 @@ import {
 } from '../types';
 import { businessKeysFromCatalog } from '../businessKeys';
 import { resolveSyncEntities, runEntitySync, type EntitySyncSource } from '../syncEngine';
-import { asEntityDescriptors, EXACT_ONLINE_ENTITIES, EXACT_ONLINE_KNOWN_RELATIONSHIPS, ENTITIES_BY_NAME, type ExactOnlineEntity } from './entities';
-import { EXACT_ONLINE_COLUMN_DOCS } from './docs';
+import {
+  asEntityDescriptors,
+  ENTITIES_BY_NAME,
+  EXACT_ONLINE_COLUMN_DOCS,
+  EXACT_ONLINE_ENTITIES,
+  EXACT_ONLINE_KNOWN_RELATIONSHIPS,
+  EXACT_ONLINE_PACKAGE,
+  EXACT_ONLINE_STAR_SCHEMA_TEMPLATE,
+  type ExactOnlineEntity,
+} from './catalog';
 import { typesJoinable, joinableCandidates } from '../columnTypes';
-import { EXACT_ONLINE_STAR_SCHEMA_TEMPLATE } from './starSchemaTemplate';
 import type { StarSchemaTemplate } from '../starSchema';
 import type { EntityDocs, KnownRelationship, UnresolvedReference } from '../types';
 import { asExactOnlineConfig, exactOnlineConfigSchema, type ExactOnlineConfig } from './schema';
@@ -109,9 +116,10 @@ export class ExactOnlineConnector extends BaseSourceConnector implements SourceC
 
   // ─── listEntities ──────────────────────────────────────────────────────
   async listEntities(rawConfig: ConnectorConfig, _ctx: ProbeContext): Promise<EntityDescriptor[]> {
-    // Entity catalog is curated today (see `entities.ts`). When we add
-    // dynamic discovery, this method fetches `/api/v1/{division}/$metadata`
-    // and merges parsed entities with the curated list. The shape of the
+    // Entity catalog is curated today — the source package under
+    // `./package/datasets`, projected by `catalog.ts`. When we add dynamic
+    // discovery, this method fetches `/api/v1/{division}/$metadata` and
+    // merges parsed entities with the curated list. The shape of the
     // returned descriptors does not change.
     this.validateConfig(rawConfig);
     return asEntityDescriptors();
@@ -600,9 +608,15 @@ export class ExactOnlineConnector extends BaseSourceConnector implements SourceC
   }
 
   // ─── getStarSchemaTemplate ─────────────────────────────────────────────
-  /** Deterministic Kimball design for ExactOnline — see `starSchemaTemplate.ts`. */
+  /** Deterministic Kimball design for ExactOnline — the package's `model/` datasets. */
   getStarSchemaTemplate(): StarSchemaTemplate {
     return EXACT_ONLINE_STAR_SCHEMA_TEMPLATE;
+  }
+
+  // ─── getSourceNotes ────────────────────────────────────────────────────
+  /** Source-wide caveats from the package manifest (`clarion.notes`) — prompt context only. */
+  getSourceNotes(): string | undefined {
+    return EXACT_ONLINE_PACKAGE.clarion.notes;
   }
 
   /**
@@ -679,6 +693,8 @@ export class ExactOnlineConnector extends BaseSourceConnector implements SourceC
         entityName: name,
         displayName: entity.displayName,
         description: entity.description,
+        // Soft context from the package — prompt-only, never persisted.
+        ...(entity.notes ? { notes: entity.notes } : {}),
         columns: cols ? [...cols] : [],
         ...(relationships.length > 0 ? { relationships } : {}),
         ...(unresolved.length > 0 ? { unresolvedReferences: unresolved } : {}),

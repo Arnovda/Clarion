@@ -1,0 +1,29 @@
+# Odoo model. `source` is the dotted model name used for RPC; `name` is the warehouse table. Field descriptions are the curated fallback beneath the live fields_get harvest (Odoo 16+ semantics).
+
+name: account_account
+label: Chart of accounts
+description: The chart of accounts — one row per general-ledger account.
+source: account.account
+primary_key: [ id ]
+fields:
+  - name: id
+    description: Technical identifier of the general-ledger account
+  - name: name
+    description: Name of the general-ledger account
+  - name: code
+    description: Account code in the chart of accounts
+  - name: account_type
+    description: Account category (receivable, payable, income, expense, …) driving report placement
+  - name: reconcile
+    description: True when open items on this account are matched (receivable/payable style)
+  - name: company_id
+    description: Company this account belongs to
+  - name: deprecated
+    description: True when the account is closed for new entries
+  - name: write_date
+    description: When the record was last modified
+clarion:
+  kind: source
+  category: Accounting
+  sync:
+    cursor: { field: write_date, type: timestamp }

@@ -1,0 +1,92 @@
+# Exact Online entity. Field docs are TRANSCRIBED from the vendor REST reference by scripts/generate-eo-docs.ts — do not hand-edit descriptions; edit label/description/clarion freely.
+
+name: StockCounts
+label: Stock counts
+description: Physical inventory counts and reconciliations.
+source: /inventory/StockCounts
+primary_key: [ ID ]
+fields:
+  - name: CountedBy
+    description: Stock count user
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: Created
+    description: Creation date
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: Creator
+    description: User ID of creator
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: CreatorFullName
+    description: Name of creator
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Description
+    description: Description of the stock count
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Division
+    description: Division code
+    datatype: Edm.Int32
+  - name: EntryNumber
+    description: Entry number of the stock transaction
+    datatype: Edm.Int32
+  - name: Modified
+    description: Last modified date
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: Modifier
+    description: User ID of modifier
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: ModifierFullName
+    description: Name of modifier
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: OffsetGLInventory
+    description: Offset GL account of inventory
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: GLAccounts, field: ID } }
+  - name: OffsetGLInventoryCode
+    description: GLAccount code
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: OffsetGLInventoryDescription
+    description: GLAccount description
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Source
+    description: "Source of stock count entry: 1-Manual entry, 2-Import, 3-Stock count, 4-Web service"
+    datatype: Edm.Int16
+  - name: Status
+    description: "Stock count status: 12-Draft, 21-Processed"
+    datatype: Edm.Int16
+  - name: StockCountDate
+    description: Stock count date
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: StockCountID
+    description: Primary key
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: StockCountNumber
+    description: Human readable id of the stock count
+    datatype: Edm.Int32
+  - name: Warehouse
+    description: Warehouse
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: Warehouses, field: ID } }
+  - name: WarehouseCode
+    description: Code of Warehouse
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: WarehouseDescription
+    description: Description of Warehouse
+    datatype: Edm.String
+    clarion: { role: dimension }
+clarion:
+  kind: source
+  category: Inventory
+  sync:
+    cursor: { field: Modified, type: timestamp }

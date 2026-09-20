@@ -1,0 +1,132 @@
+# Exact Online entity. Field docs are TRANSCRIBED from the vendor REST reference by scripts/generate-eo-docs.ts — do not hand-edit descriptions; edit label/description/clarion freely.
+
+name: EmploymentContracts
+label: Employment contracts
+description: Contract terms (FTE, contract type, start/end) per employment.
+source: /payroll/EmploymentContracts
+primary_key: [ ID ]
+fields:
+  - name: ContractFlexPhase
+    description: Flexible employment contract phase
+    datatype: Edm.Int32
+  - name: ContractFlexPhaseDescription
+    description: Flexible employment contract phase description.
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: CreateAutoCorrection
+    description: "Confirmation: Create Auto Correction When the 'payroll run' already finalized and the update is made to the employment contract start date, the system will first block the PUT action with the message below. With the 'PayrollCorrection' right, the error message below will be thrown: &emsp;This change will lead to a recalculation of previous periods. A correction request will be created with the following data: &emsp;&emsp;Activation date: 01-01-2019 &emsp;&emsp;Payroll year: 2019 &emsp;&emsp;Period: 1 &emsp;If you are confirmed want to proceed, set the [CreateAutoCorrection] to True and re-submit the request. Without the 'PayrollCorrection' right, the error message below will be thrown: &emsp;You do not have rights to change data that can influence processed payroll transactions. Note : If you delete this contract in an already calculated period, auto corrections will be created for this employee."
+    datatype: Edm.Boolean
+    clarion: { role: dimension }
+  - name: Created
+    description: Creation date
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: CreatePredecessorsForLinkedAgencies
+    description: "Confirmation: Create Predecessors For Linked Agencies The system will block the POST/PUT action when one of the condition below fulfilled: When create (POST) a new successor, the employment contract successor start date is set to an earlier payroll year. When update (PUT) the existing employment contract start date to an earlier payroll year. The error message below will be thrown: &emsp;Attention: If you change the start date to an earlier payroll year, predecessors will be created for linked agencies. &emsp;You will have to check if the data of the predecessors is correct. &emsp;If you are confirmed want to proceed, set the [CreatePredecessorsForLinkedAgencies] to True and re-submit the request."
+    datatype: Edm.Boolean
+    clarion: { role: dimension }
+  - name: Creator
+    description: User ID of creator
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: CreatorFullName
+    description: Name of creator
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Division
+    description: Division code
+    datatype: Edm.Int32
+  - name: Document
+    description: Document ID of the employment contract
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: Documents, field: ID } }
+  - name: Employee
+    description: ID of employee
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: Employees, field: ID } }
+  - name: EmployeeFullName
+    description: Name of employee
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: EmployeeHID
+    description: Numeric ID of the employee
+    datatype: Edm.Int32
+  - name: EmployeeType
+    description: Type of employee. 1 - Employee, 2 - Contractor, 3 - Temporary, 4 - Student, 5 - Flexworker
+    datatype: Edm.Int32
+  - name: EmployeeTypeDescription
+    description: Employee type description
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Employment
+    description: Employment ID
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: Employments, field: ID } }
+  - name: EmploymentHID
+    description: Obsolete
+    datatype: Edm.Int32
+  - name: EmploymentNumber
+    description: Employment number
+    datatype: Edm.Int32
+  - name: EndDate
+    description: End date of employment contract
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: ID
+    description: Primary key
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: Modified
+    description: Last modified date
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: Modifier
+    description: User ID of modifier
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: ModifierFullName
+    description: Name of modifier
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Notes
+    description: Obsolete
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: ProbationEndDate
+    description: Employment probation end date
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: ProbationPeriod
+    description: Employment probation period
+    datatype: Edm.Int32
+  - name: ProbationPeriodDescription
+    description: Contract probation period description
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: ReasonContract
+    description: Employment contract reason code. 1 - New employment, 2 - Employment change, 3 - New legal employer, 4 - Acquisition 5 - Previous contract expired, 6 - Other
+    datatype: Edm.Int32
+  - name: ReasonContractDescription
+    description: Employment contract reason description
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Sequence
+    description: Sequence number
+    datatype: Edm.Int32
+  - name: StartDate
+    description: "Start date of employment contract Note : Be aware that for PUT, when you use a start date in the past it will also update years in service to this date."
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: Type
+    description: Type of employment contract. 1 - Definite, 2 - Indefinite, 3 - External
+    datatype: Edm.Int32
+  - name: TypeDescription
+    description: Description of employment contract type
+    datatype: Edm.String
+    clarion: { role: dimension }
+clarion:
+  kind: source
+  category: HRM
+  sync:
+    cursor: { field: Modified, type: timestamp }
+    requiresSelect: true

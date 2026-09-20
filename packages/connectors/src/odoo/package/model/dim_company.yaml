@@ -1,0 +1,32 @@
+# Odoo star-schema template table. `source` is the DuckDB SQL over BARE source entity names; a foreign key is written ONCE on its field (clarion.references) and the template joins are derived from it.
+
+name: dim_company
+label: Companies
+description: Internal legal entities configured in Odoo.
+source: |-
+  SELECT
+    id   AS company_id,
+    name AS company_name,
+    currency_id
+  FROM res_company
+fields:
+  - name: company_id
+    label: Company ID
+    description: Odoo company id (primary key).
+    datatype: BIGINT
+    clarion: { role: natural_key, technical: true, lineage: { dataset: res_company, field: id } }
+  - name: company_name
+    label: Company name
+    description: Name of the legal entity.
+    datatype: VARCHAR
+    clarion: { role: attribute, lineage: { dataset: res_company, field: name } }
+  - name: currency_id
+    label: Currency
+    description: Main currency of the company.
+    datatype: BIGINT
+    clarion:
+      role: foreign_key
+      references: { dataset: dim_currency, field: currency_id }
+      technical: true
+      lineage: { dataset: res_company, field: currency_id }
+clarion: { kind: dimension, product: Core dimensions, sourceEntities: [ res_company ] }

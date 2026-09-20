@@ -1,0 +1,28 @@
+# Exact Online star-schema template table. `source` is the DuckDB SQL over BARE source entity names; a foreign key is written ONCE on its field (clarion.references) and the template joins are derived from it.
+
+name: dim_payment_condition
+label: Payment conditions
+description: Payment terms (net 30, end-of-month, …). Code-keyed — documents reference them by code.
+source: |-
+  SELECT
+    Code        AS payment_condition_code,
+    Description AS payment_condition_name,
+    PaymentDays AS payment_days
+  FROM PaymentConditions
+fields:
+  - name: payment_condition_code
+    label: Payment condition code
+    description: Payment condition code (natural key).
+    datatype: VARCHAR
+    clarion: { role: natural_key, lineage: { dataset: PaymentConditions, field: Code } }
+  - name: payment_condition_name
+    label: Payment condition
+    description: Description of the payment term.
+    datatype: VARCHAR
+    clarion: { role: attribute, lineage: { dataset: PaymentConditions, field: Description } }
+  - name: payment_days
+    label: Payment days
+    description: Number of days before payment is due.
+    datatype: BIGINT
+    clarion: { role: attribute, lineage: { dataset: PaymentConditions, field: PaymentDays } }
+clarion: { kind: dimension, product: Core dimensions, sourceEntities: [ PaymentConditions ] }

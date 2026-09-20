@@ -1,0 +1,192 @@
+# Exact Online entity. Field docs are TRANSCRIBED from the vendor REST reference by scripts/generate-eo-docs.ts — do not hand-edit descriptions; edit label/description/clarion freely.
+
+name: TimeTransactions
+label: Time transactions
+description: Time bookings against projects — hours per employee per task.
+source: /project/TimeTransactions
+primary_key: [ ID ]
+fields:
+  - name: Account
+    description: Reference to the account
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: Accounts, field: ID } }
+  - name: AccountName
+    description: Name of account that is linked to the project
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Activity
+    description: Guid ID of activity that is linked to project WBS (work breakdown structure)
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: ActivityDescription
+    description: Name of activity that is linked to project WBS (work breakdown structure)
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Amount
+    description: This property is obsolete. Use property 'AmountFC' instead.
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: AmountFC
+    description: Calculated amount of the transaction based on (Quantity * PriceFC)
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: Attachment
+    description: Attachment linked to the transaction (not mandatory)
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: Created
+    description: Date and time the transaction was created
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: Creator
+    description: The Guid ID of user that created the transaction
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: CreatorFullName
+    description: The full name of the user that created the record
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Currency
+    description: Currency of amount FC
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: CustomField
+    description: Custom field endpoint. Provided only for the Exact Online Premium users.
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Date
+    description: Date and time the time transaction was done
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: Division
+    description: Division code
+    datatype: Edm.Int32
+  - name: DivisionDescription
+    description: Description of Division
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Employee
+    description: Guid ID of the employee that is linked to the time transaction
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: Employees, field: ID } }
+  - name: EndTime
+    description: End time of the time transaction
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: EntryNumber
+    description: Number that represents the grouping of time transactions
+    datatype: Edm.Int32
+  - name: ErrorText
+    description: (Only used by backgroundjobs) To determine which transaction has an error
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: HourStatus
+    description: "For POST/PUT: Status of the transaction: 1 = Draft, 2 = Rejected, 10 = Submitted For GET: Status of the transaction: 1 = Draft, 2 = Rejected, 10 = Submitted, 11 = Failed on approval, 14 = Processing, 16 = Processing, 19 = Failed while undoing approval, 20 = Final"
+    datatype: Edm.Int16
+  - name: ID
+    description: Primary key
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: Item
+    description: Item that is linked to the transaction, which provides the time information
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: Items, field: ID } }
+  - name: ItemDescription
+    description: Description of the item that is linked to the transaction
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: ItemDivisable
+    description: Indicates if fractional quantities of the item can be used, for example quantity = 0.4
+    datatype: Edm.Boolean
+    clarion: { role: dimension }
+  - name: Modified
+    description: The date and time transaction record was modified
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: Modifier
+    description: The Guid ID of the user that modified the records
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: ModifierFullName
+    description: The full name of the user that modified the record
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Notes
+    description: Notes linked to the transaction for providing additional information (not mandatory)
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Price
+    description: This property is obsolete. Use property 'PriceFC' instead.
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: PriceFC
+    description: For use in AmountFC (Quantiy * Price FC)
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: Project
+    description: Guid ID of project that is linked to the transaction
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: Projects, field: ID } }
+  - name: ProjectAccount
+    description: Project account ID that is linked to the transaction (not mandatory)
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: Accounts, field: ID } }
+  - name: ProjectAccountCode
+    description: Project account code that is linked to the transaction
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: ProjectAccountName
+    description: Project account name that is linked to the transaction
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: ProjectCode
+    description: Project code that is linked to the transaction
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: ProjectDescription
+    description: Project description that is linked to the transaction
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Quantity
+    description: Quantity of the item that is linked to the transaction
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: SkipValidation
+    description: Skip validation
+    datatype: Edm.Boolean
+    clarion: { role: dimension }
+  - name: StartTime
+    description: Start time of the time transaction
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: Subscription
+    description: Guid ID of subscription that is linked to the transaction
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: Subscriptions, field: EntryID } }
+  - name: SubscriptionAccount
+    description: Subscription account ID that is linked to the transaction, this is to identify the referenced subscription
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: Accounts, field: ID } }
+  - name: SubscriptionAccountCode
+    description: Subscription account code that is linked to the transaction
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: SubscriptionAccountName
+    description: Subscription account name that is linked to the transaction
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: SubscriptionDescription
+    description: Subscription description that is linked to the transaction
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: SubscriptionNumber
+    description: Subscription number that is linked to the transaction
+    datatype: Edm.Int32
+  - name: Type
+    description: "The type of transaction. E.g: 1 = Time, 2 = Cost"
+    datatype: Edm.Int16
+clarion:
+  kind: source
+  category: Project
+  sync:
+    cursor: { field: Modified, type: timestamp }

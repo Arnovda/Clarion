@@ -1,0 +1,59 @@
+# Odoo model. `source` is the dotted model name used for RPC; `name` is the warehouse table. Field descriptions are the curated fallback beneath the live fields_get harvest (Odoo 16+ semantics).
+
+name: account_move_line
+label: Journal items
+description: Individual debit/credit lines of journal entries — the finest-grained accounting record.
+source: account.move.line
+primary_key: [ id ]
+fields:
+  - name: id
+    description: Technical identifier of the journal item
+  - name: move_id
+    description: Journal entry (invoice, bill or misc entry) this line belongs to
+  - name: name
+    description: Label or product description of the line
+  - name: account_id
+    description: General-ledger account the line is booked on
+  - name: partner_id
+    description: Partner the line relates to
+  - name: journal_id
+    description: Journal of the parent entry
+  - name: company_id
+    description: Company the line belongs to
+  - name: product_id
+    description: Product on the line, when it comes from an invoice line
+  - name: quantity
+    description: Quantity invoiced or booked on the line
+  - name: price_unit
+    description: Unit price on the line, in document currency
+  - name: price_subtotal
+    description: Line total before taxes, in document currency
+  - name: price_total
+    description: Line total including taxes, in document currency
+  - name: debit
+    description: Debit amount in company currency
+  - name: credit
+    description: Credit amount in company currency
+  - name: balance
+    description: Debit minus credit in company currency
+  - name: amount_currency
+    description: Amount in the document currency when it differs from the company currency
+  - name: currency_id
+    description: Currency of amount_currency
+  - name: date
+    description: Accounting date inherited from the parent entry
+  - name: date_maturity
+    description: Due date of the line for receivables and payables
+  - name: reconciled
+    description: True when the receivable/payable line is fully matched with payments
+  - name: display_type
+    description: "Line kind: product line, section or note (sections and notes carry no amounts)"
+  - name: tax_ids
+    description: Taxes applied on the line
+  - name: write_date
+    description: When the record was last modified
+clarion:
+  kind: source
+  category: Accounting
+  sync:
+    cursor: { field: write_date, type: timestamp }

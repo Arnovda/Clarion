@@ -1,0 +1,43 @@
+# Odoo model. `source` is the dotted model name used for RPC; `name` is the warehouse table. Field descriptions are the curated fallback beneath the live fields_get harvest (Odoo 16+ semantics).
+
+name: product_template
+label: Product templates
+description: Products as defined in the catalog; variants of one product share a template.
+source: product.template
+primary_key: [ id ]
+fields:
+  - name: id
+    description: Technical identifier of the product template
+  - name: name
+    description: Product name
+  - name: default_code
+    description: Internal reference (SKU) of the product
+  - name: categ_id
+    description: Product category, driving grouping and accounting defaults
+  - name: type
+    description: "Product kind: storable good, consumable or service"
+  - name: list_price
+    description: Default sales price before pricelists
+  - name: standard_price
+    description: Cost of the product used for valuation and margins
+  - name: uom_id
+    description: Default unit of measure for sales and stock
+  - name: uom_po_id
+    description: Default unit of measure for purchasing
+  - name: active
+    description: False when the product has been archived
+  - name: sale_ok
+    description: True when the product can be sold
+  - name: purchase_ok
+    description: True when the product can be purchased
+  - name: barcode
+    description: Barcode (EAN/UPC) of the product
+  - name: create_date
+    description: When the record was created
+  - name: write_date
+    description: When the record was last modified
+clarion:
+  kind: source
+  category: Products
+  sync:
+    cursor: { field: write_date, type: timestamp }

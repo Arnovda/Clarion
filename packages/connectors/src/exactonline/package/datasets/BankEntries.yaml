@@ -1,0 +1,80 @@
+# Exact Online entity. Field docs are TRANSCRIBED from the vendor REST reference by scripts/generate-eo-docs.ts — do not hand-edit descriptions; edit label/description/clarion freely.
+
+name: BankEntries
+label: Bank entries
+description: Bank statement headers — one entry per statement / batch. Listed under /financialtransaction/ in the EO API.
+source: /financialtransaction/BankEntries
+primary_key: [ EntryID ]
+fields:
+  - name: BankStatementDocument
+    description: Reference to document with bank statement
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: Documents, field: ID } }
+  - name: BankStatementDocumentNumber
+    description: Document number of document with bank statement
+    datatype: Edm.Int32
+  - name: BankStatementDocumentSubject
+    description: Subject of document with bank statement
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: ClosingBalanceFC
+    description: Closing balance in the currency of the transaction
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: Created
+    description: Creation date
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: Currency
+    description: Currency code
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: CustomField
+    description: Custom field endpoint
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Division
+    description: Division code
+    datatype: Edm.Int32
+  - name: EntryID
+    description: Primary key
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: EntryNumber
+    description: Entry number
+    datatype: Edm.Int32
+  - name: FinancialPeriod
+    description: The period of the transaction lines. The period should exist in the period date table
+    datatype: Edm.Int16
+  - name: FinancialYear
+    description: The financial year to which the entry belongs. The financial year should exist in the period date table
+    datatype: Edm.Int16
+  - name: JournalCode
+    description: Code of Journal
+    datatype: Edm.String
+    clarion: { role: dimension, references: { dataset: Journals, field: ID } }
+  - name: JournalDescription
+    description: Description of Journal
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Modified
+    description: Last modified date
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: OpeningBalanceFC
+    description: Opening balance in the currency of the transaction
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: Status
+    description: "Status: 20 = Open, 50 = Processed"
+    datatype: Edm.Int16
+  - name: StatusDescription
+    description: Description of Status
+    datatype: Edm.String
+    clarion: { role: dimension }
+clarion:
+  kind: source
+  category: Cashflow
+  sync:
+    cursor: { field: Modified, type: timestamp }
+    requiresSelect: true

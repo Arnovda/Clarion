@@ -1,0 +1,121 @@
+# Odoo star-schema template table. `source` is the DuckDB SQL over BARE source entity names; a foreign key is written ONCE on its field (clarion.references) and the template joins are derived from it.
+
+name: fact_journal_items
+label: Journal items
+description: One row per general-ledger line — the complete accounting detail.
+source: |-
+  SELECT
+    aml.id                      AS journal_item_id,
+    aml.move_id                 AS entry_id,
+    am.name                     AS entry_number,
+    TRY_CAST(aml.date AS DATE)  AS entry_date,
+    am.state                    AS state,
+    am.move_type                AS move_type,
+    aml.account_id              AS account_id,
+    aml.partner_id              AS partner_id,
+    aml.journal_id              AS journal_id,
+    aml.company_id              AS company_id,
+    aml.currency_id             AS currency_id,
+    aml.debit                   AS debit,
+    aml.credit                  AS credit,
+    aml.balance                 AS balance
+  FROM account_move_line aml
+  JOIN account_move am ON aml.move_id = am.id
+fields:
+  - name: journal_item_id
+    label: Journal item ID
+    description: Odoo journal item id (primary key).
+    datatype: BIGINT
+    clarion: { role: natural_key, technical: true, lineage: { dataset: account_move_line, field: id } }
+  - name: entry_id
+    label: Entry ID
+    description: Odoo id of the journal entry header.
+    datatype: BIGINT
+    clarion: { role: attribute, technical: true, lineage: { dataset: account_move_line, field: move_id } }
+  - name: entry_number
+    label: Entry number
+    description: Journal entry number.
+    datatype: VARCHAR
+    clarion: { role: degenerate_dimension, lineage: { dataset: account_move, field: name } }
+  - name: entry_date
+    label: Entry date
+    description: Accounting date of the line.
+    datatype: DATE
+    clarion: { role: attribute, lineage: { dataset: account_move_line, field: date } }
+  - name: state
+    label: Status
+    description: draft, posted or cancel.
+    datatype: VARCHAR
+    clarion: { role: attribute, lineage: { dataset: account_move, field: state } }
+  - name: move_type
+    label: Document type
+    description: entry, out_invoice, in_invoice, … — what kind of document produced this line.
+    datatype: VARCHAR
+    clarion: { role: attribute, lineage: { dataset: account_move, field: move_type } }
+  - name: account_id
+    label: GL account
+    description: GL account the line posts to.
+    datatype: BIGINT
+    clarion:
+      role: foreign_key
+      references: { dataset: dim_account, field: account_id }
+      technical: true
+      lineage: { dataset: account_move_line, field: account_id }
+  - name: partner_id
+    label: Partner
+    description: Customer / vendor on the line (when set).
+    datatype: BIGINT
+    clarion:
+      role: foreign_key
+      references: { dataset: dim_partner, field: partner_id }
+      technical: true
+      lineage: { dataset: account_move_line, field: partner_id }
+  - name: journal_id
+    label: Journal
+    description: Journal the line is booked in.
+    datatype: BIGINT
+    clarion:
+      role: foreign_key
+      references: { dataset: dim_journal, field: journal_id }
+      technical: true
+      lineage: { dataset: account_move_line, field: journal_id }
+  - name: company_id
+    label: Company
+    description: Company of the line.
+    datatype: BIGINT
+    clarion:
+      role: foreign_key
+      references: { dataset: dim_company, field: company_id }
+      technical: true
+      lineage: { dataset: account_move_line, field: company_id }
+  - name: currency_id
+    label: Currency
+    description: Currency of the line.
+    datatype: BIGINT
+    clarion:
+      role: foreign_key
+      references: { dataset: dim_currency, field: currency_id }
+      technical: true
+      lineage: { dataset: account_move_line, field: currency_id }
+  - name: debit
+    label: Debit
+    description: Debit amount in company currency.
+    datatype: DECIMAL(18,4)
+    clarion: { role: measure, additivity: additive, lineage: { dataset: account_move_line, field: debit } }
+  - name: credit
+    label: Credit
+    description: Credit amount in company currency.
+    datatype: DECIMAL(18,4)
+    clarion: { role: measure, additivity: additive, lineage: { dataset: account_move_line, field: credit } }
+  - name: balance
+    label: Balance
+    description: Debit minus credit in company currency.
+    datatype: DECIMAL(18,4)
+    clarion: { role: measure, additivity: additive, lineage: { dataset: account_move_line, field: balance } }
+clarion:
+  kind: fact
+  product: Finance
+  sourceEntities: [ account_move_line, account_move ]
+  grain: One row per journal item
+  factTableType: transaction
+  dimensionsUsed: [ dim_account, dim_partner, dim_journal, dim_company, dim_currency, dim_date ]

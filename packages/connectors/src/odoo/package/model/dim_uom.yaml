@@ -1,0 +1,22 @@
+# Odoo star-schema template table. `source` is the DuckDB SQL over BARE source entity names; a foreign key is written ONCE on its field (clarion.references) and the template joins are derived from it.
+
+name: dim_uom
+label: Units of measure
+description: Quantity units used on order and stock lines.
+source: |-
+  SELECT
+    id   AS uom_id,
+    name AS uom_name
+  FROM uom_uom
+fields:
+  - name: uom_id
+    label: UoM ID
+    description: Odoo unit-of-measure id (primary key).
+    datatype: BIGINT
+    clarion: { role: natural_key, technical: true, lineage: { dataset: uom_uom, field: id } }
+  - name: uom_name
+    label: Unit of measure
+    description: Name of the unit (Units, kg, hour, …).
+    datatype: VARCHAR
+    clarion: { role: attribute, lineage: { dataset: uom_uom, field: name } }
+clarion: { kind: dimension, product: Core dimensions, sourceEntities: [ uom_uom ] }

@@ -21,9 +21,9 @@ import './sharepoint';
 import { getConnector, listConnectorTypes } from './registry';
 import { validateBusinessKeyExposure, validateConnectorMetadata, validateEntityCatalog, validateKnownRelationships } from './conformance';
 import { validateStarSchemaTemplate } from './starSchema';
-import { EXACT_ONLINE_ENTITIES } from './exactonline/entities';
-import { EXACT_ONLINE_COLUMN_DOCS } from './exactonline/docs';
-import { ODOO_ENTITIES } from './odoo/entities';
+import { validateSourcePackage, type SourcePackage } from './sourcePackage';
+import { EXACT_ONLINE_COLUMN_DOCS, EXACT_ONLINE_ENTITIES, EXACT_ONLINE_PACKAGE } from './exactonline/catalog';
+import { ODOO_ENTITIES, ODOO_PACKAGE } from './odoo/catalog';
 
 describe('connector conformance — metadata (all registered connectors)', () => {
   const types = listConnectorTypes();
@@ -75,8 +75,9 @@ describe('connector conformance — entity catalogs', () => {
    */
   const columnDocs: Record<string, Record<string, ReadonlyArray<{ name: string; dataType?: string }>> | undefined> = {
     exactonline: EXACT_ONLINE_COLUMN_DOCS,
-    // Odoo harvests its docs live from fields_get and ships no static column
-    // list, so there is nothing to check against here.
+    // Odoo harvests its docs live from fields_get; the package's field lists
+    // are a curated SUBSET (`fieldCoverage: partial`), so "not documented"
+    // proves nothing and there is nothing to check against here.
     odoo: undefined,
   };
 
@@ -96,5 +97,33 @@ describe('connector conformance — entity catalogs', () => {
     if (!template) return;
     const errs = validateStarSchemaTemplate(template, entities.map((e) => e.name));
     expect(errs).toEqual([]);
+  });
+});
+
+describe('connector conformance — source packages', () => {
+  // Every connector that ships its knowledge as a source package
+  // (src/<connector>/package/) is held to the format here. Loading already
+  // validates — a broken package fails at import — but the explicit assertion
+  // names the violations instead of a stack trace, and the negative case
+  // proves the validator is not a no-op.
+  const packages: Array<[string, SourcePackage]> = [
+    ['exactonline', EXACT_ONLINE_PACKAGE],
+    ['odoo', ODOO_PACKAGE],
+  ];
+
+  it.each(packages)('source package for "%s" validates (schema + cross-references)', (_type, pkg) => {
+    expect(validateSourcePackage(pkg)).toEqual([]);
+  });
+
+  it.each(packages)('source package for "%s" says whether its field lists are complete', (_type, pkg) => {
+    expect(['complete', 'partial']).toContain(pkg.clarion.fieldCoverage);
+  });
+
+  it('refuses a package whose template table names a product that does not exist', () => {
+    const broken: SourcePackage = JSON.parse(JSON.stringify(EXACT_ONLINE_PACKAGE));
+    const fact = broken.datasets.find((d) => d.clarion.kind === 'fact')!;
+    fact.clarion.product = 'Nowhere';
+    const errs = validateSourcePackage(broken);
+    expect(errs.some((e) => e.includes("product 'Nowhere' is not a template product"))).toBe(true);
   });
 });

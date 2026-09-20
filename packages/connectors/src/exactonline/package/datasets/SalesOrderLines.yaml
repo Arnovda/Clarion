@@ -1,0 +1,208 @@
+# Exact Online entity. Field docs are TRANSCRIBED from the vendor REST reference by scripts/generate-eo-docs.ts — do not hand-edit descriptions; edit label/description/clarion freely.
+
+name: SalesOrderLines
+label: Sales order lines
+description: Line items on sales orders.
+source: /salesorder/SalesOrderLines
+primary_key: [ ID ]
+fields:
+  - name: AmountDC
+    description: Amount in the default currency of the company
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: AmountFC
+    description: Amount in the currency of the transaction
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: CostCenter
+    description: Reference to Cost center
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: CostCenterDescription
+    description: Description of CostCenter
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: CostPriceFC
+    description: Item cost price
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: CostUnit
+    description: Reference to Cost unit
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: CostUnitDescription
+    description: Description of CostUnit
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: CustomerItemCode
+    description: Code the customer uses for this item
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: CustomField
+    description: Custom field endpoint. Provided only for the Exact Online Premium users.
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: DeliveryDate
+    description: Delivery date of this line
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: DeliveryStatus
+    description: Shipping status of the sales order line. 12=Open, 20=Partial, 21=Complete, 45=Cancelled
+    datatype: Edm.Int16
+  - name: Description
+    description: Description
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Discount
+    description: Discount given on the default price. Discount = (DefaultPrice of Item - PriceItem in line) / DefaultPrice of Item
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: Division
+    description: Division code
+    datatype: Edm.Int32
+  - name: ID
+    description: Primary key
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: InvoiceStatus
+    description: Invoice status of the sales order line. 12=Open, 20=Partial, 21=Complete, 45=Cancelled
+    datatype: Edm.Int16
+  - name: Item
+    description: Reference to the item that is sold in this sales order line
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: Items, field: ID } }
+  - name: ItemCode
+    description: Code of Item
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: ItemDescription
+    description: Description of Item
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: ItemVersion
+    description: Item Version
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: ItemVersionDescription
+    description: Description of Item Version
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: LineNumber
+    description: Line number
+    datatype: Edm.Int32
+  - name: Margin
+    description: Sales margin of the sales order line
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: NetPrice
+    description: Net price of the sales order line
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: Notes
+    description: Extra notes
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: OrderID
+    description: The OrderID identifies the sales order. All the lines of a sales order have the same OrderID
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: SalesOrders, field: OrderID } }
+  - name: OrderNumber
+    description: Number of sales order
+    datatype: Edm.Int32
+  - name: OrderStatus
+    description: The status of the sales order line. 12=Open, 20=Partial, 21=Complete, 45=Cancelled
+    datatype: Edm.Int16
+  - name: Pricelist
+    description: Price list
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: PricelistDescription
+    description: Description of Pricelist
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Project
+    description: The project to which the sales order line is linked. The project can be different per line. Sometimes also the project in the header is filled although this is not really used
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: Projects, field: ID } }
+  - name: ProjectDescription
+    description: Description of Project
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: PurchaseOrder
+    description: Purchase order that is linked to the sales order
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: PurchaseOrders, field: PurchaseOrderID } }
+  - name: PurchaseOrderLine
+    description: Purchase order line of the purchase order that is linked to the sales order
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: PurchaseOrderLines, field: ID } }
+  - name: PurchaseOrderLineNumber
+    description: Number of the purchase order line
+    datatype: Edm.Int32
+  - name: PurchaseOrderNumber
+    description: Number of the purchase order
+    datatype: Edm.Int32
+  - name: Quantity
+    description: The number of items sold in default units. The quantity shown in the entry screen is Quantity * UnitFactor. Positive quantity = Sales order lines, Negative quantity = Trade-in lines.
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: QuantityDelivered
+    description: The number of items delivered
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: QuantityInvoiced
+    description: The number of items invoiced
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: ShopOrder
+    description: Reference to ShopOrder
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: TaxSchedule
+    description: Obsolete
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: TaxScheduleCode
+    description: Obsolete
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: TaxScheduleDescription
+    description: Obsolete
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: UnitCode
+    description: Code of item unit
+    datatype: Edm.String
+    clarion: { role: dimension, references: { dataset: Units, field: ID } }
+  - name: UnitDescription
+    description: Description of Unit
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: UnitPrice
+    description: Price per unit in the currency of the transaction
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: UseDropShipment
+    description: Indicates if drop shipment is used (delivery directly to customer, invoice to wholesaler)
+    datatype: Edm.Byte
+  - name: VATAmount
+    description: VAT amount in the currency of the transaction
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: VATCode
+    description: VAT code
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: VATCodeDescription
+    description: Description of VATCode
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: VATPercentage
+    description: The vat percentage of the VAT code. This is the percentage at the moment the sales order is created. It's also used for the default calculation of VAT amounts and VAT base amounts
+    datatype: Edm.Double
+    clarion: { role: measure }
+clarion:
+  kind: source
+  category: Sales
+  sync:
+    cursor: { field: Modified, type: timestamp }

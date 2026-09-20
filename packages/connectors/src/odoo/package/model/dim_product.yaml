@@ -1,0 +1,67 @@
+# Odoo star-schema template table. `source` is the DuckDB SQL over BARE source entity names; a foreign key is written ONCE on its field (clarion.references) and the template joins are derived from it.
+
+name: dim_product
+label: Products
+description: Sellable / purchasable product variants with their template attributes.
+source: |-
+  SELECT
+    pp.id           AS product_id,
+    pt.name         AS product_name,
+    pp.default_code AS internal_reference,
+    pt.type         AS product_type,
+    pt.categ_id     AS category_id,
+    pt.uom_id       AS uom_id,
+    pt.list_price   AS list_price,
+    pp.active       AS active
+  FROM product_product pp
+  JOIN product_template pt ON pp.product_tmpl_id = pt.id
+fields:
+  - name: product_id
+    label: Product ID
+    description: Odoo product variant id (primary key).
+    datatype: BIGINT
+    clarion: { role: natural_key, technical: true, lineage: { dataset: product_product, field: id } }
+  - name: product_name
+    label: Product name
+    description: Name of the product.
+    datatype: VARCHAR
+    clarion: { role: attribute, lineage: { dataset: product_template, field: name } }
+  - name: internal_reference
+    label: Internal reference
+    description: Internal product code / SKU.
+    datatype: VARCHAR
+    clarion: { role: attribute, lineage: { dataset: product_product, field: default_code } }
+  - name: product_type
+    label: Product type
+    description: Goods, service or consumable classification.
+    datatype: VARCHAR
+    clarion: { role: attribute, lineage: { dataset: product_template, field: type } }
+  - name: category_id
+    label: Category
+    description: Product category.
+    datatype: BIGINT
+    clarion:
+      role: foreign_key
+      references: { dataset: dim_product_category, field: category_id }
+      technical: true
+      lineage: { dataset: product_template, field: categ_id }
+  - name: uom_id
+    label: Unit of measure
+    description: Default unit of measure.
+    datatype: BIGINT
+    clarion:
+      role: foreign_key
+      references: { dataset: dim_uom, field: uom_id }
+      technical: true
+      lineage: { dataset: product_template, field: uom_id }
+  - name: list_price
+    label: List price
+    description: Default sales price of the product.
+    datatype: DOUBLE
+    clarion: { role: attribute, lineage: { dataset: product_template, field: list_price } }
+  - name: active
+    label: Active
+    description: False when the product is archived.
+    datatype: BOOLEAN
+    clarion: { role: attribute, lineage: { dataset: product_product, field: active } }
+clarion: { kind: dimension, product: Core dimensions, sourceEntities: [ product_product, product_template ] }

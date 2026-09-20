@@ -1,12 +1,12 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import dynamic from 'next/dynamic';
 import { formatSql } from '@/lib/formatSql';
-import { Gauge, X, Sparkles, Maximize2 } from 'lucide-react';
+import { Gauge, X, Sparkles, Maximize2, BookOpen } from 'lucide-react';
 import api from '@/lib/api';
 import AiPromptDialog from './AiPromptDialog';
-import { ProductColumn, ProductTable, ProductTreeItem } from './types';
+import { ProductColumn, ProductTable, ProductTreeItem, type ResolvedGlossaryLink } from './types';
 import ApprovalBadge from './ApprovalBadge';
 import HistoryPanel from './HistoryPanel';
 import QualityPanel from '@/components/QualityPanel';
@@ -94,6 +94,34 @@ export default function ProductTableDetailPanel({
 }: Props) {
   const role = useRole();
   const curator = canCurate(role);
+  // Glossary terms linked to this table or its columns — "your team calls
+  // this …". The term is the soft document; the column is the hard address it
+  // points at (GlossaryPanel is where the link is made). One small fetch per
+  // panel mount; a failure simply shows no chips.
+  const [glossaryTerms, setGlossaryTerms] = useState<Array<{ id: number; term: string; links: ResolvedGlossaryLink[] }>>([]);
+  useEffect(() => {
+    let cancelled = false;
+    api.get('/semantic/glossary')
+      .then((r) => {
+        if (cancelled) return;
+        const rows = (r.data?.data ?? []) as Array<{ id: number; term: string; links?: ResolvedGlossaryLink[] }>;
+        setGlossaryTerms(rows.map((row) => ({
+          id: Number(row.id),
+          term: String(row.term ?? ''),
+          links: Array.isArray(row.links) ? row.links : [],
+        })));
+      })
+      .catch(() => { if (!cancelled) setGlossaryTerms([]); });
+    return () => { cancelled = true; };
+  }, []);
+  const termsForColumn = (tableName: string, columnName: string): string[] =>
+    glossaryTerms
+      .filter((g) => g.links.some((l) => l.kind === 'column' && l.table === tableName && l.column === columnName))
+      .map((g) => g.term);
+  const termsForTable = (tableName: string): string[] =>
+    glossaryTerms
+      .filter((g) => g.links.some((l) => l.kind === 'table' && l.table === tableName))
+      .map((g) => g.term);
   // Find the table in the product tree. The incoming id may be the GRAPH id
   // (Structure tree) or the Postgres id (Browse reference cards, ?refTableId
   // deep links) — the tree rows carry both since 2026-08-27, so match either.
@@ -258,6 +286,12 @@ export default function ProductTableDetailPanel({
             {/* Mono raw name only for curators. */}
             {curator && (
               <p className="text-[12px] font-mono text-muted-2 mt-1 truncate">{tbl.table_name}</p>
+            )}
+            {termsForTable(tbl.table_name).length > 0 && (
+              <p className="mt-1.5 flex items-center gap-1.5 text-[12px] text-ink-3">
+                <BookOpen className="w-3.5 h-3.5 shrink-0 text-ocean" strokeWidth={2} aria-hidden />
+                <span>Your team calls this <span className="italic">{termsForTable(tbl.table_name).join(', ')}</span></span>
+              </p>
             )}
 
             <div className="flex items-center gap-2 mt-2 flex-wrap">
@@ -566,6 +600,7 @@ export default function ProductTableDetailPanel({
                           {col.display_name && col.display_name !== col.column_name && (
                             <span className="block text-[10px] text-muted-2 truncate max-w-[140px]">{col.display_name}</span>
                           )}
+                          <GlossaryChips terms={termsForColumn(tbl.table_name, col.column_name)} />
                         </td>
                         <td className="px-3 py-2.5">
                           <span className={`inline-flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-md font-semibold ${typeInfo.cls}`}>
@@ -637,6 +672,7 @@ export default function ProductTableDetailPanel({
                             {colRoleLabel(col.column_role)}
                           </span>
                         )}
+                        <GlossaryChips terms={termsForColumn(tbl.table_name, col.column_name)} />
                       </div>
                       <ApprovalBadge
                         entityType="product_column" entityId={col.id}
@@ -943,5 +979,24 @@ function SqlViewer({ pgTableId }: { pgTableId: number }) {
         <p className="text-[12px] text-muted-2 italic">No transformation SQL is stored for this table.</p>
       )}
     </div>
+  );
+}
+
+/** "Your team's word for this column" — glossary terms linked to a column. */
+function GlossaryChips({ terms }: { terms: string[] }) {
+  if (terms.length === 0) return null;
+  return (
+    <span className="mt-1 flex flex-wrap gap-1">
+      {terms.map((t) => (
+        <span
+          key={t}
+          title="Your team's word for this column (glossary)"
+          className="inline-flex items-center gap-1 rounded bg-ocean-softer px-1.5 py-0.5 text-[10px] text-ocean"
+        >
+          <BookOpen className="w-3 h-3" strokeWidth={2} aria-hidden />
+          <span className="italic">{t}</span>
+        </span>
+      ))}
+    </span>
   );
 }

@@ -1,0 +1,133 @@
+# Exact Online entity. Field docs are TRANSCRIBED from the vendor REST reference by scripts/generate-eo-docs.ts — do not hand-edit descriptions; edit label/description/clarion freely.
+
+name: SubscriptionTypes
+label: Subscription types
+description: Subscription plan templates.
+source: /subscription/SubscriptionTypes
+primary_key: [ ID ]
+fields:
+  - name: AutomaticGenerateInvoiceDays
+    description: Number of days before or after generating the subscription invoice. Company settings and automatic generate invoice type need to be enabled before subscription invoice generated automatically
+    datatype: Edm.Int16
+  - name: AutomaticGenerateInvoiceDescription
+    description: Description of the automatic generated invoice
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: AutomaticGenerateInvoiceType
+    description: "Type of automatic generate invoice: 1=Never, 2=Before the subscription period, 3=After the subscription period. Company settings need to be enabled before subscription invoice generated automatically"
+    datatype: Edm.Int16
+  - name: AutomaticSendInvoiceDays
+    description: Number of days after sending the subscription invoice. Company settings and automatic sending invoice type need to be enabled before subscription invoice sent automatically
+    datatype: Edm.Int16
+  - name: AutomaticSendInvoiceMethod
+    description: "Method of automatic send invoice: 1=Send based on account, 2=Send via email, 3=Create documents, 4=Send via digital postbox, 5=Send and track, 6=Send via peppol. Company settings need to be enabled before subscription invoice sent automatically"
+    datatype: Edm.Int16
+  - name: AutomaticSendInvoiceSender
+    description: "Sender's email of automatic send invoice: 1=Company email address, 2=Main user email address. Company settings need to be enabled before subscription invoice sent automatically"
+    datatype: Edm.Int16
+  - name: AutomaticSendInvoiceSenderMailbox
+    description: ID of automatic send invoice sender's mailbox. Company settings need to be enabled before subscription invoice sent automatically
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: AutomaticSendInvoiceType
+    description: "Type of automatic send invoice: 1=Never, 2=When available. Company settings need to be enabled before subscription invoice sent automatically"
+    datatype: Edm.Int16
+  - name: CancellationPeriod
+    description: Cancellation period of subscription type
+    datatype: Edm.Int16
+  - name: CancellationPeriodUnit
+    description: "Unit of cancellation period: wk=Week, mm=Month, yy=Year, hy=Half-year, qt=Quarter"
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Code
+    description: Code
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Created
+    description: Date and time when the subscription type was created
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: Creator
+    description: ID of user that created the subscription type
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: CreatorFullName
+    description: Full name of user that created the subscription type
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: CustomField
+    description: Custom field endpoint. Provided only for the Exact Online Premium users.
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Description
+    description: Description of subscription type
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Division
+    description: Division code
+    datatype: Edm.Int32
+  - name: EnablePaymentLink
+    description: "Enable payment link: 0=Never, 1=Always, 2=Based on account"
+    datatype: Edm.Int16
+  - name: ID
+    description: Primary key
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: InvoiceCorrectionMethod
+    description: "Invoice correction method: 1=Ratio based, 2=Zero Invoice, 3=Never invoiced"
+    datatype: Edm.Int16
+  - name: InvoicePeriod
+    description: Invoice period of subscription type
+    datatype: Edm.Int16
+  - name: InvoicePeriodUnit
+    description: "Unit of invoice period: wk=Week, mm=Month, yy=Year, hy=Half-year, qt=Quarter"
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: ManualRenewalMethod
+    description: "Manual renewal method: 1=Use item prices, 2=Use current subscription prices"
+    datatype: Edm.Int16
+  - name: Modified
+    description: Last modified date of subscription type
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: Modifier
+    description: ID of user that modified the subscription type
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: ModifierFullName
+    description: Full name of user that modified the subscription type
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Notes
+    description: Additional information about subscription type
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: ProlongationType
+    description: "Prolongation type: 0=No, 1=Manual, 2=Automatic"
+    datatype: Edm.Byte
+  - name: RenewalCancellationPeriod
+    description: Renewal cancellation period of subscription type
+    datatype: Edm.Int16
+  - name: RenewalCancellationPeriodUnit
+    description: "Unit of renewal cancellation period: wk=Week, mm=Month, yy=Year, hy=Half-year, qt=Quarter"
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: RenewalPeriod
+    description: Renewal period of subscription type
+    datatype: Edm.Int16
+  - name: RenewalPeriodUnit
+    description: "Unit of renewal period: wk=Week, mm=Month, yy=Year, hy=Half-year, qt=Quarter"
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: SubscriptionPeriod
+    description: Subscription period of subscription type
+    datatype: Edm.Int16
+  - name: SubscriptionPeriodUnit
+    description: "Unit of subscription period: wk=Week, mm=Month, yy=Year, hy=Half-year, qt=Quarter"
+    datatype: Edm.String
+    clarion: { role: dimension }
+clarion:
+  kind: source
+  category: Subscription
+  sync:
+    cursor: { field: Modified, type: timestamp }

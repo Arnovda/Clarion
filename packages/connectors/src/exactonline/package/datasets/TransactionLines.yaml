@@ -1,0 +1,307 @@
+# Exact Online entity. Field docs are TRANSCRIBED from the vendor REST reference by scripts/generate-eo-docs.ts — do not hand-edit descriptions; edit label/description/clarion freely.
+
+name: TransactionLines
+label: Transaction lines
+description: GL ledger detail — every booked accounting line. The largest table in a typical ExactOnline division. First sync of a 10-year-old active division can run tens of millions of rows; subsequent re-syncs only see changes if the connector supports it (not today — runs are full-table).
+source: /financialtransaction/TransactionLines
+primary_key: [ ID ]
+fields:
+  - name: Account
+    description: Reference to account
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: Accounts, field: ID } }
+  - name: AccountCode
+    description: Code of the Account
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: AccountName
+    description: Name of the Account
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: AmountDC
+    description: Amount in the default currency of the company
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: AmountFC
+    description: Amount in the currency of the transaction
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: AmountVATBaseFC
+    description: Vat base amount in the currency of the transaction
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: AmountVATFC
+    description: Vat amount in the currency of the transaction
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: Asset
+    description: Reference to asset
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: AssetCode
+    description: Code of Asset
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: AssetDescription
+    description: Description of Asset
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: CostCenter
+    description: Reference to cost center
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: CostCenterDescription
+    description: Description of CostCenter
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: CostUnit
+    description: Reference to cost unit
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: CostUnitDescription
+    description: Description of CostUnit
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Created
+    description: Creation date
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: Creator
+    description: User ID of creator
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: CreatorFullName
+    description: Name of creator
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Currency
+    description: Currency
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: CustomField
+    description: Custom field endpoint
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Date
+    description: Entry date
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: Description
+    description: Description
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Division
+    description: Division code
+    datatype: Edm.Int32
+  - name: Document
+    description: Reference to document
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: Documents, field: ID } }
+  - name: DocumentNumber
+    description: Number of the document
+    datatype: Edm.Int32
+  - name: DocumentSubject
+    description: Subject of the document
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: DueDate
+    description: Date that payment should be done
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: EntryID
+    description: The transaction lines that make up a financial entry share the same EntryID
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: EntryNumber
+    description: Entry number of the header
+    datatype: Edm.Int32
+  - name: ExchangeRate
+    description: Exchange rate
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: ExternalLinkDescription
+    description: Description of ExternalLink
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: ExternalLinkReference
+    description: External link
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: ExtraDutyAmountFC
+    description: Extra duty amount
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: ExtraDutyPercentage
+    description: Extra duty percentage
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: FinancialPeriod
+    description: Financial period
+    datatype: Edm.Int16
+  - name: FinancialYear
+    description: Financial year
+    datatype: Edm.Int16
+  - name: GLAccount
+    description: General ledger account
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: GLAccounts, field: ID } }
+  - name: GLAccountCode
+    description: Code of GLAccount
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: GLAccountDescription
+    description: Description of GLAccount
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: ID
+    description: Primary key
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: InvoiceNumber
+    description: Invoice number
+    datatype: Edm.Int32
+  - name: Item
+    description: Reference to item
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: Items, field: ID } }
+  - name: ItemCode
+    description: Code of Item
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: ItemDescription
+    description: Description of Item
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: JournalCode
+    description: The journal code
+    datatype: Edm.String
+    clarion: { role: dimension, references: { dataset: Journals, field: ID } }
+  - name: JournalDescription
+    description: The journal description
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: LineNumber
+    description: Line number
+    datatype: Edm.Int32
+  - name: LineType
+    description: Line type
+    datatype: Edm.Int16
+  - name: Modified
+    description: Last modified date
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: Modifier
+    description: User ID of modifier
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: ModifierFullName
+    description: Name of modifier
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Notes
+    description: Extra remarks
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: OffsetID
+    description: OffsetID
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: TransactionLines, field: ID } }
+  - name: OrderNumber
+    description: Order number
+    datatype: Edm.Int32
+  - name: PaymentDiscountAmount
+    description: Discount amount when paid in time
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: PaymentReference
+    description: Payment reference
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Project
+    description: Reference to project
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: Projects, field: ID } }
+  - name: ProjectCode
+    description: Code of Project
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: ProjectDescription
+    description: Description of Project
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: ProjectWBS
+    description: Reference to Project WBS
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: ProjectWBSDescription
+    description: Description of Project WBS
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Quantity
+    description: Quantity
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: SerialNumber
+    description: Obsolete
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: ShopOrder
+    description: Reference to shop order
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: Status
+    description: 20 = Open, 50 = Processed
+    datatype: Edm.Int16
+  - name: Subscription
+    description: "Reference to subscription line (Note: LineNumber greater than 0 is subscription line)"
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: SubscriptionLines, field: ID } }
+  - name: SubscriptionDescription
+    description: Description of subscription line
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: TrackingNumber
+    description: Tracking number of item
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: TrackingNumberDescription
+    description: Tracking number description
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Type
+    description: 142 = Issue to parent
+    datatype: Edm.Int32
+  - name: VATCode
+    description: Vat code
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: VATCodeDescription
+    description: Description of VATCode
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: VATPercentage
+    description: Vat percentage
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: VATType
+    description: Vat type
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: YourRef
+    description: Your reference (of customer)
+    datatype: Edm.String
+    clarion: { role: dimension }
+clarion:
+  kind: source
+  category: Financial
+  sync:
+    cursor: { field: Modified, type: timestamp }
+    requiresSelect: true
+  notes: |-
+    The general-ledger detail: one row per journal line, across every journal.
+
+    `AmountDC` is the amount in the division currency and is additive; `AmountFC`, `AmountVATBaseFC` and `AmountVATFC` are in the document currency (`Currency`).
+
+    `JournalCode` references Journals by `Code`, not by GUID. `FinancialYear` / `FinancialPeriod` are the POSTING period and `Date` the transaction date; they differ for entries posted into another period, so period reports go by the former.
+
+    `Type` and `Status` are numeric codes (entry type, posting status), not labels.

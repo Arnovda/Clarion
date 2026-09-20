@@ -1,0 +1,109 @@
+# Exact Online entity. Field docs are TRANSCRIBED from the vendor REST reference by scripts/generate-eo-docs.ts — do not hand-edit descriptions; edit label/description/clarion freely.
+
+name: WarehouseTransfers
+label: Warehouse transfers
+description: Stock movement headers between warehouses.
+source: /inventory/WarehouseTransfers
+primary_key: [ ID ]
+fields:
+  - name: Created
+    description: Creation date
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: Creator
+    description: User ID of creator
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: CreatorFullName
+    description: Name of creator
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Description
+    description: Description
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Division
+    description: Division code
+    datatype: Edm.Int32
+  - name: EntryDate
+    description: Entry Date
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: Modified
+    description: Last modified date
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: Modifier
+    description: User ID of modifier
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: ModifierFullName
+    description: Name of modifier
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: PickedBy
+    description: Warehouse pick/Location pick user
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: PlannedDeliveryDate
+    description: Planned delivery date / Planned transfer date It shows the date the items will be sent for transfer delivery.
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: PlannedReceiptDate
+    description: Planned receipt date It shows the date the items will arrive at the warehouse location.
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: Remarks
+    description: Remarks
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Source
+    description: "Source of warehouse transfer entry: 1-Manual entry, 2-Import, 3-Transfer advice, 4-Web service"
+    datatype: Edm.Int16
+  - name: Status
+    description: "Warehouse transfer status: 10-Open, 50-Complete"
+    datatype: Edm.Int16
+  - name: TransferDate
+    description: Transfer Date of the processed warehouse transfer
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: TransferID
+    description: Primary key
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: TransferNumber
+    description: Transfer Number
+    datatype: Edm.Int32
+  - name: TransferredBy
+    description: Warehouse transfer/Location transfer user
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: WarehouseFrom
+    description: ID of warehouse to transfer item from
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: WarehouseFromCode
+    description: Code of warehouse to transfer item from
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: WarehouseFromDescription
+    description: Description of warehouse to transfer item from
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: WarehouseTo
+    description: ID of warehouse to transfer item to
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: WarehouseToCode
+    description: Code of warehouse to transfer item to
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: WarehouseToDescription
+    description: Description of warehouse to transfer item to
+    datatype: Edm.String
+    clarion: { role: dimension }
+clarion:
+  kind: source
+  category: Inventory
+  sync:
+    cursor: { field: Modified, type: timestamp }

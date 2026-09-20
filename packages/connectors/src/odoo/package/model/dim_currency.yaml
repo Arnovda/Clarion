@@ -1,0 +1,34 @@
+# Odoo star-schema template table. `source` is the DuckDB SQL over BARE source entity names; a foreign key is written ONCE on its field (clarion.references) and the template joins are derived from it.
+
+name: dim_currency
+label: Currencies
+description: Currencies referenced by journals, orders and invoices.
+source: |-
+  SELECT
+    id     AS currency_id,
+    name   AS currency_code,
+    symbol AS currency_symbol,
+    active
+  FROM res_currency
+fields:
+  - name: currency_id
+    label: Currency ID
+    description: Odoo currency id (primary key).
+    datatype: BIGINT
+    clarion: { role: natural_key, technical: true, lineage: { dataset: res_currency, field: id } }
+  - name: currency_code
+    label: Currency code
+    description: ISO currency code (EUR, USD, …).
+    datatype: VARCHAR
+    clarion: { role: attribute, lineage: { dataset: res_currency, field: name } }
+  - name: currency_symbol
+    label: Symbol
+    description: Currency symbol.
+    datatype: VARCHAR
+    clarion: { role: attribute, lineage: { dataset: res_currency, field: symbol } }
+  - name: active
+    label: Active
+    description: False when the currency is disabled.
+    datatype: BOOLEAN
+    clarion: { role: attribute, lineage: { dataset: res_currency, field: active } }
+clarion: { kind: dimension, product: Core dimensions, sourceEntities: [ res_currency ] }

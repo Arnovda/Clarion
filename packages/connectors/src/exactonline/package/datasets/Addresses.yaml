@@ -1,0 +1,230 @@
+# Exact Online entity. Field docs are TRANSCRIBED from the vendor REST reference by scripts/generate-eo-docs.ts — do not hand-edit descriptions; edit label/description/clarion freely.
+
+name: Addresses
+label: Addresses
+description: Postal addresses linked to accounts (billing, shipping, visit).
+source: /crm/Addresses
+primary_key: [ ID ]
+fields:
+  - name: Account
+    description: Account linked to the address
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: Accounts, field: ID } }
+  - name: AccountIsSupplier
+    description: Indicates if the account is a supplier
+    datatype: Edm.Boolean
+    clarion: { role: dimension }
+  - name: AccountName
+    description: Name of the account
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: AddressLine1
+    description: First address line
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: AddressLine2
+    description: Second address line
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: AddressLine3
+    description: Third address line
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: City
+    description: City
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Contact
+    description: Contact linked to Address
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: Contacts, field: ID } }
+  - name: ContactName
+    description: Contact name
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Country
+    description: Country code
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: CountryName
+    description: Country name
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Created
+    description: Creation date
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: Creator
+    description: User ID of creator
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: CreatorFullName
+    description: Name of creator
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: CustomField
+    description: Custom field endpoint. Provided only for the Exact Online Premium users.
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Division
+    description: Division code
+    datatype: Edm.Int32
+  - name: Fax
+    description: Fax number
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: FreeBoolField_01
+    description: Free boolean field 1
+    datatype: Edm.Boolean
+    clarion: { role: dimension }
+  - name: FreeBoolField_02
+    description: Free boolean field 2
+    datatype: Edm.Boolean
+    clarion: { role: dimension }
+  - name: FreeBoolField_03
+    description: Free boolean field 3
+    datatype: Edm.Boolean
+    clarion: { role: dimension }
+  - name: FreeBoolField_04
+    description: Free boolean field 4
+    datatype: Edm.Boolean
+    clarion: { role: dimension }
+  - name: FreeBoolField_05
+    description: Free boolean field 5
+    datatype: Edm.Boolean
+    clarion: { role: dimension }
+  - name: FreeDateField_01
+    description: Free date field 1
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: FreeDateField_02
+    description: Free date field 2
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: FreeDateField_03
+    description: Free date field 3
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: FreeDateField_04
+    description: Free date field 4
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: FreeDateField_05
+    description: Free date field 5
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: FreeNumberField_01
+    description: Free number field 1
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: FreeNumberField_02
+    description: Free number field 2
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: FreeNumberField_03
+    description: Free number field 3
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: FreeNumberField_04
+    description: Free number field 4
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: FreeNumberField_05
+    description: Free number field 5
+    datatype: Edm.Double
+    clarion: { role: measure }
+  - name: FreeTextField_01
+    description: Free text field 1
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: FreeTextField_02
+    description: Free text field 2
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: FreeTextField_03
+    description: Free text field 3
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: FreeTextField_04
+    description: Free text field 4
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: FreeTextField_05
+    description: Free text field 5
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: ID
+    description: Primary key
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: Mailbox
+    description: "Mailbox Take notes: The 'Mailbox' functionality required the Mailbox feature set in the licence."
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Main
+    description: Indicates if the address is the main address for this type
+    datatype: Edm.Boolean
+    clarion: { role: dimension }
+  - name: Modified
+    description: Last modified date
+    datatype: Edm.DateTime
+    clarion: { role: dimension }
+  - name: Modifier
+    description: User ID of modifier
+    datatype: Edm.Guid
+    clarion: { role: dimension }
+  - name: ModifierFullName
+    description: Name of modifier
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: NicNumber
+    description: Last 5 digits of SIRET number which is an intern sequential number of 4 digits representing the identification of the localization of the office
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Notes
+    description: Notes for an address
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Phone
+    description: Phone number
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: PhoneExtension
+    description: Phone extension
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Postcode
+    description: Postcode
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Source
+    description: CRM creation source
+    datatype: Edm.Byte
+  - name: State
+    description: State
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: StateDescription
+    description: Name of the State
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: Type
+    description: The type of address. Visit=1, Postal=2, Invoice=3, Delivery=4
+    datatype: Edm.Int16
+  - name: Warehouse
+    description: The warehouse linked to the address, if a warehouse is linked the account will be empty. Can only be filled for type=Delivery
+    datatype: Edm.Guid
+    clarion: { role: dimension, references: { dataset: Warehouses, field: ID } }
+  - name: WarehouseCode
+    description: Code of the warehoude
+    datatype: Edm.String
+    clarion: { role: dimension }
+  - name: WarehouseDescription
+    description: Description of the warehouse
+    datatype: Edm.String
+    clarion: { role: dimension }
+clarion:
+  kind: source
+  category: CRM
+  sync:
+    cursor: { field: Modified, type: timestamp }
