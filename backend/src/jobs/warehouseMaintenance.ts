@@ -262,12 +262,31 @@ export function startMaintenanceWorker(): Worker | null {
     log.error({ jobId: job?.id, err: err.message }, 'warehouse maintenance job failed');
   });
 
+  // LOAD-BEARING LOG LINE: `.ops/prod-logs` keys `maintenance-worker` on it.
+  // This is the ONLY positive evidence that the consumer for this queue was
+  // actually constructed. Every other link in the chain has a signal —
+  // registration (`maintenance-registered`), the queue filter
+  // (`queues-configured`), the run itself (`maintenance-run`) — and by
+  // 2026-09-20 all three had been measured while the sweep still never
+  // executed, leaving this the one unverified step. It cannot ride
+  // startWorkers()'s `Started N workers` count: that counts the `workers`
+  // array, and this worker (like the brief and security ones) is tracked in
+  // its own module-level variable and never pushed into it.
+  log.info({ queue: QUEUE_NAME, cron: WEEKLY_CRON }, 'warehouse maintenance worker started');
+
   return maintenanceWorker;
 }
 
 /**
  * Register the weekly repeatable. Called once from scheduler.ts loadSchedules().
- * Safe to call multiple times — BullMQ replaces the existing entry by jobId.
+ * Safe to call multiple times — measured 2026-09-20 against BullMQ 5.73 and a
+ * real Redis: five successive remove-then-re-add cycles against `0 3 * * 0`
+ * leave one repeatable and one delayed job, with nextRunAt pinned to the SAME
+ * Sunday 03:00 each time. `upsertJobScheduler` behaves identically, and a live
+ * Worker still fires at a ~16:1 boot-to-fire ratio, across processes too. So
+ * the re-registration churn here (93 boots in 14 days in production) is NOT
+ * why the weekly sweep never runs — do not "fix" this function on that
+ * theory.
  */
 export async function registerWeeklyMaintenance(): Promise<void> {
   const queue = getQueue();
