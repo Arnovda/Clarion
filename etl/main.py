@@ -539,40 +539,6 @@ def ingest_tables(req: IngestRequest):
     return IngestResponse(ok=True, warehouse_path=wh_path, results=results)
 
 
-class DbtRunRequest(BaseModel):
-    project_dir: str
-    target: str = "dev"
-    select: Optional[str] = None
-    full_refresh: bool = False
-    # Optional path to the DuckDB state file. When provided, /dbt/test
-    # will fetch failure sample rows from dbt_test__audit tables.
-    state_path: Optional[str] = None
-
-
-@app.post("/dbt/run")
-def dbt_run(req: DbtRunRequest):
-    """Run `dbt run` against a dbt project already generated on disk.
-
-    The backend `dbtProjectBuilder` writes the project to a shared warehouse
-    path; both the backend and ETL containers mount the warehouse volume, so
-    `req.project_dir` is reachable from here.
-    """
-    from dbt_runner import run_dbt_project
-    return run_dbt_project(
-        req.project_dir,
-        target=req.target,
-        select=req.select,
-        full_refresh=req.full_refresh,
-    )
-
-
-@app.post("/dbt/test")
-def dbt_test(req: DbtRunRequest):
-    """Run `dbt test` (quality tests) against a dbt project on disk."""
-    from dbt_runner import run_dbt_test
-    return run_dbt_test(req.project_dir, target=req.target, state_path=req.state_path)
-
-
 class OptimizeRequest(BaseModel):
     connection_id: int
     tenant_id: Optional[int] = None

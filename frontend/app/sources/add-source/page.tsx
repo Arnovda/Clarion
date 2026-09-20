@@ -507,8 +507,8 @@ function PickType(props: {
   return (
     <div>
       <p className="text-[13px] text-ink-2 mb-6">
-        Choose what you'd like to connect. The form on the next step is generated from
-        the connector's own schema — different sources ask for different fields.
+        Choose what you&rsquo;d like to connect. The form on the next step is generated from
+        the connector&rsquo;s own schema — different sources ask for different fields.
       </p>
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
         {props.types.map((t) => (
@@ -1033,7 +1033,7 @@ function PickEntities(props: {
         Choose entities to sync
       </h2>
       <p className="text-[13px] text-ink-3 mb-6">
-        These are the tables we'll pull on each sync. You can change the selection later.
+        These are the tables we&rsquo;ll pull on each sync. You can change the selection later.
       </p>
 
       <div className="flex items-center justify-between mb-4 text-[12px]">

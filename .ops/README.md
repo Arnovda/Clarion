@@ -1,5 +1,9 @@
 # `.ops/` — GitOps controls for production settings
 
+> Also in this folder, not a control: `cloud-setup-script.sh`, the setup script pasted
+> into the Claude Code cloud environment (installs dependencies into the cached image);
+> its header explains why it lives here rather than in a SessionStart hook.
+
 Files here are **operational switches**, not application config. Editing one on
 `main` triggers a workflow that applies it to the running Azure resources.
 

@@ -65,7 +65,8 @@ audience is missing.
 
 **On the day the first customer signs — four steps, about an hour:**
 
-1. Declare a train in `FEATURE_FLAGS` (`shared/contract.ts`, both copies — the
+1. Declare a train in `FEATURE_FLAGS` (`backend/src/shared/contract.ts` and
+   `frontend/lib/contract.ts`, both copies — the
    contract-sync ratchet enforces it), e.g. `release_2026_09` with a `name` a
    non-developer would recognise: that string is what the console shows.
 2. Point `CURRENT_RELEASE` at it. It is `null` today, which is what "no train is

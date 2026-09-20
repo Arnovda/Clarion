@@ -488,7 +488,6 @@ function ConnectionCard({
   conn,
   onDelete,
   onStartReProfile,
-  onReProfileDone,
   onEdit,
   onReIngest,
   highlightedFromUrl,
@@ -497,7 +496,6 @@ function ConnectionCard({
   conn: Connection;
   onDelete: (id: number) => void;
   onStartReProfile: (id: number) => void;
-  onReProfileDone: (id: number) => void;
   onEdit: (conn: Connection) => void;
   onReIngest: (conn: Connection) => void;
   /** True when this card matches `?connectionId=` on the URL — typically
@@ -2150,7 +2148,7 @@ function SourcesPageInner() {
         const conns: Connection[] = res.data.data ?? [];
         setConnections(conns);
         // Resume profiling banner if any connection is still being profiled
-        const running = conns.find((c: any) => c.profiling_status === 'running');
+        const running = conns.find((c) => c.profiling_status === 'running');
         if (running && !profiling) {
           setProfiling({ id: running.id, name: running.name, startStream: false });
         }
@@ -2287,9 +2285,6 @@ function SourcesPageInner() {
     }
   }
 
-  function handleReProfileDone(_id: number) {
-    // No-op — SSE banner handles completion internally
-  }
 
   const contextPanel = (
     <div className="flex flex-col h-full">
@@ -2435,7 +2430,6 @@ function SourcesPageInner() {
                   conn={conn}
                   onDelete={handleDelete}
                   onStartReProfile={handleStartReProfile}
-                  onReProfileDone={handleReProfileDone}
                   onEdit={openEdit}
                   onReIngest={handleReIngest}
                   highlightedFromUrl={urlConnectionId === conn.id}

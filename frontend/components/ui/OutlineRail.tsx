@@ -1,6 +1,6 @@
 'use client';
 
-import { ReactNode } from 'react';
+import type { ElementType, ReactNode } from 'react';
 import { cn } from '@/lib/cn';
 
 export interface OutlineItem {
@@ -73,7 +73,7 @@ export function OutlineRail({
               <ul>
                 {g.items.map((it) => {
                   const active = it.id === activeId;
-                  const Tag: any = it.href ? 'a' : 'button';
+                  const Tag: ElementType = it.href ? 'a' : 'button';
                   return (
                     <li key={it.id}>
                       <Tag

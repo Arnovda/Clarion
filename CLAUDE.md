@@ -31,7 +31,129 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-09-20 (TWO THINGS FROM THE CONTEXT-ENGINEERING READ, BUILT —
+**Last updated:** 2026-09-20 (PR #152 MERGED AND LIVE, THEN THE CODEBASE WAS CLEANED —
+owner: *"After you've put everything in main and production, I want you to clean
+up the project's codebase and remove anything not up-to-date or update it or
+remove unnecessary or wrong things."* Draft PR on `claude/gallant-faraday-9ccrhq`,
+restarted from main at `9d039f4`.)
+
+**THE GLOSSARY-LINKS + SOURCE-PACKAGE WORK (the entry below) IS IN PRODUCTION.**
+PR #152 rebase-merged as `9d039f4`; Build & Deploy run #615: gate on Tests +
+Lint green, images `main-9d039f4`, **`migrate-sql` applied migration 100
+(`Batch 58 run: 1 migrations`)**, deploy at 0%, Go live health-checked
+`/api/health → 200` with all six components ok and shifted backend + frontend
+to 100% at 12:52 UTC. ETL and `neo4j-constraints` skipped correctly. The watch
+items from that entry stand: the next Analyse of the Exact Online tenant is the
+first profile with the VENDOR NOTES block; the first glossary save with a link
+should land `resolved: true`.
+
+**WHAT THE CLEANUP FOUND, AND THE RULE IT FOLLOWED: delete what nothing
+reaches, correct what is stated wrongly, regenerate what is supposed to
+describe the disk — and touch nothing that runs.** Measured, not eyeballed: an
+import-graph scan over every TS/TSX file (826), every entry of this file's
+Folder Structure checked against `git ls-files` (29 listed entries did not
+exist — deleted routes, deleted components, a root `shared/` that is gone),
+`.env.example` against every `process.env` read (one dead key, fourteen
+operator variables nothing documented), `next lint` (33 errors), and a
+dangling-path scan over the non-backlog docs.
+- **THE dbt ENGINE IS GONE.** Refused since 2026-09-10 (its hook SQL bypassed
+  the soft-delete firewall) and set nowhere, so the guard was protecting a
+  door that led nowhere. Deleted: `services/dbtRunner.ts` (399 lines),
+  `services/dbtProjectBuilder.ts` (750), `etl/dbt_runner.py` (279), the ETL
+  `/dbt/run` + `/dbt/test` endpoints and the `dbt-core`/`dbt-duckdb` pins (the
+  ETL image shrinks), `scripts/dbt-parity-check.ts` + `scripts/shadow-run.ts`,
+  the `USE_DBT_TRANSFORMATIONS` guard with its two tests (nothing is left to
+  guard — there is no dbt code at all), its `lint-warehouse-scan` allowlist
+  entry (the ratchet reports STALE entries, so leaving it would have gone red),
+  the activation guide and the cutover playbook. RFC-001 stays with a
+  *Withdrawn* header — the reasoning is worth keeping, the instructions were not.
+- **Dead code with zero importers, verified by the graph scan**: `utils/secrets.ts`
+  (a Key Vault reader nothing called — `AZURE_KEY_VAULT_URL` dropped from
+  `.env.example`, the production compose file and the two Container App env
+  blocks in `infra/main.tf`; `@azure/keyvault-secrets` removed from the backend
+  dependencies; the vault RESOURCE stays, deleting infrastructure is not this
+  PR's call), `editColumnExpression` + the `COLUMN_EDIT_*` prompts,
+  `starSchemaDesignSchema` and the single-call design interfaces (only the
+  propose/design flow deleted on 2026-09-07 used them; `starSchemaPrompt.ts`
+  now holds `ColumnDesign` and the dim_date template), `DashboardHeader.tsx`
+  (**this file claimed on 2026-09-20 that it was still imported — the scan says
+  nothing imports it**), `MorningBriefCard.tsx` (orphaned by the Home redesign).
+- **Ten operator one-shots deleted from `backend/scripts/`**, each superseded:
+  `prod-fix-missing-policies` (by migration 88), `prod-check-app-role`,
+  `prod-test-app-role`, `prod-rls-audit` (by `preflight-role-flip` + the
+  isolation audit), `list-tenants-and-users`, `inspect-tenant-for-demo` (by the
+  operator console), `smoke-budget-gate` (by the budget tests), and the two dbt
+  drivers above. Kept, because nothing else does their job: `prod-create-app-role`
+  (a fresh database needs the role before migration 75 can grant to it),
+  `check-app-grants` (the 42501 diagnostic this file calls the residual risk),
+  `admin-tenants` (tenant deletion has no console button), `inspect-user`,
+  `prod-reset-password`, the preflight, the audit, the two PoCs and the twelve
+  ratchets.
+- **Root-level staleness removed**: `PROJECT_PLAN.md` (frozen 2026-04-03 and
+  telling every session to read it first), `Clarion_Architecture.py` +
+  `DataBridge_Architecture.pdf` ("Version 1.0 April 2026", a hardcoded
+  `C:\\Users\\…` output path, Neo4j described as scale-to-zero),
+  `profiling-explained.html` (the four-layer FK detector replaced on
+  2026-08-03), `stitch-prompt.md` + `stitch_review/` (a rejected design
+  direction), `start-backend-now.bat` (one machine's paths),
+  `docs/how-it-works.html/.pdf` (presented dbt as the materialiser — wrong in
+  its core), `docs/prepare-my-data-flow.html` (a banner over a deleted flow).
+  The April design handoff moved from the root `handoff/` to
+  `docs/handoffs/observatory-restyle/` with a status header; `frontend/README.md`
+  was the create-next-app scaffold and now says how to run the checks.
+- **Docs corrected rather than deleted**: `docs/SECURITY.md` (its rows said
+  "no MFA", "Key Vault read via managed identity", "runbook not formalised",
+  "no RTO/RPO", a `npm audit` that only warned — every one false today; the
+  Sprint plan became a done/open list), `DEPLOY.md` (how production is really
+  operated: the GitOps flow, immutable tags — the `:main-latest` it recommended
+  is the tag that ran the sync worker on stale code for weeks — the deep health
+  check, the real topology, Terraform's limits), status banners on
+  `docs/HANDOFF.md` and `docs/UX_REDESIGN.md`, paths in
+  `docs/CODE_QUALITY_PLAN.md` and `docs/DEV_FLOW.md`, `.ops/README.md` names
+  the setup script that lives beside the controls.
+- **`.env.example` is complete and honest now**: `SQLITE_DB_PATH` (read by
+  nothing) removed; `ROLE`, `WORKER_QUEUES`, `RUN_SCHEDULERS`, `LOG_LEVEL`,
+  `REFRESH_TOKEN_DAYS`, `SYNC_MAX_DURATION_MS`, `WORKER_CANCEL_GRACE_MS`,
+  `SYNC_RUN_RETENTION_DAYS`, `MORNING_BRIEF_CRON`, `SECURITY_MAINTENANCE_CRON`,
+  `OAUTH_REDIRECT_BASE_URL`, `CLARION_DEV_PAGES`, `FK_RESOLVE_TIMEOUT_MS`,
+  `BRIEF_INVESTIGATE_ACTIVE_DAYS` documented with the defaults the code uses.
+  Every key in the file is read by code.
+- **Frontend lint: 33 errors → 0.** Unused imports, variables and props (a
+  `useState` pair nothing read, a prop that was a no-op end to end, a
+  `layoutDag` argument the function never used), unescaped quotes,
+  `cond ? a() : b()` used as a statement, two `any`s. The ten WARNINGS stay on
+  purpose — `<img>` and hook dependency arrays — because changing an effect's
+  dependencies changes behaviour, and this PR changes none.
+- **THIS FILE'S FACTUAL SECTIONS ARE REGENERATED**: the Folder Structure comes
+  from `git ls-files` (every directory; the old annotations carried over where
+  the path still exists, the wrong ones fixed — `ShellLayout` was called legacy
+  while it chromes 12 routes, `starSchemaPrompt.ts` holds the dim_date template
+  not the designer, `queues.ts` has far more than "4 queues"); the migrations
+  list is complete (101; it had stopped at 38); Tech Stack, AI Architecture's
+  model line and call types 2 and 5, the ingestion workflow, CI/CD, the Azure
+  topology, "To start locally" and "Known issues" say what is true today, and
+  the closing line no longer reads "April 2026 — v0.2".
+- **DELIBERATELY KEPT**: the legacy Python ETL path (`etl/main.py`,
+  `routes/ingestion.ts`, `backend/src/connectors/*`) — SQLite still uses it and
+  the ETL Container App is deployed; `e2e/smoke.spec.ts` (valid, needs both
+  apps; not in CI, and it says so); `docs/backlog/*` and this file's history
+  (records, not specs — and this entry corrects the record where it was wrong
+  rather than rewriting it); `design-mockups/` (a kept reference);
+  `infra/` resources; `migrateSemanticToNeo4j.ts` (the documented graph-rebuild
+  path, `npm run neo4j:migrate`).
+- Validation: backend `npm run check` clean, full vitest **96 files / 934
+  passed / 10 skipped** (was 96/940 — the six tests deleted tested the code
+  that was deleted); **all TWELVE ratchets green from the repo root**
+  (warehouse-scan now inspects 6 scans against 2 allowlisted files);
+  frontend `tsc` clean, `next lint` **0 errors**, vitest 7 files / 62 passed,
+  `next build` green 46/46; `etl/main.py` compiles; the backend lockfile was
+  refreshed with `npm install --package-lock-only`. Connectors and worker are
+  untouched by this PR. **SANDBOX**: the full backend run went into a hanging
+  teardown after printing its summary and had to be killed; a sliced test file
+  left a stray closing brace that only the transform step caught — read one
+  failure's text before believing a count, again.
+
+**Prior last updated:** 2026-09-20 (TWO THINGS FROM THE CONTEXT-ENGINEERING READ, BUILT —
 owner, after pasting an essay on hard/soft semantics, files-in-git, graph
 linking and Apache Ossie and asking what it means for Clarion: *"Laten we deze
 zaken implementeren"*. Item A: a glossary term now has an ADDRESS in the topic
@@ -11101,9 +11223,9 @@ Terraform state surgery, and an npm package rename. Single, well-scoped
 follow-up task; not blocking.
 
 **Files renamed:** `databridge-overview.html` → `clarion-overview.html`,
-`DataBridge_Architecture.py` → `Clarion_Architecture.py` (the generated
-`DataBridge_Architecture.pdf` artifact is left in place; re-run the .py to
-regenerate as `Clarion_Architecture.pdf`).
+`DataBridge_Architecture.py` → `Clarion_Architecture.py` (both the generator
+and its `DataBridge_Architecture.pdf` were deleted on 2026-09-20 as stale
+generated documents — April 2026 content, hardcoded Windows paths).
 
 **Dual-write contract — relationship mirrors + docs (2026-05-04):** Closed three
 latent count-divergence bugs in the same class as the AI review queue confirm bug
@@ -11214,7 +11336,7 @@ reversible decision pending future scale. Files changed: `backend/src/routes/sem
 - Date formatting consolidated: `frontend/lib/dates.ts` (formatDate/formatDateTime/formatRelative/formatRelativeShort, `en-GB` locale).
 - Tenant chip in TopBar fetches real org name from `/users/profile` (cached in sessionStorage), no longer derived from email domain.
 - Deleted routes: `/connect`, `/cross-views`, `/dictionary`, `/quality`, `/reports`, `/review`, `/team` (consolidated into `/setup`, `/semantic`, `/users`, `/health`).
-- New routes: `/dev/*` (internal playground), `/onboarding` (new-user wizard).
+- New routes: `/dev/*` (internal playground; 404 in production since 2026-09-06), `/onboarding` (new-user wizard — deleted again on 2026-09-06 as unwired mock).
 
 **Neo4j integration status:**
 - All phases complete (0–6). Phase 7 (drop Postgres semantic tables) deferred.
@@ -11223,19 +11345,23 @@ reversible decision pending future scale. Files changed: `backend/src/routes/sem
 - quality_rules remain dual-written (Postgres primary for rule_executions FK integrity; Neo4j for AI context traversal).
 
 **To start locally:**
-1. `docker compose up -d` (starts Postgres, Neo4j, ETL)
-2. `cd backend && npx knex migrate:latest` (run all 30 migrations)
-3. `npm run neo4j:migrate` (seed Neo4j from Postgres, if data exists)
-4. `npm run dev` in backend/ (Express on port 3001)
-5. `npm run dev` in frontend/ (Next.js on port 3000)
-Or use `start.bat` / `start.sh` to do all of the above in one command.
+1. `docker compose up -d` (Postgres, Neo4j, ETL)
+2. `cd backend && npm run migrate:latest` (all 101 migrations)
+3. `npm run dev` in backend/ (Express on port 3001)
+4. `npm run dev` in frontend/ (Next.js on port 3000)
+Or `start.sh` / `start.bat`. `npm run neo4j:migrate` (backend) rebuilds Neo4j
+from Postgres when the graph is empty or lost. In the Claude Code cloud
+environment `.ops/cloud-setup-script.sh` does the installs and the Postgres
+roles/test database.
 
 **Known issues / blockers:**
-- `better-sqlite3` v9.x does not compile on Node 24 — pinned to `latest` (v11+) which has Node 24 prebuilt binaries
-- Neo4j container takes ~30s to start — backend retries constraint creation automatically for up to 30s
-- Backend must be restarted after any changes to `backend/src/**` (no hot-reload)
-- Redis is optional for local dev — if not configured, jobs execute inline (synchronous)
-- quality_rules are dual-written (Postgres + Neo4j) — rule_executions FK still points to Postgres quality_rules.id
+- The runtime is Node 20 (`.nvmrc`, every Dockerfile, every CI job); the cloud sandbox runs Node 22 — CI is the truth
+- `better-sqlite3` is pinned to `latest` because 9.x has no prebuilt binary for newer Node
+- Neo4j takes ~30s to start — the backend retries constraint creation for up to 30s
+- Backend dev mode (`ts-node`) has no hot reload — restart after changes under `backend/src`
+- Redis is optional locally — without it jobs run inline and the rate-limit store is per process
+- `quality_rules` are dual-written (Postgres primary for `rule_executions` FK integrity; Neo4j for AI context)
+- The Delta sidecar suites skip loudly when `deltalake` is not installed in the Python environment
 
 **Key architectural decisions made during build:**
 - Entity pre-flight check in `query.ts`: extracts string literals from generated SQL, checks exact match count in source dimension columns before executing. Count 0 → fuzzy suggestions. Count 2–15 → disambiguation picker. Count 16+ → treated as category value, proceeds normally.
@@ -11289,418 +11415,902 @@ The platform supports the full data lifecycle:
 
 ## Tech Stack
 
-### Backend
-- **Runtime:** Node.js 20+ with TypeScript
-- **Framework:** Express.js with Helmet (security headers), CORS, rate limiting
-- **Query builder:** Knex.js for PostgreSQL (semantic layer) and SQLite (source)
-- **Semantic layer database:** PostgreSQL 16 (Docker locally, Azure Flexible Server in prod)
-- **Knowledge graph:** Neo4j 5 Community — stores semantic relationships, cross-source views
-- **Source connectors:** SQLite, PostgreSQL, MySQL, SQL Server (via `connectors/` abstraction)
-- **Query engine:** DuckDB — used to query ingested Parquet files (star schema products)
-- **AI:** Anthropic Claude API (`claude-sonnet-4-6`) via `@anthropic-ai/sdk`
-- **Auth:** JWT-based with bcrypt password hashing; three roles: admin, analyst, viewer
-- **Job queue:** BullMQ + Redis (optional — falls back to inline execution)
-- **Logging:** Pino (structured JSON logging)
-- **Monitoring:** Azure Application Insights (optional)
-- **Storage:** Local filesystem or Azure Blob Storage (auto-detected)
-- **Secrets:** AES-256-GCM encryption for stored credentials; Azure Key Vault in production
-- **Validation:** Zod schemas for request validation
-- **Testing:** Vitest with PostgreSQL service container
+### Backend (`backend/`)
+- **Runtime:** Node.js 20 (`.nvmrc`; every Dockerfile is `node:20`) with TypeScript 5
+- **Framework:** Express 4 with Helmet, CORS, `express-rate-limit` on a Redis-backed store shared across replicas
+- **Query builder:** Knex 3 for PostgreSQL — the platform database (definitions, logs, products, tenants, …)
+- **Platform database:** PostgreSQL 16 (Docker locally, Azure Flexible Server in production). Row-Level Security ENABLED + FORCED on every tenant table; production connects as the non-bypass role `databridge_app`
+- **Knowledge graph:** Neo4j 5 Community — semantic relationships and AI context, tenant-scoped by predicate on every `MATCH`
+- **Source connectors:** `@databridge/connectors` (`packages/connectors`) — Exact Online, Odoo, Postgres, MySQL, SQL Server, Excel, CSV, SharePoint — one sync engine, one SQL kit, YAML source packages. The legacy `backend/src/connectors/*` + Python ETL path remains for SQLite files
+- **Warehouse:** Parquet (source layer, soft deletes behind the `_clarion_*` firewall) and Delta Lake (topic tables, written by the Python sidecar `etl/scd2/commit_table.py`) on local disk or Azure Blob — per-tenant containers in production
+- **Query engine:** DuckDB 1.4 (`duckdb-async`) with bounded sessions (memory, threads, per-tenant concurrency) and optional child-process runners (`DUCKDB_RUNNER=child`)
+- **AI:** Anthropic Claude via `@anthropic-ai/sdk` — `claude-sonnet-4-6` by default, `claude-haiku-4-5` for summarisation-class calls, per-category overrides (incl. Azure OpenAI) through the AI routing console. Every call goes through `ai/AIService.ts`
+- **Auth:** JWT (15-minute access + 30-day refresh tokens), bcryptjs, TOTP + WebAuthn MFA, three roles (admin / analyst / viewer), API tokens for the Excel add-in
+- **Job queue:** BullMQ 5 + Redis (ioredis); inline execution when Redis is absent
+- **Logging / monitoring:** Pino 10 (request/job correlation in every line); Azure Application Insights (optional)
+- **Validation:** Zod 4 on every mutating route the `lint-validate-coverage` ratchet counts
+- **Testing:** Vitest 4 against a PostgreSQL service container; the RLS suite over the real API as `databridge_app`
 
-### Frontend
-- **Framework:** Next.js 14 (App Router)
-- **Styling:** Tailwind CSS 3.4
-- **Charts / Dashboards:** Recharts for data visualisation
-- **Graph visualization:** ReactFlow + Dagre (star schema diagrams, lineage flows)
-- **Export:** html2canvas + jsPDF for dashboard PDF export
-- **API calls:** Axios with a central `api.ts` client (JWT interceptor, 401 auto-redirect)
-- **Custom fonts:** Geist / Geist Mono
+### Frontend (`frontend/`)
+- **Framework:** Next.js 14.2 (App Router), React 18, Tailwind CSS 3.4 — the "Observatory" design system (`app/globals.css`, `lib/observatory.ts`)
+- **Charts:** Recharts 3 and ECharts 6 (second rendering backend behind the same widget DSL); `react-grid-layout` for Arrange mode
+- **Graph visualisation:** ReactFlow 11 + Dagre (relations canvas, star-schema diagram, pipelines DAG)
+- **Export:** html2canvas + jsPDF (PDF); dependency-free xlsx writer (backend) and reader (frontend)
+- **Notebooks:** Pyodide 0.26 self-hosted from `public/pyodide/` (vendored at build), DuckDB-WASM helpers
+- **API:** Axios through `lib/api.ts` (JWT interceptor, silent refresh, 401 → sign-in)
+- **Fonts / icons:** Inter, Manrope, Source Serif 4 via `next/font`; Geist Mono local; `lucide-react`
+- **Testing:** Vitest + Testing Library (jsdom); Playwright for e2e and the widget render gate
 
-### ETL Pipeline
-- **Runtime:** Python 3.12 (FastAPI)
-- **Storage format:** Delta Lake (Apache Parquet-based)
-- **Supported sources:** SQLite, PostgreSQL, MySQL, SQL Server
-- **Output:** Local filesystem or Azure Blob Storage
-- **Incremental loading:** Watermark-based CDC
+### ETL & sidecars (`etl/`)
+- **Python 3.12.** `etl/main.py` — FastAPI legacy ETL for the direct-database path (discover / ingest / optimize, Delta Lake via deltalake 0.23). `etl/scd2/commit_table.py` — the Delta sidecar the backend spawns for topic tables (deltalake 1.6.3 + pyarrow, pinned in `backend/Dockerfile`)
 
 ### Infrastructure
 - **Local dev:** Docker Compose (Postgres, Neo4j, ETL; Redis optional)
-- **Production:** Azure Container Apps with scale-to-zero
-- **IaC:** Terraform (Azure: PostgreSQL Flexible Server, Container Apps, ACR, Blob Storage, Key Vault, App Insights)
-- **CI/CD:** GitHub Actions (test on PR, deploy on push to main/staging)
-- **E2E:** Playwright (Chrome, headless)
+- **Production:** Azure Container Apps — backend, jobs-worker, frontend, Neo4j, Redis, ETL, plus the sync-worker Container Apps Job; PostgreSQL Flexible Server; Blob Storage; ACR; Application Insights + Log Analytics
+- **IaC:** Terraform (`infra/`) — state is local to the machine that last applied; the jobs-worker was provisioned by `az` from a workflow. Read `docs/runbooks/jobs-worker-apply.md` before any apply
+- **CI/CD + operations:** GitHub Actions (see CI/CD below) and the GitOps controls under `.ops/`
 
 ---
 
 ## Folder Structure
 
-> Note: the on-disk root directory is still `databridge/`. The brand was renamed
-> to Clarion but the directory wasn't moved (would require updating every shell
-> script + dev launcher). Rename when convenient.
+> Regenerated from `git ls-files` on 2026-09-20 — every directory is listed;
+> test files, fixtures and lockfiles are omitted, and a few leaf-heavy directories
+> are summarised with their file count. When files move, regenerate this tree
+> rather than patching it by hand.
 
 ```
-clarion/                              ← on disk: databridge/
-├── CLAUDE.md                         ← you are here
-├── .env                              ← local only, gitignored
-├── .env.example                      ← committed, no secrets
-├── .gitignore
-├── docker-compose.yml                ← dev: Postgres + Neo4j + ETL
-├── docker-compose.production.yml     ← prod-like: adds Redis + backend + frontend
-├── package.json                      ← root workspace (minimal)
-├── playwright.config.ts              ← E2E test config
-├── start.bat / start.sh              ← one-command startup scripts
-├── start-backend.bat / start-frontend.bat / start-docker.bat / stop-docker.bat
-├── run-migrations.bat / run-seed.bat / rebuild-etl.bat
-├── PROJECT_PLAN.md / DEPLOY.md       ← planning and deployment docs
-│
-├── shared/
-│   └── types.ts                      ← UserRole, AuthUser, JwtPayload, ApiResponse<T>
-│
-├── e2e/
-│   └── smoke.spec.ts                 ← Playwright: register, login, navigate pages
-│
-├── etl/
-│   ├── main.py                       ← FastAPI ETL service (discover, ingest endpoints)
-│   ├── Dockerfile                    ← Python 3.12-slim
-│   └── requirements.txt              ← fastapi, deltalake, pyarrow, pandas, etc.
-│
-├── infra/
-│   ├── main.tf                       ← Azure resources (Postgres, Container Apps, ACR, etc.)
-│   ├── variables.tf                  ← Terraform variables
-│   ├── outputs.tf                    ← Terraform outputs
-│   └── prod.tfvars.example           ← Example production variables
-│
-├── .github/workflows/
-│   ├── deploy.yml                    ← Build + push images + deploy to Container Apps
-│   ├── test.yml                      ← Run vitest + security audit on PR
-│   └── dependabot.yml                ← Weekly dependency updates
-│
-├── packages/connectors/              ← the SourceConnector framework (`@databridge/connectors`)
-│   ├── package.json                  ← build = tsc + scripts/copy-package-data.mjs (YAML → dist)
-│   ├── scripts/
-│   │   ├── copy-package-data.mjs     ← copies every src/**/package/**/*.yaml into dist/ after tsc
-│   │   └── generate-eo-docs.ts       ← Exact Online transcriber: refreshes package/datasets/*.yaml `fields`
-│   └── src/
-│       ├── types.ts                  ← SourceConnector contract (describeEntities, getKnownRelationships, getBusinessKeys, getSourceNotes, …)
-│       ├── syncEngine.ts             ← the ONE ingestion loop (runEntitySync / runReconcile)
-│       ├── starSchema.ts             ← StarSchemaTemplate contract + instantiate/validate
-│       ├── conformance.ts            ← catalog / relationship / template invariants (merge gate)
-│       ├── sourcePackage/            ← THE SOURCE PACKAGE FORMAT (Ossie-aligned YAML, `clarion` extension)
-│       │   ├── README.md             ← format doc: manifest + datasets/ + model/, derivations, superset keys
-│       │   ├── types.ts              ← SourcePackage / PackageDataset / PackageField / clarion blocks
-│       │   ├── schema.json           ← draft-07 JSON Schema, additionalProperties:false everywhere
-│       │   ├── validate.ts           ← ajv shape check + cross-reference checks (fieldCoverage-gated)
-│       │   ├── load.ts               ← loadSourcePackage(dir): merge + validate + canonical order + memoise
-│       │   ├── project.ts            ← package → EntityDescriptor[] / ColumnDoc / KnownRelationship[] / StarSchemaTemplate
-│       │   ├── write.ts              ← toYaml(): flow style for the small always-together maps
-│       │   └── index.ts
-│       ├── exactonline/
-│       │   ├── package/              ← package.yaml + datasets/ (61) + model/ (12) — the connector's KNOWLEDGE, as data
-│       │   ├── catalog.ts            ← loads ./package; exports EXACT_ONLINE_ENTITIES / _KNOWN_RELATIONSHIPS / _COLUMN_DOCS / _STAR_SCHEMA_TEMPLATE
-│       │   └── ExactOnlineConnector.ts (+ schema, oauth, http, tests)
-│       ├── odoo/
-│       │   ├── package/              ← package.yaml + datasets/ (21) + model/ (15); fieldCoverage: partial
-│       │   ├── catalog.ts            ← loads ./package; ODOO_ENTITIES / ODOO_ALLOWLIST / MODEL_TO_TABLE / …
-│       │   ├── entities.ts           ← RULES only (field-type excludes, odooTypeToDuckDb, odooFieldRole)
-│       │   └── OdooConnector.ts (+ transports, tests)
-│       ├── sql/ postgres/ mysql/ mssql/  ← the SQL kit + three dialects
-│       ├── spreadsheet/ excel/ csv/ sharepoint/
-│       └── registry.ts / index.ts
-│
+Clarion/                              ← the repository (Arnovda/Clarion); a local checkout may still be called databridge/
+├── .github/
+│   ├── workflows/
+│   │   ├── alerts.yml              ← creates/updates the Azure Monitor alert rules from .ops/alerts
+│   │   ├── check.yml               ← typecheck signal on push/PR (not a gate)
+│   │   ├── db-pool.yml             ← GitOps control: KNEX_POOL_MAX per process
+│   │   ├── db-role.yml             ← GitOps control: the databridge_app role flip (.ops/db-role)
+│   │   ├── deploy.yml              ← push to main: gate on Tests+Lint → build images main-<sha> → migrate-sql → deploy at 0% → Go live after /api/health 200
+│   │   ├── duckdb-lockdown-mode.yml  ← GitOps control: DUCKDB_SESSION_LOCKDOWN
+│   │   ├── duckdb-runner-mode.yml  ← GitOps control: DUCKDB_RUNNER
+│   │   ├── graph-backfill.yml      ← GitOps control: runs the graph backfill as a one-shot Container Apps Job
+│   │   ├── infra-preflight.yml     ← read-only Azure probe (.ops/infra-preflight)
+│   │   ├── lint.yml                ← runs the twelve backend ratchets (backend/scripts/lint-*.ts); a merge gate with test.yml
+│   │   ├── operators.yml           ← GitOps control: PLATFORM_OPERATOR_EMAILS
+│   │   ├── prod-checks.yml         ← GitOps control: production preflight + isolation audit
+│   │   ├── prod-logs.yml           ← Log Analytics signature reader for .ops/prod-logs
+│   │   ├── promote.yml             ← Promote to production (dispatch or .ops/promote)
+│   │   ├── provision-jobs-worker.yml  ← creates/deletes the jobs-worker Container App with az
+│   │   ├── relationship-audit.yml  ← read-only semantic-layer dump for one tenant
+│   │   ├── rollback.yml            ← Rollback production — traffic back to the previous revision (+ optional migrate:rollback)
+│   │   ├── star-schema-design-mode.yml  ← GitOps control: templates | ai
+│   │   ├── test.yml                ← vitest (backend, connectors, frontend), rls-isolation as databridge_app, migration rollback, audit gates, widget render gate
+│   │   └── warehouse-container-mode.yml  ← GitOps control: WAREHOUSE_CONTAINER_MODE
+│   └── dependabot.yml              ← weekly dependency updates (backend, frontend, connectors, Actions)
+├── .ops/
+│   ├── alerts
+│   ├── cloud-setup-script.sh       ← the Claude Code cloud environment setup script (not a control)
+│   ├── db-pool
+│   ├── db-role
+│   ├── duckdb-lockdown
+│   ├── duckdb-runner
+│   ├── graph-backfill
+│   ├── infra-preflight
+│   ├── operators
+│   ├── prod-checks
+│   ├── prod-logs                   ← lookback window + tenant/request filters; a push runs the signature report
+│   ├── promote
+│   ├── provision-jobs-worker
+│   ├── README.md                   ← what every control does — read before editing any file here
+│   ├── redeploy
+│   ├── relationship-audit
+│   ├── star-schema-design
+│   └── warehouse-container-mode
 ├── backend/
+│   ├── scripts/
+│   │   ├── admin-tenants.ts        ← operator back door: list/delete tenants across RLS
+│   │   ├── check-app-grants.ts     ← diagnose 42501 grant gaps for the app role
+│   │   ├── inspect-user.ts         ← operator: find a user across tenants, reset-token state
+│   │   ├── lint-api-base-path.ts   ← each lint-*.ts is a ratchet run from the repo root; baselines only ever go down
+│   │   ├── lint-contract-sync.ts
+│   │   ├── lint-graph-tenant-predicate.ts
+│   │   ├── lint-graph-tenant-stamp.ts
+│   │   ├── lint-no-console.ts
+│   │   ├── lint-no-inline-500.ts
+│   │   ├── lint-no-internal-dynamic-import.ts
+│   │   ├── lint-no-session-tenant-set.ts
+│   │   ├── lint-scattered-config.ts
+│   │   ├── lint-shared-trx-catch.ts
+│   │   ├── lint-validate-coverage.ts
+│   │   ├── lint-warehouse-scan.ts
+│   │   ├── poc-delta-rs.py         ← measurements behind docs/backlog/ingestion-chain-assessment.md §9
+│   │   ├── poc-ducklake-merge.js   ← measurements behind docs/backlog/ingestion-chain-assessment.md §9
+│   │   ├── preflight-role-flip.ts  ← production role/policy preflight (.ops/prod-checks, db-role.yml)
+│   │   ├── prod-create-app-role.ts  ← creates databridge_app on a fresh database (idempotent)
+│   │   ├── prod-reset-password.ts  ← operator: password reset when email is unavailable
+│   │   ├── prod-tenant-isolation-audit.ts  ← RLS audit run by .ops/prod-checks
+│   │   ├── set-app-role-password.ts  ← used by db-role.yml
+│   │   └── verify-structured-outputs.ts  ← one real Claude call before flipping AI_STRUCTURED_OUTPUTS
+│   ├── src/
+│   │   ├── ai/
+│   │   │   ├── prompts/
+│   │   │   │   ├── answerFormatterPrompt.ts  ← report narrative generation
+│   │   │   │   ├── buildChatPrompt.ts
+│   │   │   │   ├── busMatrixPrompt.ts  ← the live star-schema designer (design + extend)
+│   │   │   │   ├── dashboardEditPlanPrompt.ts
+│   │   │   │   ├── dashboardPrompt.ts  ← dashboard generation + refinement
+│   │   │   │   ├── forecastPrompt.ts
+│   │   │   │   ├── insightsPrompt.ts
+│   │   │   │   ├── investigateAgentPrompt.ts
+│   │   │   │   ├── investigatePrompt.ts
+│   │   │   │   ├── kpiDraftPrompt.ts
+│   │   │   │   ├── morningBriefPrompt.ts
+│   │   │   │   ├── narratePrompt.ts
+│   │   │   │   ├── nlToSqlPrompt.ts  ← NL→SQL for source databases
+│   │   │   │   ├── nlToSqlPromptDuckDB.ts  ← NL→SQL for DuckDB (warehouse queries)
+│   │   │   │   ├── productIconPrompt.ts
+│   │   │   │   ├── pulseSuggestPrompt.ts
+│   │   │   │   ├── qualityAlertPrompt.ts  ← 2-sentence business context for quality alerts (Haiku)
+│   │   │   │   ├── queryStartersPrompt.ts
+│   │   │   │   ├── refineChatPrompt.ts
+│   │   │   │   ├── refineProductPrompt.ts
+│   │   │   │   ├── repairPrompt.ts  ← agentic SQL repair loop
+│   │   │   │   ├── schemaContextPrompt.ts  ← 3-pass profiler prompts (conventions → table context → column descriptions), VENDOR NOTES block
+│   │   │   │   ├── schemaDraftPrompt.ts  ← schema profiling prompts
+│   │   │   │   └── starSchemaPrompt.ts  ← ColumnDesign / ColumnLineage types + the dim_date template
+│   │   │   ├── AIService.ts        ← single entry point for ALL Claude API calls
+│   │   │   └── outputSchemas.ts    ← Zod guards for persisted AI JSON (dashboard spec, schema draft) + the dashboard JSON Schema for structured outputs
+│   │   ├── connectors/
+│   │   │   ├── BaseConnector.ts    ← abstract interface + FK detection + table classification
+│   │   │   ├── ConnectorFactory.ts  ← creates correct connector from connection config
+│   │   │   ├── ConnectorPool.ts    ← connection pooling + shutdown drain
+│   │   │   ├── DuckDBConnector.ts  ← duckdb-async (warehouse query engine)
+│   │   │   ├── DuckDBPool.ts       ← pooled DuckDB sessions (LRU cap, in-flight aware eviction)
+│   │   │   ├── MssqlConnector.ts   ← mssql
+│   │   │   ├── MysqlConnector.ts   ← mysql2
+│   │   │   ├── PostgresConnector.ts  ← pg
+│   │   │   └── SqliteConnector.ts  ← better-sqlite3
+│   │   ├── db/
+│   │   │   ├── migrations/         ← 101 Knex migrations (see the list below) (101 files)
+│   │   │   ├── knex.ts             ← PostgreSQL semantic DB (with RLS role switching)
+│   │   │   ├── migrateSemanticToNeo4j.ts  ← rebuild Neo4j from Postgres (npm run neo4j:migrate; the DR path for the graph)
+│   │   │   ├── neo4j.ts            ← Neo4j driver singleton + constraints + shutdown
+│   │   │   ├── reqDb.ts            ← reqDb(req): the request's tenant transaction, or the scoped handle after a stream started
+│   │   │   ├── safeQuery.ts        ← typed query helpers
+│   │   │   ├── scopedRequestDb.ts  ← per-query tenant-scoped handle for streaming responses (11-1)
+│   │   │   ├── semanticCacheScope.ts  ← entity → connection scope for per-connection semantic cache invalidation
+│   │   │   ├── semanticGraph.ts    ← ALL Cypher queries (only file with Cypher)
+│   │   │   ├── tenantContext.ts    ← SET LOCAL app.current_tenant inside a transaction
+│   │   │   ├── tenantOwnership.ts  ← owns()/ownedIds(): the 404-not-403 ownership gate in front of graph ids
+│   │   │   ├── tenantScopedWrite.ts  ← explicit SET LOCAL write for a target tenant
+│   │   │   └── unauthQuery.ts      ← unauthenticated-path reads under the auth_lookup RLS policy
+│   │   ├── jobs/
+│   │   │   ├── cacheBus.ts         ← Redis pub/sub cache invalidation across processes
+│   │   │   ├── cancellation.ts     ← cross-process job cancellation via Redis
+│   │   │   ├── connectionSyncScheduler.ts  ← repeatables for sync schedules
+│   │   │   ├── emailScheduler.ts   ← repeatable job manager for email report schedules
+│   │   │   ├── freshnessMonitor.ts  ← 'source stale' hourly sweep
+│   │   │   ├── morningBriefJob.ts  ← 06:00 daily brief job ('morning brief run done')
+│   │   │   ├── pipelineScheduler.ts  ← repeatables for pipeline cron triggers
+│   │   │   ├── queueDepthMonitor.ts  ← 'queue depth high' signal
+│   │   │   ├── queueRoles.ts       ← which process owns which queue (Fase 2 split)
+│   │   │   ├── queues.ts           ← BullMQ queue definitions + stampCorrelation() on every add()
+│   │   │   ├── redis.ts            ← IORedis singleton (optional)
+│   │   │   ├── scheduler.ts        ← repeatable job manager for cron-based transformation schedules
+│   │   │   ├── scheduleReconciler.ts  ← re-registers repeatables after a Redis reconnect
+│   │   │   ├── securityMaintenanceJob.ts  ← daily security sweep
+│   │   │   ├── tenantFairness.ts   ← one tenant cannot hold every AI-queue slot
+│   │   │   ├── tenantSchedules.ts  ← (un)register a tenant's repeatables on suspend/resume
+│   │   │   ├── warehouseMaintenance.ts  ← weekly OPTIMIZE/VACUUM (Delta topic tables + legacy ETL)
+│   │   │   └── workers.ts          ← every BullMQ worker; makeWorker() honours WORKER_QUEUES
+│   │   ├── middleware/
+│   │   │   ├── apiToken.ts         ← Excel add-in machine auth: token → short-lived JWT, then requireAuth
+│   │   │   ├── auth.ts             ← JWT verify, password hash, role checks (admin/analyst/viewer)
+│   │   │   ├── errorHandler.ts     ← global error handler, never leak internals
+│   │   │   ├── rateLimitStore.ts   ← Redis-backed fixed-window store shared across replicas
+│   │   │   ├── requestLogger.ts    ← structured request logging with request IDs
+│   │   │   ├── schemas.ts          ← Zod schemas for auth, invites, etc.
+│   │   │   └── validate.ts         ← Zod request validation middleware
+│   │   ├── orchestrator/
+│   │   │   ├── AzureContainerAppsJobLauncher.ts  ← starts the sync-worker Container Apps Job execution
+│   │   │   ├── BlobConfigStager.ts  ← stages the worker config blob
+│   │   │   ├── BlobSasTokenIssuer.ts  ← per-tenant-container SAS for the worker
+│   │   │   ├── JobLauncher.ts      ← local child-process launcher (config via 0600 temp file)
+│   │   │   └── SyncOrchestrator.ts  ← runs a source sync: launch worker, checkpoints, continuation, reconcile, persist
+│   │   ├── quality/
+│   │   │   └── QualityProfiler.ts  ← per-field stats: nulls, distinct, min/max, histograms; business-key choice
+│   │   ├── routes/
+│   │   │   ├── products/           ← data products, split into focused modules (index.ts composes them)
+│   │   │   │   ├── build.ts        ← bus-matrix jobs: start / extend-start / active / cancel / stream, run-full, refresh-start
+│   │   │   │   ├── buildOverview.ts  ← GET /build-overview — the Build page's single read model
+│   │   │   │   ├── catalog.ts      ← catalog-facing product reads
+│   │   │   │   ├── cells.ts        ← per-table notebook cells (guarded)
+│   │   │   │   ├── core.ts         ← GET/PUT/DELETE products, GET /:id
+│   │   │   │   ├── index.ts
+│   │   │   │   ├── kpis.ts         ← product KPIs + AI draft
+│   │   │   │   ├── refine.ts
+│   │   │   │   ├── refineChat.ts   ← "Ask for a change" planner + preview
+│   │   │   │   ├── shared.ts
+│   │   │   │   ├── tables.ts       ← product tables: PATCH, sql, refresh-history, quality
+│   │   │   │   └── topic.ts        ← GET /:id/topic — the topic page's single read model
+│   │   │   ├── addin.ts            ← the add-in's three read-only endpoints
+│   │   │   ├── adminOps.ts         ← operator console: errors feed, queues, announcements
+│   │   │   ├── adminTenants.ts     ← operator console: customers, caps, usage CSV, user-admin
+│   │   │   ├── aiRouting.ts        ← per-tenant AI routing mode incl. off
+│   │   │   ├── aiUsage.ts          ← AI usage, cost and answer latency (admin)
+│   │   │   ├── announcements.ts    ← GET /announcements (the shell banner's feed)
+│   │   │   ├── apiTokens.ts        ← API tokens for the Excel add-in
+│   │   │   ├── auth.ts             ← register, login, forgot-password, reset, refresh token
+│   │   │   ├── briefs.ts           ← morning briefs
+│   │   │   ├── build.ts            ← Build page chat (coverage context)
+│   │   │   ├── catalog.ts          ← Data Catalog read model
+│   │   │   ├── connections.ts      ← CRUD connections; trigger profiling; manage ingestion
+│   │   │   ├── connectionSyncSchedules.ts  ← sync schedules per connection
+│   │   │   ├── conversations.ts    ← chat history persistence; export results
+│   │   │   ├── dashboards.ts       ← CRUD dashboards; execute widget SQL; refinement
+│   │   │   ├── emailSchedules.ts   ← CRUD dashboard email schedules; send-now trigger
+│   │   │   ├── featureFlags.ts     ← operator console for release flags
+│   │   │   ├── home.ts             ← GET /home/summary
+│   │   │   ├── ingestion.ts        ← trigger ETL ingestion to Delta Lake warehouse
+│   │   │   ├── investigations.ts   ← root-cause agent runs
+│   │   │   ├── legal.ts            ← GET /legal/status, POST /legal/accept (P0-7)
+│   │   │   ├── lineage.ts          ← column-level lineage, both layers
+│   │   │   ├── managedGrids.ts     ← Your tables (managed grids) + linked columns + coverage
+│   │   │   ├── notebooks.ts        ← notebooks: cells, run (guarded, policy-aware), AI generate
+│   │   │   ├── notifications.ts    ← user notifications (job complete, quality alerts, invites)
+│   │   │   ├── pipelines.ts        ← refresh pipelines: DAG, built-in + custom, runs
+│   │   │   ├── policies.ts         ← row filters + column masks
+│   │   │   ├── pulse.ts            ← the watchlist (pulse) + suggestions
+│   │   │   ├── quality.ts          ← quality profiling; alerts; trends
+│   │   │   ├── query.ts            ← NL→SQL; execute; repair loop (SSE); entity pre-flight
+│   │   │   ├── relationships.ts    ← relationship canvas: tenant graph, measure, check, flag, values, match-preview
+│   │   │   ├── reports.ts          ← CRUD reports; AI narrative generation
+│   │   │   ├── savedQuestions.ts   ← saved / Verified questions
+│   │   │   ├── schedules.ts        ← CRUD transformation schedules (cron); manual triggers
+│   │   │   ├── semantic.ts         ← confirm/edit table/column definitions from AI draft
+│   │   │   ├── settings.ts         ← tenant settings, delete-tenant, export.zip
+│   │   │   ├── sources.ts          ← connector registry: source types, OAuth init/callback, list-entities
+│   │   │   └── users.ts            ← admin-only user management; invites; role updates; audit export
+│   │   ├── scripts/
+│   │   │   └── backfillGraphTenant.ts  ← compiled into the image; run by .ops/graph-backfill inside the environment
+│   │   ├── semantic/
+│   │   │   ├── fkVerification.ts   ← the ONE FK test (containment + target uniqueness)
+│   │   │   ├── referenceResolution.ts  ← settles a vendor-documented FK's target column by measurement
+│   │   │   └── SchemaProfiler.ts   ← profiling workflow: introspect → docs channel → 3-pass AI → persist (PG + Neo4j)
+│   │   ├── services/
+│   │   │   ├── ai/
+│   │   │   │   ├── azureClient.ts  ← Azure OpenAI client for routed categories
+│   │   │   │   ├── callCategoryConfig.ts
+│   │   │   │   ├── router.ts       ← per-category model routing (Anthropic / Azure OpenAI overrides)
+│   │   │   │   └── tenantAiMode.ts  ← tenant AI routing mode incl. off
+│   │   │   ├── warehouse/
+│   │   │   │   ├── container.ts    ← per-tenant container lifecycle
+│   │   │   │   ├── deleter.ts      ← warehouse deletes for offboarding
+│   │   │   │   ├── deltaWriter.ts  ← Node side of the Delta sidecar: counts via DuckDB, maintenance
+│   │   │   │   ├── duckdb.ts       ← setupDuckDBForWarehouse: extensions, Azure secret, guardrails
+│   │   │   │   ├── index.ts
+│   │   │   │   ├── paths.ts        ← warehouse URIs: container mode, layout version
+│   │   │   │   ├── queryRunnerChild.ts  ← child entrypoint: same views, one query at a time
+│   │   │   │   ├── queryRunnerPool.ts  ← child-process query runners (DUCKDB_RUNNER=child)
+│   │   │   │   ├── views.ts        ← createScanView + parquetSelect: the soft-delete firewall on every read
+│   │   │   │   └── writer.ts       ← writeParquet / writeRowsParquet (stage-then-upload on Azure)
+│   │   │   ├── accountDeletion.ts  ← purgeTenant — the GDPR erasure path
+│   │   │   ├── accountStatus.ts    ← cached suspended/inactive verdict in requireAuth
+│   │   │   ├── aiBudget.ts         ← monthly token budget + AiDisabledError
+│   │   │   ├── aiCallLogger.ts     ← ai_call_log writes (cost per call)
+│   │   │   ├── announcements.ts    ← operator announcements (6-4)
+│   │   │   ├── apiTokens.ts        ← API token mint/verify (sha256 at rest)
+│   │   │   ├── auditService.ts     ← recordAudit / recordAuthEvent / recordAuditForTenant
+│   │   │   ├── autoApproveService.ts  ← auto-approve stale AI drafts
+│   │   │   ├── buildChatContext.ts  ← coverage context for the Build chat
+│   │   │   ├── busMatrixBuilder.ts  ← persists a bus-matrix design; snapshot-and-merge of human edits
+│   │   │   ├── busMatrixOrchestrator.ts  ← the build workflows: design, extend, refresh, pipeline
+│   │   │   ├── columnValues.ts     ← GET /relationships/:id/values
+│   │   │   ├── crossSourceSession.ts  ← two connections in one DuckDB session (match preview)
+│   │   │   ├── dashboardEditOps.ts  ← tiered dashboard edits (deterministic ops, scoped SQL edits)
+│   │   │   ├── dashboardSpecMerge.ts  ← layout/productIds carry-over after a refine
+│   │   │   ├── declaredBusinessKeys.ts  ← user pick > connector declaration > name-shape guess
+│   │   │   ├── emailService.ts     ← nodemailer wrapper; no-op when SMTP_HOST not configured
+│   │   │   ├── featureFlags.ts     ← release flags: registry in contract.ts, rollout in feature_flags
+│   │   │   ├── filterOptionsCache.ts  ← dashboard filter dropdown cache
+│   │   │   ├── forecastEngine.ts   ← linear regression / moving average forecasts
+│   │   │   ├── glossaryContext.ts  ← tenant glossary block for prompts (resolved links only on product-layer prompts)
+│   │   │   ├── glossaryLinks.ts    ← glossary term → product column / table / KPI, by NAME; resolve + link-targets + prompt line
+│   │   │   ├── healthCheck.ts      ← deep /api/health (Postgres, Redis, Neo4j, blob, queue listeners)
+│   │   │   ├── heartbeat.ts        ← withHeartbeat for long-running work
+│   │   │   ├── investigateService.ts  ← the root-cause agent loop
+│   │   │   ├── invites.ts          ← inviteUser(), shared by tenant admin and operator doors
+│   │   │   ├── legal.ts            ← in-force flag, acceptance status + record (P0-7)
+│   │   │   ├── lineageDerivation.ts  ← column lineage derived from the transformation SQL at persist time
+│   │   │   ├── managedGrids.ts     ← grid schema derivation, coercion, materialisation
+│   │   │   ├── matchAssertions.ts  ← confirmed cross-source matches phrased for the model
+│   │   │   ├── matchMeasure.ts     ← cross-source match rate (normalised)
+│   │   │   ├── mfaService.ts       ← TOTP + backup codes
+│   │   │   ├── morningBriefService.ts  ← the brief + the overnight investigation
+│   │   │   ├── notificationService.ts  ← notify(), notifyTenant()
+│   │   │   ├── pipelineService.ts  ← DAG, scope resolution, topo sort, per-product source maps
+│   │   │   ├── policyEngine.ts     ← row filters + column masks rewrite
+│   │   │   ├── previewRead.ts      ← policy-aware sample rows (explicit select, never *)
+│   │   │   ├── productContext.ts   ← build star schema semantic context for NL→SQL; detects rollup tables
+│   │   │   ├── productGraphSync.ts  ← mirrors products into Neo4j
+│   │   │   ├── productOwnership.ts
+│   │   │   ├── productWarehouse.ts  ← buildConnectionWarehouseSession — THE warehouse session builder
+│   │   │   ├── profilingProgress.ts  ← profiling progress read for the sources card
+│   │   │   ├── pulseService.ts     ← watchlist entries + AI suggestions
+│   │   │   ├── pulseStateService.ts  ← live values + comparisons for the board
+│   │   │   ├── queryCache.ts       ← SQL result cache for repeated questions
+│   │   │   ├── queryScope.ts       ← WHICH data a question may reach (tenant + connections + products)
+│   │   │   ├── queryStartersService.ts  ← starter questions for the empty state
+│   │   │   ├── readPolicy.ts       ← prepareUserRead / prepareUnattendedRead: guard → data policies
+│   │   │   ├── reapers.ts          ← liveness-based reapers for stuck work
+│   │   │   ├── refineService.ts    ← refinement planner for an existing subject
+│   │   │   ├── refreshTokenService.ts  ← refresh tokens: hashed, revocable, tenant-status checked
+│   │   │   ├── relationshipGraph.ts  ← GET /relationships/graph read model (Postgres, tenant-scoped)
+│   │   │   ├── relationshipMeasure.ts  ← POST /relationships/measure
+│   │   │   ├── reportEmailService.ts  ← execute dashboard widgets + AI summary + HTML email builder
+│   │   │   ├── retention.ts        ← row retention sweeps
+│   │   │   ├── savedQuestions.ts   ← normalisation + the Verified fast path
+│   │   │   ├── schemaLoss.ts       ← pure: is a bind failure the source losing a column, or a slip? (D3)
+│   │   │   ├── signup.ts           ← self-registration: slug retry, budget stamp, email verification rule
+│   │   │   ├── sqlSelfHeal.ts      ← one AI repair of read SQL that fails to compile (pre-policy, re-guarded)
+│   │   │   ├── sse.ts              ← startSSE(res) — signal, heartbeat, close
+│   │   │   ├── starSchemaTemplates.ts  ← connector template → bus matrix (before the AI designer)
+│   │   │   ├── tableCatalog.ts     ← the single source of truth for where a logical table lives
+│   │   │   ├── tenantExport.ts     ← the streamed ZIP export (P0-7)
+│   │   │   ├── tenantLimits.ts     ← seats / sources caps + cron cadence floor (P0-8)
+│   │   │   ├── tenantQuery.ts      ← tenantQuery / readAcrossTenants: short transactions with SET LOCAL
+│   │   │   ├── tenantRequestStats.ts  ← 24h per-tenant request stats in Redis
+│   │   │   ├── transformationChecks.ts  ← BK uniqueness + fan-out quality gates
+│   │   │   ├── transformationRunner.ts  ← materialises product tables (Delta via the Python sidecar; parquet escape hatch), rollups, checks
+│   │   │   ├── warehouseRegistration.ts  ← view naming + the cross-source collision rule (pure)
+│   │   │   ├── webauthnService.ts  ← passkeys
+│   │   │   ├── widgetCache.ts      ← 5-min in-memory widget result cache (tenantId + sql_hash keyed)
+│   │   │   └── widgetReadability.ts  ← the READABILITY gate: row profile → findings → spec fixes / SQL findings (pure)
+│   │   ├── shared/
+│   │   │   ├── contract.ts         ← API contract types + FEATURE_FLAGS; byte-identical copy in frontend/lib/contract.ts
+│   │   │   ├── legalVersions.ts    ← LEGAL_IN_FORCE + versions; lint-locked with frontend/lib/legal/versions.ts
+│   │   │   ├── provenance.ts       ← the ONE provenance ladder + provenanceOf(); lint-locked with frontend/lib/provenance.ts
+│   │   │   ├── types.ts            ← backend-internal shared types
+│   │   │   └── widgetContracts.ts  ← required SQL columns per widget type
+│   │   ├── tests/                  ← vitest suites — setup.ts, helpers.ts, db-helpers.ts + one file per feature (3 files)
+│   │   ├── utils/
+│   │   │   ├── aiPricing.ts        ← token → USD
+│   │   │   ├── cache.ts            ← in-memory cache utility
+│   │   │   ├── crypto.ts           ← AES-256-GCM credential encryption/decryption
+│   │   │   ├── logger.ts           ← Pino structured logging (mixin writes requestId/jobId)
+│   │   │   ├── monitoring.ts       ← Azure App Insights telemetry
+│   │   │   ├── netGuard.ts         ← egress guard for connector hosts
+│   │   │   ├── paginate.ts         ← pagination helper
+│   │   │   ├── requestAbort.ts     ← client disconnect → AbortSignal for streams
+│   │   │   ├── requestScope.ts     ← the one AsyncLocalStorage; correlation id (6-1)
+│   │   │   ├── semaphore.ts        ← Semaphore / KeyedSemaphore with timeouts
+│   │   │   ├── slug.ts
+│   │   │   ├── sqlGuard.ts         ← SELECT-only + no external access + quoted-name denylist
+│   │   │   ├── xlsxBuilder.ts      ← dependency-free .xlsx writer
+│   │   │   └── zipStream.ts        ← streaming STORE zip writer (export)
+│   │   ├── config.ts               ← central config (appUrl, JWT, refresh-token days, …)
+│   │   ├── index.ts                ← Express app: routes, middleware, ROLE/WORKER_QUEUES split, schedulers, reapers, shutdown
+│   │   ├── migrate-sqlite-to-postgres.ts  ← one-time SQLite→Postgres migration tool
+│   │   ├── seed-hr.ts              ← creates sample HR database (hr.db)
+│   │   ├── seed-postgres.ts        ← populates Azure Postgres with sample data
+│   │   ├── seed.ts                 ← creates data/sample.db (Belgian SMB data)
+│   │   └── syncAllProducts.ts      ← one-shot: mirror every product into Neo4j (compiled, runnable in the image)
+│   ├── Dockerfile                  ← Node 20 backend image; bakes the connectors dist + YAML packages and the Python Delta venv
+│   ├── knexfile.ts                 ← Knex config for migrations
 │   ├── package.json
+│   ├── tsconfig.build.json         ← the strict build/typecheck project (excludes tests)
 │   ├── tsconfig.json
-│   ├── knexfile.ts
-│   ├── Dockerfile                    ← Node.js backend container
-│   └── src/
-│       ├── index.ts                  ← Express app: routes, middleware, startup, shutdown
-│       ├── seed.ts                   ← creates data/sample.db (Belgian SMB data)
-│       ├── seed-hr.ts                ← creates sample HR database (hr.db)
-│       ├── seed-postgres.ts          ← populates Azure Postgres with sample data
-│       ├── migrate-sqlite-to-postgres.ts  ← one-time SQLite→Postgres migration tool
-│       │
-│       ├── ai/
-│       │   ├── AIService.ts          ← single entry point for ALL Claude API calls
-│       │   └── prompts/
-│       │       ├── schemaDraftPrompt.ts      ← schema profiling prompts
-│       │       ├── nlToSqlPrompt.ts          ← NL→SQL for source databases
-│       │       ├── nlToSqlPromptDuckDB.ts    ← NL→SQL for DuckDB (warehouse queries)
-│       │       ├── dashboardPrompt.ts        ← dashboard generation + refinement
-│       │       ├── starSchemaPrompt.ts       ← star schema design + transformation SQL
-│       │       ├── answerFormatterPrompt.ts   ← report narrative generation
-│       │       ├── repairPrompt.ts           ← agentic SQL repair loop
-│       │       └── qualityAlertPrompt.ts     ← 2-sentence business context for quality alerts (Haiku)
-│       │
-│       ├── connectors/
-│       │   ├── BaseConnector.ts      ← abstract interface + FK detection + table classification
-│       │   ├── ConnectorFactory.ts   ← creates correct connector from connection config
-│       │   ├── ConnectorPool.ts      ← connection pooling + shutdown drain
-│       │   ├── SqliteConnector.ts    ← better-sqlite3
-│       │   ├── PostgresConnector.ts  ← pg
-│       │   ├── MysqlConnector.ts     ← mysql2
-│       │   ├── MssqlConnector.ts     ← mssql
-│       │   └── DuckDBConnector.ts    ← duckdb-async (warehouse query engine)
-│       │
-│       ├── db/
-│       │   ├── knex.ts               ← PostgreSQL semantic DB (with RLS role switching)
-│       │   ├── scopedRequestDb.ts    ← per-query tenant-scoped handle for streaming responses (11-1)
-│       │   ├── neo4j.ts              ← Neo4j driver singleton + constraints + shutdown
-│       │   ├── semanticGraph.ts      ← ALL Cypher queries (only file with Cypher)
-│       │   ├── migrateSemanticToNeo4j.ts  ← one-shot migration script
-│       │   └── migrations/           ← 30 Knex migrations (see list below)
-│       │
-│       ├── jobs/
-│       │   ├── freshnessMonitor.ts   ← 'source stale' hourly sweep (wave B 7-1)
-│       │   ├── redis.ts              ← IORedis singleton (optional)
-│       │   ├── queues.ts             ← BullMQ queue definitions (4 queues: profiling, ingestion, transformation, email-report)
-│       │   ├── workers.ts            ← schema-profiling, ingestion, transformation, email-report workers
-│       │   ├── scheduler.ts          ← repeatable job manager for cron-based transformation schedules
-│       │   └── emailScheduler.ts     ← repeatable job manager for email report schedules
-│       │
-│       ├── middleware/
-│       │   ├── auth.ts               ← JWT verify, password hash, role checks (admin/analyst/viewer)
-│       │   ├── validate.ts           ← Zod request validation middleware
-│       │   ├── schemas.ts            ← Zod schemas for auth, invites, etc.
-│       │   ├── requestLogger.ts      ← structured request logging with request IDs
-│       │   └── errorHandler.ts       ← global error handler, never leak internals
-│       │
-│       ├── routes/
-│       │   ├── auth.ts               ← register, login, forgot-password, reset, refresh token
-│       │   ├── connections.ts        ← CRUD connections; trigger profiling; manage ingestion
-│       │   ├── semantic.ts           ← confirm/edit table/column definitions from AI draft
-│       │   ├── query.ts              ← NL→SQL; execute; repair loop (SSE); entity pre-flight
-│       │   ├── reports.ts            ← CRUD reports; AI narrative generation
-│       │   ├── dashboards.ts         ← CRUD dashboards; execute widget SQL; refinement
-│       │   ├── cross-views.ts        ← admin-only cross-source views (Neo4j graph)
-│       │   ├── quality.ts            ← quality profiling; alerts; trends
-│       │   ├── ingestion.ts          ← trigger ETL ingestion to Delta Lake warehouse
-│       │   ├── products/            ← CRUD data products, split 11 ways (see products/index.ts)
-│       │   │   ├── topic.ts         ← GET /:id/topic — the topic page's single read model
-│       │   │   ├── buildOverview.ts ← GET /build-overview — the Build page's single read model
-│       │   │   └── …                ← catalog, core, design, tables, refine, kpis, build, refineChat, cells
-│       │   ├── jobs.ts               ← check background job status
-│       │   ├── schedules.ts          ← CRUD transformation schedules (cron); manual triggers
-│       │   ├── adminTenants.ts       ← operator console: customers, caps, usage CSV, user-admin
-│       │   ├── adminOps.ts           ← operator console: errors feed, queues, announcements
-│       │   ├── announcements.ts      ← GET /announcements (the shell banner's feed)
-│       │   ├── legal.ts              ← GET /legal/status, POST /legal/accept (P0-7)
-│       │   ├── users.ts              ← admin-only user management; invites; role updates; audit export
-│       │   ├── conversations.ts      ← chat history persistence; export results
-│       │   ├── notifications.ts      ← user notifications (job complete, quality alerts, invites)
-│       │   └── emailSchedules.ts     ← CRUD dashboard email schedules; send-now trigger
-│       │
-│       ├── services/
-│       │   ├── tenantLimits.ts             ← seats / sources caps + cron cadence floor (P0-8)
-│       │   ├── announcements.ts            ← operator announcements (6-4)
-│       │   ├── invites.ts                  ← inviteUser(), shared by tenant admin and operator doors
-│       │   ├── legal.ts                    ← in-force flag, acceptance status + record (P0-7)
-│       │   ├── tenantExport.ts             ← the streamed ZIP export (P0-7)
-│       │   ├── notificationService.ts      ← notify(), notifyTenant()
-│       │   ├── glossaryLinks.ts            ← glossary term → product column / table / KPI, by NAME; resolve + link-targets + prompt line
-│       │   ├── glossaryContext.ts          ← tenant glossary block for prompts (resolved links only on product-layer prompts)
-│       │   ├── schemaLoss.ts               ← pure: is a bind failure the source losing a column, or a slip? (D3)
-│       │   ├── warehouse/views.ts          ← createScanView + parquetSelect: hides soft-deleted rows and _clarion_* columns (phase 2)
-│       │   ├── queryScope.ts              ← WHICH data a question may reach (tenant + connections + products)
-│       │   ├── warehouseRegistration.ts   ← view naming + the cross-source collision rule (pure)
-│       │   ├── productContext.ts           ← build star schema semantic context for NL→SQL; detects rollup tables
-│       │   ├── transformationRunner.ts     ← DuckDB transformation materialization (Parquet) + monthly rollup generation
-│       │   ├── transformationChecks.ts     ← BK uniqueness + fan-out quality gates
-│       │   ├── widgetCache.ts             ← 5-min in-memory widget result cache (tenantId + sql_hash keyed)
-│       │   ├── widgetReadability.ts       ← the READABILITY gate: row profile → findings → spec fixes / SQL findings (pure)
-│       │   ├── emailService.ts            ← nodemailer wrapper; no-op when SMTP_HOST not configured
-│       │   └── reportEmailService.ts      ← execute dashboard widgets + AI summary + HTML email builder
-│       │
-│       ├── quality/
-│       │   └── QualityProfiler.ts    ← per-field stats: nulls, distinct, min/max, histograms
-│       │
-│       ├── semantic/
-│       │   └── SchemaProfiler.ts     ← full profiling workflow: introspect → AI draft → store
-│       │
-│       ├── utils/
-│       │   ├── requestScope.ts       ← the one AsyncLocalStorage; correlation id (6-1)
-│       │   ├── logger.ts             ← Pino structured logging (mixin writes requestId/jobId)
-│       │   ├── crypto.ts             ← AES-256-GCM credential encryption/decryption
-│       │   ├── zipStream.ts          ← streaming STORE zip writer (export)
-│       │   ├── cache.ts              ← in-memory cache utility
-│       │   ├── monitoring.ts         ← Azure App Insights telemetry
-│       │   ├── paginate.ts           ← pagination helper
-│       │   ├── secrets.ts            ← Azure Key Vault secret retrieval
-│       │   └── storage.ts            ← Azure Blob Storage helpers
-│       │
-│       ├── shared/
-│       │   ├── legalVersions.ts      ← LEGAL_IN_FORCE + versions; lint-locked with frontend/lib/legal/versions.ts
-│       │   ├── provenance.ts         ← the ONE provenance ladder + provenanceOf(); lint-locked with frontend/lib/provenance.ts
-│       │   └── types.ts              ← backend-internal shared types
-│       │
-│       └── tests/
-│           ├── setup.ts              ← Vitest global setup
-│           ├── helpers.ts            ← test utilities
-│           ├── db-helpers.ts         ← database test helpers
-│           ├── auth.test.ts
-│           ├── connections.test.ts
-│           ├── dashboards.test.ts
-│           ├── widget-readability.test.ts        ← the gate's rules, both directions
-│           ├── readability-gate-wiring.test.ts   ← source-level: the gate is called, repair re-checked, stream path annotates
-│           ├── health.test.ts
-│           ├── notifications.test.ts
-│           ├── tenant-isolation.test.ts
-│           └── users.test.ts
-│
-└── frontend/
-    ├── package.json
-    ├── tsconfig.json
-    ├── next.config.mjs
-    ├── tailwind.config.ts
-    ├── postcss.config.mjs
-    ├── .eslintrc.json
-    ├── Dockerfile                    ← Next.js frontend container
-    ├── scripts/vendor-pyodide.mjs    ← prebuild: core from npm + wheel closure into public/pyodide/ (4-2)
-    ├── public/
-    │   └── logo.svg
-    ├── app/
-    │   ├── layout.tsx                ← root layout + <Toaster /> mount
-    │   ├── globals.css               ← Observatory CSS variables, scrollbar utilities, orbs, heatmap
-    │   ├── page.tsx                  ← login / landing page
-    │   ├── register/page.tsx         ← new user registration form
-    │   ├── forgot-password/page.tsx  ← password reset request
-    │   ├── reset-password/page.tsx   ← password reset confirmation (token-based)
-    │   ├── profile/page.tsx          ← user profile: display name, password change
-    │   ├── onboarding/page.tsx       ← new-user onboarding wizard
-    │   ├── home/                     ← the daily driver; two shapes by role (9-3)
-    │   │   ├── page.tsx              ← operator page (health / attention / act)
-    │   │   ├── ViewerHome.tsx        ← the viewer's page: brief, question box, dashboards, subjects
-    │   │   ├── sections.tsx          ← DashboardsSection + RecentQuestionsSection, shared
-    │   │   └── types.ts              ← HomeSummary
-    │   ├── not-found.tsx / error.tsx / global-error.tsx  ← the 9-1 boundaries
-    │   ├── setup/page.tsx            ← admin: connect sources, trigger AI schema profiling (RequireRole)
-    │   ├── semantic/page.tsx         ← definitions: tables/columns/relationships/glossary tabs (KPIs moved to /products)
-    │   ├── topics/                   ← TOPIC-FIRST FRONT DOOR (business user's home)
-    │   │   ├── layout.tsx            ← ShellLayout wrap
-    │   │   ├── types.ts              ← Topic, TopicQuestion, ManageTab, TableSubTab, DeployState
-    │   │   └── [productId]/page.tsx  ← topic layer + manage layer (?manage=1) + cross-fade
-    │   ├── shared-data/              ← conformed lookups (was the "Core dimensions" product)
-    │   │   ├── layout.tsx
-    │   │   └── page.tsx
-    │   ├── build/                    ← Studio → Build: source → topics (plan, create, show/hide, warned rebuild)
-    │   │   ├── layout.tsx
-    │   │   └── page.tsx
-    │   ├── products/                 ← build workshop — off the nav, deep-link only
-    │   │   ├── page.tsx              ← orchestrator + tabs (overview, bus-matrix, schema, lineage, kpis)
-    │   │   ├── types.ts              ← Connection, DataProduct, StarSchema, ProductTable/Column/Relationship, KPI, ActiveTab
-    │   │   ├── helpers.ts            ← statusBorderColor, productIcon, cleanTopicName
-    │   │   └── badges.tsx            ← StatusDot, StatusBadge, RoleBadge, ColumnRoleBadge, Spinner
-    │   ├── query/                    ← NL chat with repair loop + disambiguation
-    │   │   ├── page.tsx              ← stateful orchestrator
-    │   │   ├── types.ts              ← Message, DebugInfo, Conversation, RepairState, EntityMismatch/Ambiguity, ForecastData
-    │   │   ├── utils.ts              ← formatSql, formatCellValue
-    │   │   ├── components.tsx        ← SourceSelector, BoldText, ConfidenceBadge, QueryLayerBadge
-    │   │   ├── MessageBubble.tsx     ← main bubble + ResultVisualizer + ForecastChart + LowConfidenceGuide + AdminDebugPanel
-    │   │   ├── thinking.tsx          ← ThinkingBubble (live reasoning) + ThinkingPanel (repair-loop events)
-    │   │   ├── ChatSidebar.tsx       ← conversation list (slots into AppShell contextPanel)
-    │   │   └── EmptyState.tsx        ← pre-chat landing with STARTERS
-    │   ├── dashboards/               ← AI dashboard builder with filters + drill-down
-    │   │   ├── page.tsx              ← orchestrator (mode: empty | choosing | refining | creating | viewing)
-    │   │   ├── layout.tsx            ← app shell wrap
-    │   │   ├── types.ts              ← FilterSpec, WidgetSpec, DashboardSpec, SavedDashboard, DashboardTemplate, DrillState, RefinementQuestion, ChatMessage, WidgetData
-    │   │   ├── utils/
-    │   │   │   ├── format.ts         ← buildDefaultFilters, relTime, formatValue, yAxisFormatter (format-aware), looksLikeYearColumn, formatIsoTimestamp
-    │   │   │   ├── motion.ts         ← Framer Motion variants (containerVariants, slideUp, shimmerClass)
-    │   │   │   ├── chart-theme.ts    ← Recharts palette + style helpers
-    │   │   │   └── download.ts       ← authenticated file-download helper (CSV/XLSX/PDF)
-    │   │   └── components/
-    │   │       ├── CreateInput.tsx           ← reusable text-input + Go button
-    │   │       ├── EmptyDashboardHero.tsx    ← empty-state hero + suggestion chips
-    │   │       ├── DashboardHeader.tsx       ← title + save/discard + dark-mode toggle
-    │   │       ├── FilterBar.tsx             ← dashboard filter row
-    │   │       ├── MarkdownAnswer.tsx        ← streaming markdown renderer
-    │   │       ├── KpiCard.tsx               ← KPI tile with trend + sparkline
-    │   │       ├── ChartWidgets.tsx          ← Bar/Line/Pie/Stacked/Combo/Radar/Treemap/TopList/DataTable
-    │   │       ├── WidgetCard.tsx            ← widget container (header + body + error state)
-    │   │       ├── WidgetSkeletons.tsx       ← shimmer placeholders while loading
-    │   │       ├── Sparkline.tsx             ← compact trend line for KPI cards
-    │   │       ├── PremiumTooltip.tsx        ← styled Recharts tooltip
-    │   │       ├── AnimatedNumber.tsx        ← counting animation for KPI values
-    │   │       └── EmailSchedulePanel.tsx    ← dashboard email report schedules (CRUD + send-now; slotted into settings dropdown)
-    │   ├── health/page.tsx           ← data-quality dashboard (split-pane: sidebar + overview/detail pills)
-    │   ├── gaps/page.tsx             ← admin: definition gaps + query log tabs (RequireRole)
-    │   ├── users/page.tsx            ← admin: team management, invites, roles, audit export (RequireRole)
-    │   ├── admin/tenants/page.tsx    ← operator: customers, caps, usage CSV, user-admin
-    │   ├── admin/ops/page.tsx        ← operator: errors · queues · announcements
-    │   ├── policies/page.tsx        ← admin: data policies (RequireRole)
-    │   ├── notebooks/                ← interactive Python notebooks (Pyodide)
-    │   │   ├── page.tsx              ← list + create notebook
-    │   │   └── [id]/page.tsx         ← editor with cells, schema explorer
-    │   └── dev/                      ← internal-only playground (UI, tokens, icons)
-    │       ├── layout.tsx            ← notFound() in production unless CLARION_DEV_PAGES=1 (9-5)
-    │       ├── ui/page.tsx
-    │       └── widgets/page.tsx      ← the widget gallery the render gate drives
-    │
-    ├── components/
-    │   ├── Nav.tsx                   ← legacy role-aware nav (kept for non-shell pages)
-    │   ├── RequireRole.tsx           ← admin gate wrapper (shows "Restricted" card instead of redirecting)
-    │   ├── IngestionWizard.tsx       ← step-by-step data ingestion setup
-    │   ├── IntegrationsPanel.tsx     ← integration management UI
-    │   ├── JobProgressBanner.tsx     ← (legacy) background job progress (prefer components/ui/JobProgressBanner)
-    │   ├── NotificationBell.tsx      ← notification icon + dropdown (used by TopBar)
-    │   ├── Pagination.tsx            ← generic pagination component
-    │   ├── QualityAlertBanner.tsx    ← data quality issue alerts
-    │   ├── QualityPanel.tsx          ← quality profiling dashboard
-    │   ├── EmptyState.tsx            ← Observatory empty state (eyebrow/title/description/actions)
-    │   ├── SchedulePanel.tsx         ← transformation schedule management
-    │   ├── layout/
-    │   │   ├── AppShell.tsx          ← Observatory chrome (IconRail + TopBar + ContextPanel + children)
-    │   │   ├── AuthLayout.tsx        ← auth-page chrome (login/register/reset)
-    │   │   ├── ShellLayout.tsx       ← legacy shell (superseded by AppShell)
-    │   │   ├── IconRail.tsx          ← leftmost icon nav (Lucide icons, role-aware)
-    │   │   ├── TopBar.tsx            ← header: wordmark + tenant chip + search + notifications + avatar menu
-    │   │   ├── ContextPanel.tsx      ← optional left context panel (sits between IconRail and main)
-    │   │   ├── CommandPalette.tsx    ← Cmd+K palette (nav + actions)
-    │   │   └── PillNav.tsx           ← pill-style tab switcher
-    │   ├── topics/
-    │   │   ├── TopicLayer.tsx        ← screen 1 — no SQL, no counts, no warehouse vocabulary
-    │   │   ├── ManageLayer.tsx       ← screen 2 — mode bar + header + 6 tabs (analyst+)
-    │   │   └── ManageTables.tsx      ← Tables tab: measures / shared lookups / "How it's built"
-    │   ├── products/
-    │   │   ├── StarSchemaFlow.tsx    ← ReactFlow star schema diagram (Observatory palette)
-    │   │   └── LineageFlow.tsx       ← ReactFlow data lineage visualization (Observatory palette)
-    │   ├── semantic/
-    │   │   ├── ApprovalBadge.tsx     ← approval status indicator
-    │   │   ├── AuditPanel.tsx        ← audit trail viewer
-    │   │   ├── BulkImportModal.tsx   ← bulk definition import
-    │   │   ├── DatabaseTree.tsx      ← database schema tree (Observatory light tokens)
-    │   │   ├── HistoryPanel.tsx      ← change history tracking
-    │   │   ├── KpiPanel.tsx          ← KPI definitions management
-    │   │   ├── PathFinderPanel.tsx   ← relationship path finder
-    │   │   ├── TableDetailPanel.tsx  ← source-layer table detail panel
-    │   │   ├── ProductTableDetailPanel.tsx ← product-layer table detail panel (+ "Your team calls this …" glossary chips)
-    │   │   ├── GlossaryPanel.tsx     ← the tenant glossary editor: terms, definitions, LINKS to product columns/tables/KPIs
-    │   │   ├── GlossaryLinkPicker.tsx ← searchable grouped picker over GET /semantic/glossary/link-targets
-    │   │   ├── shared.tsx            ← de-duplicated helpers: parseDomains/parseExamples/classifyType/completenessBucket/PreviewTable
-    │   │   └── types.ts             ← shared TypeScript types for semantic components
-    │   ├── notebooks/
-    │   │   ├── SchemaExplorer.tsx    ← left sidebar table/schema tree
-    │   │   └── usePyodide.ts         ← Pyodide runtime hook (self-hosted /pyodide/, vendored at build)
-    │   └── ui/                       ← Observatory primitives (preferred callsites)
-    │       ├── Toast.tsx             ← <Toast> + <Toaster /> + useToast() hook (module-level dispatch queue)
-    │       ├── NotificationBell.tsx  ← (newer variant, dev use)
-    │       ├── JobProgressBanner.tsx ← background job progress (Observatory tokens)
-    │       └── ChartCard.tsx         ← card wrapper for Recharts embeds
-    │
-    └── lib/
-        ├── api.ts                   ← Axios client; JWT interceptor; 401 → redirect to /
-        ├── auth.ts                  ← JWT storage, getTokenPayload, isAdmin, setToken
-        ├── cn.ts                    ← classnames helper (clsx + tailwind-merge)
-        ├── dates.ts                 ← formatDate/formatDateTime/formatRelative/formatRelativeLong/Short (en-GB)
-        ├── sqlProvenance.ts         ← FROM/JOIN extraction for the "How it's built" provenance trail
-        ├── askLink.ts               ← askAboutSubject() — the one /query deep-link builder
-        ├── subjectAssistant.ts      ← the ONE subject chat: askSubjectAssistant + startSubjectAddition
-        ├── observatory.ts           ← JS/SVG mirror of globals.css tokens + SERIES chart palette
-        ├── freshness.ts             ← data-freshness helpers (formatRelativeTime, getFreshnessStatus)
-        └── hooks/
-            └── useDebounce.ts       ← custom debounce hook
+│   └── vitest.config.ts            ← backend suite config (Postgres service container in CI)
+├── design-mockups/                 ← three HTML design directions kept as reference (Vega-era) (3 files)
+├── docs/
+│   ├── backlog/                    ← assessments, plans and reviews — the chronological record, not a spec (23 files)
+│   ├── handoffs/
+│   │   ├── observatory-restyle/    ← the April 2026 design-system handoff (executed; moved from the root on 2026-09-20) (12 files)
+│   │   └── topic-first-data/       ← the topic-first front door handoff — README (binding spec), screens, prototype (6 files)
+│   ├── legal/
+│   │   └── README.md               ← the lawyer's checklist for the legal drafts
+│   ├── runbooks/
+│   │   ├── db-role-flip.md         ← the databridge_app cutover (done 2026-08-06)
+│   │   ├── disaster-recovery.md    ← RTO/RPO per store, restore procedures, the rehearsal checklist
+│   │   ├── incident-response.md    ← severity ladder, first hour, breach path
+│   │   ├── jobs-worker-apply.md    ← terraform apply guide — leads with the state-file check
+│   │   └── per-tenant-container-flip.md  ← per-tenant warehouse containers (done 2026-07-26)
+│   ├── testing/
+│   │   └── sql-load-test/          ← SQL fixture for a live Postgres/MySQL/SQL Server connector load test (5 files)
+│   ├── APP_BLUEPRINT.md            ← how Clarion should work for a non-technical data owner
+│   ├── AZURE_COSTS.md
+│   ├── CODE_QUALITY_PLAN.md        ← the 2026-07 code-quality phases (session log)
+│   ├── DASHBOARD_PERF.md
+│   ├── DEV_FLOW.md                 ← the daily loop: push to main, flags, promote
+│   ├── DEV_TOOLING.md              ← tooling recommendations for the no-local-stack setup
+│   ├── exactonline-entities.md     ← the Exact Online entity catalog reference
+│   ├── HANDOFF.md                  ← historical: the May 2026 hardening handoff
+│   ├── home-brief-prototype.html   ← prototype behind docs/backlog/home-experience.md
+│   ├── incremental-sync.md         ← incremental sync design and contract
+│   ├── rfc-001-dbt-transformations.md  ← withdrawn RFC (the dbt engine was deleted 2026-09-20)
+│   ├── rfc-002-python-notebooks.md  ← proposed RFC on Pyodide limits
+│   ├── SECURITY-AUDIT-2026-05-14.md
+│   ├── SECURITY.md                 ← security posture (controls today + honest gaps)
+│   ├── SOURCE_ONBOARDING.md        ← the binding playbook for every new connector
+│   ├── storage-competitive-analysis.md  ← storage/compute vs Peliqan, Definite, MotherDuck …
+│   └── UX_REDESIGN.md              ← the original IA brief (superseded as a plan)
+├── e2e/
+│   ├── auth-login.spec.ts          ← login/refresh/duplicate-register under RLS
+│   ├── rls.spec.ts                 ← tenant isolation over the real API as databridge_app (CI rls-isolation job)
+│   ├── schedules.spec.ts           ← a schedule round-trips under RLS
+│   ├── smoke.spec.ts               ← register → login → navigate (needs frontend + backend; not in CI)
+│   └── widgets.spec.ts             ← the widget render gate: every DSL widget draws marks in real Chromium
+├── etl/
+│   ├── scd2/
+│   │   ├── __init__.py
+│   │   ├── commit_table.py         ← the Delta sidecar for topic tables: streaming overwrite, counts, maintain
+│   │   └── test_commit_table.py
+│   ├── Dockerfile                  ← python:3.12-slim
+│   ├── main.py                     ← legacy Python ETL for the direct-database path: discover / ingest / optimize
+│   └── requirements.txt            ← fastapi, deltalake 0.23, pyarrow, pandas, psycopg2, pymysql
+├── excel-addin/                    ← Office add-in manifest + sideloading guide (2 files)
+├── frontend/
+│   ├── app/
+│   │   ├── admin/
+│   │   │   ├── ai-usage/
+│   │   │   │   └── page.tsx        ← AI usage, cost, routing mode, time to answer
+│   │   │   ├── features/
+│   │   │   │   └── page.tsx        ← Who sees what — release flags per customer
+│   │   │   ├── ops/
+│   │   │   │   └── page.tsx        ← operator console: errors · queues · announcements
+│   │   │   └── tenants/
+│   │   │       └── page.tsx        ← operator console: customers, caps, usage CSV, support sessions
+│   │   ├── ask/
+│   │   │   └── page.tsx            ← redirect stub → /query (the rail's Ask entry)
+│   │   ├── build/                  ← Studio → Build: source → topics
+│   │   │   ├── AskPanel.tsx
+│   │   │   ├── layout.tsx
+│   │   │   └── page.tsx            ← Studio → Build: plan, create topics, show/hide, warned rebuild, ask about coverage
+│   │   ├── catalog/                ← Data Catalog — the ONE understanding surface across both layers
+│   │   │   ├── layout.tsx
+│   │   │   └── page.tsx            ← Data Catalog — browse sources and subjects, sample rows, definitions, lineage
+│   │   ├── dashboards/             ← AI dashboards
+│   │   │   ├── components/
+│   │   │   │   ├── AnimatedNumber.tsx  ← counting animation for KPI values
+│   │   │   │   ├── AssistantPanel.tsx
+│   │   │   │   ├── ChartWidgets.tsx  ← Bar/Line/Pie/Stacked/Combo/Radar/Treemap/TopList/DataTable
+│   │   │   │   ├── CreateInput.tsx  ← reusable text-input + Go button
+│   │   │   │   ├── DrillDetailModal.tsx
+│   │   │   │   ├── EChart.tsx
+│   │   │   │   ├── EChartsWidgets.tsx
+│   │   │   │   ├── EmailSchedulePanel.tsx  ← dashboard email report schedules (CRUD + send-now; slotted into settings dropdown)
+│   │   │   │   ├── EmptyDashboardHero.tsx  ← empty-state hero + suggestion chips
+│   │   │   │   ├── FilterBar.tsx   ← dashboard filter row
+│   │   │   │   ├── InsightsStrip.tsx
+│   │   │   │   ├── InvestigationPanel.tsx
+│   │   │   │   ├── KpiCard.tsx     ← KPI tile with trend + sparkline
+│   │   │   │   ├── MarkdownAnswer.tsx  ← streaming markdown renderer
+│   │   │   │   ├── PremiumTooltip.tsx  ← styled Recharts tooltip
+│   │   │   │   ├── Sparkline.tsx   ← compact trend line for KPI cards
+│   │   │   │   ├── StoryModal.tsx
+│   │   │   │   ├── WidgetBody.tsx
+│   │   │   │   ├── WidgetCard.tsx  ← widget container (header + body + error state)
+│   │   │   │   ├── WidgetContextMenu.tsx
+│   │   │   │   ├── WidgetProvenance.tsx
+│   │   │   │   └── WidgetSkeletons.tsx  ← shimmer placeholders while loading
+│   │   │   ├── utils/
+│   │   │   │   ├── chart-theme.ts  ← Recharts palette + style helpers
+│   │   │   │   ├── dashboardContext.ts
+│   │   │   │   ├── download.ts     ← authenticated file-download helper (CSV/XLSX/PDF)
+│   │   │   │   ├── echartsSetup.ts
+│   │   │   │   ├── format.ts       ← buildDefaultFilters, relTime, formatValue, yAxisFormatter (format-aware), looksLikeYearColumn, formatIsoTimestamp
+│   │   │   │   ├── motion.ts       ← Framer Motion variants (containerVariants, slideUp, shimmerClass)
+│   │   │   │   ├── refineCarryover.ts
+│   │   │   │   └── useWindowedRows.ts
+│   │   │   ├── layout.tsx          ← app shell wrap
+│   │   │   ├── page.tsx            ← AI dashboards: generate, refine (tiered), arrange, filters, drill, my-view
+│   │   │   └── types.ts            ← FilterSpec, WidgetSpec, DashboardSpec, SavedDashboard, DashboardTemplate, DrillState, RefinementQuestion, ChatMessage, WidgetData
+│   │   ├── dev/                    ← internal-only playground; 404 in production unless CLARION_DEV_PAGES=1
+│   │   │   ├── ui/
+│   │   │   │   └── page.tsx
+│   │   │   ├── widgets/
+│   │   │   │   └── page.tsx        ← the widget gallery the render gate drives
+│   │   │   └── layout.tsx          ← notFound() in production unless CLARION_DEV_PAGES=1
+│   │   ├── excel-addin/
+│   │   │   └── page.tsx            ← the Excel add-in task pane
+│   │   ├── fonts/                  ← Geist + Geist Mono local font files (2 files)
+│   │   ├── forgot-password/
+│   │   │   └── page.tsx            ← password reset request
+│   │   ├── gaps/
+│   │   │   └── page.tsx            ← definition gaps + query log (admin; reached from notifications)
+│   │   ├── glossary/
+│   │   │   └── page.tsx            ← redirect stub → /catalog
+│   │   ├── grids/
+│   │   │   ├── [id]/
+│   │   │   │   └── page.tsx        ← the sheet editor: typed cells, paste from Excel, linked columns, coverage chip
+│   │   │   ├── import.ts
+│   │   │   ├── layout.tsx
+│   │   │   ├── LinkPicker.tsx
+│   │   │   ├── page.tsx            ← Your tables (managed grids)
+│   │   │   └── types.ts
+│   │   ├── health/
+│   │   │   └── page.tsx            ← data-quality dashboard (deep link only; off the rail)
+│   │   ├── home/                   ← Home — the briefing (one page for every role; the operator/viewer split collapsed on 2026-09-07)
+│   │   │   ├── Board.tsx
+│   │   │   ├── FreshnessDetail.tsx
+│   │   │   ├── layout.tsx
+│   │   │   ├── lead.ts             ← pure: the lead sentence + ops line from the summary/brief/pulse
+│   │   │   ├── MovementCards.tsx
+│   │   │   ├── page.tsx            ← Home — the briefing: one sentence, ask box, what moved, the board, ops line
+│   │   │   ├── pieces.tsx
+│   │   │   ├── sections.tsx        ← DashboardsSection + RecentQuestionsSection, shared
+│   │   │   ├── Sparkline.tsx
+│   │   │   ├── states.tsx
+│   │   │   └── types.ts            ← HomeSummary
+│   │   ├── investigate/
+│   │   │   └── page.tsx            ← root-cause agent
+│   │   ├── legal/
+│   │   │   ├── dpa/
+│   │   │   │   └── page.tsx
+│   │   │   ├── privacy/
+│   │   │   │   └── page.tsx
+│   │   │   ├── subprocessors/
+│   │   │   │   └── page.tsx
+│   │   │   ├── terms/
+│   │   │   │   └── page.tsx        ← legal drafts (terms, privacy, dpa, subprocessors) — not in force until LEGAL_IN_FORCE
+│   │   │   └── LegalPage.tsx
+│   │   ├── notebooks/              ← notebooks (SQL + Python via Pyodide, analyst+)
+│   │   │   ├── [id]/
+│   │   │   │   ├── CellDiff.tsx
+│   │   │   │   ├── diff.ts
+│   │   │   │   ├── NotebookAssistant.tsx
+│   │   │   │   └── page.tsx        ← notebook editor with the assistant panel, diffs, Pyodide
+│   │   │   ├── layout.tsx
+│   │   │   └── page.tsx            ← list + create notebook
+│   │   ├── pipelines/
+│   │   │   ├── layout.tsx
+│   │   │   └── page.tsx            ← Refresh: pipelines DAG, built-in + custom, live run dock
+│   │   ├── policies/
+│   │   │   └── page.tsx            ← admin: data policies (RequireRole)
+│   │   ├── products/               ← build workshop — off the nav, deep-link only (structural surgery)
+│   │   │   ├── [id]/
+│   │   │   │   └── page.tsx
+│   │   │   ├── AskAIPanel.tsx
+│   │   │   ├── badges.tsx          ← StatusDot, StatusBadge, RoleBadge, ColumnRoleBadge, Spinner
+│   │   │   ├── helpers.ts          ← statusBorderColor, productIcon, cleanTopicName
+│   │   │   ├── layout.tsx
+│   │   │   ├── page.tsx            ← build workshop — off the nav, deep-link only
+│   │   │   ├── QualityTab.tsx
+│   │   │   └── types.ts            ← Connection, DataProduct, StarSchema, ProductTable/Column/Relationship, KPI, ActiveTab
+│   │   ├── profile/
+│   │   │   ├── ApiTokensSection.tsx
+│   │   │   └── page.tsx            ← profile: display name, password, MFA / passkeys, API tokens
+│   │   ├── query/                  ← Ask AI — the worksheet: steps as a tree, spine + one-step canvas, repair loop
+│   │   │   ├── AssumptionChips.tsx
+│   │   │   ├── chartShape.ts
+│   │   │   ├── ChatSidebar.tsx     ← conversation list (slots into AppShell contextPanel)
+│   │   │   ├── components.tsx      ← SourceSelector, BoldText, ConfidenceBadge, QueryLayerBadge
+│   │   │   ├── EmptyState.tsx      ← pre-chat landing with STARTERS
+│   │   │   ├── MessageBubble.tsx   ← main bubble + ResultVisualizer + ForecastChart + LowConfidenceGuide + AdminDebugPanel
+│   │   │   ├── page.tsx            ← Ask AI — the worksheet (steps as a tree, spine + one-step canvas)
+│   │   │   ├── steps.ts
+│   │   │   ├── StepSpine.tsx
+│   │   │   ├── thinking.tsx        ← ThinkingBubble (live reasoning) + ThinkingPanel (repair-loop events)
+│   │   │   ├── types.ts            ← Message, DebugInfo, Conversation, RepairState, EntityMismatch/Ambiguity, ForecastData
+│   │   │   └── utils.ts            ← formatSql, formatCellValue
+│   │   ├── register/
+│   │   │   └── page.tsx            ← new user registration form
+│   │   ├── relationships/
+│   │   │   ├── layout.tsx
+│   │   │   └── page.tsx            ← Relations canvas: Sources | Topics
+│   │   ├── reset-password/
+│   │   │   └── page.tsx            ← password reset confirmation (token-based)
+│   │   ├── review/
+│   │   │   └── page.tsx            ← AI review queue (Suggestions)
+│   │   ├── security/
+│   │   │   └── page.tsx            ← public security posture page (mirrors docs/SECURITY.md)
+│   │   ├── semantic/
+│   │   │   ├── layout.tsx
+│   │   │   └── page.tsx            ← redirect stub → /catalog (kept for bookmarks)
+│   │   ├── shared-data/            ← Shared data — the conformed lookups
+│   │   │   ├── layout.tsx
+│   │   │   └── page.tsx            ← conformed lookups (viewer-readable, read-only)
+│   │   ├── sources/
+│   │   │   ├── add-source/
+│   │   │   │   └── page.tsx        ← registry-driven connector wizard (OAuth, file pickers, entity selection)
+│   │   │   ├── oauth-return/
+│   │   │   │   └── page.tsx        ← OAuth callback landing for connector authorisation
+│   │   │   └── page.tsx            ← Studio → Sources: connections, sync, analyse, history
+│   │   ├── subjects/
+│   │   │   ├── layout.tsx
+│   │   │   └── page.tsx            ← Subjects hub (topics + shared data) — the business user's map
+│   │   ├── topics/                 ← TOPIC-FIRST FRONT DOOR — one URL, topic layer + manage layer
+│   │   │   ├── [productId]/
+│   │   │   │   └── page.tsx        ← topic layer + manage layer (?manage=1) — the topic-first front door
+│   │   │   ├── layout.tsx          ← ShellLayout wrap
+│   │   │   └── types.ts            ← Topic, TopicQuestion, ManageTab, TableSubTab, DeployState
+│   │   ├── users/
+│   │   │   └── page.tsx            ← admin: team management, invites, roles, audit export (RequireRole)
+│   │   ├── verify-email/
+│   │   │   └── page.tsx            ← email verification landing (posts the token, offers resend)
+│   │   ├── error.tsx
+│   │   ├── favicon.ico
+│   │   ├── global-error.tsx
+│   │   ├── globals.css             ← Observatory CSS variables, scrollbar utilities, orbs, heatmap
+│   │   ├── layout.tsx              ← root layout + <Toaster /> mount
+│   │   ├── not-found.tsx
+│   │   └── page.tsx                ← sign-in
+│   ├── components/
+│   │   ├── build/
+│   │   │   └── BuildDashboard.tsx  ← the Build page body
+│   │   ├── catalog/
+│   │   │   ├── AnalyticsCard.tsx
+│   │   │   ├── CatalogBrowser.tsx  ← the catalog tree (sources → tables; products grouped by primary source)
+│   │   │   ├── CatalogSplitView.tsx
+│   │   │   ├── EntityDetailPanel.tsx
+│   │   │   ├── entityIcons.ts
+│   │   │   ├── GlossaryMatchCards.tsx
+│   │   │   ├── LineageGraph.tsx    ← two-lane column lineage (deterministic geometry, no ReactFlow)
+│   │   │   ├── ProductCardGrid.tsx
+│   │   │   ├── ProductFullView.tsx  ← the ONE product page in the catalog
+│   │   │   ├── ProductPreviewPanel.tsx
+│   │   │   ├── ReferenceCard.tsx
+│   │   │   ├── sourcePalette.ts
+│   │   │   ├── SourceRootPanel.tsx
+│   │   │   └── useSchema.ts
+│   │   ├── investigate/
+│   │   │   ├── InvestigationPanel.tsx
+│   │   │   └── InvestigationView.tsx
+│   │   ├── layout/
+│   │   │   ├── AnnouncementBanner.tsx  ← operator announcements in both chromes
+│   │   │   ├── AppShell.tsx        ← Observatory chrome (IconRail + TopBar + ContextPanel + children)
+│   │   │   ├── AuthLayout.tsx      ← auth-page chrome (login/register/reset)
+│   │   │   ├── CommandPalette.tsx  ← Cmd+K palette (nav + actions)
+│   │   │   ├── ContextPanel.tsx    ← optional left context panel (sits between IconRail and main)
+│   │   │   ├── IconRail.tsx        ← the rail: Home · Uncover · Subjects · Studio · Settings (role-aware)
+│   │   │   ├── LegalAcceptanceGate.tsx  ← blocks every screen until the current legal versions are accepted (when in force)
+│   │   │   ├── PillNav.tsx         ← pill-style tab switcher
+│   │   │   ├── ShellLayout.tsx     ← second copy of the app chrome (12 routes); provides the same FeaturesProvider as AppShell
+│   │   │   └── TopBar.tsx          ← header: wordmark + tenant chip + search + notifications + avatar menu
+│   │   ├── notebooks/
+│   │   │   ├── CellEditor.tsx
+│   │   │   ├── SchemaExplorer.tsx  ← left sidebar table/schema tree
+│   │   │   └── usePyodide.ts       ← Pyodide runtime hook (self-hosted /pyodide/, vendored at build)
+│   │   ├── products/
+│   │   │   ├── CellOutput.tsx
+│   │   │   ├── KpiManager.tsx
+│   │   │   ├── ProductRootPanel.tsx  ← workshop product panel (also /products/[id])
+│   │   │   ├── RefineChat.tsx      ← "Ask for a change" — refine an existing subject (escalates to the build assistant)
+│   │   │   ├── RefreshHistoryChart.tsx
+│   │   │   ├── StarSchemaFlow.tsx  ← ReactFlow star schema diagram (Observatory palette)
+│   │   │   └── TableNotebook.tsx
+│   │   ├── pulse/
+│   │   │   ├── PulsePanel.tsx      ← the watchlist editor (Home board)
+│   │   │   └── PulseTile.tsx
+│   │   ├── quality/
+│   │   │   └── QualityOverview.tsx
+│   │   ├── relationships/
+│   │   │   ├── EdgeInspector.tsx
+│   │   │   ├── focusLayout.ts
+│   │   │   ├── geometry.ts
+│   │   │   ├── GraphCanvas.tsx     ← the relations canvas (anchor + join surface, measure before save)
+│   │   │   ├── MatchPanel.tsx
+│   │   │   ├── MeasurePanel.tsx
+│   │   │   ├── provenance.ts
+│   │   │   ├── RelationEdge.tsx
+│   │   │   ├── sourceColors.ts
+│   │   │   ├── TableList.tsx
+│   │   │   ├── TableNode.tsx
+│   │   │   ├── TopicsCanvas.tsx    ← topics view: product tables + grids, read-only
+│   │   │   ├── types.ts
+│   │   │   └── ValueExplorer.tsx
+│   │   ├── semantic/
+│   │   │   ├── AiPromptDialog.tsx
+│   │   │   ├── ApprovalBadge.tsx   ← approval status indicator
+│   │   │   ├── GlossaryLinkPicker.tsx  ← searchable grouped picker over GET /semantic/glossary/link-targets
+│   │   │   ├── GlossaryPanel.tsx   ← the tenant glossary editor: terms, definitions, LINKS to product columns/tables/KPIs
+│   │   │   ├── HistoryPanel.tsx    ← change history tracking
+│   │   │   ├── ProductTableDetailPanel.tsx  ← product-layer table detail panel (+ "Your team calls this …" glossary chips)
+│   │   │   ├── shared.tsx          ← de-duplicated helpers: parseDomains/parseExamples/classifyType/completenessBucket/PreviewTable
+│   │   │   ├── TableDetailPanel.tsx  ← source-layer table detail panel
+│   │   │   └── types.ts            ← shared TypeScript types for semantic components
+│   │   ├── topics/
+│   │   │   ├── ManageLayer.tsx     ← screen 2 — mode bar + header + 6 tabs (analyst+)
+│   │   │   ├── ManageTables.tsx    ← Tables tab: measures / shared lookups / "How it's built"
+│   │   │   └── TopicLayer.tsx      ← screen 1 — no SQL, no counts, no warehouse vocabulary
+│   │   ├── ui/                     ← Observatory primitives: Button, Input, Select, Badge, Card, Table, Tabs, Toast, Modal, Skeleton, KPITile, ChartCard, AIResponseBlock, NotebookCell, OutlineRail, SourceCard, JobProgressBanner (17 files)
+│   │   ├── EmptyState.tsx          ← Observatory empty state (eyebrow/title/description/actions)
+│   │   ├── HelpTooltip.tsx         ← the `?` explainer used on canvases and panels
+│   │   ├── IngestionWizard.tsx     ← step-by-step data ingestion setup
+│   │   ├── NotificationBell.tsx    ← notification icon + dropdown (used by TopBar)
+│   │   ├── Pagination.tsx          ← generic pagination component
+│   │   ├── QualityAlertBanner.tsx  ← data quality issue alerts
+│   │   ├── QualityPanel.tsx        ← quality profiling dashboard
+│   │   ├── RequireRole.tsx         ← admin gate wrapper (shows "Restricted" card instead of redirecting)
+│   │   └── SourceBadge.tsx         ← the one source-badge primitive (+N chip for multi-source products)
+│   ├── lib/
+│   │   ├── hooks/
+│   │   │   └── useDebounce.ts      ← custom debounce hook
+│   │   ├── legal/
+│   │   │   ├── dpa.ts
+│   │   │   ├── privacy.ts
+│   │   │   ├── subprocessors.ts
+│   │   │   ├── terms.ts
+│   │   │   └── versions.ts         ← LEGAL_IN_FORCE + versions; lint-locked with backend/src/shared/legalVersions.ts
+│   │   ├── wasm/                   ← DuckDB-WASM client-side cube/sql helpers (3 files)
+│   │   ├── api.ts                  ← Axios client; JWT interceptor; 401 → redirect to /
+│   │   ├── askLink.ts              ← askAboutSubject() — the one /query deep-link builder
+│   │   ├── auth.ts                 ← JWT storage, getTokenPayload, isAdmin, setToken
+│   │   ├── catalog.ts              ← catalog fetch helpers
+│   │   ├── cn.ts                   ← classnames helper (clsx + tailwind-merge)
+│   │   ├── connectorIcons.tsx      ← brand marks + labels per connector
+│   │   ├── contract.ts             ← byte-identical copy of backend/src/shared/contract.ts (lint-contract-sync)
+│   │   ├── dates.ts                ← formatDate/formatDateTime/formatRelative/formatRelativeLong/Short (en-GB)
+│   │   ├── features.tsx            ← release flags context; hooks throw outside the provider
+│   │   ├── formatSql.ts            ← the ONE SQL formatter wrapper
+│   │   ├── freshness.ts            ← data-freshness helpers (formatRelativeTime, getFreshnessStatus)
+│   │   ├── humanize.ts             ← raw table name → business label
+│   │   ├── investigateRunner.ts    ← drives an investigation stream
+│   │   ├── investigationTypes.ts
+│   │   ├── observatory.ts          ← JS/SVG mirror of globals.css tokens + SERIES chart palette
+│   │   ├── provenance.ts           ← byte-identical copy of backend/src/shared/provenance.ts
+│   │   ├── qualityNarrative.ts     ← plain-language quality narrative
+│   │   ├── questionMode.ts         ← Ask AI question-mode detection (investigate / forecast keywords)
+│   │   ├── role.ts                 ← canCurate / canSeeSql — the role model
+│   │   ├── sqlProvenance.ts        ← FROM/JOIN extraction for the "How it's built" provenance trail
+│   │   ├── sse.ts                  ← streamSSE — the one SSE reader loop
+│   │   ├── storage.ts              ← every localStorage/sessionStorage touch goes through here
+│   │   ├── subjectAssistant.ts     ← the ONE subject chat: askSubjectAssistant + startSubjectAddition
+│   │   ├── topicsChanged.ts        ← clarion:topics-changed window event
+│   │   └── xlsxRead.ts             ← dependency-free .xlsx reader (kept in step with packages/connectors/src/spreadsheet/xlsxReader.ts)
+│   ├── public/                     ← static assets (logo, vendored pyodide/ is gitignored) (1 files)
+│   ├── scripts/
+│   │   └── vendor-pyodide.mjs      ← prebuild: core from npm + wheel closure into public/pyodide/ (4-2)
+│   ├── .env.local.example          ← NEXT_PUBLIC_API_URL for local dev
+│   ├── .eslintrc.json
+│   ├── Dockerfile                  ← Next.js standalone image
+│   ├── next.config.mjs             ← ignoreBuildErrors stays on — the Tests workflow type-checks the frontend first
+│   ├── package.json
+│   ├── postcss.config.mjs
+│   ├── README.md                   ← Next.js scaffold readme
+│   ├── tailwind.config.ts          ← Observatory tokens
+│   ├── tsconfig.json
+│   └── vitest.config.ts            ← frontend unit tests (jsdom, globals)
+├── infra/
+│   ├── alerts.tf                   ← mirror of the alert rules alerts.yml creates (for a future terraform import)
+│   ├── main.tf                     ← Azure resources (Postgres, Container Apps, Job, ACR, storage, Key Vault, Insights)
+│   ├── outputs.tf                  ← Terraform outputs
+│   ├── prod.tfvars.example         ← Example production variables
+│   └── variables.tf                ← Terraform variables
+├── packages/
+│   └── connectors/                 ← the SourceConnector framework (`@databridge/connectors`)
+│       ├── scripts/
+│       │   ├── copy-package-data.mjs  ← copies src/**/package/**/*.yaml into dist/ after tsc
+│       │   └── generate-eo-docs.ts  ← Exact Online transcriber: refreshes datasets/*.yaml fields
+│       ├── src/
+│       │   ├── csv/
+│       │   │   ├── CsvConnector.ts
+│       │   │   ├── index.ts
+│       │   │   └── schema.ts
+│       │   ├── exactonline/
+│       │   │   ├── package/        ← package.yaml + datasets/ (61) + model/ (12) — the connector's KNOWLEDGE, as data
+│       │   │   │   ├── datasets/   ← 61 dataset YAMLs (clarion.kind: source) (61 files)
+│       │   │   │   ├── model/      ← 12 star-schema model YAMLs (kind: dimension | fact) (12 files)
+│       │   │   │   └── package.yaml  ← manifest: categories (wizard order), notes, transcribed stamp
+│       │   │   ├── catalog.ts      ← loads ./package; exports the entity catalog, docs, relationships, template
+│       │   │   ├── ExactOnlineConnector.ts
+│       │   │   ├── index.ts
+│       │   │   ├── metadata.ts     ← OData $metadata → column types
+│       │   │   ├── oauth.ts
+│       │   │   └── schema.ts
+│       │   ├── excel/
+│       │   │   ├── ExcelConnector.ts
+│       │   │   ├── index.ts
+│       │   │   └── schema.ts
+│       │   ├── mssql/
+│       │   │   ├── dialect.ts
+│       │   │   ├── index.ts
+│       │   │   ├── MssqlConnector.ts
+│       │   │   └── schema.ts
+│       │   ├── mysql/
+│       │   │   ├── dialect.ts
+│       │   │   ├── index.ts
+│       │   │   ├── MysqlConnector.ts
+│       │   │   └── schema.ts
+│       │   ├── odoo/
+│       │   │   ├── package/        ← package.yaml + datasets/ (21) + model/ (15); fieldCoverage: partial
+│       │   │   │   ├── datasets/   ← 21 dataset YAMLs (21 files)
+│       │   │   │   ├── model/      ← 15 star-schema model YAMLs (15 files)
+│       │   │   │   └── package.yaml
+│       │   │   ├── catalog.ts      ← loads ./package; ODOO_ENTITIES / ODOO_ALLOWLIST / MODEL_TO_TABLE
+│       │   │   ├── entities.ts     ← RULES only (field-type excludes, odooTypeToDuckDb, odooFieldRole)
+│       │   │   ├── index.ts
+│       │   │   ├── json2Transport.ts
+│       │   │   ├── OdooConnector.ts
+│       │   │   ├── schema.ts
+│       │   │   ├── transport.ts    ← read-only method allow-list + transport resolution
+│       │   │   ├── xmlrpcCodec.ts
+│       │   │   └── xmlrpcTransport.ts
+│       │   ├── postgres/
+│       │   │   ├── dialect.ts
+│       │   │   ├── index.ts
+│       │   │   ├── PostgresConnector.ts
+│       │   │   └── schema.ts
+│       │   ├── sharepoint/
+│       │   │   ├── entities.ts
+│       │   │   ├── graph.ts
+│       │   │   ├── index.ts
+│       │   │   ├── oauth.ts
+│       │   │   ├── schema.ts
+│       │   │   └── SharePointConnector.ts
+│       │   ├── sourcePackage/      ← THE SOURCE PACKAGE FORMAT (Ossie-aligned YAML, `clarion` extension)
+│       │   │   ├── index.ts
+│       │   │   ├── load.ts         ← loadSourcePackage(dir): merge + validate + canonical order
+│       │   │   ├── project.ts      ← package → EntityDescriptor[] / ColumnDoc / relationships / template
+│       │   │   ├── README.md       ← the source package format document
+│       │   │   ├── schema.json     ← draft-07 JSON Schema, additionalProperties:false everywhere
+│       │   │   ├── types.ts        ← SourcePackage / PackageDataset / PackageField / clarion blocks
+│       │   │   ├── validate.ts     ← shape + cross-reference checks (fieldCoverage-gated)
+│       │   │   └── write.ts        ← toYaml(): flow style for the small always-together maps
+│       │   ├── spreadsheet/
+│       │   │   ├── csvReader.ts    ← delimiter / encoding / decimal / date inference for CSV
+│       │   │   ├── tabular.ts      ← headers → identifiers, type inference, the row-cap refusal
+│       │   │   └── xlsxReader.ts   ← dependency-free .xlsx reader (kept in step with frontend/lib/xlsxRead.ts)
+│       │   ├── sql/
+│       │   │   ├── catalog.ts      ← introspection → entities + relationships
+│       │   │   ├── configSchema.ts
+│       │   │   ├── pagination.ts   ← keyset paging ordered by (cursor, key)
+│       │   │   ├── README.md       ← the SQL kit: one kit, three dialects; the tier table
+│       │   │   ├── SqlSourceConnector.ts  ← the abstract SQL connector (kit + dialect)
+│       │   │   ├── typeMap.ts      ← explicit DuckDB type allow-list per dialect
+│       │   │   └── types.ts
+│       │   ├── BaseSourceConnector.ts  ← shared base: writeEntityInChunks, checkpoints
+│       │   ├── BlobSasWarehouseWriter.ts  ← Azure writer behind a per-tenant SAS
+│       │   ├── businessKeys.ts     ← businessKeysFromCatalog
+│       │   ├── columnTypes.ts      ← typeClass / typesJoinable (GUID is not a string)
+│       │   ├── configValidation.ts  ← validateConnectorConfig (JSON Schema)
+│       │   ├── conformance.ts      ← catalog / relationship / template invariants (merge gate)
+│       │   ├── duckdbGuardrails.ts  ← bounded DuckDB sessions in the worker
+│       │   ├── HttpClient.ts       ← retry, pacing, 401 refresh, egress allow-list, binary responses
+│       │   ├── index.ts
+│       │   ├── ipc.ts              ← worker ↔ orchestrator event protocol
+│       │   ├── logging.ts          ← connector logger
+│       │   ├── parquetOps.ts       ← the DuckDB operations both writers run
+│       │   ├── ParquetWriter.ts    ← local warehouse writer (merge, soft delete, reconcile)
+│       │   ├── registry.ts         ← connector registry (drives /source-types and the wizard)
+│       │   ├── starSchema.ts       ← StarSchemaTemplate contract + instantiate/validate
+│       │   ├── syncEngine.ts       ← the ONE ingestion loop (runEntitySync / runReconcile)
+│       │   └── types.ts            ← SourceConnector contract (describeEntities, getKnownRelationships, getBusinessKeys, getSourceNotes, …)
+│       ├── package.json            ← build = tsc + scripts/copy-package-data.mjs (YAML → dist)
+│       └── tsconfig.json
+├── scripts/
+│   └── audit-gate.mjs              ← npm audit gate with reasoned allowlist, per workspace
+├── worker/
+│   ├── src/
+│   │   ├── env.ts                  ← typed worker env (WORKER_* variables)
+│   │   └── main.ts                 ← sync worker entry: pulls entities through the connector framework and writes the warehouse
+│   ├── Dockerfile                  ← the sync worker image (Container Apps Job)
+│   ├── package.json                ← databridge-sync-worker
+│   └── tsconfig.json
+├── .dockerignore
+├── .env.example                    ← committed, no secrets — every variable the code reads
+├── .gitignore
+├── .nvmrc
+├── clarion-overview.html           ← the product overview — every claim true today or badged roadmap
+├── CLAUDE.md                       ← you are here
+├── DEPLOY.md                       ← first-time Azure deployment guide (+ how production is really operated)
+├── docker-compose.production.yml   ← prod-like: adds Redis + backend + frontend
+├── docker-compose.yml              ← dev: Postgres + Neo4j + ETL
+├── package.json                    ← root workspace (minimal)
+├── playwright.config.ts            ← E2E config (PLAYWRIGHT_CHROMIUM_PATH for managed environments)
+├── rebuild-etl.bat
+├── run-migrations.bat
+├── run-seed.bat
+├── start-backend.bat
+├── start-docker.bat
+├── start-frontend.bat
+├── start.bat
+├── start.sh                        ← one-command local startup (start.bat on Windows; the other .bat files start one piece each)
+└── stop-docker.bat
 ```
 
-### Database Migrations (101 files on disk)
+### Database Migrations (101 files)
+
+Knex, in `backend/src/db/migrations/`, applied by `npm run migrate:latest` (CI's
+`migrate-sql` job records a recovery point first). Every one rolls back — the
+`migration-rollback` CI job runs the whole chain down and up.
 
 ```
 20260328000001  create_connections
@@ -11733,19 +12343,77 @@ clarion/                              ← on disk: databridge/
 20260403000028  create_notifications
 20260404000029  performance_indexes
 20260407000030  add_profiling_status
+20260409000031  data_product_dependencies
+20260415000031  create_notebooks
+20260415000032  add_neo4j_pgid_to_product_tables
+20260416000031  add_freshness_tracking
+20260416000033  create_data_policies
+20260416000034  add_auto_approve_setting
+20260418000035  create_query_cache
+20260420000036  add_tenant_ai_budgets
 20260421000037  create_email_schedules
 20260421000038  add_ai_context_to_quality_alerts
-…               (39–90: see the migrations directory — this list stopped being maintained after 38)
-20260905000091  sync_run_truthfulness            (P0-6: source_sync_runs.mode + failed_entities)
-20260905000092  customer_record_and_caps         (P0-8: tenants.plan/seats/max_connections/…)
-20260905000093  ops_correlation_and_announcements (6-1 source_sync_runs.request_id; 6-4 announcements)
-20260906000094  legal_acceptances                 (P0-7: who accepted which versions, when, from where)
-20260906000095  ai_routing_mode_off               (4-3: tenants.ai_routing_mode may be 'off')
-20260906000096  query_log_duration                (time-to-answer, measured end to end)
-20260907000097  cross_source_scope                (notebooks + saved_questions.cross_source)
-20260909000098  ingestion_phase1                  (source_columns.source_data_type; product_tables.degraded_reason/_at; provenance on product_relationships + column_lineage)
-20260910000099  ingestion_phase2                  (entity_sync_cursors: nullable cursor, rows_total, 'incomplete'; source_sync_runs.resumed_from_run_id + incomplete_entities)
-20260920000100  glossary_links                    (business_glossary.links jsonb — a term's address in the topic layer)
+20260425000039  add_icon_svg_to_data_products
+20260427000040  create_business_glossary
+20260502000041  add_source_connector_support
+20260503000042  create_oauth_pending
+20260503000043  add_schema_hash
+20260503000044  create_connection_sync_schedules
+20260503000045  create_pipelines
+20260505000046  create_product_customizations
+20260505000047  create_user_pulse_entries
+20260505000048  create_morning_briefs
+20260505000049  create_investigations
+20260505000050  create_ai_call_log
+20260507000051  create_schema_changes
+20260508000052  create_refresh_history
+20260510000054  add_product_kind
+20260511000055  backfill_is_technical
+20260512000056  force_rls_audit
+20260512000057  create_audit_events
+20260512000058  create_refresh_tokens
+20260512000059  add_mfa_support
+20260512000060  create_webauthn_credentials
+20260512000061  add_ai_routing_mode
+20260515000062  create_entity_sync_cursors
+20260519000063  rebackfill_product_kind
+20260526000064  create_product_table_cells
+20260526000065  create_ai_model_config
+20260527000066  add_investigation_followups
+20260614000067  source_sync_runs_inflight_unique
+20260714000068  add_semantic_source
+20260714000069  add_template_version
+20260720000070  add_human_edit_tracking
+20260720000071  add_vendor_description
+20260804000072  add_rollup_path
+20260804000073  sync_tenants_sequence
+20260804000074  backfill_rls_policies
+20260804000075  backfill_app_role_grants
+20260806000076  topic_first_fields
+20260811000077  relationship_kind_and_measurement
+20260813000078  relationship_flag
+20260814000079  relationship_semantic_source
+20260818000080  add_product_hidden
+20260821000081  create_managed_grids
+20260827000082  conversation_message_meta
+20260827000083  saved_questions
+20260828000084  message_steps
+20260829000085  create_feature_flags
+20260831000086  create_api_tokens
+20260901000087  create_dashboard_user_views
+20260901000088  auth_lookup_policies
+20260901000089  email_verification
+20260901000090  add_work_heartbeats
+20260905000091  sync_run_truthfulness
+20260905000092  customer_record_and_caps
+20260905000093  ops_correlation_and_announcements
+20260906000094  legal_acceptances
+20260906000095  ai_routing_mode_off
+20260906000096  query_log_duration
+20260907000097  cross_source_scope
+20260909000098  ingestion_phase1
+20260910000099  ingestion_phase2
+20260920000100  glossary_links
 ```
 
 ---
@@ -11753,7 +12421,12 @@ clarion/                              ← on disk: databridge/
 ## AI Architecture — How Claude Is Used
 
 All AI calls go through `backend/src/ai/AIService.ts` — no exceptions.
-The model is `claude-sonnet-4-6` for all call types.
+The default model is `claude-sonnet-4-6`; summarisation-class calls (answer
+formatting, the validator, quality-alert context, KPI drafts) use
+`claude-haiku-4-5`, and the AI routing console can override the model per call
+category. The call types below are the original six; the same module also
+carries the bus-matrix designer, dashboard edit planning, the repair loops, the
+morning brief, investigations, the build/refine chats and the readability repair.
 
 ### Call Type 1 — Schema Draft (setup phase)
 **When:** After a source database is connected and schema is read.
@@ -11763,9 +12436,9 @@ All output stored with `ai_draft: true` until a human confirms.
 
 ### Call Type 2 — Natural Language to SQL (every user question)
 **When:** A user types any question in the chat interface.
-**Two modes:**
-- `nlToSql()` — generates SQL for source databases (SQLite/Postgres/MySQL/MSSQL dialect)
-- `nlToSqlCross()` — generates cross-source SQL using Neo4j graph context
+**Two layers:**
+- product layer (default) — `nlToSqlPromptDuckDB` over the topic tables registered for the question's scope; cross-source questions are an explicit opt-in scope (`services/queryScope.ts`)
+- source layer (admin/analyst only) — `nlToSqlPrompt` in the source database's dialect
 
 **Confidence gating:** If confidence < 0.70, SQL is NOT executed. Question logged as a definition gap.
 
@@ -11782,9 +12455,9 @@ All output stored with `ai_draft: true` until a human confirms.
 - `validateDashboard()` — checks widget SQL and data types
 
 ### Call Type 5 — Star Schema Design
-**When:** Admin designs a data product from source tables.
-- `designStarSchema()` — Claude designs fact/dimension tables + transformations
-- `generateTransformationSql()` — generates DuckDB SQL for each table
+**When:** "Create my topics" on Build, or an additive subject from the Build chat.
+- a connector's star-schema template (source package `model/`) is used first, when it covers the synced entities
+- otherwise `generateBusMatrixStreaming()` — Claude designs the conformed dimensions, facts, relationships and transformation SQL in one streamed call (`busMatrixPrompt.ts`); `prepareExtensionMatrix` constrains the additive variant
 
 ### Call Type 6 — Answer Formatting
 **When:** After a query executes successfully.
@@ -11804,11 +12477,10 @@ All output stored with `ai_draft: true` until a human confirms.
    - Results stored with `ai_draft: true`
 4. Admin reviews and confirms definitions in /semantic
 
-### Data Ingestion (Admin)
-1. Admin triggers ingestion for selected tables
-2. ETL service (Python/FastAPI) reads source data
-3. Writes Delta Lake tables (Parquet) to warehouse (local or Azure Blob)
-4. Supports full and incremental (watermark-based) load modes
+### Data Ingestion (Admin / Analyst)
+1. Connector sources (Exact Online, Odoo, SQL databases, files) sync through the sync worker: `SyncOrchestrator` launches one Container Apps Job execution (a child process locally), `runEntitySync` pulls each entity, the writer merges Parquet with soft deletes; checkpoints and continuation runs survive the 30-minute ceiling; `reconcile` tombstones rows the source no longer has
+2. SQLite files still go through the legacy ETL service (Python/FastAPI), which writes Delta Lake tables to the warehouse
+3. Both land under the tenant's warehouse root (per-tenant Blob container in production) and are read only through `createScanView`
 
 ### Star Schema Products (Admin)
 1. Admin selects source tables to model
@@ -12002,77 +12674,55 @@ write-side-only legacy and we can finish Phase 7.
 
 ## Environment Variables (.env.example)
 
+`.env.example` is the authoritative, commented list — every key in it is read by
+code (checked on 2026-09-20), and every variable the code reads is in it. The
+groups, so you know where to look:
+
 ```bash
-# Backend
-PORT=3001
-NODE_ENV=development
+# Runtime & roles
+PORT=3001  NODE_ENV=development  LOG_LEVEL=
+ROLE= | WORKER_QUEUES= | RUN_SCHEDULERS=      # the Fase 2 split; unset = one process runs everything
 
-# Semantic layer DB — PostgreSQL running in Docker
+# Platform database, graph, cache, queues
 DATABASE_URL=postgresql://databridge:databridge@localhost:5432/databridge
+NEO4J_URI=bolt://localhost:7687  NEO4J_USER  NEO4J_PASSWORD  NEO4J_DATABASE
+REDIS_URL=redis://localhost:6379                # optional; jobs run inline without it
+KNEX_POOL_MAX / KNEX_POOL_ACQUIRE_TIMEOUT_MS     # set per process by .ops/db-pool in production
 
-# Source sync, phase 2: checkpoint flush size, the worker's stop margin
-# before SYNC_MAX_DURATION_MS, and the continuation-chain cap
-SYNC_CHECKPOINT_ROWS=50000
-SYNC_DEADLINE_MARGIN_MS=240000
-SYNC_MAX_CONTINUATIONS=24
+# Auth
+JWT_SECRET  JWT_ACCESS_EXPIRES_IN=15m  REFRESH_TOKEN_DAYS=30  AUTH_STATUS_TTL_MS=30000
+CREDENTIALS_ENCRYPTION_KEY                      # AES-256-GCM key for stored source credentials
+REQUIRE_EMAIL_VERIFICATION                      # default: on exactly when an email provider is configured
+PLATFORM_OPERATOR_EMAILS                        # set through .ops/operators
 
-# JWT auth — access tokens are short-lived (15m) + 30-day refresh tokens;
-# JWT_EXPIRES_IN is deprecated and ignored (P1-3)
-JWT_SECRET=change_me_in_production
-JWT_ACCESS_EXPIRES_IN=15m
-AUTH_STATUS_TTL_MS=30000
+# AI
+ANTHROPIC_API_KEY  CLAUDE_MODEL=claude-sonnet-4-6  CLAUDE_MODEL_HAIKU=claude-haiku-4-5-20251001
+ANTHROPIC_TIMEOUT_MS  AI_STRUCTURED_OUTPUTS  DEFAULT_MONTHLY_TOKEN_BUDGET
+AZURE_OPENAI_*                                  # optional per-category routing
 
-# Claude API (get key from console.anthropic.com)
-ANTHROPIC_API_KEY=your_key_here
-CLAUDE_MODEL=claude-sonnet-4-6
+# Warehouse & DuckDB
+STORAGE_FORMAT= (delta default; parquet opts out)  PYTHON_BIN  SCD2_SIDECAR_PATH
+WAREHOUSE_CONTAINER_MODE=shared|per-tenant  WAREHOUSE_LAYOUT_VERSION  AZURE_STORAGE_CONNECTION_STRING
+DUCKDB_MEMORY_LIMIT=70%  DUCKDB_THREADS=2  DUCKDB_MAX_RESULT_ROWS  DUCKDB_MAX_CONCURRENT_QUERIES(_PER_TENANT)
+DUCKDB_QUERY_TIMEOUT_MS  DUCKDB_QUEUE_TIMEOUT_MS  DUCKDB_POOL_MAX  DUCKDB_RUNNER=child|off  DUCKDB_SESSION_LOCKDOWN
 
-# SQLite source database (optional — for local sample data)
-SQLITE_DB_PATH=./data/sample.db
+# Sync
+SYNC_MAX_DURATION_MS  SYNC_DEADLINE_MARGIN_MS  SYNC_CHECKPOINT_ROWS  SYNC_MAX_CONTINUATIONS
+SYNC_RUN_RETENTION_DAYS  WORKER_CANCEL_GRACE_MS  FRESHNESS_CHECK_MS  FRESHNESS_MIN_STALE_MINUTES
 
-# Neo4j — semantic knowledge graph (runs in Docker alongside Postgres)
-NEO4J_URI=bolt://localhost:7687
-NEO4J_USER=neo4j
-NEO4J_PASSWORD=databridge_secret
-NEO4J_DATABASE=neo4j
+# Schedules (server-local cron) & caps
+WAREHOUSE_MAINTENANCE_CRON=0 3 * * 0  MORNING_BRIEF_CRON=0 6 * * *  SECURITY_MAINTENANCE_CRON=30 3 * * *
+MIN_SCHEDULE_INTERVAL_MINUTES=15  DEFAULT_SEATS  DEFAULT_MAX_CONNECTIONS  QUEUE_DEPTH_WARN
 
-# Credential encryption key (32-byte hex string for AES-256-GCM)
-CREDENTIALS_ENCRYPTION_KEY=generate_a_32_byte_hex_key_here
-
-# ETL service URL (Python FastAPI, runs in Docker)
-ETL_URL=http://localhost:8000
-
-# CORS — allowed frontend origins
-CORS_ORIGINS=http://localhost:3000
-
-# Redis — optional; enables BullMQ job queues + caching
-# If not set, jobs execute inline (synchronous)
-REDIS_URL=redis://localhost:6379
-
-# SMTP — Scheduled email reports (Sprint 2.1)
-# Leave SMTP_HOST blank to disable email sending (no-op in dev)
-SMTP_HOST=
-SMTP_PORT=587
-SMTP_SECURE=false
-SMTP_USER=
-SMTP_PASS=
-SMTP_FROM=Clarion <noreply@yourdomain.com>
-
-# Storage format for product tables. Delta Lake + Python sidecar is the
-# DEFAULT — production images bake Python + deltalake in. Set
-# STORAGE_FORMAT=parquet to opt out (e.g. local dev without Python deps).
-STORAGE_FORMAT=
-
-# Python interpreter the SCD1/SCD2 sidecar runs under. Defaults to `python3`.
-PYTHON_BIN=
-
-# Override sidecar script path. Defaults to <repo>/etl/scd2/commit_table.py.
-SCD2_SIDECAR_PATH=
-
-# Azure (optional — only needed for production / Azure deployment)
-# AZURE_STORAGE_CONNECTION_STRING=
-# AZURE_KEY_VAULT_URL=
-# APPLICATIONINSIGHTS_CONNECTION_STRING=
+# Email, OAuth, misc
+SMTP_*  or  ACS_*                                # no provider = email is a no-op
+OAUTH_REDIRECT_BASE_URL  CORS_ORIGINS  ETL_URL  APPLICATIONINSIGHTS_CONNECTION_STRING
+FK_SAMPLE_SIZE  FK_MIN_DISTINCT  FK_TARGET_UNIQUENESS  FK_MIN_CONTAINMENT  FK_RESOLVE_TIMEOUT_MS
+RELATIONSHIP_MEASURE_TIMEOUT_MS  RELATIONSHIP_VALUES_TIMEOUT_MS  BRIEF_INVESTIGATE_ACTIVE_DAYS
 ```
+
+Frontend: `NEXT_PUBLIC_API_URL` (build-time, see `frontend/.env.local.example`)
+and `CLARION_DEV_PAGES=1` to keep `/dev/*` in a production build.
 
 ---
 
@@ -12097,19 +12747,53 @@ Adds:
 
 ## CI/CD
 
-### GitHub Actions Workflows
-- **test.yml** — runs on PR + push to main: Vitest tests against PostgreSQL service container, security audits
-- **deploy.yml** — runs on push to main/staging: builds Docker images → pushes to ACR → deploys to Azure Container Apps → runs migrations
-- **dependabot.yml** — weekly dependency updates for backend, frontend, GitHub Actions
+### GitHub Actions workflows (`.github/workflows/`)
 
-### Azure Production Architecture
-- PostgreSQL Flexible Server (always-on, B_Standard_B1ms)
-- 4 Container Apps: Neo4j (min=1), ETL (scale-to-zero), Backend (0–3 replicas), Frontend (0–3 replicas)
-- Azure Blob Storage for data warehouse
-- Azure Key Vault for secrets
-- Application Insights + Log Analytics for monitoring
-- ACR (Azure Container Registry) for Docker images
-- Estimated cost: ~30 EUR/month idle, ~50-60 EUR/month active
+**Gates** — run on pull requests and pushes to `main`; `deploy.yml` refuses to
+migrate or deploy a commit for which either is not green:
+- `test.yml` — **Tests**: backend vitest against a Postgres service container; the
+  `rls-isolation` job runs the API as `databridge_app` and drives `e2e/rls.spec.ts`,
+  `auth-login.spec.ts`, `schedules.spec.ts`; connectors `npm run build` + vitest;
+  frontend `tsc` + vitest; a migration rollback round trip (all down, schema check,
+  all up); `scripts/audit-gate.mjs` for backend, connectors and frontend; the
+  widget render gate (Playwright over `/dev/widgets`, real Chromium)
+- `lint.yml` — **Lint**: the twelve backend ratchets (`backend/scripts/lint-*.ts`),
+  run from the repo root; baselines only ever go down
+- `check.yml` — typecheck signal on pushes and PRs (not a gate)
+
+**Deploy** — `deploy.yml` on every push to `main`: gate on Tests + Lint for the
+sha → build the changed images tagged `main-<sha>` (paths-filtered, with a
+catch-up for components a cancelled deploy left stale) → `migrate-sql` (records the
+PITR marker and a schema-only dump, then `knex migrate:latest`) → deploy backend and
+frontend as 0%-traffic revisions, update the jobs-worker, pin the sync-worker Job to
+the tag → **Go live**: `/api/health` must answer 200 through the `staging` label
+before traffic shifts to 100%. `promote.yml` / `rollback.yml` are the manual
+promote and the one-click rollback (optionally `migrate:rollback`).
+
+**GitOps controls** — one workflow per file under `.ops/`, fired by a push to that
+file and documented in `.ops/README.md`: `alerts`, `db-pool`, `db-role`,
+`duckdb-lockdown-mode`, `duckdb-runner-mode`, `graph-backfill`, `infra-preflight`,
+`operators`, `prod-checks`, `prod-logs`, `provision-jobs-worker`,
+`relationship-audit`, `star-schema-design-mode`, `warehouse-container-mode`.
+`workflow_dispatch` is 403 for the integration token, so a push to one of these
+files is how a session operates production.
+
+`dependabot.yml` — weekly dependency updates (backend, frontend, connectors, Actions).
+
+### Azure production architecture
+- PostgreSQL Flexible Server (B_Standard_B1ms, 14-day PITR); connected as `databridge_app`
+- Container Apps: **backend** (API + the identity-requiring queues, scale-to-zero),
+  **jobs-worker** (`ROLE=worker`, the compute queues, always on at 1 replica —
+  BullMQ needs a running worker to fire scheduled jobs), **frontend** (scale-to-zero),
+  **Neo4j** (internal ingress only, min 1), **Redis** (`noeviction`, `maxmemory`,
+  ephemeral by design), **ETL** (scale-to-zero); the **sync-worker** is a Container
+  Apps Job, one execution per source sync, holding a tenant-scoped SAS and no
+  database credentials
+- Azure Blob Storage for the warehouse (per-tenant containers), a File Share for
+  Neo4j data (daily snapshots in Terraform), ACR for images
+- Application Insights + Log Analytics (30-day retention, read via `.ops/prod-logs`);
+  Azure Monitor alert rules from `.ops/alerts`
+- Costs: measured in `docs/AZURE_COSTS.md`
 
 ---
 
@@ -12136,4 +12820,4 @@ Do not summarise what you did in chat — write everything directly into CLAUDE.
 
 ---
 
-*Last updated: April 2026 — Clarion v0.2*
+*Factual sections (Tech Stack, Folder Structure, Migrations, AI Architecture, Environment Variables, CI/CD) regenerated against the tree on 2026-09-20.*

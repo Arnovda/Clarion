@@ -763,10 +763,6 @@ resource "azurerm_container_app" "backend" {
         secret_name = "storage-connection-string"
       }
       env {
-        name  = "AZURE_KEY_VAULT_URL"
-        value = azurerm_key_vault.main.vault_uri
-      }
-      env {
         name  = "APPLICATIONINSIGHTS_CONNECTION_STRING"
         value = azurerm_application_insights.main.connection_string
       }
@@ -1088,10 +1084,6 @@ resource "azurerm_container_app" "jobs_worker" {
       env {
         name        = "AZURE_STORAGE_CONNECTION_STRING"
         secret_name = "storage-connection-string"
-      }
-      env {
-        name  = "AZURE_KEY_VAULT_URL"
-        value = azurerm_key_vault.main.vault_uri
       }
       env {
         name  = "APPLICATIONINSIGHTS_CONNECTION_STRING"

@@ -14,7 +14,7 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import dynamic from 'next/dynamic';
-import { Search, ArrowRight, Loader2, Sparkles } from 'lucide-react';
+import { Search, ArrowRight, Sparkles } from 'lucide-react';
 import api from '@/lib/api';
 import { formatRelative } from '@/lib/dates';
 import AppShell from '@/components/layout/AppShell';
@@ -88,8 +88,8 @@ export default function InvestigatePage() {
           </h1>
           <p className="text-[14px] text-muted leading-relaxed max-w-[560px]">
             Type a question about your data. Clarion runs a few diagnostic queries
-            in sequence and writes a conclusion in plain English. Best for "why did X
-            change" or "what's driving Y."
+            in sequence and writes a conclusion in plain English. Best for &ldquo;why did X
+            change&rdquo; or &ldquo;what&rsquo;s driving Y.&rdquo;
           </p>
         </header>
 

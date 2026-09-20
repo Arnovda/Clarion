@@ -125,7 +125,7 @@ interface RunRow {
 const NODE_W = 220;
 const NODE_H = 64;
 
-function layoutDag(dag: Dag, scope: { sourceIds: Set<number>; productIds: Set<number> }) {
+function layoutDag(dag: Dag) {
   const g = new dagre.graphlib.Graph();
   g.setGraph({ rankdir: 'LR', nodesep: 18, ranksep: 80, marginx: 24, marginy: 24 });
   g.setDefaultEdgeLabel(() => ({}));
@@ -425,7 +425,7 @@ function PipelinesInner() {
 
   useEffect(() => {
     if (!dag) return;
-    const positions = layoutDag(dag, scopeHint);
+    const positions = layoutDag(dag);
     const nodes: Node<NodeData>[] = [
       ...dag.sources.map((s) => ({
         id: `c:${s.id}`,
@@ -1265,8 +1265,7 @@ function CustomPipelineEditor({
   const [edEdges, setEdEdges, edOnEdgesChange] = useEdgesState([]);
 
   useEffect(() => {
-    const scopeHint = { sourceIds: pickedSources, productIds: pickedProducts };
-    const positions = layoutDag(dag, scopeHint);
+    const positions = layoutDag(dag);
     const nodes: Node<NodeData>[] = [
       ...dag.sources.map((s) => ({
         id: `c:${s.id}`,
@@ -1548,7 +1547,7 @@ interface NodeRunState {
 }
 
 function RunActivityDock({
-  jobId, pipelineRunId: _runId, pipelineName, scopeHint, dag, onDismiss, onCompleted, onLiveNodesChange,
+  jobId, pipelineName, scopeHint, dag, onDismiss, onCompleted, onLiveNodesChange,
 }: {
   jobId: string;
   pipelineRunId: number;

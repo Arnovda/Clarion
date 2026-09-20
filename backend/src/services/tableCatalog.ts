@@ -10,8 +10,8 @@
  * Why centralise:
  *   - Today the same question ("where is dim_account?") is answered
  *     differently by /query, /dashboards, /notebooks, /catalog,
- *     /quality, the dependency loader in transformationRunner, and
- *     dbtProjectBuilder. Each has its own join, its own fallback,
+ *     /quality and the dependency loader in transformationRunner.
+ *     Each has its own join, its own fallback,
  *     its own remap logic. Bugs like the recent `delta_path` /
  *     `is_shared_dimension` cascade come from these surfaces falling
  *     out of sync.

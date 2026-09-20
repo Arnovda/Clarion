@@ -653,7 +653,7 @@ function TablesSection({
 // trying to render a fan-out diagram for tens of tables.
 
 function LineageSection({
-  connectionId: _connectionId, tables,
+  tables,
 }: {
   connectionId: number;
   tables: SourceTable[];
@@ -1011,7 +1011,7 @@ function SqlSection({
             <button
               onClick={() => setOpen((s) => {
                 const n = new Set(s);
-                n.has(t.id) ? n.delete(t.id) : n.add(t.id);
+                if (n.has(t.id)) n.delete(t.id); else n.add(t.id);
                 return n;
               })}
               className="w-full text-left px-4 py-2.5 flex items-center gap-2 hover:bg-softer/40 transition-colors"

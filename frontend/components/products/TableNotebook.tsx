@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import {
-  Play, Plus, Trash2, Loader2, GripVertical, Sparkles,
+  Play, Trash2, Loader2, GripVertical, Sparkles,
   Code as CodeIcon, FileText, MessageSquareText, Rocket, Network, AlertTriangle,
 } from 'lucide-react';
 import api from '@/lib/api';
