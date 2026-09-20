@@ -31,7 +31,89 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-09-11 (THE THREE SQL DATABASES ARE FRAMEWORK CONNECTORS
+**Last updated:** 2026-09-20 (PRODUCTION WAS READ FOR THE FIRST TIME SINCE B1 WENT
+LIVE, AND THE READER COULD NOT ANSWER ITS OWN QUESTION — owner: *"Is there
+anything left for us today? Open points we still have to tackle?"*, then
+*"Let's finish this and clean up"*. Workflow + docs only; no product code.)
+
+**THE RLS REFUSALS ARE CLOSED, AND THIS IS THE RUN THAT PROVES IT.** Run #15
+over the first 14-day window returned three signatures and nothing else:
+`rls-write-denied` **19**, `brief-run` **12**, `runner-active` **5**.
+- The 19 are still exactly 19, still ending **2026-09-09T14:14:08**, and the
+  example line's hostname is `main-035fdb2` — a PRE-FIX revision. `aiBudget`
+  (#595, 14:28) and `aiCallLogger` (#596, 14:39) deployed that same afternoon,
+  so the window now extends **ten days past both fixes with no recurrence**.
+  Run #13 could only say "nothing since, same day"; this settles it. Those two
+  were the only sites, and the AI spend cap and the cost log are genuinely
+  fixed.
+- **`runner-active` reports `maxRunners 4 / budgetDivisor 6 /
+  memoryLimitPerRunner 11%`** — the cgroup-aware memory division from the
+  phase-2 guardrails fix (70% ÷ 6) confirmed in production for the first time.
+  That was a documented "watch this" item and it is now observed.
+- `brief-run` last fired **2026-09-19T07:47** with `tenantsRun: 2,
+  briefsCreated: 0, observations: 0` — as on all twelve runs. The morning brief
+  has still never produced anything, and `observations: 0` says why: nothing is
+  being watched.
+- **No sync worker in the unfiltered source list for a fourteenth day**, and
+  `sync-complete` never appeared, so the four phase-2 sync signals still say
+  nothing either way.
+
+**THE WINDOW WAS WIDENED FIRST, AND THE REASON IS THE DEPLOY BOUNDARY.** B1 went
+live 2026-09-11 15:20 UTC and the last read was run #14 on 09-11, *before* it. A
+7d window read on 09-19 starts at 09-12 — entirely AFTER that boundary — so
+"the new sidecar has never written" and "it wrote before the window opened"
+produce an identical report and only one is a fault. 7d → **14d** (PR #144,
+`12bbb99`) reaches 09-05 and carries a pre-deploy stretch to contrast against.
+`workflow_dispatch` is still **403** for the session token, re-confirmed, so a
+push to `.ops/prod-logs` on main remains the only trigger; that path builds
+nothing (deploy.yml filters on `.ops/redeploy`, alerts.yml on `.ops/alerts`).
+
+**AND THEN THE READER COULD NOT ANSWER THE QUESTION IT WAS WIDENED TO ANSWER.**
+`delta-write` and `delta-maintenance` were BOTH absent, and that absence is
+structurally ambiguous: `maintainProductTables` returns early and **silently**
+when `STORAGE_FORMAT === 'parquet'` or when no tenant holds a
+`transformation_status='success'` row with a non-null `delta_path` — the
+per-tenant loop never runs, so no line is emitted at all. `runMaintenance` does
+log unconditionally (`'warehouse maintenance start'` at
+`warehouseMaintenance.ts:169`, before any Delta work) — **but that line was not
+a signature.** The reader had the numerator and not the denominator, which is
+the exact `brief-run` pattern this file established for the overnight signals
+and `sync-complete` for the sync ones, missing for the maintenance pass.
+- **NEW SIGNATURE `maintenance-run`**, with the absence block the rule demands:
+  both present = the sweep working; `maintenance-run` alone = it ran and found
+  nothing to maintain (benign, but B1's maintenance half stays unproven);
+  `maintenance-run` ABSENT = the weekly repeatable never fired, which is a
+  fault. Cron is `0 3 * * 0` and the queue is a COMPUTE queue, so the line is
+  emitted by the jobs-worker — in scope, verified against `queueRoles.ts`.
+- **A CORRECTION MADE IN THE SAME SESSION, because it changed the plan:** the
+  signature was first framed as something to land "before Sunday so Monday's
+  read settles it". That under-claims what a signature is. It is a QUERY over
+  logs Log Analytics retains for **30 days**, so adding it reads HISTORY — both
+  Sunday 09-13 and Sunday 09-20 sit inside the same 14d window. There was
+  nothing to wait for.
+
+**THE UNIFYING FINDING, and it outranks every individual signal: production is
+healthy and IDLE.** No `server-error`, `grant-missing`, `ownership-refused` or
+`source-stale` in fourteen days — against real traffic (backend 424,589 lines,
+jobs-worker 36,041), so the clean report means something. But also: no sync, no
+topic refresh, nothing watched. **B1's write half, the four phase-2 sync signals
+and live validation of the three SQL connectors are not waiting on separate
+fixes — they are all waiting on one source being turned on.** That is the single
+highest-value act available, and it is the owner's.
+- Validation: `prod-logs.yml` parses as YAML and its Query step passes `bash
+  -n`; `SIG_Q` expanded exactly as bash does and grepped — **zero backslashes
+  reach KQL** (the standing rule since run #11's parse error); the new arm
+  dry-run BOTH directions over synthetic rows — present renders its meaning
+  rather than "no interpretation recorded", absent fires the absence block, and
+  a present `runner-active` correctly suppresses its own. No product code
+  touched (`git status`), so no suite applies.
+- **NOT done, deliberately**: the window stays 14d rather than narrowing (it
+  covers two Sundays and the deploy boundary; narrow it once a sync has been
+  observed, per the file's own note). No second signature on `'warehouse
+  maintenance done'` — the start line is the denominator, and a completion
+  signal earns its place only once a sweep is known to run.
+
+**Prior last updated:** 2026-09-11 (THE THREE SQL DATABASES ARE FRAMEWORK CONNECTORS
 NOW, AND THE INGESTION LOOP EXISTS ONCE — owner: *"implement the connectors for
 Postgres/MySQL/MSSQL correctly so that afterwards we can test the ingestion and
 transformation on one of these sources"*, then *"make it as consistent and
