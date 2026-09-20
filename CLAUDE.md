@@ -157,6 +157,61 @@ shipped.** Nothing has ever compacted or vacuumed a topic table.
   branch to work around the `workflow_dispatch` 403; `.ops/promote` on main
   already does that job, verified present before closing.
 
+**THE THEORY IN THE ENTRY ABOVE IS FALSIFIED. DO NOT SHIP THE FIX IT PROPOSES.**
+The churn is REAL and was measured — run #17: `maintenance-registered` **93**
+occurrences in 14 days (≈6.6 backend cold-starts a day, each one removing the
+weekly repeatable and re-adding it) and `queues-configured` **131**. But the
+churn does NOT lose the run, and four experiments against real BullMQ 5.73.0
+and a real Redis say so:
+1. **A cron re-add does not push the next occurrence out.** Five simulated
+   boots of the EXACT production registrar against `0 3 * * 0`: one repeatable,
+   one delayed job, `nextRunAt` pinned to the same Sunday 03:00 every time.
+2. **`upsertJobScheduler` behaves identically** — so the "modern API" is not a
+   fix either, it is the same result with less code.
+3. **Re-registration does not starve a running worker.** A live Worker with the
+   registrar looping at a ~16:1 boot-to-fire ratio still executed every
+   iteration.
+4. **Nor across processes.** Registrar and Worker as two separate node
+   processes on one Redis: still fires.
+Also refuted on the way: the jobs-worker is `--min-replicas 1 --max-replicas 1`
+(provisioned by `az`, not Terraform), so it is always on; there is no BullMQ
+prefix mismatch; and preflight run 8 reports **`worker ROLE: worker`** and
+**`worker RUN_SCHEDULERS: false`** against **backend `RUN_SCHEDULERS` unset**,
+so exactly one process registers. The split is configured precisely as designed.
+
+**So every structural explanation is now eliminated by measurement, and the
+cause is still unknown.** That is a better place to be than a plausible fix
+shipped against a disproved premise — which is what the previous entry, and the
+task written from it, would have produced.
+- **THE ONE LINK IN THE CHAIN WITH NO POSITIVE EVIDENCE**, and therefore the
+  next thing to do: nothing proves the maintenance **Worker object was ever
+  constructed** in the jobs-worker. `startMaintenanceWorker()` is called
+  (`workers.ts:593`) and `warehouse-maintenance` is in its `WORKER_QUEUES`, but
+  the function has two silent `return null` paths, and the one loud one
+  (`'Redis unavailable — skipping warehouse maintenance worker'`) is not a
+  signature. `startWorkers()`'s own `Started N workers` count does NOT include
+  it — maintenance, brief and security workers are tracked separately and never
+  pushed into that array. So add a one-line positive log when the worker is
+  actually constructed, plus a signature for it. That is a tiny code change and
+  it is the last unverified link.
+
+**PR #129 MERGED AND DEPLOYED** (`0404a67`) — the dashboard readability gate,
+rebased onto current main after 8 days (conflicts in `prod-logs.yml`,
+`.ops/prod-logs` and CLAUDE.md, all resolved as keep-both; the merged signature
+query carries 27 signatures and 27 interpretation arms, 1:1, verified). First
+product change since 09-12.
+
+**PR HYGIENE, same session**: #46 closed as superseded by `.ops/promote`.
+The stale Dependabot backlog was triaged rather than left: the **five GitHub
+Actions majors are KEPT** (#2 setup-node, #3 docker/login-action, #5
+actions/checkout, #6 azure/login, #33 docker/build-push-action) because every
+workflow run now warns that Node 20 is deprecated and `actions/checkout@v4` and
+`azure/login@v2` are being forced onto Node 24 — they want one validated batch,
+since they touch `deploy.yml`. The rest were closed: the two grouped
+minor/patch PRs (#42, #43) as three months stale, which Dependabot regenerates
+fresh, and the npm majors CLAUDE.md already records as deliberately deferred
+(next 16, tailwind 4, typescript 6, eslint 10, react, neo4j-driver 6, …).
+
 - **NOT done, deliberately**: the window stays 14d rather than narrowing (it
   covers two Sundays and the deploy boundary; narrow it once a sync has been
   observed, per the file's own note). No second signature on `'warehouse

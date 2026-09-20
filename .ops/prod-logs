@@ -184,6 +184,17 @@
 #                     and its `queues` array says what it consumes. Preflight
 #                     run 7 proved the ENV VAR lists warehouse-maintenance;
 #                     this proves the PROCESS acted on it.
+#   maintenance-worker
+#                     POSITIVE, added 2026-09-20, and the LAST link in the
+#                     chain to get a signal. `'warehouse maintenance worker
+#                     started'` — the consumer for this queue was actually
+#                     CONSTRUCTED. Registration, the queue filter and the run
+#                     all had signals and all three were measured while the
+#                     sweep still never executed; this step had none.
+#                     ABSENT while queues-configured names
+#                     warehouse-maintenance means startMaintenanceWorker()
+#                     took one of its silent return-null paths — that is the
+#                     bug, and it is the only place left for it to hide.
 #   source-stale      the hourly freshness sweep (wave B 7-1) finding a source
 #                     whose schedule says data should have landed and it has
 #                     not. Added 2026-09-10 because it is the ONE signal that
