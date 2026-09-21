@@ -27,7 +27,7 @@
     "codemirror": "^6.0.2",
     "dagre": "^0.8.5",
     "echarts": "^6.1.0",
-    "framer-motion": "^12.38.0",
+    "framer-motion": "^13.4.0",
     "html2canvas": "^1.4.1",
     "jspdf": "^4.2.1",
     "lucide-react": "^1.8.0",
