@@ -31,7 +31,72 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-09-20 (TWO THINGS FROM THE CONTEXT-ENGINEERING READ, BUILT —
+**Last updated:** 2026-09-21 (NEOPAUL PILOT PLAN — doc only, no product code
+changed; owner: *"Ik wil het platform samen testen met een eerste klant:
+Neopaul… Ze willen werken met exports die ze zelf zullen extraheren uit Odoo.
+Kan je nagaan wat we allemaal nodig hebben… het stappenplan en hoe we het
+nadien goed in Clarion kunnen brengen om te showcasen?"*)
+
+**NEW DOC `docs/backlog/neopaul-pilot-plan.md` (Dutch) is the plan of record
+for the first customer pilot; the 2026-09-08 `odoo-raw-tables-readiness.md`
+carries a superseded banner.** Artifact "Odoo-export Neopaul" republished as
+**v2** (the client-facing export instruction). Every Odoo claim was verified
+against the Odoo 17.0 SOURCE on GitHub (odoo.com is egress-blocked here), not
+recalled.
+- **THE 2026-09-08 EXPORT ADVICE WAS WRONG, and it would have broken every
+  join silently.** It said to tick "import-compatible export". That mode
+  HIDES EVERY READ-ONLY FIELD (`addons/web/controllers/export.py:332-337`:
+  `if field.get('readonly'): continue`) — verified field by field against
+  `account_move_line.py`/`account_move.py`: `move_id`, `date`, `journal_id`,
+  `balance`, `amount_residual`, `reconciled`, `price_subtotal`,
+  `parent_state`, and on `account.move` `move_type`, `state`, every amount
+  and `payment_state` are all withheld. A journal-item export in that mode
+  does not even carry the link to its entry. **The correct recipe: the
+  NORMAL export, with the user's language on English, choosing "ID"
+  (database id) for the record and "<Relation>/ID" for every relation**
+  (`export.py:318` — `.id` exists only in normal mode; headers are the
+  localised labels, `:347`); CSV per fiscal year for journal items (UI
+  exports run inside one HTTP request); one ZIP; files named as Odoo names
+  them, `Journal Item (account.move.line).csv` (`export.py:445-453`).
+- Other Odoo facts that shape the plan: Monetary **0.00 exports as an EMPTY
+  cell** (`fields.py` base rule), booleans as `True`/empty, datetimes in the
+  exporter's timezone, selection values as LABELS; `account.partial.reconcile`
+  (needed for any residual "as of a past date", i.e. DSO/DPO history) has no
+  menu — reachable via `#model=account.partial.reconcile&view_type=list` as
+  admin in debug mode; export needs `base.group_allow_export` (**denied by
+  default on Odoo 19**); the Community `account` module ships three
+  cash-flow tags on `account.account.tag_ids` (`account_data.xml`) that, if
+  the bookkeeper set them, ARE the operating/investing/financing
+  classification.
+- **RECOMMENDED BUILD (not started): an `odoo_export` connector** (one ZIP of
+  Odoo export files = one connection) that normalises the export idiom
+  (English labels → technical names, `Relation/ID` → `<field>`, selection
+  labels → keys, empty Monetary → 0) into the shape the existing Odoo SOURCE
+  PACKAGE expects, and serves `ODOO_COLUMN_DOCS` / `ODOO_KNOWN_RELATIONSHIPS`
+  / `ODOO_STAR_SCHEMA_TEMPLATE` unchanged — the template lookup resolves the
+  connector from the registry by type (`starSchemaTemplates.ts:127`), so no
+  backend change. Then: `account_partial_reconcile` + `tag_ids` added to the
+  package (benefits the API connector too), THREE CFO tables in the template
+  (`fact_account_balance_monthly`, `fact_settlements`, `fact_open_items`) with
+  DSO/DPO/DIO/working-capital KPIs, `.ops/star-schema-design` back to
+  `templates` (global — an EO rebuild would then use the template), and the
+  13-week cash plan LAST as a product table + fixed-commitments grid.
+  Estimated ~2 weeks of Clarion work before the data, one week with it.
+- **Plan B recorded honestly**: an Excel workbook through the generic Excel
+  connector + AI designer works today for a first look, but gets label-named
+  columns, no vendor docs, no package relationships and no template — not a
+  showcase.
+- **The one thing to do FIRST**: ask Dries the row count since 2023 and the
+  Odoo version/edition (the version decides the label dictionary; Enterprise
+  decides whether Odoo's own trial balance / aged receivable / "Average
+  debtors days" exist as the reconciliation targets the showcase leans on).
+  And a DPA or NDA before the first file lands — the export carries partner
+  names, e-mails and VAT numbers, and `LEGAL_IN_FORCE` is still false.
+- Validation: doc + artifact only (`git status`: two docs, CLAUDE.md). No
+  suite applies. Odoo sources fetched from `raw.githubusercontent.com`
+  (17.0) into the scratchpad and greppped for `readonly`/`compute`/`inverse`.
+
+**Prior last updated:** 2026-09-20 (TWO THINGS FROM THE CONTEXT-ENGINEERING READ, BUILT —
 owner, after pasting an essay on hard/soft semantics, files-in-git, graph
 linking and Apache Ossie and asking what it means for Clarion: *"Laten we deze
 zaken implementeren"*. Item A: a glossary term now has an ADDRESS in the topic
