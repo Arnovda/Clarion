@@ -1,5 +1,17 @@
 # Odoo via ruwe tabellen — is Clarion hier klaar voor?
 
+> **⚠ Deels achterhaald — lees eerst `neopaul-pilot-plan.md` (2026-09-21).**
+> Drie punten hieronder kloppen niet meer: (1) §5.2's advies om de
+> **import-compatibele export** te gebruiken is FOUT — die modus verbergt elk
+> read-only veld, waaronder `move_id`, `balance`, `amount_residual`,
+> `move_type`, `state` en `payment_state` (geverifieerd in Odoo 17.0
+> `export.py:332-337`); het juiste recept is de gewone export met "ID"-
+> kolommen, in het Engels. (2) §3.3: Postgres is sinds 2026-09-11 een
+> framework-connector, niet het oude ETL-pad. (3) §3.4: de Odoo-kennis is nu
+> een bronpakket, en het plan bouwt een `odoo_export`-connector die het
+> hergebruikt in plaats van een "template lenen"-veld in de wizard. De
+> inhoudelijke analyse (§2, §4) staat nog.
+
 **Status:** assessment, 2026-09-08. Geen productcode gewijzigd.
 **Aanleiding:** mail van Dries Martens (Neopaul, 2026-06-05) — eerste
 potentiële testklant. Draait Odoo. Wil **de ruwe tabellen aanleveren**, niet
