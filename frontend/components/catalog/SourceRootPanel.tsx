@@ -30,12 +30,13 @@ import dynamic from 'next/dynamic';
 import Link from 'next/link';
 import {
   AlertTriangle, Boxes, ChevronRight, ChevronDown, Code as CodeIcon,
-  Database, FileText, Loader2, Network, Play,
+  FileText, Loader2, Network, Play,
   Search, ShieldCheck, Sparkles, Workflow, X,
 } from 'lucide-react';
 import api from '@/lib/api';
 import { cn } from '@/lib/cn';
 import { useRole, canCurate } from '@/lib/role';
+import ConnectorMarkIcon from '@/components/ConnectorMarkIcon';
 import { useSchema, type RelationshipRow } from '@/components/catalog/useSchema';
 import type { SourceTable, SourceColumn } from '@/components/semantic/types';
 import { formatRelative } from '@/lib/dates';
@@ -155,9 +156,8 @@ export default function SourceRootPanel({ connectionId }: Props) {
       {/* ── Header ─────────────────────────────────────────────────────────── */}
       <div className="border-b border-line bg-raised px-6 py-4 shrink-0">
         <div className="flex items-start gap-4">
-          <div className="w-12 h-12 rounded-xl bg-ocean-softer flex items-center justify-center shrink-0 text-ocean">
-            <Database className="w-6 h-6" strokeWidth={1.5} />
-          </div>
+          {/* The source's own mark — the same one the tree and Sources use. */}
+          <ConnectorMarkIcon connectorType={conn?.connector_type ?? conn?.type} size="lg" />
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-2 flex-wrap">
               <h1 className="font-display text-[22px] tracking-[-0.01em] text-ink truncate">{name}</h1>

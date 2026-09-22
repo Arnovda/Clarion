@@ -31,7 +31,140 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-09-22 (DECLARATIVE DATA ENGINEERING — investigation +
+**Last updated:** 2026-09-22 (THE DECLARATIVE WORKSPACE IS BUILT — owner, on
+the revision-2 boards: *"I don't really like your mockups, they are too busy
+and somewhat wrong with what's already there. But I think that's just due to
+it being a mockup and not being the real app. Can you implement what we
+already can with what's already there? + The AI chat and the easy lineage view
++ SQL editor for declarative data engineering + definitions pane + icons of
+source systems?"* So: slices 1–3 of the design, on the EXISTING components,
+no retirements yet. Same branch, draft PR #175. §0a of the design doc records
+shipped vs not.)
+
+**BACKEND — the declaration contract; closes D1, D3 and D4 of the design doc.**
+- **Migration 101**: `product_tables.declared_by` (text) + `declared_at`.
+- **`PUT /products/tables/:id/sql` is the ONE write (admin + analyst)**:
+  `assertSafeReadQuery` → compile with a real `DESCRIBE` in a warehouse
+  session (NEW `services/tableDeclaration.ts`: `prepareDeclaredSql`,
+  `openDeclarationSession`, `compileDeclaredSql`, `previewDeclaredSql`,
+  `describeSessionSchemas`, `sanitizeSqlError` — storage URIs and paths never
+  reach the wire) → store once → **the table keeps serving**:
+  `transformation_status` stays `success` when it was, and "changed since the
+  last build" is `declared_at > last_run_at` (`pending_rebuild`), never a
+  status flip, so a saved table no longer VANISHES from Ask AI →
+  `syncDeployCell` (now exported from `refineService`), so Deploy can no
+  longer revert a hand edit. A shared stub refuses 400 naming the owner; a
+  compile failure is 400 `{ compiled: false }` with the sanitised message;
+  nothing is stored on any refusal.
+- `GET /products/tables/:id/declaration` (admin + analyst): SQL, state, last
+  error, degraded reason, `declared_by/at`, `pending_rebuild`, product,
+  `shared_from`, columns.
+- `POST …/sql/preview` (LIMIT 12, nothing stored) and `POST …/sql/propose`
+  (`AIService.proposeTransformationEdit`, temperature 0, sees ONLY the
+  session's schemas; the result is guarded + compiled and RETURNED —
+  `{ proposed, sql, summary, compiled, columns | error }`; an unchanged or
+  guard-refused proposal is `proposed: false` with the reason). Refine
+  RETURNS instead of writing.
+- `POST /products/tables/:id/run` widened admin → admin + analyst (it is
+  "Rebuild now").
+- `POST /products/build-chat` gained `anchorTableId` (Zod): a tenant-filtered
+  join to `product_tables` puts *THE TABLE THE USER IS LOOKING AT* + up to 60
+  non-technical columns in the coverage context and sets the product anchor
+  from it.
+- NEW `GET /definitions` (`routes/definitions.ts`, all roles): terms with
+  resolved links · metrics per subject (hidden flagged) · verified answers
+  with connection + verifier — explicit `tenant_id` filters throughout.
+- `GET /catalog/sources` carries `connectorType` (`connector_type ?? type`) —
+  the marks.
+- NEW `tests/table-declaration.test.ts` **21 green**: guard refuses (nothing
+  stored), compile refuses with a sanitised error (nothing stored), a success
+  table keeps `success` + `pending_rebuild`, a draft stays draft, the deploy
+  cell is synced, a stub refuses naming the owner, tenant isolation 404,
+  viewer 403, preview rows + LIMIT, propose returns without writing (mocked
+  model) incl. the guard-refused case, the anchor reaches the build-chat
+  prompt and another tenant's table id does not, the definitions union with
+  tenant isolation.
+
+**FRONTEND — the catalog is the workspace, built from what was there.**
+- **`app/catalog/page.tsx` REWRITTEN (954 → 531 lines): ONE tree + ONE
+  view.** No facets, no layer chips, no Grid / List / Structure, no hero, no
+  cards inset. Deep links are read by NEW `lib/catalogUrl.ts` (`?productId`,
+  `?tableId` / `?refTableId` in EITHER id space, `?connectionId[&sourceTableId]`,
+  `?table=<name>` → the exact search hit else the tree's search,
+  `?facet=glossary` → `/definitions`), pinned by `tests/catalogUrl.test.ts`;
+  the address bar follows every selection.
+- `CatalogBrowser` reworked: roots Subjects / Sources / Your tables (from
+  `GET /grids`), subjects first, every source row and bucket header under its
+  connector mark (NEW `components/ConnectorMarkIcon.tsx` over
+  `lib/connectorIcons`), no header.
+- DELETED `CatalogSplitView`, `ProductCardGrid`, `GlossaryMatchCards`,
+  `AnalyticsCard`, `ProductPreviewPanel`; `EntityDetailPanel` lost the
+  preview / reference flavours (product-root → `ProductFullView`); storage
+  keys `catalogViewMode` / `catalogLayer` / `catalogCardsLayout` gone,
+  `catalogAssistantOpen` added.
+- `ProductTableDetailPanel`: tabs Overview · Columns · **SQL** (curator) ·
+  Lineage (curator) · Quality · History. NEW `SqlDeclaration.tsx` = the
+  notebook's CodeMirror `CellEditor`, a state line (*built 2 h ago · 1,289
+  rows · changed since, by Ines · 40m ago*), Format / Preview (12 rows) /
+  **Rebuild now** (offered only once a saved change waits) / Save (the PUT),
+  the columns DERIVED under the editor, a shared table shows its owner
+  instead of an editor; the old read-only SqlViewer is gone. NEW
+  `LineageSummary.tsx` (*Where it comes from* on a product table, *What it
+  feeds* on a source table, over `GET /lineage/table`, with a door to the
+  full graph) sits on both Overview tabs for curators.
+- NEW `CatalogAssistant.tsx` — the dashboards' floating panel pattern,
+  admin + analyst: a pill bottom-right of the VIEW column (never over the
+  tree), a scope chip from the selection, modes **Ask**
+  (`askSubjectAssistant` with product + table anchors; it gained an abort
+  signal so Stop stops the request) and **Change the SQL** (a product table,
+  a curator: `POST …/sql/propose` with the editor's unsaved draft). A
+  proposal lands through NEW `catalogAssistantContext.tsx` ON THE
+  DECLARATION as a diff (`diffLines` / `collapseUnchanged` from the notebook)
+  with **Keep** (= the editor's own Save, reported back as `kept`) /
+  **Discard**; the panel's message reads *Waiting for you, on the table* →
+  *Kept — the SQL was saved* / *Discarded — your SQL kept*; leaving the table
+  discards an unanswered proposal; the open state is persisted.
+- NEW `CatalogLanding.tsx`: nothing selected = three lines with a door each
+  (suggestions waiting, sources not analysed, tables below the bar — curators)
+  + `QualityOverview` compact — the Trust facet, absorbed.
+- NEW `app/definitions/` (all roles): Terms = `GlossaryPanel` (hideHeading) ·
+  Metrics per subject from `GET /definitions` with *Edit in the subject →* ·
+  Verified answers with **Ask it** (carries the `connectionId`). `/glossary`
+  → `/definitions`, `/health` → `/catalog`. Rail: **Definitions** (Library
+  icon) under Catalog, aliases updated; ⌘K entry; `ManageLayer`'s overflow
+  gained **Open in the Catalog**.
+- Validation: backend `npm run check` clean; touched suites **11 files / 101
+  passed**; **all TWELVE ratchets green from the repo root** (validate-coverage
+  139/226, dynamic-import 73, session-tenant 17, api-base-path 392 sites);
+  frontend `tsc` clean, touched files lint-clean (the two findings in
+  `SourceRootPanel.tsx` are the documented pre-existing ones on untouched
+  lines), vitest **8 files / 70 passed** (+8 `catalogUrl`), `next build`
+  green (`/catalog` 45.8 kB / 336 kB, `/definitions` 11 kB / 127 kB).
+  **RENDER-CHECKED IN HEADLESS CHROMIUM against the REAL built pages with a
+  mocked API** (Playwright route mocks + a forged JWT, scratchpad only, no
+  harness in the repo): twelve screens — landing, table overview, the SQL
+  tab, propose → diff → Keep → kept, ask, source, source table, subject,
+  definitions, viewer landing and viewer table — zero page errors. It found
+  one wording defect (the state line) and nothing in the components.
+- **NOT done, deliberately — the retirements (§3.5 / slice 4)**: the
+  workshop + `product_table_cells`, RefineChat, AskAIPanel, KpiManager,
+  Manage mode, `/build`, `/review`, the Topics canvas;
+  `snapshotProductEdits` carrying SQL across a rebuild (D2 — a rebuild still
+  wipes a hand edit; the declaration now shows `declared_by`, so at least it
+  is visible); `GET /catalog/attention`; the source-table drafts as inline
+  Keep / Discard. The boards stay the design of record for those.
+- **WATCH AFTER DEPLOY**: the first `PUT /products/tables/:id/sql` in
+  production — a compile 400 naming a schema means `openDeclarationSession`
+  registered fewer views than the runner sees (the D2 shape); the first
+  `/sql/propose` is the first real model call through
+  `PROPOSE_TRANSFORMATION_SYSTEM`; a `proposed: false` "refused: it tried to
+  read outside your data" means the model named a raw path.
+- SANDBOX: Postgres died once between commands again (restarted by the test
+  command); `next start` warns about `output: standalone` and still serves —
+  good enough for a render check. No new env vars. Migration 101 applied on
+  the test database (102 total).
+
+**Prior last updated:** 2026-09-22 (DECLARATIVE DATA ENGINEERING — investigation +
 design, doc and mockups only, no product code; owner: *"a declarative view of
 the data products we have, with the data lineage and the SQL code that we can
 adapt … We just declare what we want … and a place where we logically place
@@ -11568,6 +11701,7 @@ clarion/                              ← on disk: databridge/
 │       │   ├── products/            ← CRUD data products, split 11 ways (see products/index.ts)
 │       │   │   ├── topic.ts         ← GET /:id/topic — the topic page's single read model
 │       │   │   ├── buildOverview.ts ← GET /build-overview — the Build page's single read model
+│       │   │   ├── tables.ts        ← a table's DECLARATION: GET /tables/:id/declaration, PUT /tables/:id/sql (guard → compile → store once → deploy cell), sql/preview, sql/propose, run
 │       │   │   └── …                ← catalog, core, design, tables, refine, kpis, build, refineChat, cells
 │       │   ├── jobs.ts               ← check background job status
 │       │   ├── schedules.ts          ← CRUD transformation schedules (cron); manual triggers
@@ -11575,6 +11709,7 @@ clarion/                              ← on disk: databridge/
 │       │   ├── adminOps.ts           ← operator console: errors feed, queues, announcements
 │       │   ├── announcements.ts      ← GET /announcements (the shell banner's feed)
 │       │   ├── legal.ts              ← GET /legal/status, POST /legal/accept (P0-7)
+│       │   ├── definitions.ts        ← GET /definitions — terms · metrics · verified answers in one read (all roles)
 │       │   ├── users.ts              ← admin-only user management; invites; role updates; audit export
 │       │   ├── conversations.ts      ← chat history persistence; export results
 │       │   ├── notifications.ts      ← user notifications (job complete, quality alerts, invites)
@@ -11586,6 +11721,7 @@ clarion/                              ← on disk: databridge/
 │       │   ├── invites.ts                  ← inviteUser(), shared by tenant admin and operator doors
 │       │   ├── legal.ts                    ← in-force flag, acceptance status + record (P0-7)
 │       │   ├── tenantExport.ts             ← the streamed ZIP export (P0-7)
+│       │   ├── tableDeclaration.ts         ← prepareDeclaredSql · openDeclarationSession · compileDeclaredSql (DESCRIBE in a real session) · previewDeclaredSql · describeSessionSchemas · sanitizeSqlError
 │       │   ├── notificationService.ts      ← notify(), notifyTenant()
 │       │   ├── glossaryLinks.ts            ← glossary term → product column / table / KPI, by NAME; resolve + link-targets + prompt line
 │       │   ├── glossaryContext.ts          ← tenant glossary block for prompts (resolved links only on product-layer prompts)
@@ -11712,7 +11848,10 @@ clarion/                              ← on disk: databridge/
     │   │       ├── PremiumTooltip.tsx        ← styled Recharts tooltip
     │   │       ├── AnimatedNumber.tsx        ← counting animation for KPI values
     │   │       └── EmailSchedulePanel.tsx    ← dashboard email report schedules (CRUD + send-now; slotted into settings dropdown)
-    │   ├── health/page.tsx           ← data-quality dashboard (split-pane: sidebar + overview/detail pills)
+    │   ├── catalog/page.tsx          ← THE WORKSPACE: one tree (subjects · sources by their mark · your tables) + one view; the floating assistant; deep links via lib/catalogUrl.ts
+    │   ├── definitions/page.tsx      ← terms (the glossary editor) · metrics per subject · verified answers — documented once, read by the AI (all roles)
+    │   ├── glossary/page.tsx         ← redirect → /definitions
+    │   ├── health/page.tsx           ← redirect → /catalog (health lives on the catalog's landing)
     │   ├── gaps/page.tsx             ← admin: definition gaps + query log tabs (RequireRole)
     │   ├── users/page.tsx            ← admin: team management, invites, roles, audit export (RequireRole)
     │   ├── admin/tenants/page.tsx    ← operator: customers, caps, usage CSV, user-admin
@@ -11754,6 +11893,19 @@ clarion/                              ← on disk: databridge/
     │   ├── products/
     │   │   ├── StarSchemaFlow.tsx    ← ReactFlow star schema diagram (Observatory palette)
     │   │   └── LineageFlow.tsx       ← ReactFlow data lineage visualization (Observatory palette)
+    │   ├── ConnectorMarkIcon.tsx     ← a connector's brand mark as a tile (lib/connectorIcons), Database fallback
+    │   ├── catalog/
+    │   │   ├── CatalogBrowser.tsx    ← the ONE tree: subjects first, sources under their connector mark, your tables
+    │   │   ├── EntityDetailPanel.tsx ← selection → panel (source-root / source-table / product-root / product-table)
+    │   │   ├── CatalogLanding.tsx    ← nothing selected: what needs you + the health overview
+    │   │   ├── SqlDeclaration.tsx    ← the SQL tab: CodeMirror editor · Format · Preview · Rebuild now · Save; a proposal as a diff with Keep / Discard
+    │   │   ├── LineageSummary.tsx    ← the easy lineage line (Where it comes from / What it feeds) over GET /lineage/table
+    │   │   ├── LineageGraph.tsx      ← the column-level lineage graph (two lanes, threads per column)
+    │   │   ├── CatalogAssistant.tsx  ← the floating chat: Ask / Change the SQL, aimed at the selected node
+    │   │   ├── catalogAssistantContext.tsx ← the proposal handed from the chat to the declaration (Keep = Save)
+    │   │   ├── SourceRootPanel.tsx   ← a source: overview · tables · relations door · data flow · quality · SQL snippets
+    │   │   ├── ProductFullView.tsx   ← a subject: overview · metrics · tables · quality · lineage
+    │   │   └── ReferenceCard.tsx / useSchema.ts / entityIcons.ts / sourcePalette.ts
     │   ├── semantic/
     │   │   ├── ApprovalBadge.tsx     ← approval status indicator
     │   │   ├── AuditPanel.tsx        ← audit trail viewer
@@ -11784,6 +11936,7 @@ clarion/                              ← on disk: databridge/
         ├── dates.ts                 ← formatDate/formatDateTime/formatRelative/formatRelativeLong/Short (en-GB)
         ├── sqlProvenance.ts         ← FROM/JOIN extraction for the "How it's built" provenance trail
         ├── askLink.ts               ← askAboutSubject() — the one /query deep-link builder
+        ├── catalogUrl.ts            ← parseCatalogUrl / catalogHref — every /catalog deep link, read in one place
         ├── subjectAssistant.ts      ← the ONE subject chat: askSubjectAssistant + startSubjectAddition
         ├── observatory.ts           ← JS/SVG mirror of globals.css tokens + SERIES chart palette
         ├── freshness.ts             ← data-freshness helpers (formatRelativeTime, getFreshnessStatus)
@@ -11791,7 +11944,7 @@ clarion/                              ← on disk: databridge/
             └── useDebounce.ts       ← custom debounce hook
 ```
 
-### Database Migrations (101 files on disk)
+### Database Migrations (102 files on disk)
 
 ```
 20260328000001  create_connections
@@ -11837,6 +11990,7 @@ clarion/                              ← on disk: databridge/
 20260909000098  ingestion_phase1                  (source_columns.source_data_type; product_tables.degraded_reason/_at; provenance on product_relationships + column_lineage)
 20260910000099  ingestion_phase2                  (entity_sync_cursors: nullable cursor, rows_total, 'incomplete'; source_sync_runs.resumed_from_run_id + incomplete_entities)
 20260920000100  glossary_links                    (business_glossary.links jsonb — a term's address in the topic layer)
+20260922000101  product_table_declaration         (product_tables.declared_by / declared_at — who last declared the SQL and when; "changed since the last build" = declared_at > last_run_at)
 ```
 
 ---
@@ -11951,12 +12105,14 @@ All output stored with `ai_draft: true` until a human confirms.
 | Analyse / re-analyse a source (AI profiling)    | YES   | NO      | NO     | `POST /connections/:id/profile`, `/enrich-descriptions` |
 | Review / confirm definitions (source layer)     | YES   | YES     | NO     | `PATCH /semantic/tables|columns|relationships/:id`, `/review` page |
 | Edit product-layer definitions & summaries      | YES   | YES     | NO     | `PATCH /semantic/product-tables|product-columns/:id`, `PATCH /products/tables/:id` |
+| Declare a table's SQL (read, save, preview, propose, rebuild one table) | YES | YES | NO | `GET /products/tables/:id/declaration`, `PUT …/sql` (guard → compile → store once → deploy cell), `POST …/sql/preview`, `POST …/sql/propose`, `POST …/run`; the Catalog's SQL tab + assistant (`canCurate`) |
 | Create, design, extend, rebuild subjects        | YES   | YES     | NO     | `POST/PUT /products`, every `/products/bus-matrix*` and `/build-*` route, `/build` page |
 | Per-product workshop actions (run-full, refresh-start) | YES | NO | NO | `routes/products/build.ts` (`/:id/run-full`, `/:id/refresh-start`) — the `/propose*`, `/build-proposed` and `design.ts` routes were deleted 2026-09-07 (no callers) |
 | Pipelines / Refresh                             | YES   | YES     | NO     | `routes/pipelines.ts`, `/pipelines` page |
 | Relationships canvas (measure, flag, confirm)   | YES   | YES     | NO     | `routes/relationships.ts`, `/relationships` page |
 | Your tables (managed grids)                     | YES   | YES     | NO     | `routes/managedGrids.ts` (no viewer read yet) |
 | Glossary edit                                   | YES   | YES     | NO     | `POST/PUT/DELETE /semantic/glossary` |
+| Definitions pane (terms, metrics, verified answers — read) | YES | YES | YES | `GET /definitions`, `/definitions` page |
 | Quality: profile a table, evaluate rules        | YES   | YES     | NO     | `routes/quality.ts` profile/evaluate (source + product) |
 | Quality: rules and thresholds (write)           | YES   | NO      | NO     | `routes/quality.ts` rules/settings |
 | Catalog (browse, sample rows, lineage)          | YES   | YES     | YES    | `/catalog` page; `GET /semantic/preview` + `/product-preview` are any-role and policy-aware; lineage endpoint admin+analyst |

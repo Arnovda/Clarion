@@ -113,6 +113,10 @@ const NAV_ITEMS: NavItem[] = [
   // preview data. The one relationship surface stays /relationships — the
   // catalog's own diagram tab was retired the day this entry returned.
   { key: 'catalog',    href: '/catalog',    label: 'Catalog',         icon: ICONS.book,    roles: ['admin', 'analyst', 'viewer'],  group: 'studio' },
+  // The glossary, the metrics and the verified answers in ONE pane — a
+  // definition is documented once here and read by the AI; it is not
+  // executed. Its own entry because it is not a table (2026-09-22).
+  { key: 'definitions', href: '/definitions', label: 'Definitions',   icon: ICONS.library, roles: ['admin', 'analyst', 'viewer'],  group: 'studio' },
   { key: 'pipelines',  href: '/pipelines',  label: 'Refresh',         icon: ICONS.workflow,roles: ['admin', 'analyst'],            group: 'studio' },
   { key: 'review',     href: '/review',     label: 'Suggestions',     icon: ICONS.inbox,   roles: ['admin', 'analyst'],            group: 'studio', badgeKey: 'review' },
   // ── Settings — admin-only org config ────────────────────────────────────
@@ -135,9 +139,11 @@ const ROUTE_ALIASES: Record<string, string[]> = {
   '/pipelines':  ['/pipelines'],
   '/sources':    ['/sources', '/setup'],
   '/build':      ['/build'],
-  // Glossary + health are facets of the catalog surface; deep links there
-  // keep the Data Catalog rail item lit instead of orphaning the active state.
-  '/catalog':    ['/catalog', '/semantic', '/glossary', '/health'],
+  // Health lives on the catalog's landing; the old /health and /semantic
+  // links keep the Catalog entry lit instead of orphaning the active state.
+  '/catalog':    ['/catalog', '/semantic', '/health'],
+  // The glossary became the Definitions pane.
+  '/definitions': ['/definitions', '/glossary'],
   '/review':     ['/review', '/gaps', '/suggestions'],
   '/users':      ['/users'],
   '/policies':   ['/policies'],

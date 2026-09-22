@@ -66,6 +66,7 @@ import briefsRouter          from './routes/briefs';
 import investigationsRouter  from './routes/investigations';
 import managedGridsRouter    from './routes/managedGrids';
 import savedQuestionsRouter  from './routes/savedQuestions';
+import definitionsRouter     from './routes/definitions';
 import apiTokensRouter from './routes/apiTokens';
 import addinRouter from './routes/addin';
 import aiUsageRouter         from './routes/aiUsage';
@@ -307,6 +308,7 @@ app.use('/api/investigations',  investigationsRouter);
 // computeLimiter: link-values and coverage run DuckDB queries.
 app.use('/api/grids',           computeLimiter, managedGridsRouter);
 app.use('/api/saved-questions', savedQuestionsRouter);
+app.use('/api/definitions',     definitionsRouter);
 app.use('/api/admin/ai-usage',  aiUsageRouter);
 app.use('/api/admin/ai-routing', aiRoutingRouter);
 // Personal API tokens, and the one surface that accepts them. The add-in

@@ -55,11 +55,17 @@ export interface AssistantTurn {
 export async function askSubjectAssistant(
   messages: AssistantTurn[],
   anchorProductId?: number | null,
+  /** The product table on screen (the catalog's assistant) — its columns and
+   *  meaning join the prompt, so the answer is about THIS table. */
+  anchorTableId?: number | null,
+  /** Stop: abort the request; the caller decides what the thread shows. */
+  opts?: { signal?: AbortSignal },
 ): Promise<AssistantReply> {
   const res = await api.post('/products/build-chat', {
     messages,
     ...(anchorProductId ? { anchorProductId } : {}),
-  });
+    ...(anchorTableId ? { anchorTableId } : {}),
+  }, opts?.signal ? { signal: opts.signal } : undefined);
   const data = res.data?.data ?? {};
   return {
     reply: typeof data.reply === 'string' ? data.reply : '',

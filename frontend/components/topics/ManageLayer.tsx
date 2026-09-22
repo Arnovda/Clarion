@@ -291,6 +291,16 @@ export default function ManageLayer({
                     {/* Product creation still lives in the build workshop —
                         the topic nav has no "new topic" affordance, so the
                         route must stay reachable from somewhere. */}
+                    {/* The catalog is where a table's declaration lives —
+                        its SQL, lineage and health, editable by hand or
+                        with the assistant (2026-09-22). */}
+                    <a
+                      href={`/catalog?productId=${topic.id}`}
+                      className="block px-3.5 py-2 text-[12.5px] text-ink-2 hover:bg-softer"
+                      role="menuitem"
+                    >
+                      Open in the Catalog
+                    </a>
                     <a
                       href="/products"
                       className="block px-3.5 py-2 text-[12.5px] text-ink-2 hover:bg-softer"
