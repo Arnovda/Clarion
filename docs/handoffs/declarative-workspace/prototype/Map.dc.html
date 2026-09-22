@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>What goes where</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,500;1,8..60,400&family=Geist+Mono:wght@400;500&display=swap">
+<style>
+body{margin:0;background:#eef0f2;color:#0f1a22;font-family:Inter, system-ui, sans-serif;-webkit-font-smoothing:antialiased;font-feature-settings:"ss01","cv11"}
+a{color:#164e63;text-decoration:none}a:hover{color:#103d4f}
+.eyebrow{font-family:"Geist Mono", ui-monospace, monospace;font-size:10px;letter-spacing:0.14em;text-transform:uppercase;color:#8891a0;font-weight:500}
+.mono{font-family:"Geist Mono", ui-monospace, monospace}
+.serif{font-family:"Source Serif 4", Georgia, serif}
+.chip{display:inline-flex;align-items:center;gap:5px;padding:2px 8px;border-radius:999px;font-size:11px;font-family:"Geist Mono", ui-monospace, monospace;letter-spacing:0.04em;line-height:1.6;white-space:nowrap}
+.btn{display:inline-flex;align-items:center;gap:6px;border:1px solid #d0d5da;background:#ffffff;color:#0f1a22;font:500 13px Inter, system-ui, sans-serif;padding:7px 12px;border-radius:6px;cursor:pointer;line-height:1.3}
+.btn-primary{background:#164e63;border-color:#164e63;color:#fff}
+.btn-primary:disabled{opacity:.45}
+.btn-ghost{border-color:transparent;background:transparent;color:#4a5660}
+.row{display:flex;align-items:center}
+.card{background:#ffffff;border:1px solid #d0d5da;border-radius:10px}
+.k{color:#7dd3fc}.s{color:#fde68a}.f{color:#c4b5fd}.c{color:#8891a0}
+
+</style>
+</helmet>
+<div style="width:1100px;height:720px;box-sizing:border-box;background:#eef0f2;padding:32px 36px;font-family:Inter, system-ui, sans-serif;display:flex;flex-direction:column;gap:14px">
+    <div><h1 class="serif" style="margin:0 0 4px;font-size:24px;font-weight:400;letter-spacing:-0.02em">What goes where</h1><div style="font-size:13.5px;color:#4a5660">Every surface that touched a table’s SQL, lineage, metrics or definitions, and where it lands. Line counts are today’s.</div></div>
+    <div class="card" style="overflow:hidden">
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;padding:8px 16px;background:#f8f9fa" class="eyebrow"><span>Today</span><span>Target</span></div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;padding:10px 16px;border-top:1px solid #edeff2;font-size:13.5px;line-height:1.45"><span style="color:#334049">/build · Build page (883) + AskPanel</span><span style="font-weight:500">Model → source node (plan panel, run panel, hide toggle)</span></div><div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;padding:10px 16px;border-top:1px solid #edeff2;font-size:13.5px;line-height:1.45"><span style="color:#334049">/products · workshop (915) + BuildDashboard (479)</span><span style="">Retired · subject view in Model</span></div><div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;padding:10px 16px;border-top:1px solid #edeff2;font-size:13.5px;line-height:1.45"><span style="color:#334049">/products/[id] · ProductRootPanel (1,053) + TableNotebook (681)</span><span style="">Retired · the declaration + Preview in Model</span></div><div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;padding:10px 16px;border-top:1px solid #edeff2;font-size:13.5px;line-height:1.45"><span style="color:#334049">RefineChat (986) · AskAIPanel (640) · KPI AI draft</span><span style="font-weight:500">One assistant in Model / Definitions, proposals as diffs</span></div><div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;padding:10px 16px;border-top:1px solid #edeff2;font-size:13.5px;line-height:1.45"><span style="color:#334049">Topic page → Manage mode (ManageLayer 453 + ManageTables 670)</span><span style="">Retired · “Edit in Model →” for curators</span></div><div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;padding:10px 16px;border-top:1px solid #edeff2;font-size:13.5px;line-height:1.45"><span style="color:#334049">Manage → Metrics (KpiManager 506)</span><span style="font-weight:500">Definitions</span></div><div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;padding:10px 16px;border-top:1px solid #edeff2;font-size:13.5px;line-height:1.45"><span style="color:#334049">Catalog → Glossary facet (GlossaryPanel 475)</span><span style="font-weight:500">Definitions (facet redirects)</span></div><div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;padding:10px 16px;border-top:1px solid #edeff2;font-size:13.5px;line-height:1.45"><span style="color:#334049">Catalog product / table pages</span><span style="font-weight:500">Stay, read-only · lose SQL viewer and edit forms · “Edit in Model →”</span></div><div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;padding:10px 16px;border-top:1px solid #edeff2;font-size:13.5px;line-height:1.45"><span style="color:#334049">/relationships → Topics toggle (TopicsCanvas 600)</span><span style="">Retired · joins drawn in Model. Sources canvas stays</span></div><div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;padding:10px 16px;border-top:1px solid #edeff2;font-size:13.5px;line-height:1.45"><span style="color:#334049">/shared-data</span><span style="">Stays · cards link to Model for curators</span></div><div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;padding:10px 16px;border-top:1px solid #edeff2;font-size:13.5px;line-height:1.45"><span style="color:#334049">/pipelines · /notebooks · Ask · Dashboards · Topic page (viewers)</span><span style="">Unchanged</span></div>
+    </div>
+    <div style="font-size:12.5px;color:#6b7680">About 6,900 lines retired against roughly 2,000 new. The engine (runner, checks, lineage derivation, refresh) is untouched; the backend change is one PUT that validates, stores once, and rebuilds.</div>
+  </div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1100,"height":720}}'>
+class Component extends DCLogic { renderVals() { return {}; } }
+</script>
+</body>
+</html>
