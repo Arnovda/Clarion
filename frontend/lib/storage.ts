@@ -25,12 +25,8 @@ export const storageKeys = {
   busMatrixJobId: 'busMatrixJobId',
   /** IconRail — persisted width/collapsed/open-groups JSON. */
   navRail: 'clarion:navRail',
-  /** /catalog — cards vs structure view mode. */
-  catalogViewMode: 'catalog:viewMode',
-  /** /catalog — sources/products/all layer filter (structure mode). */
-  catalogLayer: 'catalog:layer',
-  /** /catalog — grid vs list layout (cards mode). */
-  catalogCardsLayout: 'catalog:cardsLayout',
+  /** /catalog — the floating assistant's open state ('1' / '0'). */
+  catalogAssistantOpen: 'catalog:assistant:open',
   /** Catalog relationships diagram — left rail collapsed state. */
   catalogDiagramRail: 'catalog:diagram:rail',
   /** Product detail — AI panel open state ('1' / '0'). */

@@ -1,18 +1,21 @@
 'use client';
 
 /**
- * <EntityDetailPanel> — selection-scope router for the unified /catalog page.
+ * <EntityDetailPanel> — selection-scope router for the /catalog page.
  *
  * Given a typed selection, dispatches to the right detail surface and fetches
- * the data each surface needs. The three flavours are:
+ * the data each surface needs. ONE view per thing (the catalog is the
+ * workspace, 2026-09-22 — no cards inset, no preview flavour):
  *
- *   - source-table              → <TableDetailPanel>  (semantic-layer panel)
- *   - product-table / reference-table → <ProductTableDetailPanel>  (the ONE
- *     merged table page — Release B; reference cards and the Structure tree
- *     land on the same panel, compact in the narrow inset)
- *   - product-root   → <ProductPreviewPanel> (cards inset) / <ProductFullView>
+ *   - source-root    → <SourceRootPanel>
+ *   - source-table   → <TableDetailPanel>
+ *   - product-root   → <ProductFullView>
+ *   - product-table  → <ProductTableDetailPanel> — the table's declaration:
+ *                      what it holds, where it comes from, the SQL that
+ *                      builds it. `tableId` may be a graph id OR a Postgres
+ *                      product_tables id; the loader resolves both.
  *
- * The caller stays free of the per-flavour fetch/cache choreography.
+ * The caller stays free of the per-flavour fetch choreography.
  */
 
 import { useCallback, useEffect, useState } from 'react';
@@ -22,10 +25,9 @@ import dynamic from 'next/dynamic';
 import TableDetailPanel from '@/components/semantic/TableDetailPanel';
 import ProductTableDetailPanel from '@/components/semantic/ProductTableDetailPanel';
 import SourceRootPanel from '@/components/catalog/SourceRootPanel';
-import ProductPreviewPanel from '@/components/catalog/ProductPreviewPanel';
 
 // Lazy: the full product page pulls in preview tables etc. — only needed
-// when a product is actually opened from the Structure tree.
+// when a subject is actually opened.
 const ProductFullView = dynamic(
   () => import('@/components/catalog/ProductFullView'),
   { ssr: false },
@@ -39,14 +41,8 @@ import type {
 
 export type EntitySelection =
   | { scope: 'source-table'; tableId: number; connectionId: number; columnId?: number | null }
-  | { scope: 'product-table'; tableId: number; productId?: number; columnId?: number | null }
-  /**
-   * `reference-table` — same panel as `product-table` (Release B merged
-   * them), but the tableId is a POSTGRES product_tables id (reference
-   * cards / deep links) rather than a graph id, and the compact inset
-   * treatment applies in cards mode.
-   */
-  | { scope: 'reference-table'; tableId: number; productId: number }
+  /** `tableId` is a graph id (the tree) OR a Postgres product_tables id (deep links). */
+  | { scope: 'product-table'; tableId: number; productId?: number; columnId?: number | null; initialTab?: 'sql' }
   | { scope: 'product-root'; productId: number }
   | { scope: 'source-root'; connectionId: number }
   | { scope: 'empty' };
@@ -56,61 +52,26 @@ interface Connection {
   domains?: string[];
 }
 
-interface ProductHint {
-  name: string;
-  description: string | null;
-  status: string;
-  source: {
-    id: number | null;
-    name: string | null;
-    connectorType: string | null;
-    multiSource?: boolean;
-    sourceDeleted?: boolean;
-  };
-  last_refreshed_at: string | null;
-}
-
 interface Props {
   selection: EntitySelection;
   /** Fired after a save inside any panel so the parent can refresh tree data. */
   onSaved?: () => void;
-  /** When the user deletes a product, the parent decides what to do next. */
-  onProductDeleted?: () => void;
   /** Optional: parent-supplied connection list so we don't re-fetch domains. */
   connections?: Connection[];
-  /**
-   * When true, product-root selections render the new clean preview panel
-   * (starter questions, key metrics, "see full details"). Defaults to
-   * false for backward compat with Structure mode, where the legacy
-   * full-tabs panel is the right surface for analysts. The Browse mode
-   * on /catalog opts in.
-   */
-  productPreview?: boolean;
-  /** When productPreview is on, an instant header hint avoids the layout
-   *  flash while the canonical detail loads. Comes from the card the
-   *  user just clicked. */
-  productHint?: ProductHint;
-  /** Called when the user clicks "Open full view" inside the preview.
-   *  The parent expands the slide-over to full-screen so the full
-   *  tabbed layout gets the width it needs. */
-  onOpenFullView?: () => void;
-  /** Close handler — slides the detail panel away. */
+  /** Close handler — clears the selection. */
   onClose?: () => void;
+  /** Landing when nothing is selected; defaults to a quiet hint. */
+  empty?: React.ReactNode;
 }
 
-// Note: `onProductDeleted` stays in Props for caller compatibility but is
-// currently unconsumed — product deletion lives in the workshop
-// (/products/[id]), not on the catalog's understanding surfaces.
 export default function EntityDetailPanel({
   selection,
   onSaved,
   connections = [],
-  productPreview,
-  productHint,
-  onOpenFullView,
   onClose,
+  empty,
 }: Props) {
-  if (selection.scope === 'empty') return <EmptyHint />;
+  if (selection.scope === 'empty') return <>{empty ?? <EmptyHint />}</>;
   if (selection.scope === 'source-root') {
     return (
       <SourceRootPanel
@@ -120,22 +81,6 @@ export default function EntityDetailPanel({
     );
   }
   if (selection.scope === 'product-root') {
-    // Browse mode (cards UX) defaults to the clean preview, with a
-    // "See full details" button inside that expands to ProductFullView.
-    // Structure mode renders ProductFullView directly — ONE product page
-    // for both doors (Release B: the workshop's OverviewSection embedding
-    // is retired from the catalog).
-    if (productPreview) {
-      return (
-        <ProductPreviewPanel
-          key={`pp-${selection.productId}`}
-          productId={selection.productId}
-          hint={productHint}
-          onOpenFullView={onOpenFullView}
-          onClose={onClose}
-        />
-      );
-    }
     return <ProductFullView key={`pf-${selection.productId}`} productId={selection.productId} />;
   }
   if (selection.scope === 'source-table') {
@@ -157,27 +102,7 @@ export default function EntityDetailPanel({
         key={`pt-${selection.tableId}`}
         tableId={selection.tableId}
         focusColumnId={selection.columnId ?? null}
-        onSaved={onSaved}
-        onClose={onClose}
-      />
-    );
-  }
-  if (selection.scope === 'reference-table') {
-    // Release B: reference cards land on the SAME merged table panel as the
-    // Structure tree (ProductTableDetailPanel) — one table page per thing.
-    //
-    // productPreview doubles as the "are we in the narrow inset?" hint:
-    // when true (cards-mode default), the panel runs in `compact` mode
-    // (Overview/Columns only, plus a "Full view" button wired to
-    // onOpenFullView). When false (full-screen wrapper) the panel shows
-    // every tab including Quality/History/Lineage.
-    return (
-      <ProductTableLoader
-        key={`rt-${selection.tableId}`}
-        tableId={selection.tableId}
-        focusColumnId={null}
-        compact={productPreview === true}
-        onOpenFullView={onOpenFullView}
+        initialTab={selection.initialTab}
         onSaved={onSaved}
         onClose={onClose}
       />
@@ -241,14 +166,13 @@ function SourceTableLoader({
 }
 
 function ProductTableLoader({
-  tableId, focusColumnId, compact, onOpenFullView, onSaved, onClose,
+  tableId, focusColumnId, initialTab, onSaved, onClose,
 }: {
-  /** Graph id (Structure tree) OR Postgres product_tables id (reference
-   *  cards / ?refTableId deep links) — resolved against the tree below. */
+  /** Graph id (the tree) OR Postgres product_tables id (deep links) —
+   *  resolved against the tree below. */
   tableId: number;
   focusColumnId: number | null;
-  compact?: boolean;
-  onOpenFullView?: () => void;
+  initialTab?: 'sql';
   onSaved?: () => void;
   onClose?: () => void;
 }) {
@@ -292,8 +216,7 @@ function ProductTableLoader({
       productTree={tree}
       columns={cols}
       focusColumnId={focusColumnId}
-      compact={compact}
-      onOpenFullView={onOpenFullView}
+      initialTab={initialTab}
       onSaved={() => { load(); onSaved?.(); }}
       onClose={onClose}
     />
@@ -317,7 +240,7 @@ function EmptyHint({ message }: { message?: string } = {}) {
       <div className="w-12 h-12 rounded-md bg-softer border border-line flex items-center justify-center mb-4 text-muted-2">
         <Database className="w-5 h-5" strokeWidth={1.5} />
       </div>
-      <p className="text-[13.5px] text-ink-2">{message ?? 'Select a table or product on the left.'}</p>
+      <p className="text-[13.5px] text-ink-2">{message ?? 'Pick a subject, a table or a source on the left.'}</p>
     </div>
   );
 }

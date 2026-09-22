@@ -34,6 +34,8 @@ export interface SchemaEntry {
     connectionId?: number;
     dataProductId?: number;
     type?: string;
+    /** The PRODUCT behind a source connection (exactonline, odoo, postgres…) — its mark. */
+    connectorType?: string | null;
     /** Primary source for a product schema (products catalog only). */
     sourceConnectionId?: number | null;
     sourceConnectionName?: string | null;

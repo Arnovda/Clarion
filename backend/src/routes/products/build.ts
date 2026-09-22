@@ -198,13 +198,50 @@ router.post('/build-chat', requireAuth, requireRole('admin', 'analyst'), validat
     const tenantId = req.user?.tenantId;
     if (!tenantId) { res.status(401).json({ ok: false, error: 'Tenant context required' }); return; }
 
-    const { messages, anchorProductId } = req.body as {
+    const { messages, anchorTableId } = req.body as {
       messages: Array<{ role: 'user' | 'assistant'; content: string }>;
       anchorProductId?: number;
+      anchorTableId?: number;
     };
+    let anchorProductId = (req.body as { anchorProductId?: number }).anchorProductId;
 
     const { buildCoverageContext } = await import('../../services/buildChatContext');
     const coverage = await buildCoverageContext(db, tenantId);
+
+    // THE TABLE ANCHOR — the catalog's assistant, aimed at the table on
+    // screen. Same rule as the product anchor: matched on tenant_id
+    // EXPLICITLY, so a forged id resolves to nothing and is dropped. The
+    // table's subject becomes the product anchor when none was given, so the
+    // two lines below agree about where the user is.
+    let tableLine = '';
+    if (anchorTableId) {
+      const t = await db('product_tables as pt')
+        .join('star_schemas as ss', 'pt.star_schema_id', 'ss.id')
+        .join('data_products as dp', 'ss.data_product_id', 'dp.id')
+        .where('pt.id', anchorTableId)
+        .andWhere('pt.tenant_id', tenantId)
+        .first('pt.id', 'pt.table_name', 'pt.display_name', 'pt.table_role', 'pt.description', 'pt.plain_summary', 'dp.id as product_id');
+      if (t) {
+        anchorProductId = anchorProductId ?? Number(t.product_id);
+        const cols = await db('product_columns')
+          .where({ product_table_id: Number(t.id) })
+          .andWhere((qb) => qb.where('is_technical', false).orWhereNull('is_technical'))
+          .orderBy(['sort_order', 'id'])
+          .limit(60)
+          .select('column_name', 'data_type', 'column_role', 'description');
+        const colText = cols
+          .map((c: { column_name: string; data_type: string | null; column_role: string | null; description: string | null }) =>
+            `${c.column_name} (${c.data_type ?? '?'}${c.column_role ? `, ${c.column_role}` : ''})${c.description ? ` — ${String(c.description).replace(/\s+/g, ' ').slice(0, 140)}` : ''}`)
+          .join('; ');
+        tableLine = `\n\n## THE TABLE THE USER IS LOOKING AT\n`
+          + `"${t.display_name ?? t.table_name}" (${t.table_name}, ${t.table_role ?? 'table'})`
+          + `${t.description ? `: ${String(t.description).replace(/\s+/g, ' ').slice(0, 400)}` : ''}`
+          + `${t.plain_summary ? `\nHow it is built: ${String(t.plain_summary).replace(/\s+/g, ' ').slice(0, 600)}` : ''}`
+          + `\nColumns: ${colText || '(none recorded)'}`
+          + `\nAnswer questions about this table from these facts — what a row is, what a column means, which columns carry a measure. `
+          + 'Do not propose a new subject unless the user asks for one.';
+      }
+    }
 
     // THE ANCHOR. This is the same assistant whether it is opened from /build
     // or from inside a subject, and the anchor is the whole difference: it is
@@ -232,7 +269,7 @@ router.post('/build-chat', requireAuth, requireRole('admin', 'analyst'), validat
     }
 
     const { respondBuildChat } = await import('../../ai/AIService');
-    const response = await respondBuildChat(coverage.text + anchorLine, messages);
+    const response = await respondBuildChat(coverage.text + anchorLine + tableLine, messages);
 
     // Server-side proposal validation — the model's suggestion only survives
     // when every part of it checks out against the real catalog. A proposal

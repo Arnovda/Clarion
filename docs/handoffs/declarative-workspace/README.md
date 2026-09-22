@@ -5,6 +5,14 @@ that document first — it carries the investigation (click paths, duplication,
 the two-store defect), the contract ("the user declares, Clarion derives") and
 the backend half. This folder holds the screens.
 
+**Implemented (2026-09-22, same evening, same branch).** The catalog and the
+Definitions pane now exist in the app, built on the existing components (see
+§0a of the design doc for the exact list). For what shipped, the real pages
+supersede these boards; the boards stay the design of record for what did not
+ship yet — the source-table drafts as inline Keep / Discard, the attention and
+review lists on the landing, the new-subject panel inside the catalog, and
+every retirement (`/build`, `/review`, the workshop, Manage mode).
+
 **Revision 2 (2026-09-22, evening).** After reviewing the first boards the
 owner settled that the **catalog is the workspace**: no separate Model page,
 one tree on the left with sources under their own mark, no All / Sources /

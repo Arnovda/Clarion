@@ -1,23 +1,30 @@
 'use client';
 
 /**
- * <CatalogBrowser> — Unity-Catalog-style three-level tree.
+ * <CatalogBrowser> — THE tree: the one view of everything on the left of the
+ * catalog (revision 2 of the declarative-workspace design, 2026-09-22).
  *
- * Catalogs (sources / products) → schemas (connections / data products)
- * → tables → columns. Lazy-loads each level via /api/catalog.
+ *   Subjects            products, grouped under the SOURCE they are built
+ *     [mark] Exact      from — the source's own mark, not a folder glyph
+ *       Finance         subject → tables → columns
+ *   Sources             every connection, under its mark; the source tables
+ *     [mark] Exact      → columns
+ *   Your tables         managed grids, one row each (a door to /grids)
  *
- * Generic on selection: the parent owns `selected` + `onSelect` so the same
- * component drives /semantic, /health, /products and /notebooks. Selection
- * is keyed to the table — the parent decides what to render in the right
- * pane (definition panel, quality panel, etc).
+ * No layer chips, no view toggle: both roots are open, and the tree is the
+ * whole navigation. Lazy-loads each level via /api/catalog; the parent owns
+ * the selection and decides what the right-hand view shows.
  */
 
 import { useEffect, useMemo, useState, useCallback } from 'react';
+import Link from 'next/link';
 import {
-  ChevronRight, Database, Star, Folder,
+  ChevronRight, Star, Layers, Table2,
   Table as TableIcon, Loader2,
 } from 'lucide-react';
 import { cn } from '@/lib/cn';
+import api from '@/lib/api';
+import ConnectorMarkIcon from '@/components/ConnectorMarkIcon';
 import {
   catalogApi,
   type CatalogId,
@@ -66,6 +73,9 @@ interface Props {
 }
 
 // ── Visual helpers ──────────────────────────────────────────────────────────
+
+/** The roots in the vocabulary the rest of the app uses. */
+const ROOT_LABEL: Record<CatalogId, string> = { products: 'Subjects', sources: 'Sources' };
 
 const Chevron = ({ open }: { open: boolean }) => (
   <ChevronRight
@@ -129,7 +139,9 @@ function sourceBucketLabel(key: string, sample: SchemaEntry | undefined): string
 
 export default function CatalogBrowser({ selected, selectedSchema, onSelectTable, onSelectSchema, hide, showRowCounts = true, searchValue }: Props) {
   const [catalogs, setCatalogs] = useState<CatalogEntry[]>([]);
-  const [openCatalogs, setOpenCatalogs] = useState<Set<CatalogId>>(new Set<CatalogId>(['sources']));
+  // Both roots open: the tree IS the navigation, there is nothing else to
+  // reveal it. Subjects first — that is what most people came for.
+  const [openCatalogs, setOpenCatalogs] = useState<Set<CatalogId>>(new Set<CatalogId>(['products', 'sources']));
   const [openSchemas, setOpenSchemas] = useState<Set<string>>(new Set());
   const [openTables, setOpenTables] = useState<Set<string>>(new Set());
   // Source-buckets within the products catalog. We track CLOSED buckets
@@ -139,7 +151,7 @@ export default function CatalogBrowser({ selected, selectedSchema, onSelectTable
   const toggleProductBucket = (key: string) => {
     setClosedProductBuckets((s) => {
       const n = new Set(s);
-      n.has(key) ? n.delete(key) : n.add(key);
+      if (n.has(key)) n.delete(key); else n.add(key);
       return n;
     });
   };
@@ -154,14 +166,30 @@ export default function CatalogBrowser({ selected, selectedSchema, onSelectTable
 
   const [error, setError] = useState<string | null>(null);
 
-  // Load catalogs on mount
+  // Load catalogs on mount. Subjects before Sources whatever the API's order.
   useEffect(() => {
     let cancelled = false;
     catalogApi.catalogs()
-      .then((rows) => { if (!cancelled) setCatalogs(rows.filter((c) => c.id !== hide)); })
+      .then((rows) => {
+        if (cancelled) return;
+        const rank = (c: CatalogEntry) => (c.id === 'products' ? 0 : 1);
+        setCatalogs(rows.filter((c) => c.id !== hide).sort((a, b) => rank(a) - rank(b)));
+      })
       .catch((e) => { if (!cancelled) setError(e?.message ?? 'Failed to load catalogs'); });
     return () => { cancelled = true; };
   }, [hide]);
+
+  // Managed grids — "Your tables". Curators only (the endpoint is); a viewer
+  // or a tenant without grids simply gets no third root.
+  const [grids, setGrids] = useState<Array<{ id: number; name: string; viewName: string; rowCount: number | null }>>([]);
+  useEffect(() => {
+    let cancelled = false;
+    api.get('/grids')
+      .then((r) => { if (!cancelled) setGrids((r.data?.data ?? []) as typeof grids); })
+      .catch(() => { if (!cancelled) setGrids([]); });
+    return () => { cancelled = true; };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const loadSchemas = useCallback(async (catalog: CatalogId) => {
     if (schemasByCatalog[catalog]) return;
@@ -221,7 +249,7 @@ export default function CatalogBrowser({ selected, selectedSchema, onSelectTable
   const toggleCatalog = (id: CatalogId) => {
     setOpenCatalogs((s) => {
       const n = new Set(s);
-      n.has(id) ? n.delete(id) : n.add(id);
+      if (n.has(id)) n.delete(id); else n.add(id);
       return n;
     });
   };
@@ -245,10 +273,6 @@ export default function CatalogBrowser({ selected, selectedSchema, onSelectTable
       return n;
     });
   };
-
-  const totalTables = useMemo(() => {
-    return Object.values(tablesBySchema).reduce((sum, arr) => sum + arr.length, 0);
-  }, [tablesBySchema]);
 
   // ── Search mode ──────────────────────────────────────────────────────────
   // Debounce so we don't hit the API on every keystroke. The empty / sub-2
@@ -284,21 +308,13 @@ export default function CatalogBrowser({ selected, selectedSchema, onSelectTable
 
   return (
     <div className="flex flex-col h-full min-h-0 bg-soft text-ink-2">
-      {/* Header */}
-      <div className="px-4 pt-4 pb-3 border-b border-line shrink-0">
-        <p className="text-[10px] font-mono tracking-[0.12em] uppercase text-muted">Catalog</p>
-        <p className="text-xs text-muted-2 mt-0.5">
-          {catalogs.length} catalogs{totalTables > 0 ? ` · ${totalTables} tables loaded` : ''}
-        </p>
-      </div>
-
       {error && (
         <div className="mx-4 mt-2 px-2.5 py-1.5 text-[11px] text-danger bg-danger-soft border border-danger/20 rounded">
           {error}
         </div>
       )}
 
-      <div className="flex-1 overflow-y-auto min-h-0 py-1">
+      <div className="flex-1 overflow-y-auto min-h-0 py-1 flex flex-col">
         {isSearching && (
           <SearchResults
             query={debouncedSearch}
@@ -308,6 +324,29 @@ export default function CatalogBrowser({ selected, selectedSchema, onSelectTable
             selected={selected ?? null}
             onSelectTable={onSelectTable}
           />
+        )}
+        {!isSearching && grids.length > 0 && (
+          <div className="order-last">
+            <div className="w-full flex items-center gap-2 px-4 pt-3 pb-1.5">
+              <span className="w-3 shrink-0" aria-hidden />
+              <span className="text-[10px] font-mono tracking-[0.14em] uppercase text-muted-2 font-medium truncate flex-1">Your tables</span>
+              <span className="text-[10px] font-mono text-muted-2 tabular-nums">{grids.length}</span>
+            </div>
+            {grids.map((g) => (
+              <Link
+                key={g.id}
+                href={`/grids/${g.id}`}
+                className="flex items-center gap-2 pl-7 pr-3 py-1.5 hover:bg-softer transition-colors border-l-2 border-transparent -ml-[2px]"
+                title={`In answers as ${g.viewName}`}
+              >
+                <Table2 className="w-3.5 h-3.5 shrink-0 text-muted-2" strokeWidth={1.5} />
+                <span className="text-[13px] text-ink-2 truncate flex-1">{g.name}</span>
+                {g.rowCount != null && (
+                  <span className="text-[10px] font-mono text-muted-2 tabular-nums">{fmtRows(g.rowCount)}</span>
+                )}
+              </Link>
+            ))}
+          </div>
         )}
         {!isSearching && catalogs.map((cat) => {
           const catOpen = openCatalogs.has(cat.id);
@@ -319,15 +358,11 @@ export default function CatalogBrowser({ selected, selectedSchema, onSelectTable
               {/* ── Catalog row ── */}
               <button
                 onClick={() => toggleCatalog(cat.id)}
-                className="w-full flex items-center gap-2 px-4 py-2 group hover:bg-softer transition-colors"
+                className="w-full flex items-center gap-2 px-4 pt-3 pb-1.5 group hover:bg-softer transition-colors"
               >
                 <Chevron open={catOpen} />
-                <Database
-                  className={cn('w-4 h-4 shrink-0', catOpen ? 'text-ocean' : 'text-muted')}
-                  strokeWidth={1.5}
-                />
-                <span className="text-sm font-medium text-ink truncate flex-1 text-left">
-                  {cat.label}
+                <span className="text-[10px] font-mono tracking-[0.14em] uppercase text-muted-2 font-medium truncate flex-1 text-left">
+                  {ROOT_LABEL[cat.id]}
                 </span>
                 <span className="text-[10px] font-mono text-muted-2 tabular-nums">
                   {cat.schemaCount}
@@ -343,7 +378,9 @@ export default function CatalogBrowser({ selected, selectedSchema, onSelectTable
                   )}
 
                   {schemas.length === 0 && !catLoading && (
-                    <div className="pl-9 py-2 text-[11px] text-muted-2">No schemas yet</div>
+                    <div className="pl-9 py-2 text-[11px] text-muted-2">
+                      {cat.id === 'products' ? 'No subjects yet — Build makes them from a source.' : 'No sources yet.'}
+                    </div>
                   )}
 
                   {/*
@@ -381,19 +418,22 @@ export default function CatalogBrowser({ selected, selectedSchema, onSelectTable
                       bucketCollapsed = closedProductBuckets.has(myBucket);
                       if (myBucket !== prevBucket) {
                         const inThisBucket = arr.filter((s) => sourceBucketKeyForSchema(s) === myBucket).length;
+                        const synthetic = myBucket === 'multi' || myBucket === 'deleted' || myBucket === 'unassigned';
                         bucketHeader = (
                           <button
                             key={`bh:${myBucket}`}
                             onClick={() => toggleProductBucket(myBucket)}
                             className="w-full flex items-center gap-2 pl-7 pr-3 py-1.5 hover:bg-softer transition-colors text-left"
-                            title={`${inThisBucket} product${inThisBucket === 1 ? '' : 's'}`}
+                            title={`${inThisBucket} subject${inThisBucket === 1 ? '' : 's'} built from ${sourceBucketLabel(myBucket, schema)}`}
                           >
                             <Chevron open={!bucketCollapsed} />
+                            {/* The source's own mark: recognised before the name is read. */}
+                            {!synthetic && (
+                              <ConnectorMarkIcon connectorType={schema.meta?.sourceConnectorType} size="xs" />
+                            )}
                             <span className={cn(
-                              'text-[10px] font-mono tracking-[0.12em] uppercase shrink-0',
-                              myBucket === 'multi' || myBucket === 'deleted' || myBucket === 'unassigned'
-                                ? 'text-muted-2'
-                                : 'text-ocean',
+                              'text-[12px] truncate',
+                              synthetic ? 'text-muted-2 font-mono text-[10px] tracking-[0.12em] uppercase' : 'text-ink-2 font-medium',
                             )}>
                               {sourceBucketLabel(myBucket, schema)}
                             </span>
@@ -423,7 +463,8 @@ export default function CatalogBrowser({ selected, selectedSchema, onSelectTable
                         {/* ── Schema row (split: chevron toggles, label selects) ── */}
                         <div
                           className={cn(
-                            'w-full flex items-center gap-2 pl-7 pr-3 py-1.5 group transition-colors border-l-2 -ml-[2px]',
+                            'w-full flex items-center gap-2 pr-3 py-1.5 group transition-colors border-l-2 -ml-[2px]',
+                            cat.id === 'products' ? 'pl-10' : 'pl-7',
                             schemaSelected
                               ? 'bg-ocean-softer border-ocean'
                               : 'hover:bg-softer border-transparent',
@@ -453,10 +494,14 @@ export default function CatalogBrowser({ selected, selectedSchema, onSelectTable
                             }}
                             className="flex-1 flex items-center gap-2 min-w-0 text-left"
                           >
-                            <Folder
-                              className={cn('w-3.5 h-3.5 shrink-0', schemaOpen ? 'text-ocean' : 'text-muted-2')}
-                              strokeWidth={1.5}
-                            />
+                            {cat.id === 'sources' ? (
+                              <ConnectorMarkIcon connectorType={schema.meta?.connectorType ?? schema.meta?.type} size="xs" />
+                            ) : (
+                              <Layers
+                                className={cn('w-3.5 h-3.5 shrink-0', schemaSelected || schemaOpen ? 'text-ocean' : 'text-muted-2')}
+                                strokeWidth={1.5}
+                              />
+                            )}
                             <span className={cn(
                               'text-[13px] truncate flex-1',
                               schemaSelected ? 'text-ocean font-medium' : 'text-ink-2',
@@ -495,7 +540,8 @@ export default function CatalogBrowser({ selected, selectedSchema, onSelectTable
                                 <div key={tbl.id}>
                                   <div
                                     className={cn(
-                                      'w-full flex items-center gap-1.5 pl-10 pr-3 py-1 group transition-colors',
+                                      'w-full flex items-center gap-1.5 pr-3 py-1 group transition-colors',
+                                      cat.id === 'products' ? 'pl-[52px]' : 'pl-10',
                                       isSelected
                                         ? 'bg-ocean-softer border-l-2 border-ocean -ml-[2px]'
                                         : 'hover:bg-softer border-l-2 border-transparent -ml-[2px]',
@@ -554,14 +600,14 @@ export default function CatalogBrowser({ selected, selectedSchema, onSelectTable
                                   {tableOpen && (
                                     <div>
                                       {colsLoading && cols.length === 0 && (
-                                        <div className="pl-16 py-1 flex items-center gap-2 text-[10px] text-muted-2">
+                                        <div className={cn('py-1 flex items-center gap-2 text-[10px] text-muted-2', cat.id === 'products' ? 'pl-[76px]' : 'pl-16')}>
                                           <Loader2 className="w-3 h-3 animate-spin" /> Loading columns…
                                         </div>
                                       )}
                                       {cols.map((col) => (
                                         <div
                                           key={col.id}
-                                          className="flex items-center gap-1.5 pl-16 pr-3 py-0.5 hover:bg-softer"
+                                          className={cn('flex items-center gap-1.5 pr-3 py-0.5 hover:bg-softer', cat.id === 'products' ? 'pl-[76px]' : 'pl-16')}
                                           title={col.description ?? col.name ?? ''}
                                         >
                                           <Star className="w-2.5 h-2.5 text-muted-2 shrink-0" strokeWidth={1.5} />
@@ -576,7 +622,7 @@ export default function CatalogBrowser({ selected, selectedSchema, onSelectTable
                                         </div>
                                       ))}
                                       {!colsLoading && cols.length === 0 && (
-                                        <div className="pl-16 py-1 text-[10px] text-muted-2 italic">no columns</div>
+                                        <div className={cn('py-1 text-[10px] text-muted-2 italic', cat.id === 'products' ? 'pl-[76px]' : 'pl-16')}>no columns</div>
                                       )}
                                     </div>
                                   )}

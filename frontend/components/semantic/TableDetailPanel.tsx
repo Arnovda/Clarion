@@ -12,6 +12,7 @@ import QualityPanel from '@/components/QualityPanel';
 import { parseDomains, parseExamples, classifyType, completenessBucket, PreviewTable } from './shared';
 import { useRole, canCurate } from '@/lib/role';
 import AiPromptDialog from './AiPromptDialog';
+import LineageSummary from '@/components/catalog/LineageSummary';
 
 const LineageGraph = dynamic(() => import('@/components/catalog/LineageGraph'), { ssr: false });
 
@@ -234,6 +235,13 @@ export default function TableDetailPanel({ table, columns, focusColumnId, connec
       {/* ── Overview ──────────────────────────────────────────────────────── */}
       {viewTab === 'overview' && (
         <div className="flex-1 overflow-y-auto px-6 py-6 space-y-6">
+          {/* THE EASY LINEAGE — what this source table feeds, in two lines;
+              the column-level graph is on the Lineage tab. Curators only
+              (the endpoint is analyst+). */}
+          {curator && (
+            <LineageSummary layer="source" tableId={tbl.id} onOpenLineage={() => setViewTab('lineage')} />
+          )}
+
           {/* AI suggested banner — curator-only. Viewers don't get the
               Confirm/Flag buttons (the PATCH would 403 anyway), so we
               hide the whole banner instead of leaving it as visual noise. */}

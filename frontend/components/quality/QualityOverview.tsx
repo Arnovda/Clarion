@@ -42,7 +42,7 @@ function ScoreDot({ score }: { score: number | null }) {
   return <span className={`w-2 h-2 rounded-full ${cls} inline-block`} />;
 }
 
-export default function QualityOverview() {
+export default function QualityOverview({ compact = false }: { compact?: boolean } = {}) {
   const [tables, setTables] = useState<TableHealth[]>([]);
   const [loading, setLoading] = useState(true);
   const [selected, setSelected] = useState<
@@ -127,13 +127,15 @@ export default function QualityOverview() {
 
   return (
     <div className="space-y-6">
-      <div>
-        <p className="text-[10px] font-mono tracking-[0.14em] uppercase text-muted mb-0.5">Catalog</p>
-        <h1 className="font-display text-[28px] text-ink leading-tight tracking-[-0.02em] mb-1">Trust</h1>
-        <p className="text-[12.5px] text-muted leading-relaxed max-w-2xl">
-          How healthy your data is — completeness, validity and freshness across every table. Click a table to see what's driving its score.
-        </p>
-      </div>
+      {!compact && (
+        <div>
+          <p className="text-[10px] font-mono tracking-[0.14em] uppercase text-muted mb-0.5">Catalog</p>
+          <h1 className="font-display text-[28px] text-ink leading-tight tracking-[-0.02em] mb-1">Trust</h1>
+          <p className="text-[12.5px] text-muted leading-relaxed max-w-2xl">
+            How healthy your data is — completeness, validity and freshness across every table. Click a table to see what&apos;s driving its score.
+          </p>
+        </div>
+      )}
 
       {/* Hero score */}
       <div className="bg-raised border border-line rounded-lg p-8 flex items-center gap-8">

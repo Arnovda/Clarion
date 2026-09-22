@@ -215,7 +215,7 @@ router.get('/:catalog', requireAuth, async (req: Request, res: Response, next: N
 
     if (catalog === 'sources') {
       const conns = await db('connections')
-        .select('id', 'name', 'type', 'created_at')
+        .select('id', 'name', 'type', 'connector_type', 'created_at')
         .orderBy('name');
 
       // Count tables per connection from Neo4j (in parallel)
@@ -228,7 +228,11 @@ router.get('/:catalog', requireAuth, async (req: Request, res: Response, next: N
           tableCount: tables.length,
           ownerName: null,
           lastRefreshed: c.created_at ? String(c.created_at) : null,
-          meta: { connectionId: c.id, type: c.type },
+          // `connectorType` is the PRODUCT (exactonline, odoo, postgres…):
+          // a framework connection stores `type: 'duckdb'` and the product
+          // in `connector_type`, a legacy direct-database one only `type`.
+          // The tree draws the source's own mark from it.
+          meta: { connectionId: c.id, type: c.type, connectorType: c.connector_type ?? c.type },
         };
       }));
       return res.json({ ok: true, data: withCounts });

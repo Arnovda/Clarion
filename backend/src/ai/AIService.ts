@@ -2446,6 +2446,74 @@ Return only the SELECT statement.`;
     .trim();
 }
 
+// ---------------------------------------------------------------------------
+// Declaration edit — the catalog assistant asks for a CHANGED transformation.
+//
+// The user is looking at one table's SQL in the catalog and says, in plain
+// language, what should be different ("add the customer's country", "only
+// invoices, not credit notes"). The model returns the WHOLE corrected SELECT
+// plus one sentence; the route guards and compiles it; the screen shows the
+// diff; nothing is stored until the person presses Keep.
+//
+// It is a proposal, not an apply — the same posture as the notebook assistant
+// (a suggestion the cell shows as a diff) and the reason this is separate from
+// refineService, whose intents (add/modify column, KPI) persist a
+// product_customizations row on approve. A declaration edit is any change to
+// the SELECT, and its record is the saved SQL itself (`declared_by`).
+// ---------------------------------------------------------------------------
+
+const PROPOSE_TRANSFORMATION_SYSTEM = `You edit the SELECT that builds ONE table in a small business's data warehouse (DuckDB). The user says in plain language what should change; you return the full corrected SELECT and one plain sentence saying what changed.
+
+Output ONLY a JSON object of this exact shape, no markdown, no commentary:
+{"sql": "<the full corrected SELECT>", "summary": "<one sentence>"}
+
+Rules:
+- Reference ONLY tables and columns listed in the AVAILABLE SCHEMAS section. Never invent a column. Use the bare table name as the current SQL does.
+- Change as little as possible: keep every existing column, alias, filter and join unless the request is to change or remove it.
+- Keep the table's grain (what one row is) unless the request changes it — and say so in the summary when it does.
+- Keep it a single read-only SELECT (a leading WITH is fine). Never emit INSERT, UPDATE, DELETE, CREATE, COPY, ATTACH, or any function that reads a file or a URI.
+- If the request cannot be done with the columns available, return the ORIGINAL SQL unchanged and say why in the summary.
+- No trailing semicolon. No SQL comments.`;
+
+const ProposeTransformationSchema = z.object({
+  sql: z.string().min(1),
+  summary: z.string().default(''),
+});
+
+export async function proposeTransformationEdit(args: {
+  tableName: string;
+  tableRole: string;
+  currentSql: string;
+  instruction: string;
+  availableSchemas: string;
+}): Promise<{ sql: string; summary: string }> {
+  const userPrompt = `Table: ${args.tableRole} "${args.tableName}"
+
+━━━ WHAT THE USER WANTS ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+${args.instruction}
+
+━━━ CURRENT SQL ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+${args.currentSql.trim() || '(no SQL yet — write it from the request)'}
+
+━━━ AVAILABLE SCHEMAS (these are the only tables/views/columns you may reference) ━━━
+${args.availableSchemas || '(nothing is registered for this connection yet)'}
+
+Return the JSON object.`;
+
+  const raw = await callClaude(PROPOSE_TRANSFORMATION_SYSTEM, userPrompt, {
+    model: MODEL,
+    maxTokens: 4096,
+    callLabel: 'transformation_propose',
+    // temperature 0: the same table + the same ask → the same diff.
+    temperature: 0,
+  });
+  const parsed = parseJson(raw, ProposeTransformationSchema);
+  return {
+    sql: parsed.sql.replace(/^```(?:sql)?\s*\n?/i, '').replace(/\n?```\s*$/i, '').trim(),
+    summary: parsed.summary.trim(),
+  };
+}
+
 export async function repairTransformationSql(
   tableName: string,
   tableRole: string,

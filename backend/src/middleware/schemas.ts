@@ -658,11 +658,31 @@ export const updateProductTableSchema = z.object({
   }).passthrough(),
 });
 
-// PUT /products/tables/:tableId/sql — transformation SQL edit
+// PUT /products/tables/:tableId/sql — the table's DECLARATION. Guarded,
+// compiled and stored once (services/tableDeclaration.ts); the deploy cell is
+// synced so a later Deploy cannot revert it.
 export const updateProductTableSqlSchema = z.object({
   body: z.object({
-    sql: z.string(),
+    sql: z.string().min(1).max(200_000),
   }).passthrough(),
+});
+
+// POST /products/tables/:tableId/sql/preview — run a draft declaration for a
+// few rows. Nothing is stored.
+export const previewProductTableSqlSchema = z.object({
+  body: z.object({
+    sql: z.string().min(1).max(200_000),
+  }),
+});
+
+// POST /products/tables/:tableId/sql/propose — the catalog assistant asks the
+// model for a changed declaration. `sql` is the editor's current draft when
+// it differs from what is stored; absent, the stored SQL is the base.
+export const proposeProductTableSqlSchema = z.object({
+  body: z.object({
+    instruction: z.string().min(1).max(2_000),
+    sql: z.string().max(200_000).optional(),
+  }),
 });
 
 // POST /products/:id/kpis (product-layer KPI create — camelCase contract)
@@ -714,6 +734,13 @@ export const buildChatSchema = z.object({
      * ignored, never trusted into the prompt.
      */
     anchorProductId: z.number().int().positive().optional(),
+    /**
+     * The TABLE the user is looking at in the catalog. Same assistant, one
+     * more anchor: with it the answer is about this table's columns and
+     * meaning, not about the subject in general. Ownership is checked in the
+     * route exactly like the product anchor.
+     */
+    anchorTableId: z.number().int().positive().optional(),
   }),
 });
 

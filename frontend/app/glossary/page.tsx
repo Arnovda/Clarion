@@ -1,10 +1,10 @@
 import { redirect } from 'next/navigation';
 
 /**
- * Glossary moved into the Catalog "understand your data" surface as a facet.
- * This route now redirects there so old links keep working — there's a single
- * door to the glossary, not two.
+ * The glossary is one section of the Definitions pane now — terms, metrics
+ * and verified answers in one place, documented once and read by the AI.
+ * This route redirects so old links keep working: one door, not two.
  */
 export default function GlossaryPage() {
-  redirect('/catalog?facet=glossary');
+  redirect('/definitions');
 }

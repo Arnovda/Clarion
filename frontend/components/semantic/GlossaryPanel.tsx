@@ -53,7 +53,7 @@ function parseTags(text: string): string[] {
     .filter(Boolean);
 }
 
-export default function GlossaryPanel({ canEdit }: { canEdit: boolean }) {
+export default function GlossaryPanel({ canEdit, hideHeading = false }: { canEdit: boolean; hideHeading?: boolean }) {
   const toast = useToast();
   const [entries, setEntries] = useState<GlossaryEntry[]>([]);
   const [loading, setLoading] = useState(true);
@@ -173,10 +173,16 @@ export default function GlossaryPanel({ canEdit }: { canEdit: boolean }) {
     : entries;
 
   return (
-    <div className="flex-1 overflow-y-auto px-6 py-6 bg-bg">
-      <div className="max-w-3xl mx-auto space-y-4">
-        {/* Heading */}
+    <div className={hideHeading ? '' : 'flex-1 overflow-y-auto px-6 py-6 bg-bg'}>
+      <div className={hideHeading ? 'space-y-4' : 'max-w-3xl mx-auto space-y-4'}>
+        {/* Heading — the Definitions pane carries its own, so it can be hidden. */}
         <div className="flex items-start justify-between gap-4">
+          {hideHeading ? (
+            <p className="text-[13px] text-muted max-w-xl">
+              Company words the AI reads before it answers. Link a term to the column, table or metric it means
+              and the AI stops guessing which one you meant.
+            </p>
+          ) : (
           <div>
             <p className="font-mono text-[10.5px] uppercase tracking-[0.1em] text-muted">Tenant glossary</p>
             <h2 className="font-serif text-[22px] text-ink leading-tight mt-0.5">Business definitions &amp; abbreviations</h2>
@@ -187,6 +193,7 @@ export default function GlossaryPanel({ canEdit }: { canEdit: boolean }) {
               which one you meant.
             </p>
           </div>
+          )}
           {canEdit && (
             <button
               onClick={startAdd}

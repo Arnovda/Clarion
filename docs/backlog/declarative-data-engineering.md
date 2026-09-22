@@ -76,6 +76,63 @@ duplicated them.
 
 ---
 
+## 0a. What shipped — 2026-09-22, the same branch (draft PR #175)
+
+The owner, on the revision-2 boards: *"they are too busy and somewhat wrong
+with what's already there … Can you implement what we already can with what's
+already there? + the AI chat and the easy lineage view + SQL editor for
+declarative data engineering + definitions pane + icons of source systems?"*
+So slices 1–3 of §5 were built on the EXISTING components, and none of the
+retirements was taken yet. Measured against §3:
+
+**Backend (§3.4) — shipped.**
+- Migration 101: `product_tables.declared_by`, `declared_at`.
+- `PUT /products/tables/:id/sql` is the ONE write (admin + analyst): guard →
+  compile (`DESCRIBE` in a real warehouse session, `services/tableDeclaration.ts`)
+  → store once → keep serving (`transformation_status` stays `success` when it
+  was; *changed since the last build* is `declared_at > last_run_at`, no status
+  flip, so the table never vanishes from Ask AI) → `syncDeployCell`, so Deploy
+  can no longer revert a hand edit. A shared stub refuses with "change it on
+  the owner". D1, D3 and D4 of §2.3 are closed by this one handler.
+- `GET /products/tables/:id/declaration` — the read model: SQL, state,
+  columns DERIVED by the compile, `shared_from`, `pending_rebuild`.
+- `POST …/sql/preview` (12 rows, nothing stored) and `POST …/sql/propose` —
+  the assistant returns a compiled proposal and never writes; Keep is the PUT.
+- `POST /products/build-chat` takes `anchorTableId`: the table's columns and
+  meaning join the prompt, so Ask on a table is about that table.
+- `GET /definitions` unions terms · metrics · verified answers (all roles).
+- `GET /catalog/sources` carries `connectorType`, which is the marks.
+- `tests/table-declaration.test.ts`: 21, both directions per rule.
+
+**Frontend — shipped, reusing what was there.** ONE tree (`CatalogBrowser`
+reworked: subjects first, sources under their connector mark, *Your tables*),
+ONE view (the existing panels; nothing selected = what needs you + the health
+overview that was the Trust tab), the **SQL tab** on the product-table panel
+(the notebook's CodeMirror editor · Format · Preview · *Rebuild now* only when
+a saved change waits · Save; the proposal as a diff with Keep / Discard,
+`SqlDeclaration.tsx`), the **easy lineage line** on both layers over the
+existing lineage endpoint (`LineageSummary.tsx`), the **floating assistant**
+(`CatalogAssistant.tsx`, the dashboards' panel pattern: Ask / Change the SQL,
+scope chip, Stop), the **Definitions pane** (`/definitions`: the glossary
+editor with its link picker, metrics per subject, verified answers with *Ask
+it*), `/glossary` and `/health` redirecting, the rail entry, ⌘K, *Open in the
+Catalog* on the topic page. Every deep link unchanged (`lib/catalogUrl.ts`,
+pinned by test). Render-checked in headless Chromium against a mocked API:
+twelve screens, curator and viewer, including propose → diff → Keep end to end.
+
+**Deliberately NOT yet — the retirements of §3.5, i.e. slice 4 and half of
+slices 2–3:** the workshop (`/products/[id]`, `product_table_cells`),
+RefineChat, AskAIPanel, KpiManager, Manage mode, `/build`, `/review`, the
+Topics canvas; `snapshotProductEdits` carrying SQL across a rebuild (D2);
+`GET /catalog/attention` (the landing reads the endpoints that exist — the
+review list per source table and "what changed" are not there yet); the
+source-table drafts as inline Keep / Discard; the new-subject panel inside
+the catalog. Each is one deletion PR once the workspace has been used for real
+— the boards in `docs/handoffs/declarative-workspace/` stay the design of
+record for exactly those parts.
+
+---
+
 ## 1. What "declarative" means here
 
 The user states **what**; Clarion owns **how**. Written as a contract, so the

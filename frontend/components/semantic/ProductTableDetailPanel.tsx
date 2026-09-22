@@ -2,8 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import dynamic from 'next/dynamic';
-import { formatSql } from '@/lib/formatSql';
-import { Gauge, X, Sparkles, Maximize2, BookOpen } from 'lucide-react';
+import { Code2, Gauge, X, Sparkles, BookOpen } from 'lucide-react';
 import api from '@/lib/api';
 import AiPromptDialog from './AiPromptDialog';
 import { ProductColumn, ProductTable, ProductTreeItem, type ResolvedGlossaryLink } from './types';
@@ -12,14 +11,20 @@ import HistoryPanel from './HistoryPanel';
 import QualityPanel from '@/components/QualityPanel';
 import { parseDomains, classifyType, completenessBucket, PreviewTable } from './shared';
 import { useRole, canCurate } from '@/lib/role';
+import LineageSummary from '@/components/catalog/LineageSummary';
+import { useSqlProposal } from '@/components/catalog/catalogAssistantContext';
 
 const LineageGraph = dynamic(() => import('@/components/catalog/LineageGraph'), { ssr: false });
+// The SQL editor pulls in CodeMirror — loaded only when the tab opens.
+const SqlDeclaration = dynamic(() => import('@/components/catalog/SqlDeclaration'), { ssr: false });
 
 // 'relationships' became 'lineage' on 2026-08-18: the star-schema FK list
 // duplicated the topic's Manage mode ("How it fits together"), while "which
 // source columns feed this table, and through what transformation?" had no
 // home. The tab now answers that and links to Manage mode for the shape.
-type ViewTab = 'overview' | 'columns' | 'lineage' | 'quality' | 'history';
+// 'sql' (2026-09-22) is the DECLARATION: the one editor for the SELECT that
+// builds this table, with Preview and Save — the catalog is the workspace.
+type ViewTab = 'overview' | 'columns' | 'sql' | 'lineage' | 'quality' | 'history';
 
 interface Props {
   /** Graph id OR Postgres product_tables id — the panel resolves both
@@ -33,14 +38,8 @@ interface Props {
    *  views can close the right inset; left unset when the panel is the
    *  whole pane (Structure mode), where there's nothing to close to. */
   onClose?: () => void;
-  /** True in the 480px catalog inset — hides the wide tabs (Lineage /
-   *  Quality / History) and shows a "Full view" button instead. This is
-   *  what lets ONE panel serve both the Browse card inset and the
-   *  full-pane Structure/full-view doors (the old ReferenceDetailPanel
-   *  is merged into this component — data-experience Release B). */
-  compact?: boolean;
-  /** Wired with `compact` — expands the inset to the full-screen view. */
-  onOpenFullView?: () => void;
+  /** Land on a specific tab — the assistant opens the SQL tab it proposed on. */
+  initialTab?: 'sql';
 }
 
 const roleColor = (role: string | null): string => {
@@ -89,8 +88,7 @@ const columnCompleteness = (col: ProductColumn) =>
 // ---------------------------------------------------------------------------
 
 export default function ProductTableDetailPanel({
-  tableId, productTree, columns, focusColumnId, onSaved, onClose,
-  compact = false, onOpenFullView,
+  tableId, productTree, columns, focusColumnId, onSaved, onClose, initialTab,
 }: Props) {
   const role = useRole();
   const curator = canCurate(role);
@@ -171,9 +169,14 @@ export default function ProductTableDetailPanel({
   const [savingCol, setSavingCol]     = useState<number | null>(null);
   const [savedMsg, setSavedMsg]       = useState('');
   const [colView, setColView]         = useState<'cards' | 'grid'>('grid');
-  const [viewTab, setViewTab]         = useState<ViewTab>('overview');
+  const [viewTab, setViewTab]         = useState<ViewTab>(initialTab ?? 'overview');
   const [domainInput, setDomainInput] = useState('');
   const [showColHistory, setShowColHistory] = useState<number | null>(null);
+  // A proposal from the floating assistant lands ON the declaration: when
+  // one arrives for this table, the SQL tab opens so the diff is in view.
+  const { proposal } = useSqlProposal(pgTableId);
+  const proposalId = proposal?.id ?? null;
+  useEffect(() => { if (proposalId) setViewTab('sql'); }, [proposalId]);
   // Keep local state in sync when parent switches table or columns arrive
   if (tableId !== prevTableId) {
     setPrevTableId(tableId);
@@ -246,20 +249,16 @@ export default function ProductTableDetailPanel({
 
   const isAiDraft = !!tbl.ai_draft && tbl.approval_status !== 'approved';
 
-  // History is curator-only — viewers don't need the audit log. In compact
-  // (480px inset) mode only Overview + Columns fit; the wide tabs live
-  // behind "Full view".
+  // SQL, Lineage and History are curator surfaces (the SQL editor and the
+  // lineage endpoint are analyst+; History is the audit log).
   const tabs: { id: ViewTab; label: string; count?: number }[] = [
     { id: 'overview', label: 'Overview' },
     { id: 'columns', label: 'Columns', count: cols.length },
-    // Lineage is a curator surface (transformation expressions; analyst+
-    // endpoint), like History.
-    ...(!compact && curator ? [{ id: 'lineage' as const, label: 'Lineage' }] : []),
-    ...(!compact ? [{ id: 'quality' as const, label: 'Quality' }] : []),
-    ...(!compact && curator ? [{ id: 'history' as const, label: 'History' }] : []),
+    ...(curator ? [{ id: 'sql' as const, label: 'SQL' }] : []),
+    ...(curator ? [{ id: 'lineage' as const, label: 'Lineage' }] : []),
+    { id: 'quality' as const, label: 'Quality' },
+    ...(curator ? [{ id: 'history' as const, label: 'History' }] : []),
   ];
-  // Snap back if the panel narrows while a wide tab is active.
-  if (compact && viewTab !== 'overview' && viewTab !== 'columns') setViewTab('overview');
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden bg-bg panel-enter">
@@ -322,16 +321,6 @@ export default function ProductTableDetailPanel({
 
           {/* Approval badge is governance — curator-only. */}
           <div className="flex items-start gap-2 flex-shrink-0">
-            {compact && onOpenFullView && (
-              <button
-                onClick={onOpenFullView}
-                className="inline-flex items-center gap-1 px-2 py-1 text-[11px] text-muted hover:text-ocean hover:bg-soft rounded transition-colors"
-                title="Open full view (Quality, Lineage, History)"
-              >
-                <Maximize2 className="w-3 h-3" strokeWidth={2} />
-                Full view
-              </button>
-            )}
             {curator && (
               <ApprovalBadge
                 entityType="product_table"
@@ -387,6 +376,12 @@ export default function ProductTableDetailPanel({
             <p className="text-[10px] font-mono tracking-[0.12em] uppercase text-muted mb-2">The data</p>
             <PreviewTable url={`/semantic/product-preview?productTableId=${pgTableId ?? tableId}&limit=10`} />
           </section>
+
+          {/* THE EASY LINEAGE — which tables feed this one, in two lines.
+              The column-level graph is one click away on the Lineage tab. */}
+          {curator && pgTableId != null && (
+            <LineageSummary layer="product" tableId={pgTableId} onOpenLineage={() => setViewTab('lineage')} />
+          )}
 
           {/* What is this — read-only for viewers; curators get the edit
               form below instead. (The form used to render for viewers too,
@@ -524,14 +519,29 @@ export default function ProductTableDetailPanel({
             </section>
           )}
 
-          {/* SQL LAST, curator-only, and skipped in the compact inset —
-              the transformation SQL is engineering content and the one
-              thing that must never lead this page. (The sample rows moved
-              to the top of this tab — Release B.) */}
-          {curator && !compact && (
-            <section className="bg-raised border border-line rounded-lg p-6 space-y-3">
-              <SqlViewer pgTableId={pgTableId ?? tableId} />
-            </section>
+          {/* The SQL is engineering content and must never lead this page;
+              it has its own tab (the declaration editor). One door to it. */}
+          {curator && (
+            <button
+              type="button"
+              onClick={() => setViewTab('sql')}
+              className="w-full flex items-center gap-2 bg-raised border border-line rounded-lg px-5 py-3 text-left hover:border-line-strong transition-colors"
+            >
+              <Code2 className="w-4 h-4 text-ocean shrink-0" strokeWidth={1.75} aria-hidden />
+              <span className="text-[13px] text-ink-2 flex-1">How it&apos;s built — the SQL that makes this table, editable here.</span>
+              <span className="text-[12px] font-medium text-ocean">Open →</span>
+            </button>
+          )}
+        </div>
+      )}
+
+      {/* ── SQL — the declaration ─────────────────────────────────────────── */}
+      {viewTab === 'sql' && (
+        <div className="flex-1 min-h-0 flex flex-col">
+          {pgTableId != null ? (
+            <SqlDeclaration tableId={pgTableId} canRebuild={curator} />
+          ) : (
+            <p className="px-6 py-6 text-[13px] text-muted">This table has no stored declaration to edit.</p>
           )}
         </div>
       )}
@@ -832,151 +842,6 @@ export default function ProductTableDetailPanel({
           onAccept={(text) => updateCol(aiTarget.col.id, { description: text })}
           onClose={() => setAiTarget(null)}
         />
-      )}
-    </div>
-  );
-}
-
-// ─── SQL syntax highlighting (lightweight, regex-based) ────────────────────
-const SQL_KEYWORDS = new Set([
-  'SELECT','FROM','WHERE','GROUP','BY','ORDER','HAVING','LIMIT','OFFSET',
-  'JOIN','LEFT','RIGHT','INNER','OUTER','FULL','CROSS','ON','USING',
-  'AS','AND','OR','NOT','IN','EXISTS','BETWEEN','LIKE','ILIKE','IS','NULL',
-  'CASE','WHEN','THEN','ELSE','END','UNION','ALL','DISTINCT','WITH','RECURSIVE',
-  'INSERT','INTO','VALUES','UPDATE','SET','DELETE','CREATE','TABLE','VIEW','OR','REPLACE',
-  'COPY','TO','FORMAT','PARQUET','CAST','TRY_CAST','OVER','PARTITION','ROW_NUMBER',
-  'COALESCE','IFNULL','NULLIF','GREATEST','LEAST','ASC','DESC',
-]);
-const SQL_FUNCS = new Set([
-  'COUNT','SUM','AVG','MIN','MAX','ROUND','ABS','CEIL','FLOOR',
-  'UPPER','LOWER','TRIM','LENGTH','SUBSTRING','SUBSTR','REPLACE','CONCAT',
-  'DATE','DATE_TRUNC','DATE_PART','EXTRACT','NOW','CURRENT_DATE','CURRENT_TIMESTAMP',
-  'STRFTIME','STRPTIME','MD5','HASH','LIST','STRUCT','JSON',
-]);
-
-function HighlightedSql({ sql }: { sql: string }) {
-  const re = /(--[^\n]*|\/\*[\s\S]*?\*\/|'(?:[^']|'')*'|"(?:[^"]|"")*"|\b\d+(?:\.\d+)?\b|\b\w+\b)/g;
-  const parts = sql.split(re);
-  return (
-    <>
-      {parts.map((p, i) => {
-        if (!p) return null;
-        if (p.startsWith('--') || p.startsWith('/*')) {
-          return <span key={i} className="text-white/40 italic">{p}</span>;
-        }
-        if (p.startsWith("'") || p.startsWith('"')) {
-          return <span key={i} className="text-emerald-300">{p}</span>;
-        }
-        if (/^\d/.test(p)) {
-          return <span key={i} className="text-amber-300">{p}</span>;
-        }
-        const upper = p.toUpperCase();
-        if (SQL_KEYWORDS.has(upper)) {
-          return <span key={i} className="text-sky-300 font-semibold">{p}</span>;
-        }
-        if (SQL_FUNCS.has(upper)) {
-          return <span key={i} className="text-violet-300">{p}</span>;
-        }
-        return <span key={i}>{p}</span>;
-      })}
-    </>
-  );
-}
-
-// ─── SqlViewer — lazy-loaded "Show SQL" toggle ──────────────────────────────
-function SqlViewer({ pgTableId }: { pgTableId: number }) {
-  const [state, setState] = useState<'idle' | 'loading' | 'open' | 'error'>('idle');
-  const [sql, setSql] = useState<string | null>(null);
-  const [errMsg, setErr] = useState('');
-  const [copied, setCopied] = useState(false);
-
-  async function load() {
-    setState('loading');
-    try {
-      const res = await api.get(`/semantic/product-tables/${pgTableId}/sql`);
-      const raw = res.data.data.transformation_sql ?? null;
-      let pretty = raw;
-      if (raw) {
-        try {
-          pretty = formatSql(raw);
-        } catch {
-          pretty = raw;
-        }
-      }
-      setSql(pretty);
-      setState('open');
-    } catch (err) {
-      const msg = (err as { response?: { data?: { error?: string } } })?.response?.data?.error ?? 'Could not load SQL';
-      setErr(msg);
-      setState('error');
-    }
-  }
-
-  async function copy() {
-    if (!sql) return;
-    try {
-      await navigator.clipboard.writeText(sql);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
-    } catch { /* ignore */ }
-  }
-
-  if (state === 'idle') {
-    return (
-      <button
-        onClick={load}
-        className="inline-flex items-center gap-2 text-[12px] text-ocean hover:text-ocean-hover font-medium group transition-colors"
-      >
-        <span className="w-5 h-5 rounded-md bg-ocean-softer group-hover:bg-ocean-soft flex items-center justify-center transition-colors">
-          <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.75}>
-            <polyline points="16 18 22 12 16 6" />
-            <polyline points="8 6 2 12 8 18" />
-          </svg>
-        </span>
-        View SQL
-      </button>
-    );
-  }
-
-  if (state === 'loading') {
-    return (
-      <div className="flex items-center gap-2 text-[12px] text-muted-2">
-        <span className="w-3 h-3 border-2 border-ocean border-t-transparent rounded-full animate-spin" />
-        Loading SQL…
-      </div>
-    );
-  }
-
-  if (state === 'error') {
-    return (
-      <div className="flex items-center gap-2 text-[12px] text-err">
-        {errMsg}
-        <button onClick={() => setState('idle')} className="text-muted-2 hover:text-ink-2 underline">retry</button>
-      </div>
-    );
-  }
-
-  return (
-    <div className="panel-enter">
-      <div className="flex items-center justify-between mb-2">
-        <span className="text-[10px] font-mono tracking-[0.1em] uppercase text-muted">Transformation SQL</span>
-        <div className="flex items-center gap-3">
-          {sql && (
-            <button onClick={copy} className="text-[10px] font-mono tracking-[0.06em] uppercase text-muted-2 hover:text-ink-2 transition-colors">
-              {copied ? 'Copied' : 'Copy'}
-            </button>
-          )}
-          <button onClick={() => setState('idle')} className="text-[10px] font-mono tracking-[0.06em] uppercase text-muted-2 hover:text-ink-2 transition-colors">
-            Hide
-          </button>
-        </div>
-      </div>
-      {sql ? (
-        <pre className="preview-terminal rounded-md overflow-auto max-h-96 px-4 py-3 text-[12px] font-mono leading-[1.55] whitespace-pre text-white/85">
-          <HighlightedSql sql={sql} />
-        </pre>
-      ) : (
-        <p className="text-[12px] text-muted-2 italic">No transformation SQL is stored for this table.</p>
       )}
     </div>
   );

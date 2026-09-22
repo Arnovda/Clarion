@@ -662,7 +662,7 @@ async function applyModifyColumn(tenantId: number, p: ModifyColumnPayload): Prom
  * tables), which also turns the notebook's "No cells yet" into the
  * applied SQL. Runs inside the caller's transaction.
  */
-async function syncDeployCell(
+export async function syncDeployCell(
   trx: import('knex').Knex,
   productTableId: number,
   newSql: string,
