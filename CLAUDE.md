@@ -38,8 +38,27 @@ it being a mockup and not being the real app. Can you implement what we
 already can with what's already there? + The AI chat and the easy lineage view
 + SQL editor for declarative data engineering + definitions pane + icons of
 source systems?"* So: slices 1–3 of the design, on the EXISTING components,
-no retirements yet. Same branch, draft PR #175. §0a of the design doc records
+no retirements yet. Same branch, PR #175 — MERGED AND IN PRODUCTION the same
+evening, see the deploy record just below. §0a of the design doc records
 shipped vs not.)
+
+**IN MAIN AND PRODUCTION (2026-09-22, 20:49 UTC) — owner: *"push to main and
+prd pls"*.** PR #175 was REBASE-merged as `b22ef2d` (the branch was three
+linear commits on top of main with no merge commit, so the repo's rebase
+convention held; the PR had to be taken out of draft first — GitHub refuses to
+merge a draft). **Build & Deploy run #616**: the gate waited 5m40s for Tests +
+Lint on the merged sha; backend + frontend built as **`main-b22ef2d`** (worker
+and ETL correctly skipped — nothing under them changed); **`migrate-sql`
+applied migration 101 (`Batch 59 run: 1 migrations`)**, recovery point
+recorded and the pre-migration schema kept 30 days; the jobs-worker took the
+same image; **Go live health-checked the new backend (`/api/health` 200,
+postgres / redis / neo4j / blob / worker_transformation / worker_bus_matrix
+all `ok`) and shifted backend + frontend to `--main-b22ef2d` at 100%** at
+20:48:43 / 20:49:13 UTC. Rollback if needed: Actions → **Rollback production**.
+The WATCH AFTER DEPLOY block at the end of this entry is live now, not
+hypothetical — nobody has yet saved a declaration or asked for a proposal in
+production. Housekeeping: `claude/magical-faraday-6hh5gp` was restarted from
+main for this record (force-with-lease over already-merged history only).
 
 **BACKEND — the declaration contract; closes D1, D3 and D4 of the design doc.**
 - **Migration 101**: `product_tables.declared_by` (text) + `declared_at`.

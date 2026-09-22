@@ -5,7 +5,7 @@ that document first — it carries the investigation (click paths, duplication,
 the two-store defect), the contract ("the user declares, Clarion derives") and
 the backend half. This folder holds the screens.
 
-**Implemented (2026-09-22, same evening, same branch).** The catalog and the
+**Implemented (2026-09-22, same evening, same branch) — merged as `b22ef2d` and in production (Build & Deploy run #616).** The catalog and the
 Definitions pane now exist in the app, built on the existing components (see
 §0a of the design doc for the exact list). For what shipped, the real pages
 supersede these boards; the boards stay the design of record for what did not

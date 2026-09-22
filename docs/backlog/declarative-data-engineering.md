@@ -76,7 +76,7 @@ duplicated them.
 
 ---
 
-## 0a. What shipped — 2026-09-22, the same branch (draft PR #175)
+## 0a. What shipped — 2026-09-22, the same branch (PR #175, merged as `b22ef2d`, in production via Build & Deploy run #616)
 
 The owner, on the revision-2 boards: *"they are too busy and somewhat wrong
 with what's already there … Can you implement what we already can with what's
