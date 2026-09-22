@@ -31,7 +31,71 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-09-20 (TWO THINGS FROM THE CONTEXT-ENGINEERING READ, BUILT —
+**Last updated:** 2026-09-22 (DECLARATIVE DATA ENGINEERING — investigation +
+design, doc and mockups only, no product code; owner: *"a declarative view of
+the data products we have, with the data lineage and the SQL code that we can
+adapt … We just declare what we want … and a place where we logically place
+our metrics or definitions"*, settled before work started: admin+analyst only,
+unit = the table, definitions documented-not-executed, cut freely but keep
+`/notebooks`, code-first, AI proposes a diff you Keep, mock every affected
+page.)
+
+**NEW DOC `docs/backlog/declarative-data-engineering.md` + HANDOFF
+`docs/handoffs/declarative-workspace/` (README, ten screens, the static
+prototype and its generator). Artifact: "Clarion Declarative Workspace"
+([link](https://claude.ai/artifact/XXoaDJY7jRe9prZ1PfiGA8)).**
+- **THE FINDING THAT SETTLES THE SHAPE, verified by hand:** two stores hold a
+  table's SQL. `PUT /products/tables/:id/sql` writes
+  `product_tables.transformation_sql` only; `deploy-all` copies the
+  notebook's deploy cell OVER it (`cells.ts:441-465`). So a SQL edit saved in
+  Manage mode and then "deployed" is silently reverted; only the AI refine
+  path keeps the two in step (`syncDeployCell`). Plus: a rebuild wipes every
+  human SQL edit (`snapshotProductEdits` carries `plain_summary`,
+  `question_text`, `hidden`, human KPIs — not `transformation_sql`, not
+  column meanings); no write path validates SQL before storing it; `PUT /sql`
+  sets status `draft`, and the AI context filters on `success`, so a saved
+  table VANISHES from Ask AI until rebuilt; a "definition" lives in four
+  unlinked stores (glossary, product_kpis, verified saved_questions, legacy
+  kpi_definitions).
+- **Measured today:** editing a fact's SQL is 7–8 clicks with the revert trap
+  on the way, 10 via the workshop; a shared lookup's SQL cannot be edited
+  from any linked path; SQL is viewable in 5 places and editable in 2 plus
+  the AI's; rebuild/deploy has six verbs; one product is rendered four ways;
+  seven AI assistants edit the model. Ten defects listed (D1–D10) with
+  file:line.
+- **THE DESIGN: two pages, one store per declaration, one verb.**
+  **`/model`** — tree (subjects › tables · shared data · your tables ·
+  sources as read-only inputs) · the declaration (what one row is,
+  description, SQL in a real editor, Preview 12 rows, columns DERIVED by
+  Clarion with editable meanings) · context (lineage inputs→this→outputs +
+  used-by, health, history). **Save** validates (guard + compile), stores
+  with `declared_by='human'`, and rebuilds this table + dependents; no
+  Deploy/Run/Refresh buttons anywhere. The assistant is the dashboards'
+  floating panel aimed at the selected declaration; it proposes a diff ON the
+  SQL, Keep = Save. `/build` folds in as the source node's empty state.
+  **`/definitions`** — one list, one card shape for term / metric / verified
+  answer, grouped Everywhere → per subject; "active customer" is a term with
+  an *In the data* link (the existing glossary-links mechanism). Documented,
+  not executed.
+- **Retired in the target:** `/build`, `/products` + `/products/[id]`
+  (ProductRootPanel, TableNotebook, `product_table_cells`), RefineChat,
+  AskAIPanel, KpiManager, Manage mode (ManageLayer + ManageTables), the
+  Catalog Glossary facet (redirects), the Relations Topics toggle. Catalog
+  product/table pages stay read-only with one *Edit in Model →*. Topic page
+  unchanged for viewers. ≈6,900 lines retired vs ≈2,000 new.
+- **Backend half (small, closes D1–D4):** one `PUT /model/tables/:id`
+  (guard + compile + store once + rebuild scoped), `declared_by` on
+  `product_tables`, `pending_rebuild_at` so a saved table keeps serving,
+  `snapshotProductEdits` carries human SQL/column meanings, refine returns
+  proposals instead of writing, `GET /definitions` unions the three stores,
+  `hidden` filtered in `productContext`. Sequenced in four slices, contract
+  first.
+- Validation: doc + handoff only (`git status`); every board render-checked
+  in headless Chromium (three layout fixes made from the screenshots: column
+  grid width, tree status glyphs, assistant panel position). No suite
+  applies. No env vars.
+
+**Prior last updated:** 2026-09-20 (TWO THINGS FROM THE CONTEXT-ENGINEERING READ, BUILT —
 owner, after pasting an essay on hard/soft semantics, files-in-git, graph
 linking and Apache Ossie and asking what it means for Clarion: *"Laten we deze
 zaken implementeren"*. Item A: a glossary term now has an ADDRESS in the topic
