@@ -38,12 +38,20 @@ adapt … We just declare what we want … and a place where we logically place
 our metrics or definitions"*, settled before work started: admin+analyst only,
 unit = the table, definitions documented-not-executed, cut freely but keep
 `/notebooks`, code-first, AI proposes a diff you Keep, mock every affected
-page.)
+page. **REVISED THE SAME EVENING after the owner reviewed the first boards:
+THE CATALOG IS THE WORKSPACE** — *"Catalog should be the place to check, to
+have declaration in our data engineering and be THE place where we WORK …
+clear responsibilities. You should be able to review, to check the health,
+and to adapt yourself or with AI. The AI should be a floating chat."* No
+separate Model page; one tree, sources under their own brand mark, no
+All/Sources/Products chips, no Grid/List/Structure toggle, one view; the
+glossary becomes the separate Definitions pane. Draft PR #175.)
 
-**NEW DOC `docs/backlog/declarative-data-engineering.md` + HANDOFF
-`docs/handoffs/declarative-workspace/` (README, ten screens, the static
+**DOC `docs/backlog/declarative-data-engineering.md` + HANDOFF
+`docs/handoffs/declarative-workspace/` (README, twelve screens, the static
 prototype and its generator). Artifact: "Clarion Declarative Workspace"
-([link](https://claude.ai/artifact/XXoaDJY7jRe9prZ1PfiGA8)).**
+([link](https://claude.ai/artifact/XXoaDJY7jRe9prZ1PfiGA8)), republished with
+the revision-2 boards.**
 - **THE FINDING THAT SETTLES THE SHAPE, verified by hand:** two stores hold a
   table's SQL. `PUT /products/tables/:id/sql` writes
   `product_tables.transformation_sql` only; `deploy-all` copies the
@@ -61,39 +69,58 @@ prototype and its generator). Artifact: "Clarion Declarative Workspace"
   on the way, 10 via the workshop; a shared lookup's SQL cannot be edited
   from any linked path; SQL is viewable in 5 places and editable in 2 plus
   the AI's; rebuild/deploy has six verbs; one product is rendered four ways;
-  seven AI assistants edit the model. Ten defects listed (D1–D10) with
-  file:line.
-- **THE DESIGN: two pages, one store per declaration, one verb.**
-  **`/model`** — tree (subjects › tables · shared data · your tables ·
-  sources as read-only inputs) · the declaration (what one row is,
-  description, SQL in a real editor, Preview 12 rows, columns DERIVED by
-  Clarion with editable meanings) · context (lineage inputs→this→outputs +
-  used-by, health, history). **Save** validates (guard + compile), stores
-  with `declared_by='human'`, and rebuilds this table + dependents; no
-  Deploy/Run/Refresh buttons anywhere. The assistant is the dashboards'
-  floating panel aimed at the selected declaration; it proposes a diff ON the
-  SQL, Keep = Save. `/build` folds in as the source node's empty state.
-  **`/definitions`** — one list, one card shape for term / metric / verified
-  answer, grouped Everywhere → per subject; "active customer" is a term with
-  an *In the data* link (the existing glossary-links mechanism). Documented,
-  not executed.
-- **Retired in the target:** `/build`, `/products` + `/products/[id]`
-  (ProductRootPanel, TableNotebook, `product_table_cells`), RefineChat,
-  AskAIPanel, KpiManager, Manage mode (ManageLayer + ManageTables), the
-  Catalog Glossary facet (redirects), the Relations Topics toggle. Catalog
-  product/table pages stay read-only with one *Edit in Model →*. Topic page
-  unchanged for viewers. ≈6,900 lines retired vs ≈2,000 new.
-- **Backend half (small, closes D1–D4):** one `PUT /model/tables/:id`
+  seven AI assistants edit the model; the catalog alone carries three facets,
+  a three-way layer chip, a three-way view control and ~9,000 lines across
+  15 components. Ten defects listed (D1–D10) with file:line.
+- **THE DESIGN (revision 2): the catalog is the workspace — review, check
+  the health, adapt.** **`/catalog`**: ONE TREE (subjects › tables · shared
+  data · your tables · sources, each source under its connector mark from
+  `lib/connectorIcons.tsx`, with "7 of 61 synced" and per-table "12 to
+  review · → 2 feeds") and ONE VIEW with five shapes: nothing selected = *what
+  needs you* (built · need attention · building · to review, the attention
+  list, the review list per source table, what changed — this absorbs the
+  Trust facet AND the Suggestions queue); a subject table = the declaration
+  (what one row is, description, SQL in a real editor, Preview 12 rows,
+  columns DERIVED by Clarion with editable meanings) + context (lineage,
+  health, history); a subject = what it answers, table cards, the star from
+  the FKs, metrics → Definitions; a source = mark, sync state, *read this
+  first* (the package's vendor notes), synced tables with feeds + draft
+  counts, read-only with the door to Sources; a source table = the vendor's
+  meaning where documented and Clarion's draft INLINE as a Keep/Discard
+  proposal (the review job), your note, feeds, relations with their measured
+  state, sample rows. **Save** is the one verb; the assistant is the
+  floating bottom-right chat aimed at the selected node, proposing a diff ON
+  the declaration (Keep = Save). `/build` folds in as a source with no
+  subjects; `/review` folds into the landing. **`/definitions`** stays a
+  separate pane (owner + me agreeing): one card shape for term / metric /
+  verified answer, documented not executed.
+- **Retired in the target:** the catalog's facets/chips/view control/hero/
+  cards (CatalogSplitView, ProductCardGrid, ProductFullView,
+  ProductPreviewPanel, Analytics/Reference/GlossaryMatch cards); the three
+  detail panels + CatalogBrowser + EntityDetailPanel REBUILT as one tree +
+  one declaration in three flavours; `/build`, `/review`, `/products` +
+  `/products/[id]` (ProductRootPanel, TableNotebook, `product_table_cells`),
+  RefineChat, AskAIPanel, KpiManager, Manage mode (ManageLayer +
+  ManageTables), the Relations Topics toggle. Topic page unchanged for
+  viewers, one *Open in the Catalog →* for curators. ≈11,000 lines retired
+  outright, ≈3,900 rebuilt into ≈2,600 new. Rail: Studio = Sources · Catalog
+  (badge = what needs you) · Definitions · Your tables · Relations · Refresh.
+- **Backend half (small, closes D1–D4):** one `PUT /catalog/tables/:id`
   (guard + compile + store once + rebuild scoped), `declared_by` on
   `product_tables`, `pending_rebuild_at` so a saved table keeps serving,
   `snapshotProductEdits` carries human SQL/column meanings, refine returns
   proposals instead of writing, `GET /definitions` unions the three stores,
-  `hidden` filtered in `productContext`. Sequenced in four slices, contract
-  first.
-- Validation: doc + handoff only (`git status`); every board render-checked
-  in headless Chromium (three layout fixes made from the screenshots: column
-  grid width, tree status glyphs, assistant panel position). No suite
-  applies. No env vars.
+  `GET /catalog/attention` for the landing (degraded_reason, duplicate-key
+  warnings, failed status, ai_draft counts, audit + customizations — one
+  read, nothing new stored), `hidden` filtered in `productContext`. Sequenced
+  in four slices, contract first; the catalog is rebuilt IN PLACE so every
+  existing deep link keeps working.
+- Validation: doc + handoff only (`git status`); all twelve boards
+  render-checked in headless Chromium — five layout fixes across the two
+  revisions came from the screenshots (column grid width, tree status
+  glyphs, assistant panel position, the source board's feeds column
+  overflowing, the source-table meaning column and its glossary chip
+  clipping). No suite applies. No env vars.
 
 **Prior last updated:** 2026-09-20 (TWO THINGS FROM THE CONTEXT-ENGINEERING READ, BUILT —
 owner, after pasting an essay on hard/soft semantics, files-in-git, graph

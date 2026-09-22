@@ -17,6 +17,18 @@ Discard**; deliverable is this doc plus mockups of every affected page
 (`docs/handoffs/declarative-workspace/`, artifact "Clarion Declarative
 Workspace").
 
+**Revised the same evening, after the owner reviewed the first boards: the
+catalog *is* the workspace — there is no separate Model page.** The owner's
+words: *"Catalog should be the place to check, to have declaration in our data
+engineering and be THE place where we WORK. It should be simple and effective
+and have clear responsibilities. You should be able to review, to check the
+health, and to adapt yourself or with AI. The AI should be a floating chat."*
+Also settled: no *All / Sources / Products* choice and no *Grid / List /
+Structure* toggle — one tree on the left with each source under its own mark,
+one view on the right; and the glossary leaves the catalog to become its own
+pane (Definitions — the owner's instinct, and mine). §3 is the revised target;
+§0–§2 are unchanged because the findings did not move.
+
 ---
 
 ## 0. Verdict
@@ -57,8 +69,8 @@ Three facts from the code decide the shape of the fix:
    the first two on the product layer; the topic page shows the second; the
    Ask AI fast path uses the third; nothing shows all of them together.
 
-So the design is not a new engine and not a new AI. It is **two pages**
-(Model, Definitions), **one store per declaration**, **one action** (Save,
+So the design is not a new engine and not a new AI. It is **two panes**
+(the catalog as the workspace, Definitions beside it), **one store per declaration**, **one action** (Save,
 which validates and rebuilds), and the retirement of every surface that
 duplicated them.
 
@@ -161,105 +173,135 @@ D1–D4 are the ones the redesign must fix by construction, not by a patch.
 
 ---
 
-## 3. The target — two pages, one store per declaration
+## 3. The target — the catalog is the workspace
 
 ### 3.1 Navigation
 
-Studio becomes: **Sources · Model · Definitions · Your tables · Relations ·
-Refresh · Suggestions · Catalog**. *Build* folds into Model (§3.2, empty
-state). The workshop (`/products`, `/products/[id]`) is retired. *Relations*
-keeps only its source-layer canvas; the read-only Topics toggle is retired
-because the same joins are drawn in Model. The Glossary facet of Catalog
-becomes a redirect to Definitions.
+Studio becomes: **Sources · Catalog · Definitions · Your tables · Relations ·
+Refresh** — six entries, one job each. *Build* folds into the catalog (§3.2, a
+source with no subjects). *Suggestions* folds into the catalog too: the review
+queue is what the landing shows when nothing is selected, and every draft is a
+Keep / Discard on the table it belongs to; the rail badge on Catalog is "what
+needs you" (needs attention + to review). The workshop (`/products`,
+`/products/[id]`) is retired. *Relations* keeps only its source-layer canvas;
+the read-only Topics toggle is retired because the same joins are drawn on the
+subject. The Glossary facet becomes **Definitions**, a separate pane: a
+definition is not a table, and a page that holds both carries two jobs.
 
 Uncover is unchanged. The topic page is unchanged for viewers; for curators
-*Manage this data* becomes **Edit in Model →** and deep-links to
-`/model?subject=<id>`.
+*Manage this data* becomes **Open in the Catalog →** and deep-links to
+`/catalog?subject=<id>`.
 
-### 3.2 Model (`/model`) — the declarative workspace
+### 3.2 Catalog (`/catalog`) — review, check the health, adapt
 
-Three columns, always the same shape. *(Screens: Model-Table, Model-Diff,
-Model-Subject, Model-NewSubject.)*
+Three responsibilities, in the owner's words, and everything on the page
+serves one of them: **review** what Clarion derived or drafted, **check the
+health** of what is built, **adapt** it — yourself, or through the floating
+assistant. *(Screens: Main, Catalog-Diff, Catalog-Health, Catalog-Subject,
+Catalog-Source, Catalog-SourceTable, Catalog-NewSubject.)*
 
-**Left — the tree (260px).** Everything the tenant has, as declarations:
+What goes: the Browse / Trust / Glossary tabs, the All / Sources / Products
+chips, the Grid / List / Structure control, the hero and *New product*. There
+is one tree and one view.
+
+**Left — the tree (260px).** Everything the tenant has, selectable, in the
+order people work on it:
 
 ```
 SUBJECTS
-  ▾ Finance                  built · 3 min ago
-      fact_transaction_lines   ⚑ needs attention
-      fact_receivables
-      fact_payables
-  ▸ Sales
-  ▸ Purchasing               ◌ building…
+  ▾ Finance                    ●
+      fact_transaction_lines
+      fact_receivables         ⚠
+      fact_payables            ●
+  ▸ Sales                      ●
+  ▸ Purchasing                 ◌ building
 SHARED DATA
-      dim_account · dim_item · dim_gl_account · dim_journal · dim_date …
+      dim_account · dim_item ⚠ · dim_gl_account · dim_journal · dim_date …
+YOUR TABLES
+      budget_2026              🔗 linked to Finance
 SOURCES                        read-only inputs
-  ▸ Exact Online (61 tables)
-  ▸ Budget 2026.xlsx
-+ New subject
+  ▾ [E]  Exact Online          7 of 61
+         TransactionLines      12 to review · → 2
+         Accounts              9 to review · → 1
+         …  54 more, not synced · pick them on Sources
+  ▸ [odoo] Odoo (staging)      21
+  ▸ [xls]  Budget 2026.xlsx    3
++ Add a subject
 ```
 
-Facts purple, lookups ocean (the canvas's existing vocabulary), sources muted.
-A status glyph per row, never a count. Search at the top filters all three
-groups.
+A source is its own catalog node and is identified by its **mark** — the
+brand glyph from `lib/connectorIcons.tsx` that the Sources page already
+draws — never a generic database icon. Facts purple, lookups ocean, grids
+amber (the canvas's existing vocabulary), sources muted. A status glyph per
+row, never a count, except on a source (how many of its tables are synced)
+and on a source table (how many drafts wait on it, what it feeds). Search at
+the top filters every group.
 
-**Centre — the declaration (fluid).** For a table:
+**Right — the view.** Always the declaration of the selected node; nothing
+to toggle. Five shapes:
 
-1. Header: display name, table role chip, subject, status line
-   (*built 3 min ago · 12,480 rows · checks 4/4* or *needs attention: source
-   column `Country` vanished — Clarion built without it*), and the one action
-   **Save** (disabled until something changed).
-2. **What one row is** — the grain, one sentence, editable inline.
-3. **Description** — plain language, editable inline. This is
-   `plain_summary`; the derived provenance sentence is the placeholder.
-4. **SQL** — the declaration, in a real code editor (the `/notebooks`
-   CodeMirror, not a textarea), full width, syntax-lit. Under it a **Preview**
-   button that runs the current text against the warehouse and shows 12 rows
-   (this is the refine preview, reused) — the only "run" a curator ever
-   presses, and it writes nothing.
-5. **Columns — derived by Clarion** — a read-only list of what the SQL
-   produces (name, type, role, FK target), with the *meaning* editable per
-   column and the glossary chip ("your team calls this…") where a term links
-   here. Technical columns collapsed under "+3 technical".
+1. **Nothing selected — what needs you** *(Catalog-Health)*. Four tiles
+   (built and healthy · need attention · building · to review), then the
+   attention list — each row names the table and the cause in one sentence
+   and opens it — the review list grouped per source table, and what changed.
+   This is the Trust facet and the Suggestions queue in one place, and it is
+   the page's answer to "check the health".
+2. **A subject table** *(Main)* — as in the first design. Header with the one
+   action **Save** (disabled until something changed) and *Preview 12 rows*;
+   status line (*built 3 min ago · 12,480 rows · checks 4 of 4 · declared by
+   you*); **what one row is** and **description**, editable inline; **SQL —
+   the declaration** in a real code editor (the `/notebooks` CodeMirror, not a
+   textarea); under it the sentence that replaces every button (*Saving
+   validates the SQL against your warehouse, then rebuilds this table and the
+   4 tables that read from it. Nothing else to press.*); **columns — derived by
+   Clarion**, the meaning editable per column, the glossary chip where a term
+   links here, technical columns collapsed. Context column: lineage (inputs
+   above, this table, outputs and *used by* below — `/lineage/table` and
+   `widget-context`, already built), health (change counts, checks, the
+   schedule as a link to Refresh), history.
+3. **A subject** *(Catalog-Subject)* — what it answers, its tables as cards
+   with status, the star derived from the foreign keys, its metrics with
+   *Open in Definitions →*. Actions: *Shown on Subjects* (the hide toggle),
+   *Rebuild AI-owned tables…* (§7), more.
+4. **A source** *(Catalog-Source)* — the mark, sync state, how many of its
+   tables are synced, what it is, and **read this first**: the vendor notes
+   from the source package (the `DC`/`FC` rule, credit notes negative,
+   journals by `Code`), shown because Clarion reads them before every analysis
+   and a curator should see what the model sees. Then the synced tables with
+   rows, what each feeds and how many drafts wait on it; the unsynced count
+   with a door to Sources. Context: feeds, health (last sync, failed entities,
+   rows changed, next sync), relations (laid by the source · settled by the
+   data · to review → Relations), history. **Nothing here edits the source**:
+   sync, analyse and picking entities stay on Sources, linked from the header.
+5. **A source table** *(Catalog-SourceTable)* — the review job made concrete.
+   What one row is (the vendor's own words, `vendor_description`), **your
+   note** (the editable `description`, kept apart from the vendor's), what it
+   feeds, then the columns: the vendor's meaning where it documents one, and
+   where it does not, Clarion's draft **inline as a proposal with Keep /
+   Discard** — nothing is used until you say yes. *Save* stores your notes and
+   meanings (today's `PATCH /semantic/tables|columns/:id`). Context: lineage,
+   relations with their measured state, health, history. Sample rows at the
+   bottom.
 
-**Right — context (300px).**
+**The assistant** is the floating bottom-right chat the dashboards and
+notebooks already have, aimed at the selected node ("About:
+fact_transaction_lines"). Ask a question ("what does AmountDC mean?") and it
+answers from the vendor docs and the data; ask for a change ("leave out the
+year-end close") and it proposes a diff **on the declaration**, rendered in
+place with **Keep / Discard**; nothing is stored until Keep, and Keep is Save.
+On the landing it answers about all your data; on a source, about what the
+source contains. One assistant, one history, one endpoint.
 
-1. **Lineage** — inputs above, this table in the middle, outputs below:
-   `Exact Online · TransactionLines`, `· GLAccounts` → **fact_transaction_lines**
-   → `dim_gl_account (joined)`, then *used by*: 2 dashboards, 6 saved
-   questions, 1 grid link. Click any node to move to it. This is
-   `/lineage/table` and `widget-context`, already built.
-2. **Joins** — the FK targets as a short list (the star, without a canvas).
-3. **Health** — last refresh's change counts (the sparkline that exists),
-   checks, degraded reason.
-4. **History** — who changed this declaration, when (from `audit_events` +
-   `product_customizations`).
+**A source with no subjects** *(Catalog-NewSubject)* is today's `/build` plan
+panel inside the catalog: the subjects the template would build, an intent
+field, one button *Create my subjects*; the run streams into the same place and
+the tree fills in as tables are built. `/build` retires.
 
-**The assistant** is the floating bottom-right panel that dashboards and
-notebooks already have, aimed at the selected declaration ("Target:
-fact_transaction_lines"). Ask "exclude credit notes" → it proposes a diff on
-the SQL, rendered in place with **Keep / Discard**; nothing is stored until
-Keep, and Keep is just Save. Ask "add a Quotations subject" → the same
-assistant proposes a new subject (today's extend flow) as a card with one
-*Add* button. Ask "what does `AmountDC` mean?" → it answers from the vendor
-docs. One assistant, one history, one endpoint.
+### 3.3 Definitions (`/definitions`) — its own pane
 
-**Subject selected** shows the subject's declaration: name, what it answers
-(the `question_text`s), its tables as cards with status, a compact star
-diagram (the existing `StarSchemaFlow`) and its metrics — with *Open in
-Definitions*. Its only actions are *Rename*, *Hide from Subjects* and
-*Rebuild this subject* (warned, and per §3.4 no longer destructive).
-
-**Empty state / new subject** is today's `/build` PlanPanel inside Model: for
-a source with no subjects, the plan the template would build, an intent
-field, and one button *Create my topics*; the run panel streams into the same
-place. `/build` therefore retires; its "hide" toggle moves to the subject
-header.
-
-### 3.3 Definitions (`/definitions`) — one logical home
-
-*(Screens: Definitions, Definitions-Edit.)* One searchable list, every entry
-the same card, grouped by subject with *Everywhere* first:
+*(Screens: Definitions, Definitions-Edit.)* Settled with the owner: the
+glossary leaves the catalog. One searchable list, every entry the same card,
+grouped by subject with *Everywhere* first:
 
 | Kind | Card shows | Backed by |
 |---|---|---|
@@ -272,7 +314,8 @@ and the sentence *"a customer with at least one invoice in the last 12
 months"*. That is exactly what the owner asked for ("documented once, used by
 the AI"): the glossary's link mechanism already turns it into a fact the model
 is told to use. A metric card has the same anatomy plus the question and an
-optional formula; the AI-draft helper stays. Nothing executes here.
+optional formula; the AI-draft helper stays. Nothing executes here. Each
+subject group carries *open in the Catalog →*.
 
 The page carries the rule in its header copy: *These are the words your
 team uses. Clarion uses them every time it answers.*
@@ -286,7 +329,7 @@ existing CRUD routes stay; the legacy `kpi_definitions` is listed under a
 
 Small, and each item closes one of D1–D4:
 
-1. **One store.** `PUT /model/tables/:id` replaces `PUT /tables/:id/sql`,
+1. **One store.** `PUT /catalog/tables/:id` replaces `PUT /tables/:id/sql`,
    the cell Deploy and refine-approve's SQL write. It runs
    `assertSafeReadQuery`, compiles the SQL against a warehouse session (the
    refine preview's mechanism), refuses with the DuckDB message on failure,
@@ -299,7 +342,7 @@ Small, and each item closes one of D1–D4:
 2. **Status does not hide the table.** A saved declaration that has not
    rebuilt yet keeps `transformation_status='success'` with a new
    `pending_rebuild_at`; the AI context keeps serving the last built data;
-   the Model page shows *rebuilding…*. `draft` is reserved for a table that
+   the catalog shows *rebuilding…*. `draft` is reserved for a table that
    never built.
 3. **Human declarations survive a rebuild.** `snapshotProductEdits` gains
    `transformation_sql`, `description`, `display_name` and the column
@@ -311,28 +354,40 @@ Small, and each item closes one of D1–D4:
    Keep calls the same `PUT`. `product_customizations` keeps the log.
 5. **Definitions read.** `GET /definitions` (union of the three stores,
    tenant-scoped). `hidden` filtered in `productContext`.
+6. **The landing read.** `GET /catalog/attention`: the attention rows
+   (`degraded_reason`, the duplicate-key warning from the last refresh, a
+   failed `transformation_status`), the review counts per source table
+   (`ai_draft` rows), and the recent changes (`audit_events` +
+   `product_customizations`). One read, tenant-scoped, nothing new stored.
+   Source notes on a source come from the package's `getSourceNotes()`, the
+   same call the profiler already makes.
 
 ### 3.5 Every affected page — what happens to it
 
 | Page / surface today | Target |
 |---|---|
-| Rail: Studio → Build | **Removed**; the plan panel lives in Model's empty state |
-| `/build` (883 lines) + AskPanel | **Retired** into Model (plan panel, run panel, hide toggle, rebuild) |
-| `/products` workshop (915) + BuildDashboard (479) | **Retired**; the coverage map is Model's subject view |
+| Catalog chrome: Browse / Trust / Glossary tabs, All / Sources / Products chips, Grid / List / Structure control, hero, *New product* | **Gone.** One tree, one view, one assistant |
+| Catalog cards: CatalogSplitView (451), ProductCardGrid (396), AnalyticsCard + ReferenceCard (242), GlossaryMatchCards (102) | **Retired**; there is no cards view |
+| Catalog: ProductFullView (661), ProductPreviewPanel (561) | **Retired**; the subject declaration |
+| Catalog: ProductTableDetailPanel (1,002), TableDetailPanel (691), SourceRootPanel (1,061), CatalogBrowser (784), EntityDetailPanel (324) | **Rebuilt** as one tree + one declaration with three flavours (subject table · source table · source) |
+| Catalog: Trust facet (QualityOverview 222) | The landing board — what needs you |
+| Catalog: Glossary facet + GlossaryPanel (475) | **Moved** to `/definitions`; the facet redirects |
+| Rail: Studio → Build, Suggestions | **Removed**; both fold into Catalog (badge = what needs you) |
+| `/build` (883) + AskPanel (207) | **Retired** into the catalog's source node (plan panel, run panel) |
+| `/review` (252) | **Retired**; the landing's *To review* list + Keep / Discard on each source table |
+| `/products` workshop (915) + BuildDashboard (479) | **Retired**; the coverage map is the subject view |
 | `/products/[id]` + ProductRootPanel (1,053) + TableNotebook (681) + CellOutput (205) | **Retired**; Preview replaces cell execute |
-| AskAIPanel (640), RefineChat (986), KpiManager (506), `refine.ts` routes | **Retired**; one assistant + Definitions |
-| Topic page: *Manage this data* / Manage mode (ManageLayer 453 + ManageTables 670) | Manage mode **retired**; curator link *Edit in Model →*; the topic page keeps ask box, try-asking, trust line. Quality and Activity move to Model's context column; *Refresh* stays on `/pipelines` |
-| `/shared-data` cards | Link to Model (`/model?table=`) for curators, catalog for viewers |
-| Catalog: ProductFullView, ProductTableDetailPanel | Stay as the read-only understanding surface; the SQL viewer, the description edit form and the "Open in Build / Edit in notebook" links become one *Edit in Model →*; the one-sentence Lineage tab is replaced by the same lineage strip as Model |
-| Catalog: Glossary facet + GlossaryPanel | **Moved** to `/definitions`; the facet redirects |
-| `/relationships` Topics toggle + TopicsCanvas (600) | **Retired**; Model draws the subject's joins. Sources canvas stays |
+| AskAIPanel (640), RefineChat (986), KpiManager (506), `refine.ts` routes | **Retired**; one floating assistant + Definitions |
+| Topic page: *Manage this data* / Manage mode (ManageLayer 453 + ManageTables 670) | Manage mode **retired**; curator link *Open in the Catalog →*; the topic page keeps ask box, try-asking, trust line; Quality and Activity live in the declaration's context column; *Refresh* stays on `/pipelines` |
+| `/shared-data` cards | Link into the catalog (`/catalog?table=`) |
+| `/relationships` Topics toggle + TopicsCanvas (600) | **Retired**; the subject view draws its joins. Sources canvas stays |
 | `/pipelines` | Unchanged (Refresh data, schedules, runs) |
 | `/notebooks` | Unchanged (owner's constraint); gains *Save as declaration →* later, not now |
-| ⌘K | "Model", "Definitions" actions; search hits deep-link to the entity |
+| ⌘K | "Catalog", "Definitions" actions; search hits deep-link to the node |
 
-Net: about 6,900 lines of frontend retired against roughly 2,000 new
-(Model ≈ 1,200 incl. tree/editor/context, Definitions ≈ 500, assistant
-reuse ≈ 300).
+Net: about 11,000 lines of frontend retired outright and about 3,900 rebuilt
+into roughly 2,600 new (tree ≈ 300, the declaration in three flavours ≈ 1,200,
+landing ≈ 250, assistant reuse ≈ 300, Definitions ≈ 500).
 
 ---
 
@@ -361,13 +416,17 @@ reuse ≈ 300).
    `declared_by`, the survive-rebuild snapshot, the status rule. Each has a
    red test today (D1 reproduces in one request; D2 in a rebuild round trip).
    This slice alone fixes the silent revert and the wipe.
-2. **Model page** with tree, declaration, preview, context column; the
-   assistant reusing `AssistantPanel` + `CellDiff`; retire the workshop, the
-   notebook cells, RefineChat, AskAIPanel, Manage mode's Tables tab.
+2. **Catalog rebuilt in place**: the tree (sources by their mark), the
+   declaration in its three flavours, the landing, the assistant reusing
+   `AssistantPanel` + `CellDiff`; retire the facets, the layer chips, the view
+   control, the cards components, the workshop, the notebook cells,
+   RefineChat, AskAIPanel and Manage mode's Tables tab. The URL does not
+   change, so every existing deep link (`?table=`, `?refTableId=`,
+   `?productId=`) keeps landing on the right node.
 3. **Definitions page**; move the glossary; retire KpiManager and the Metrics
    tab; ⌘K fixes.
-4. **Fold Build into Model's empty state**; retire `/build`, the Topics canvas,
-   the remaining Manage tabs; rail change.
+4. **Fold Build and Suggestions into the catalog**; retire `/build`,
+   `/review`, the Topics canvas, the remaining Manage tabs; rail change.
 
 Slices 2–4 are each a deletion-heavy PR; the only new code with risk is the
 assistant's proposal endpoint, which is the refine service returning instead
@@ -388,11 +447,19 @@ of writing.
 
 ## 7. Owner decisions
 
-Settled 2026-09-22: audience, unit, documented-only definitions, cut freely
-(notebooks stay), code-first, diff-then-Keep, all affected pages mocked.
+Settled 2026-09-22, morning: audience, unit, documented-only definitions, cut
+freely (notebooks stay), code-first, diff-then-Keep, all affected pages mocked.
 
-Open, for after the mockup review: (a) whether *Rebuild this subject* should
-exist at all once human declarations survive, or whether "re-derive the
-AI-owned tables" is a Refresh option on `/pipelines`; (b) whether the legacy
-`kpi_definitions` readers (reports, user notebooks) move to `product_kpis` in
-slice 3 or later.
+Settled 2026-09-22, evening, after the first boards: **the catalog is the
+workspace** (no Model page); one tree, no layer chips, no view toggles; a
+source is identified by its mark; the glossary becomes the separate
+Definitions pane; the assistant is a floating chat.
+
+Open, for after the second review: (a) whether *Rebuild AI-owned tables…*
+should exist at all once human declarations survive, or whether "re-derive
+the AI-owned tables" is a Refresh option on `/pipelines`; (b) whether the
+legacy `kpi_definitions` readers (reports, user notebooks) move to
+`product_kpis` in slice 3 or later; (c) whether Suggestions folds into the
+catalog in slice 4 (the boards assume it does — the landing's *To review*
+list plus Keep / Discard on each source table) or keeps its page a while
+longer.

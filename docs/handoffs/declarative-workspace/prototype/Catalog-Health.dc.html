@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Catalog — a table’s declaration</title>
+<title>Catalog — nothing selected: what needs you</title>
 <script src="./support.js"></script>
 </head>
 <body>
@@ -62,10 +62,10 @@ a{color:#164e63;text-decoration:none}a:hover{color:#103d4f}
     <div style="display:flex;align-items:center;gap:8px;padding:7px 12px 7px 14px;font-size:13.5px;border-left:2px solid transparent;background:transparent;color:#0f1a22;">
     <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#8891a0" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;display:block"><path d="m6 9 6 6 6-6"/></svg><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#4a5660" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;display:block"><path d="M3 22h18"/><path d="M6 18v-7M10 18v-7M14 18v-7M18 18v-7"/><path d="M12 2 2 8h20z"/></svg><span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">Finance</span><span title="built"><span style="width:7px;height:7px;border-radius:999px;background:#3f7a5c;display:inline-block;flex-shrink:0"></span></span></div>
     
-    <div style="display:flex;align-items:center;gap:8px;padding:6px 12px 6px 42px;font-size:13px;border-left:2px solid #164e63;background:#ffffff;color:#334049;font-weight:500;color:#0f1a22">
+    <div style="display:flex;align-items:center;gap:8px;padding:6px 12px 6px 42px;font-size:13px;border-left:2px solid transparent;background:transparent;color:#334049;">
     <span class="mono" style="font-size:12.5px;color:#6b4e8c;flex-shrink:0;width:10px;text-align:center">▣</span>
     <span class="mono" style="font-size:12.5px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">fact_transaction_lines</span>
-    
+    <span title="built"><span style="width:7px;height:7px;border-radius:999px;background:#3f7a5c;display:inline-block;flex-shrink:0"></span></span>
   </div>
     <div style="display:flex;align-items:center;gap:8px;padding:6px 12px 6px 42px;font-size:13px;border-left:2px solid transparent;background:transparent;color:#334049;">
     <span class="mono" style="font-size:12.5px;color:#6b4e8c;flex-shrink:0;width:10px;text-align:center">▣</span>
@@ -136,137 +136,59 @@ a{color:#164e63;text-decoration:none}a:hover{color:#103d4f}
   <div style="border-top:1px solid #d0d5da;padding:10px 12px">
     <button class="btn" style="width:100%;justify-content:center"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#4a5660" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;display:block"><path d="M12 5v14M5 12h14"/></svg>Add a subject</button>
   </div>
-</div><div style="flex:1;min-width:0;overflow:auto;padding:22px 32px 40px;position:relative">
-  <div class="row" style="gap:8px;margin-bottom:4px">
-    <span class="eyebrow">Finance</span><span class="eyebrow">›</span><span class="eyebrow" style="color:#6b4e8c">Measures table</span>
-  </div>
-  <div class="row" style="gap:14px;margin-bottom:6px">
-    <h1 class="mono" style="margin:0;font-size:22px;font-weight:500;letter-spacing:-0.01em">fact_transaction_lines</h1>
-    <span style="flex:1"></span>
-    <button class="btn btn-ghost"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#4a5660" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;display:block"><path d="m6 4 14 8-14 8z"/></svg>Preview 12 rows</button>
-    <button class="btn btn-primary" disabled>Save</button>
-    <button class="btn btn-ghost" aria-label="More" style="padding:7px 8px"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#4a5660" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;display:block"><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/><circle cx="5" cy="12" r="1"/></svg></button>
-  </div>
-  <div class="row" style="gap:14px;font-size:12.5px;color:#4a5660;margin-bottom:22px">
-    <span class="row" style="gap:6px"><span style="width:7px;height:7px;border-radius:999px;background:#3f7a5c;display:inline-block;flex-shrink:0"></span> Built 3 min ago</span><span>·</span><span>12,480 rows</span><span>·</span><span>checks 4 of 4</span><span>·</span><span>declared by you</span>
-  </div>
-
-  <div style="display:grid;grid-template-columns:150px 1fr;gap:10px 20px;align-items:baseline;margin-bottom:22px;max-width:820px">
-    <div class="eyebrow">What one row is</div>
-    <div style="font-size:14.5px;line-height:1.5;border-bottom:1px dashed #d0d5da;padding-bottom:4px">One processed general-ledger transaction line, in the division currency.</div>
-    <div class="eyebrow">Description</div>
-    <div style="font-size:14.5px;line-height:1.55;color:#334049;border-bottom:1px dashed #d0d5da;padding-bottom:4px">Every posted journal entry line from Exact Online, with the amount in EUR and the GL account, customer/supplier account and journal it was posted to. Credit notes arrive natively negative — no sign is flipped here.</div>
-  </div>
-
-  <div class="row" style="gap:10px;margin-bottom:8px">
-    <div class="eyebrow">SQL — the declaration</div>
-    <span style="flex:1"></span>
-    <span style="font-size:11.5px;color:#6b7680">DuckDB · source tables by their Exact Online names</span>
-  </div>
-  <div class="mono" style="background:#0f1a22;border:1px solid rgba(255,255,255,0.06);border-radius:8px;padding:12px 10px;font-size:12.5px;line-height:1.7;overflow:auto"><div style="display:flex;background:transparent"><span style="width:34px;text-align:right;padding-right:10px;color:rgba(255,255,255,0.28);user-select:none;flex-shrink:0">1</span><span style="width:12px;color:#8891a0;flex-shrink:0">&nbsp;</span><span style="white-space:pre;color:#e6edf3"><span class="k">SELECT</span></span></div><div style="display:flex;background:transparent"><span style="width:34px;text-align:right;padding-right:10px;color:rgba(255,255,255,0.28);user-select:none;flex-shrink:0">2</span><span style="width:12px;color:#8891a0;flex-shrink:0">&nbsp;</span><span style="white-space:pre;color:#e6edf3">  tl.ID                       <span class="k">AS</span> transaction_line_id,</span></div><div style="display:flex;background:transparent"><span style="width:34px;text-align:right;padding-right:10px;color:rgba(255,255,255,0.28);user-select:none;flex-shrink:0">3</span><span style="width:12px;color:#8891a0;flex-shrink:0">&nbsp;</span><span style="white-space:pre;color:#e6edf3">  <span class="f">TRY_CAST</span>(tl.Date <span class="k">AS DATE</span>)  <span class="k">AS</span> transaction_date,</span></div><div style="display:flex;background:transparent"><span style="width:34px;text-align:right;padding-right:10px;color:rgba(255,255,255,0.28);user-select:none;flex-shrink:0">4</span><span style="width:12px;color:#8891a0;flex-shrink:0">&nbsp;</span><span style="white-space:pre;color:#e6edf3">  tl.GLAccountCode            <span class="k">AS</span> gl_account_code,</span></div><div style="display:flex;background:transparent"><span style="width:34px;text-align:right;padding-right:10px;color:rgba(255,255,255,0.28);user-select:none;flex-shrink:0">5</span><span style="width:12px;color:#8891a0;flex-shrink:0">&nbsp;</span><span style="white-space:pre;color:#e6edf3">  tl.AccountCode              <span class="k">AS</span> account_code,</span></div><div style="display:flex;background:transparent"><span style="width:34px;text-align:right;padding-right:10px;color:rgba(255,255,255,0.28);user-select:none;flex-shrink:0">6</span><span style="width:12px;color:#8891a0;flex-shrink:0">&nbsp;</span><span style="white-space:pre;color:#e6edf3">  tl.JournalCode              <span class="k">AS</span> journal_code,</span></div><div style="display:flex;background:transparent"><span style="width:34px;text-align:right;padding-right:10px;color:rgba(255,255,255,0.28);user-select:none;flex-shrink:0">7</span><span style="width:12px;color:#8891a0;flex-shrink:0">&nbsp;</span><span style="white-space:pre;color:#e6edf3">  tl.AmountDC                 <span class="k">AS</span> amount_dc,</span></div><div style="display:flex;background:transparent"><span style="width:34px;text-align:right;padding-right:10px;color:rgba(255,255,255,0.28);user-select:none;flex-shrink:0">8</span><span style="width:12px;color:#8891a0;flex-shrink:0">&nbsp;</span><span style="white-space:pre;color:#e6edf3">  tl.VATAmountDC              <span class="k">AS</span> vat_amount_dc,</span></div><div style="display:flex;background:transparent"><span style="width:34px;text-align:right;padding-right:10px;color:rgba(255,255,255,0.28);user-select:none;flex-shrink:0">9</span><span style="width:12px;color:#8891a0;flex-shrink:0">&nbsp;</span><span style="white-space:pre;color:#e6edf3">  tl.Description              <span class="k">AS</span> description</span></div><div style="display:flex;background:transparent"><span style="width:34px;text-align:right;padding-right:10px;color:rgba(255,255,255,0.28);user-select:none;flex-shrink:0">10</span><span style="width:12px;color:#8891a0;flex-shrink:0">&nbsp;</span><span style="white-space:pre;color:#e6edf3"><span class="k">FROM</span> TransactionLines tl</span></div><div style="display:flex;background:transparent"><span style="width:34px;text-align:right;padding-right:10px;color:rgba(255,255,255,0.28);user-select:none;flex-shrink:0">11</span><span style="width:12px;color:#8891a0;flex-shrink:0">&nbsp;</span><span style="white-space:pre;color:#e6edf3"><span class="k">WHERE</span> tl.Status = <span class="s">50</span>               <span class="c">-- processed entries only</span></span></div></div>
-  <div style="font-size:12px;color:#6b7680;margin:8px 0 26px">Saving validates the SQL against your warehouse, then rebuilds this table and the 4 tables that read from it. Nothing else to press.</div>
-
-  <div class="row" style="gap:10px;margin-bottom:8px">
-    <div class="eyebrow">Columns — derived by Clarion</div>
-    <span style="flex:1"></span><span style="font-size:11.5px;color:#6b7680">8 columns + 1 technical · meanings editable</span>
-  </div>
-  <div class="card" style="overflow:hidden">
-    <div style="display:grid;grid-template-columns:168px 66px 128px 1fr;gap:10px;padding:6px 12px;background:#f8f9fa" class="eyebrow"><span>Column</span><span>Type</span><span>Role</span><span>Meaning</span></div>
-    <div style="display:grid;grid-template-columns:168px 66px 128px 1fr;gap:10px;align-items:center;padding:7px 12px;border-top:1px solid #edeff2;font-size:13px">
-    <span class="mono" style="font-size:12.5px">transaction_line_id</span>
-    <span class="mono" style="font-size:11px;color:#6b7680">VARCHAR</span>
-    <span><span class="chip" style="background:#e8f0f3;color:#164e63">key</span></span>
-    <span style="color:#4a5660;line-height:1.45">The line’s own id in Exact Online.</span>
-  </div>
-    <div style="display:grid;grid-template-columns:168px 66px 128px 1fr;gap:10px;align-items:center;padding:7px 12px;border-top:1px solid #edeff2;font-size:13px">
-    <span class="mono" style="font-size:12.5px">transaction_date</span>
-    <span class="mono" style="font-size:11px;color:#6b7680">DATE</span>
-    <span><span class="chip" style="background:#e8f0f3;color:#164e63">→ dim_date</span></span>
-    <span style="color:#4a5660;line-height:1.45"></span>
-  </div>
-    <div style="display:grid;grid-template-columns:168px 66px 128px 1fr;gap:10px;align-items:center;padding:7px 12px;border-top:1px solid #edeff2;font-size:13px">
-    <span class="mono" style="font-size:12.5px">gl_account_code</span>
-    <span class="mono" style="font-size:11px;color:#6b7680">VARCHAR</span>
-    <span><span class="chip" style="background:#e8f0f3;color:#164e63">→ dim_gl_account</span></span>
-    <span style="color:#4a5660;line-height:1.45"></span>
-  </div>
-    <div style="display:grid;grid-template-columns:168px 66px 128px 1fr;gap:10px;align-items:center;padding:7px 12px;border-top:1px solid #edeff2;font-size:13px">
-    <span class="mono" style="font-size:12.5px">account_code</span>
-    <span class="mono" style="font-size:11px;color:#6b7680">VARCHAR</span>
-    <span><span class="chip" style="background:#e8f0f3;color:#164e63">→ dim_account</span></span>
-    <span style="color:#4a5660;line-height:1.45"></span>
-  </div>
-    <div style="display:grid;grid-template-columns:168px 66px 128px 1fr;gap:10px;align-items:center;padding:7px 12px;border-top:1px solid #edeff2;font-size:13px">
-    <span class="mono" style="font-size:12.5px">journal_code</span>
-    <span class="mono" style="font-size:11px;color:#6b7680">VARCHAR</span>
-    <span><span class="chip" style="background:#e8f0f3;color:#164e63">→ dim_journal</span></span>
-    <span style="color:#4a5660;line-height:1.45"></span>
-  </div>
-    <div style="display:grid;grid-template-columns:168px 66px 128px 1fr;gap:10px;align-items:center;padding:7px 12px;border-top:1px solid #edeff2;font-size:13px">
-    <span class="mono" style="font-size:12.5px">amount_dc</span>
-    <span class="mono" style="font-size:11px;color:#6b7680">DOUBLE</span>
-    <span><span class="chip" style="background:#ece6f3;color:#6b4e8c">measure</span></span>
-    <span style="color:#4a5660;line-height:1.45">Amount in EUR, additive. <span class="chip" title="your team calls this net booking" style="background:#e8f0f3;color:#164e63"><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#164e63" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;display:block"><path d="M3 21c3 0 7-1 7-8V5H3v8h4c0 4-2 6-4 6z"/><path d="M15 21c3 0 7-1 7-8V5h-7v8h4c0 4-2 6-4 6z"/></svg> your team calls this: “net booking”</span></span>
-  </div>
-    <div style="display:grid;grid-template-columns:168px 66px 128px 1fr;gap:10px;align-items:center;padding:7px 12px;border-top:1px solid #edeff2;font-size:13px">
-    <span class="mono" style="font-size:12.5px">vat_amount_dc</span>
-    <span class="mono" style="font-size:11px;color:#6b7680">DOUBLE</span>
-    <span><span class="chip" style="background:#ece6f3;color:#6b4e8c">measure</span></span>
-    <span style="color:#4a5660;line-height:1.45">VAT part of the amount, additive.</span>
-  </div>
-    <div style="display:grid;grid-template-columns:168px 66px 128px 1fr;gap:10px;align-items:center;padding:7px 12px;border-top:1px solid #edeff2;font-size:13px">
-    <span class="mono" style="font-size:12.5px">description</span>
-    <span class="mono" style="font-size:11px;color:#6b7680">VARCHAR</span>
-    <span><span class="chip" style="background:#edeff2;color:#4a5660">attribute</span></span>
-    <span style="color:#4a5660;line-height:1.45">Free text from the booking.</span>
-  </div>
-    <div style="padding:7px 12px;border-top:1px solid #edeff2;font-size:12px;color:#6b7680">+ 1 technical column, hidden from answers</div>
-  </div>
-  <div style="position:absolute;bottom:20px;right:20px;display:flex;align-items:center;gap:8px;padding:10px 16px 10px 12px;border-radius:999px;border:1px solid #d0d5da;background:#ffffff;box-shadow:0 6px 24px -8px rgba(15,32,45,0.30);font-size:13px;color:#334049"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#164e63" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;display:block"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"/><path d="M19 17l.8 2.2L22 20l-2.2.8L19 23l-.8-2.2L16 20l2.2-.8z"/></svg>Ask or change this table</div>
-</div><div style="width:300px;flex-shrink:0;box-sizing:border-box;border-left:1px solid #d0d5da;background:#f8f9fa;overflow:auto;padding:16px 16px 24px;display:flex;flex-direction:column;gap:22px">
-  <div>
-    <div class="eyebrow" style="margin-bottom:8px">Lineage</div>
-    <div style="display:flex;flex-direction:column">
-      <div style="display:flex;align-items:center;gap:8px;padding:7px 10px;border:1px solid #d0d5da;border-left:3px solid #6b7680;background:#ffffff;border-radius:6px">
-    <svg width="12" height="12" viewBox="0 0 24 24" fill="#E4002B" style="display:block;flex-shrink:0"><path d="M5 2.4h14a2.6 2.6 0 0 1 2.6 2.6v14a2.6 2.6 0 0 1-2.6 2.6H5A2.6 2.6 0 0 1 2.4 19V5A2.6 2.6 0 0 1 5 2.4Zm0 1.7A.9.9 0 0 0 4.1 5v14a.9.9 0 0 0 .9.9h14a.9.9 0 0 0 .9-.9V5a.9.9 0 0 0-.9-.9Z"/><path d="M8.3 6.6h7.4v1.9h-5.3v2.6h4.7v1.9h-4.7v2.6h5.3v1.9H8.3Z"/></svg><div style="flex:1;min-width:0"><div class="mono" style="font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">TransactionLines</div><div style="font-size:11px;color:#6b7680">Exact Online · 8 columns read</div></div></div>
-      <div style="height:6px"></div>
-      <div style="display:flex;align-items:center;gap:8px;padding:7px 10px;border:1px solid #d0d5da;border-left:3px solid #6b7680;background:#ffffff;border-radius:6px">
-    <svg width="12" height="12" viewBox="0 0 24 24" fill="#E4002B" style="display:block;flex-shrink:0"><path d="M5 2.4h14a2.6 2.6 0 0 1 2.6 2.6v14a2.6 2.6 0 0 1-2.6 2.6H5A2.6 2.6 0 0 1 2.4 19V5A2.6 2.6 0 0 1 5 2.4Zm0 1.7A.9.9 0 0 0 4.1 5v14a.9.9 0 0 0 .9.9h14a.9.9 0 0 0 .9-.9V5a.9.9 0 0 0-.9-.9Z"/><path d="M8.3 6.6h7.4v1.9h-5.3v2.6h4.7v1.9h-4.7v2.6h5.3v1.9H8.3Z"/></svg><div style="flex:1;min-width:0"><div class="mono" style="font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">GLAccounts</div><div style="font-size:11px;color:#6b7680">Exact Online · joined for the account type</div></div></div>
-      <div style="width:1px;height:10px;background:#b8bec5;margin:0 auto"></div>
-      <div style="display:flex;align-items:center;gap:8px;padding:7px 10px;border:1px solid #164e63;border-left:3px solid #6b4e8c;background:#e8f0f3;border-radius:6px">
-    <div style="flex:1;min-width:0"><div class="mono" style="font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:500">fact_transaction_lines</div><div style="font-size:11px;color:#6b7680">this table</div></div></div>
-      <div style="width:1px;height:10px;background:#b8bec5;margin:0 auto"></div>
-      <div style="display:flex;align-items:center;gap:8px;padding:7px 10px;border:1px solid #d0d5da;border-left:3px solid #164e63;background:#ffffff;border-radius:6px">
-    <div style="flex:1;min-width:0"><div class="mono" style="font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">dim_gl_account</div><div style="font-size:11px;color:#6b7680">joins on gl_account_code</div></div></div>
-      <div style="height:6px"></div>
-      <div style="display:flex;align-items:center;gap:8px;padding:7px 10px;border:1px solid #d0d5da;border-left:3px solid #164e63;background:#ffffff;border-radius:6px">
-    <div style="flex:1;min-width:0"><div class="mono" style="font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">dim_account · dim_journal · dim_date</div><div style="font-size:11px;color:#6b7680">3 more joins</div></div></div>
-      <div style="height:6px"></div>
-      <div style="display:flex;align-items:center;gap:8px;padding:7px 10px;border:1px solid #d0d5da;border-left:3px solid #b45309;background:#ffffff;border-radius:6px">
-    <div style="flex:1;min-width:0"><div class="mono" style="font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">budget_2026</div><div style="font-size:11px;color:#6b7680">your table · linked on gl_account_code</div></div></div>
+</div><div style="flex:1;min-width:0;overflow:auto;padding:26px 40px 40px;position:relative">
+  <div style="max-width:980px">
+    <div class="eyebrow" style="margin-bottom:6px">Catalog</div>
+    <div class="row" style="gap:16px;margin-bottom:4px"><h1 class="serif" style="margin:0;font-size:28px;font-weight:400;letter-spacing:-0.02em">Your data, at a glance</h1><span style="flex:1"></span><span class="row" style="gap:6px;font-size:12.5px;color:#4a5660"><span style="width:7px;height:7px;border-radius:999px;background:#3f7a5c;display:inline-block;flex-shrink:0"></span> Refreshed last night at 02:04 · next tonight</span></div>
+    <p style="margin:0 0 20px;font-size:14px;color:#4a5660;line-height:1.55;max-width:720px">2 sources · 3 subjects · 7 shared lookups · 1 of your tables. Pick anything on the left to read its declaration and change it. What needs you is below.</p>
+    <div style="display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin-bottom:24px">
+      <div class="card" style="padding:14px 16px;display:flex;flex-direction:column;gap:4px;min-width:0">
+    <div class="row" style="gap:8px"><span class="serif" style="font-size:28px;font-weight:400;letter-spacing:-0.02em;line-height:1">11</span><span style="width:7px;height:7px;border-radius:999px;background:#3f7a5c;display:inline-block;flex-shrink:0"></span></div>
+    <div style="font-size:13.5px;font-weight:500;color:#3f7a5c">tables built and healthy</div>
+    <div style="font-size:12px;color:#6b7680;line-height:1.45">Everything Ask AI and the dashboards read from.</div></div>
+      <div class="card" style="padding:14px 16px;display:flex;flex-direction:column;gap:4px;min-width:0">
+    <div class="row" style="gap:8px"><span class="serif" style="font-size:28px;font-weight:400;letter-spacing:-0.02em;line-height:1">2</span><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#a06a1c" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;display:block"><path d="M12 9v4M12 17h.01"/><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/></svg></div>
+    <div style="font-size:13.5px;font-weight:500;color:#a06a1c">need attention</div>
+    <div style="font-size:12px;color:#6b7680;line-height:1.45">Built with something missing. Answers still work, narrower.</div></div>
+      <div class="card" style="padding:14px 16px;display:flex;flex-direction:column;gap:4px;min-width:0">
+    <div class="row" style="gap:8px"><span class="serif" style="font-size:28px;font-weight:400;letter-spacing:-0.02em;line-height:1">1</span><span title="building" style="width:9px;height:9px;border-radius:999px;border:1.5px dashed #164e63;display:inline-block;flex-shrink:0"></span></div>
+    <div style="font-size:13.5px;font-weight:500;color:#164e63">building</div>
+    <div style="font-size:12px;color:#6b7680;line-height:1.45">Purchasing, started 02:04 — a few minutes.</div></div>
+      <div class="card" style="padding:14px 16px;display:flex;flex-direction:column;gap:4px;min-width:0">
+    <div class="row" style="gap:8px"><span class="serif" style="font-size:28px;font-weight:400;letter-spacing:-0.02em;line-height:1">28</span><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#c08a5e" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;display:block"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"/><path d="M19 17l.8 2.2L22 20l-2.2.8L19 23l-.8-2.2L16 20l2.2-.8z"/></svg></div>
+    <div style="font-size:13.5px;font-weight:500;color:#7a4f2b">to review</div>
+    <div style="font-size:12px;color:#6b7680;line-height:1.45">Meanings Clarion drafted, waiting for a yes.</div></div>
     </div>
-    <div style="margin-top:10px;font-size:12.5px;color:#4a5660;line-height:1.5"><span style="color:#0f1a22;font-weight:500">Used by</span> 2 dashboards · 6 saved questions · the Finance topic page</div>
-  </div>
-  <div>
-    <div class="eyebrow" style="margin-bottom:8px">Health</div>
-    <div class="card" style="padding:10px 12px;display:flex;flex-direction:column;gap:8px">
-      <div class="row" style="justify-content:space-between;font-size:12.5px;gap:10px"><span>Built 3 min ago</span><span style="text-align:right"><span class="mono" style="font-size:11px;color:#6b7680">12,480 rows</span></span></div>
-      <svg width="266" height="34" viewBox="0 0 266 34"><polyline fill="none" stroke="#3f7a5c" stroke-width="1.5" points="0,26 30,25 60,25 90,24 120,25 150,23 180,24 210,22 240,21 266,20"/><polyline fill="none" stroke="#a06a1c" stroke-width="1.5" points="0,31 30,31 60,30 90,31 120,30 150,31 180,29 210,31 240,30 266,30"/></svg>
-      <div class="row" style="gap:12px;font-size:11.5px;color:#4a5660"><span><span style="width:7px;height:7px;border-radius:999px;background:#3f7a5c;display:inline-block;flex-shrink:0"></span> +36 inserted</span><span><span style="width:7px;height:7px;border-radius:999px;background:#a06a1c;display:inline-block;flex-shrink:0"></span> 2 updated</span><span>0 deleted</span></div>
-      <div style="border-top:1px solid #edeff2;padding-top:8px;display:flex;flex-direction:column;gap:6px">
-        <div class="row" style="justify-content:space-between;font-size:12.5px;gap:10px"><span>Checks</span><span style="text-align:right"><span style="color:#3f7a5c;font-weight:500">4 of 4 passing</span></span></div>
-        <div class="row" style="justify-content:space-between;font-size:12.5px;gap:10px"><span>Refresh schedule</span><span style="text-align:right"><a href="#" style="font-size:12px">nightly 02:00 · on Refresh</a></span></div>
+
+    <div class="row" style="gap:10px;margin-bottom:8px"><div class="eyebrow">Needs attention</div><span class="chip" style="background:#f1e4c8;color:#a06a1c">2</span></div>
+    <div class="card" style="overflow:hidden;margin-bottom:22px">
+      <a href="#" style="display:flex;gap:12px;padding:11px 14px;border-top:1px solid #edeff2;color:#0f1a22;align-items:flex-start">
+    <span style="padding-top:2px"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#a06a1c" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;display:block"><path d="M12 9v4M12 17h.01"/><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/></svg></span><div style="flex:1;min-width:0;font-size:13.5px;line-height:1.5"><span class="mono" style="font-size:12.5px;font-weight:500">fact_receivables</span> <span class="chip" style="background:#ece6f3;color:#6b4e8c">measures</span><div style="color:#4a5660">Exact Online stopped providing <span class="mono">DueDate</span> on 18 Sep. Clarion built the table without it, so “who is overdue” cannot be answered until the column is back or the SQL changes.</div></div><span style="font-size:12.5px;color:#164e63;white-space:nowrap;padding-top:2px">Open →</span></a>
+      <a href="#" style="display:flex;gap:12px;padding:11px 14px;border-top:1px solid #edeff2;color:#0f1a22;align-items:flex-start">
+    <span style="padding-top:2px"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#a06a1c" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;display:block"><path d="M12 9v4M12 17h.01"/><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/></svg></span><div style="flex:1;min-width:0;font-size:13.5px;line-height:1.5"><span class="mono" style="font-size:12.5px;font-weight:500">dim_item</span> <span class="chip" style="background:#e8f0f3;color:#164e63">lookup</span><div style="color:#4a5660">14 rows share the key <span class="mono">ItemCode</span>. The key was dropped for this refresh; the duplicates are in Exact Online, not here.</div></div><span style="font-size:12.5px;color:#164e63;white-space:nowrap;padding-top:2px">Open →</span></a>
+    </div>
+
+    <div style="display:grid;grid-template-columns:1.2fr 1fr;gap:20px">
+      <div>
+        <div class="row" style="gap:10px;margin-bottom:8px"><div class="eyebrow">To review</div><span class="chip" style="background:#f1e4d6;color:#7a4f2b">28</span><span style="flex:1"></span><a href="#" style="font-size:12px">Review everything →</a></div>
+        <div class="card" style="overflow:hidden">
+          <a href="#" class="row" style="gap:10px;padding:10px 14px;border-top:1px solid #edeff2;color:#0f1a22"><svg width="12" height="12" viewBox="0 0 24 24" fill="#E4002B" style="display:block;flex-shrink:0"><path d="M5 2.4h14a2.6 2.6 0 0 1 2.6 2.6v14a2.6 2.6 0 0 1-2.6 2.6H5A2.6 2.6 0 0 1 2.4 19V5A2.6 2.6 0 0 1 5 2.4Zm0 1.7A.9.9 0 0 0 4.1 5v14a.9.9 0 0 0 .9.9h14a.9.9 0 0 0 .9-.9V5a.9.9 0 0 0-.9-.9Z"/><path d="M8.3 6.6h7.4v1.9h-5.3v2.6h4.7v1.9h-4.7v2.6h5.3v1.9H8.3Z"/></svg><span class="mono" style="font-size:12.5px;flex:1">TransactionLines</span><span style="font-size:12.5px;color:#4a5660">12 meanings drafted</span><span style="font-size:12.5px;color:#164e63;white-space:nowrap">Review →</span></a><a href="#" class="row" style="gap:10px;padding:10px 14px;border-top:1px solid #edeff2;color:#0f1a22"><svg width="12" height="12" viewBox="0 0 24 24" fill="#E4002B" style="display:block;flex-shrink:0"><path d="M5 2.4h14a2.6 2.6 0 0 1 2.6 2.6v14a2.6 2.6 0 0 1-2.6 2.6H5A2.6 2.6 0 0 1 2.4 19V5A2.6 2.6 0 0 1 5 2.4Zm0 1.7A.9.9 0 0 0 4.1 5v14a.9.9 0 0 0 .9.9h14a.9.9 0 0 0 .9-.9V5a.9.9 0 0 0-.9-.9Z"/><path d="M8.3 6.6h7.4v1.9h-5.3v2.6h4.7v1.9h-4.7v2.6h5.3v1.9H8.3Z"/></svg><span class="mono" style="font-size:12.5px;flex:1">Accounts</span><span style="font-size:12.5px;color:#4a5660">9 meanings drafted</span><span style="font-size:12.5px;color:#164e63;white-space:nowrap">Review →</span></a><a href="#" class="row" style="gap:10px;padding:10px 14px;border-top:1px solid #edeff2;color:#0f1a22"><svg width="12" height="12" viewBox="0 0 24 24" fill="#E4002B" style="display:block;flex-shrink:0"><path d="M5 2.4h14a2.6 2.6 0 0 1 2.6 2.6v14a2.6 2.6 0 0 1-2.6 2.6H5A2.6 2.6 0 0 1 2.4 19V5A2.6 2.6 0 0 1 5 2.4Zm0 1.7A.9.9 0 0 0 4.1 5v14a.9.9 0 0 0 .9.9h14a.9.9 0 0 0 .9-.9V5a.9.9 0 0 0-.9-.9Z"/><path d="M8.3 6.6h7.4v1.9h-5.3v2.6h4.7v1.9h-4.7v2.6h5.3v1.9H8.3Z"/></svg><span class="mono" style="font-size:12.5px;flex:1">GLAccounts</span><span style="font-size:12.5px;color:#4a5660">7 meanings drafted</span><span style="font-size:12.5px;color:#164e63;white-space:nowrap">Review →</span></a>
+          <div style="padding:8px 14px;border-top:1px solid #edeff2;font-size:12px;color:#6b7680">Each one is a Keep or Discard on the table itself — nothing is used until you say yes.</div>
+        </div>
+      </div>
+      <div>
+        <div class="eyebrow" style="margin-bottom:8px">What changed</div>
+        <div class="card" style="padding:0 14px">
+          <div style="display:flex;gap:10px;padding:9px 0;border-top:1px solid #edeff2;font-size:13px;line-height:1.45"><span style="flex:1;color:#4a5660"><span style="color:#0f1a22;font-weight:500">You</span> kept the assistant’s change on <span class="mono">fact_transaction_lines</span></span><span class="mono" style="font-size:11px;color:#6b7680;white-space:nowrap">3 min ago</span></div>
+          <div style="display:flex;gap:10px;padding:9px 0;border-top:1px solid #edeff2;font-size:13px;line-height:1.45"><span style="flex:1;color:#4a5660"><span style="color:#0f1a22;font-weight:500">Clarion</span> rebuilt Finance — 3 tables, 4 of 4 checks</span><span class="mono" style="font-size:11px;color:#6b7680;white-space:nowrap">02:04</span></div>
+          <div style="display:flex;gap:10px;padding:9px 0;border-top:1px solid #edeff2;font-size:13px;line-height:1.45"><span style="flex:1;color:#4a5660"><span style="color:#0f1a22;font-weight:500">Ines</span> rewrote the description of <span class="mono">dim_account</span></span><span class="mono" style="font-size:11px;color:#6b7680;white-space:nowrap">12 Sep</span></div>
+          <div style="display:flex;gap:10px;padding:9px 0;border-top:1px solid #edeff2;font-size:13px;line-height:1.45"><span style="flex:1;color:#4a5660"><span style="color:#0f1a22;font-weight:500">Clarion</span> drafted 28 meanings after the re-analyse</span><span class="mono" style="font-size:11px;color:#6b7680;white-space:nowrap">12 Sep</span></div>
+        </div>
       </div>
     </div>
   </div>
-  <div>
-    <div class="eyebrow" style="margin-bottom:8px">History</div>
-    <div style="display:flex;flex-direction:column;gap:9px;font-size:12.5px;color:#4a5660;line-height:1.45">
-      <div><span style="color:#0f1a22">You</span> kept the assistant’s change <span class="mono" style="font-size:11px;color:#6b7680">· 3 min ago</span><div style="color:#6b7680">excluded the closing journal</div></div>
-      <div><span style="color:#0f1a22">Ines</span> rewrote the description <span class="mono" style="font-size:11px;color:#6b7680">· 12 Sep</span></div>
-      <div><span style="color:#0f1a22">Clarion</span> built it from the Exact Online template <span class="mono" style="font-size:11px;color:#6b7680">· 11 Sep</span></div>
-    </div>
-  </div></div>
+  <div style="position:absolute;bottom:20px;right:20px;display:flex;align-items:center;gap:8px;padding:10px 16px 10px 12px;border-radius:999px;border:1px solid #d0d5da;background:#ffffff;box-shadow:0 6px 24px -8px rgba(15,32,45,0.30);font-size:13px;color:#334049"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#164e63" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;display:block"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"/><path d="M19 17l.8 2.2L22 20l-2.2.8L19 23l-.8-2.2L16 20l2.2-.8z"/></svg>Ask about your data</div>
+</div>
 </div></div>
 </x-dc>
 <script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1440,"height":900}}'>

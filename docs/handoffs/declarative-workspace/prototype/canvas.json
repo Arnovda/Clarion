@@ -1,0 +1,169 @@
+{
+  "v": 3,
+  "attachments": {},
+  "boards": {
+    "Main.dc.html": {
+      "x": 0,
+      "y": 0,
+      "w": 1440,
+      "h": 900,
+      "title": "Catalog — a table’s declaration"
+    },
+    "Catalog-Diff.dc.html": {
+      "x": 1520,
+      "y": 0,
+      "w": 1440,
+      "h": 900,
+      "title": "Catalog — the assistant proposes a change"
+    },
+    "Catalog-Health.dc.html": {
+      "x": 3040,
+      "y": 0,
+      "w": 1440,
+      "h": 900,
+      "title": "Catalog — nothing selected: what needs you"
+    },
+    "Catalog-Subject.dc.html": {
+      "x": 4560,
+      "y": 0,
+      "w": 1440,
+      "h": 900,
+      "title": "Catalog — a subject"
+    },
+    "Catalog-Source.dc.html": {
+      "x": 0,
+      "y": 1220,
+      "w": 1440,
+      "h": 900,
+      "title": "Catalog — a source, by its mark"
+    },
+    "Catalog-SourceTable.dc.html": {
+      "x": 1520,
+      "y": 1220,
+      "w": 1440,
+      "h": 900,
+      "title": "Catalog — a source table: review the drafts"
+    },
+    "Catalog-NewSubject.dc.html": {
+      "x": 3040,
+      "y": 1220,
+      "w": 1440,
+      "h": 900,
+      "title": "Catalog — a source with no subjects yet (Build folded in)"
+    },
+    "Definitions.dc.html": {
+      "x": 0,
+      "y": 2440,
+      "w": 1440,
+      "h": 900,
+      "title": "Definitions"
+    },
+    "Definitions-Edit.dc.html": {
+      "x": 1520,
+      "y": 2440,
+      "w": 1440,
+      "h": 900,
+      "title": "Definitions — editing “Active customer”"
+    },
+    "Topic.dc.html": {
+      "x": 0,
+      "y": 3660,
+      "w": 1440,
+      "h": 900,
+      "title": "Topic page — unchanged for viewers, Manage mode gone"
+    },
+    "Rail.dc.html": {
+      "x": 1520,
+      "y": 3660,
+      "w": 760,
+      "h": 780,
+      "title": "Studio rail — before / after"
+    },
+    "Map.dc.html": {
+      "x": 2360,
+      "y": 3660,
+      "w": 1100,
+      "h": 800,
+      "title": "What goes where"
+    }
+  },
+  "createdOnFiles": {
+    "at": "2026-09-22T17:26:04.208Z",
+    "v": 1
+  },
+  "designSystems": [],
+  "launch": {
+    "view": "canvas"
+  },
+  "notes": {
+    "n1": {
+      "x": 0,
+      "y": -300,
+      "text": "Catalog — one tree, one declaration, one assistant",
+      "kind": "title1",
+      "maxW": 6000,
+      "w": 240
+    },
+    "n2": {
+      "x": 0,
+      "y": 920,
+      "text": "Sources in the catalog — read-only inputs, by their mark",
+      "kind": "title1",
+      "maxW": 4480,
+      "w": 240
+    },
+    "n3": {
+      "x": 0,
+      "y": 2140,
+      "text": "Definitions — a separate pane: the words your team uses, written once",
+      "kind": "title1",
+      "maxW": 2960,
+      "w": 240
+    },
+    "n4": {
+      "x": 0,
+      "y": 3360,
+      "text": "Affected pages — what stays, what goes",
+      "kind": "title1",
+      "maxW": 3460,
+      "w": 240
+    },
+    "s1": {
+      "x": 6080,
+      "y": 0,
+      "w": 360,
+      "text": "Reading order: left to right. Board 1 is the everyday screen: tree · declaration · context, with the assistant folded into a pill. Board 2 is the same screen while the assistant proposes a diff (Keep = Save). Board 3 is the catalog with nothing selected: what needs you — this replaces the Trust tab and the Suggestions queue. Board 4 selects a subject.",
+      "fill": "blue"
+    },
+    "s2": {
+      "x": 4560,
+      "y": 1220,
+      "w": 360,
+      "text": "Sources are inputs. Nothing here edits the source: what you do on a source table is REVIEW — keep or discard a drafted meaning, add your team’s note — and see what it feeds. Sync, analyse and picking tables stay on Sources. Board 7 is today’s Build page, inside the catalog.",
+      "fill": "blue"
+    },
+    "s3": {
+      "x": 3040,
+      "y": 2440,
+      "w": 360,
+      "text": "Three kinds, one card: term (glossary), metric (product KPI), verified answer (saved question). Documented, not executed. “In the data” is the existing glossary link — the AI is told to use exactly that column.",
+      "fill": "blue"
+    }
+  },
+  "order": [
+    "Main.dc.html",
+    "Catalog-Diff.dc.html",
+    "Catalog-Health.dc.html",
+    "Catalog-Subject.dc.html",
+    "Catalog-Source.dc.html",
+    "Catalog-SourceTable.dc.html",
+    "Catalog-NewSubject.dc.html",
+    "Definitions.dc.html",
+    "Definitions-Edit.dc.html",
+    "Topic.dc.html",
+    "Rail.dc.html",
+    "Map.dc.html"
+  ],
+  "pages": [],
+  "title": "Clarion Declarative Workspace"
+}
