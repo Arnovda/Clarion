@@ -40,8 +40,39 @@ overlaps with what's already in catalog, no? … The same goes for 'open in the
 workshop'. What's the added benefit of these two pages, and the difficult and
 not oversightful navigation to them."* · *"Format the SQL of the tables by
 default"* · *"Add relations to the catalog tab as well please next to
-lineage."* Same branch, rides on draft PR #177 (the deploy record) — NOT
-merged, NOT deployed; the owner has not asked for a merge.)
+lineage."* Same branch, PR #177 — MERGED AND IN PRODUCTION the same
+afternoon, see the deploy record just below.)
+
+**IN MAIN AND PRODUCTION (2026-09-23, 12:01 UTC) — owner: *"In main and prd
+and live?"* → told plainly no → *"I want everything in production and
+live"*.** PR #177 was taken out of draft and REBASE-merged as `6c82ff1` — two
+linear commits on top of `08ff4ee`: `e6c4308` (the 08:24 deploy record) and
+`6c82ff1` (this slice); no merge commit, so the rebase convention held. All
+ten checks were green on the branch head (`362904e`) before the merge.
+**Build & Deploy run #618**: the `changes` job classified the diff as backend
++ frontend + docs (catch-up: nothing stale); the gate waited 5m55s for Tests
++ Lint on the merged sha; backend AND frontend built, as **`main-6c82ff1`**
+(build-worker and build-etl correctly skipped — nothing under them changed);
+`migrate-sql` correctly skipped (no migration); the backend test revision
+deployed at 0% (11:55–11:57), **the jobs-worker took the same image**
+(11:57–11:58 — it shares the backend image, so the worker restarted on this
+build too), the frontend test revision at 0% (11:58–11:59); ETL, the
+sync-worker pin and `neo4j-constraints` skipped, all correctly.
+**Go live health-checked the new backend on its first try (`/api/health` 200:
+postgres / redis / neo4j / blob / worker_transformation / worker_bus_matrix
+all `ok`, uptime 164s — the deep check from P0-6, through the staging
+label) and shifted backend + frontend to `--main-6c82ff1` at 100%** at
+12:00:49 / 12:01:18 UTC. Read from the job's own log, not inferred.
+Rollback if needed: Actions → **Rollback production**. **WATCH AFTER
+DEPLOY — the three items in the entry below are LIVE now, not hypothetical**:
+the first *Rebuild* from the subject page is the first `refresh-start` call
+from the catalog; the first *Add a table* is the first `POST
+/products/:id/tables` through the Zod schema and the graph mirror; and the
+Finance subject's Relations tab must show three measures tables with one in
+the centre. Nobody has done any of the three in production yet. Housekeeping:
+`claude/magical-faraday-6hh5gp` was restarted from main at `6c82ff1`
+(force-with-lease over already-merged history only); this record rides a NEW
+draft PR.
 
 **THE ANSWER TO THE FIRST QUESTION, from the code (`routes/products/tables.ts`
 + `services/tableDeclaration.ts`):** Save = `assertSafeReadQuery` (read-only,
@@ -166,7 +197,7 @@ admin + analyst.
   diagram label bug above and nothing else.
 - No migration, no env var. SANDBOX: Postgres had died again between
   commands (restarted before the suites).
-- **WATCH AFTER DEPLOY** (when the owner merges): the first *Rebuild* from
+- **WATCH AFTER DEPLOY** (live since 12:01 UTC — the record above): the first *Rebuild* from
   the subject page is the first `refresh-start` call from the catalog (it
   was the workshop's) — the strip must settle to *Rebuilt*, not the error
   line; the first *Add a table* is the first `POST /products/:id/tables`
