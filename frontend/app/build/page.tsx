@@ -44,7 +44,7 @@ import { streamSSE } from '@/lib/sse';
 import { useToast } from '@/components/ui/Toast';
 import { formatRelativeLong } from '@/lib/dates';
 import { iconForAnalytics } from '@/components/catalog/entityIcons';
-import { cleanTopicName } from '@/app/products/helpers';
+import { cleanTopicName } from '@/components/products/helpers';
 import { TOPICS_CHANGED_EVENT } from '@/lib/topicsChanged';
 import AskPanel from './AskPanel';
 

@@ -17,11 +17,14 @@
  * the technical name and the audit trail are curator surfaces.
  *
  * The Columns tab of the previous layout is gone: two lists of the same
- * columns on two tabs is the busyness the owner asked to end.
+ * columns on two tabs is the busyness the owner asked to end. Relations
+ * (how this table joins, on its subject's star) sits beside Lineage; the
+ * doors to the topic's Manage mode and the workshop are gone with those
+ * surfaces (2026-09-23) — the subject's page holds what they had.
  */
 import { useEffect, useMemo, useState } from 'react';
 import dynamic from 'next/dynamic';
-import { BookOpen, ChevronDown, ChevronRight, Gauge, MessageSquareText, Sparkles, Table2, WandSparkles, Wrench } from 'lucide-react';
+import { BookOpen, ChevronDown, ChevronRight, MessageSquareText, Sparkles, Table2, WandSparkles } from 'lucide-react';
 import api from '@/lib/api';
 import AiPromptDialog from './AiPromptDialog';
 import { ProductColumn, ProductTable, ProductTreeItem, type ResolvedGlossaryLink } from './types';
@@ -34,10 +37,11 @@ import { formatRelative } from '@/lib/dates';
 import { askAboutSubject } from '@/lib/askLink';
 import { cn } from '@/lib/cn';
 import ConnectorMarkIcon from '@/components/ConnectorMarkIcon';
-import ExplorerHeader, { HeaderAction, MoreMenu, type Crumb } from '@/components/catalog/ExplorerHeader';
+import ExplorerHeader, { HeaderAction, type Crumb } from '@/components/catalog/ExplorerHeader';
 import AboutRail, { RailChip, type AboutSection } from '@/components/catalog/AboutRail';
 import ColumnsTable, { type ColumnRow } from '@/components/catalog/ColumnsTable';
 import LineageSummary from '@/components/catalog/LineageSummary';
+import SubjectRelations from '@/components/catalog/SubjectRelations';
 import { iconForReference } from '@/components/catalog/entityIcons';
 import { useSqlProposal } from '@/components/catalog/catalogAssistantContext';
 import type { AssistantOpenMode, CatalogConnection, CatalogNavTarget } from '@/components/catalog/navigation';
@@ -46,7 +50,7 @@ const LineageGraph = dynamic(() => import('@/components/catalog/LineageGraph'), 
 // The SQL editor pulls in CodeMirror — loaded only when the tab opens.
 const SqlDeclaration = dynamic(() => import('@/components/catalog/SqlDeclaration'), { ssr: false });
 
-type ViewTab = 'overview' | 'sample' | 'sql' | 'lineage' | 'quality' | 'history';
+type ViewTab = 'overview' | 'sample' | 'sql' | 'relations' | 'lineage' | 'quality' | 'history';
 
 interface Props {
   /** Graph id OR Postgres product_tables id — the panel resolves both. */
@@ -283,6 +287,7 @@ export default function ProductTableDetailPanel({
     { id: 'overview', label: 'Overview' },
     { id: 'sample', label: 'Sample data' },
     ...(curator ? [{ id: 'sql' as const, label: 'SQL' }] : []),
+    { id: 'relations', label: 'Relations' },
     ...(curator ? [{ id: 'lineage' as const, label: 'Lineage' }] : []),
     { id: 'quality', label: 'Quality' },
     ...(curator ? [{ id: 'history' as const, label: 'History' }] : []),
@@ -491,12 +496,6 @@ export default function ProductTableDetailPanel({
                 Ask AI
               </HeaderAction>
             )}
-            {curator && parentProductId != null && (
-              <MoreMenu items={[
-                { label: 'Manage this topic', href: `/topics/${parentProductId}?manage=1`, icon: <Gauge className="w-3.5 h-3.5" strokeWidth={1.75} aria-hidden /> },
-                { label: 'Open in the workshop', href: `/products/${parentProductId}`, icon: <Wrench className="w-3.5 h-3.5" strokeWidth={1.75} aria-hidden /> },
-              ]} />
-            )}
           </>
         )}
         tabs={tabs}
@@ -658,20 +657,22 @@ export default function ProductTableDetailPanel({
         </div>
       )}
 
+      {/* ── Relations — how this table joins, on its subject's star ───────── */}
+      {viewTab === 'relations' && (
+        <div className="flex-1 overflow-y-auto px-6 py-5">
+          {parentProductId != null ? (
+            <SubjectRelations productId={parentProductId} focusTableName={tbl.table_name} curator={curator} onNavigate={onNavigate} />
+          ) : (
+            <p className="text-[13px] text-muted">This table is not part of a subject.</p>
+          )}
+        </div>
+      )}
+
       {/* ── Lineage ───────────────────────────────────────────────────────── */}
       {viewTab === 'lineage' && (
         <div className="flex-1 min-h-0 flex flex-col">
-          <div className="flex items-center justify-between gap-3 border-b border-line bg-raised px-6 py-2">
+          <div className="border-b border-line bg-raised px-6 py-2">
             <p className="text-[12px] text-muted">Which source columns feed this table, and how.</p>
-            {parentProductId != null && (
-              <a
-                href={`/topics/${parentProductId}?manage=1`}
-                className="inline-flex shrink-0 items-center gap-1.5 text-[11px] font-mono uppercase tracking-[0.08em] text-ocean hover:text-ocean-hover transition-colors"
-              >
-                <Gauge className="h-3.5 w-3.5" strokeWidth={1.75} aria-hidden />
-                Manage this topic ↗
-              </a>
-            )}
           </div>
           <LineageGraph layer="product" tableId={pgTableId ?? tableId} />
         </div>

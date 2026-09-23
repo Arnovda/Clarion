@@ -9,7 +9,10 @@
  *
  *   - source-root    → <SourceRootPanel>
  *   - source-table   → <TableDetailPanel>
- *   - product-root   → <ProductFullView>
+ *   - product-root   → <ProductFullView> — the subject's page: overview,
+ *                      metrics, tables, relations, lineage, quality, history,
+ *                      and the acts that used to live in Manage mode and the
+ *                      workshop (rebuild, add a table, delete).
  *   - product-table  → <ProductTableDetailPanel> — the table's declaration:
  *                      what it holds, where it comes from, the SQL that
  *                      builds it. `tableId` may be a graph id OR a Postgres
@@ -93,6 +96,8 @@ export default function EntityDetailPanel({
         productId={selection.productId}
         onNavigate={onNavigate}
         onAskAssistant={onAskAssistant}
+        onChanged={onSaved}
+        onDeleted={() => { onClose?.(); onSaved?.(); }}
       />
     );
   }

@@ -3,7 +3,7 @@
 /**
  * <KpiManager> — editable KPI list for a data product.
  *
- * Replaces the read-only KpisSection in ProductRootPanel. Lets users:
+ * The Metrics tab of the catalog's subject page, for curators. Lets users:
  *   • Add a new KPI (name, plain-English description, SQL formula)
  *   • Use AI-assist to draft the SQL formula from a name + description
  *   • Edit / rename / re-draft / delete existing KPIs
@@ -22,7 +22,7 @@ import { Sparkles, Gauge, Plus, Pencil, Trash2, Loader2, X, Wand2, AlertCircle }
 import api from '@/lib/api';
 import { useToast } from '@/components/ui/Toast';
 import AiPromptDialog from '@/components/semantic/AiPromptDialog';
-import type { ProductKpi } from '@/app/products/types';
+import type { ProductKpi } from '@/components/products/types';
 
 interface KpiManagerProps {
   productId: number;

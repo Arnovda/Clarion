@@ -18,6 +18,11 @@
  * state is shown — "built 2 h ago · changed since, by Ines" — and the one
  * thing left to operate is "Rebuild now", offered only once a saved change is
  * waiting.
+ *
+ * The SQL is FORMATTED when it loads (owner, 2026-09-23: "format the SQL by
+ * default"). The formatted text is the baseline, so opening a table never
+ * reads as an unsaved change, and a proposal is formatted the same way before
+ * it is diffed — otherwise every line would differ for whitespace alone.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import dynamic from 'next/dynamic';
@@ -69,6 +74,11 @@ export default function SqlDeclaration({
 }) {
   const toast = useToast();
   const { proposal, reportDraft, decide } = useSqlProposal(tableId);
+  // Formatted like the editor's text, or the diff marks every line changed.
+  const prettyProposal = useMemo(
+    () => (proposal ? { ...proposal, sql: formatSql(proposal.sql) } : null),
+    [proposal],
+  );
 
   const [decl, setDecl] = useState<Declaration | null | undefined>(undefined);
   const [sql, setSql] = useState('');
@@ -89,8 +99,12 @@ export default function SqlDeclaration({
       const r = await api.get(`/products/tables/${tableId}/declaration`);
       const d = r.data?.data as Declaration;
       setDecl(d);
-      setSql(d.transformation_sql ?? '');
-      setSaved(d.transformation_sql ?? '');
+      // What is stored is often one long line, or the model's own layout.
+      // Save stores what is in the editor; the formatter touches whitespace
+      // and keyword case only, and unparseable SQL comes back verbatim.
+      const pretty = formatSql(d.transformation_sql ?? '');
+      setSql(pretty);
+      setSaved(pretty);
       setColumns(d.columns.map((c) => ({ name: c.column_name, type: c.data_type ?? '' })));
       setEditorKey((k) => k + 1);
     } catch {
@@ -172,9 +186,9 @@ export default function SqlDeclaration({
   }
 
   async function keepProposal() {
-    if (!proposal) return;
-    const ok = await save(proposal.sql);
-    if (ok) { setEditorKey((k) => k + 1); decide(proposal.id, 'kept'); }
+    if (!prettyProposal) return;
+    const ok = await save(prettyProposal.sql);
+    if (ok) { setEditorKey((k) => k + 1); decide(prettyProposal.id, 'kept'); }
   }
 
   function discardProposal() {
@@ -221,7 +235,7 @@ export default function SqlDeclaration({
           <StateLine decl={decl} />
         </p>
         <div className="flex items-center gap-2">
-          <ToolbarButton onClick={format} disabled={!sql.trim()} title="Tidy the SQL (display only until you save)">
+          <ToolbarButton onClick={format} disabled={!sql.trim()} title="Tidy the SQL again after editing (it is formatted when it loads)">
             <WandSparkles className="w-3.5 h-3.5" strokeWidth={1.75} aria-hidden /> Format
           </ToolbarButton>
           <ToolbarButton onClick={runPreview} disabled={!sql.trim() || previewing} title="Run the draft for a few rows — nothing is stored">
@@ -238,6 +252,7 @@ export default function SqlDeclaration({
             type="button"
             onClick={() => void save(sql)}
             disabled={!dirty || saving || !sql.trim()}
+            title="Checks that the SQL is read-only and compiles against your data, then stores it. Nothing is rebuilt until you say so."
             className="inline-flex items-center gap-1.5 px-3.5 py-1.5 text-[12.5px] font-medium bg-ocean text-white rounded-md hover:bg-ocean-hover disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
           >
             {saving ? <Loader2 className="w-3.5 h-3.5 animate-spin" strokeWidth={2} aria-hidden /> : <Check className="w-3.5 h-3.5" strokeWidth={2.5} aria-hidden />}
@@ -254,10 +269,10 @@ export default function SqlDeclaration({
       )}
 
       {/* The assistant's proposal — ON the declaration, decided here. */}
-      {proposal && (
+      {prettyProposal && (
         <ProposalDiff
           previous={sql}
-          proposal={proposal}
+          proposal={prettyProposal}
           saving={saving}
           onKeep={() => void keepProposal()}
           onDiscard={discardProposal}

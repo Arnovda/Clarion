@@ -22,7 +22,7 @@ import api from '@/lib/api';
 import { getTokenPayload } from '@/lib/auth';
 import { formatRelativeLong } from '@/lib/dates';
 import { iconForAnalytics } from '@/components/catalog/entityIcons';
-import { cleanTopicName } from '@/app/products/helpers';
+import { cleanTopicName } from '@/components/products/helpers';
 
 interface Subject {
   id: number;

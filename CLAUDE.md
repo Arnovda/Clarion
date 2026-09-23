@@ -31,7 +31,150 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-09-23 (THE CATALOG EXPLORER IS SHAPED LIKE DATABRICKS' —
+**Last updated:** 2026-09-23 (SECOND SLICE OF THE DAY — THE CATALOG ABSORBS
+MANAGE MODE AND THE WORKSHOP; owner, with five screenshots of the live
+explorer: *"If I click save, does it check if it's correct? And does it
+immediately materialize?"* · *"Subject don't need a source icon, they should
+be source independent"* · *"Is manage this topic or manage mode necessary? It
+overlaps with what's already in catalog, no? … The same goes for 'open in the
+workshop'. What's the added benefit of these two pages, and the difficult and
+not oversightful navigation to them."* · *"Format the SQL of the tables by
+default"* · *"Add relations to the catalog tab as well please next to
+lineage."* Same branch, rides on draft PR #177 (the deploy record) — NOT
+merged, NOT deployed; the owner has not asked for a merge.)
+
+**THE ANSWER TO THE FIRST QUESTION, from the code (`routes/products/tables.ts`
++ `services/tableDeclaration.ts`):** Save = `assertSafeReadQuery` (read-only,
+no external access) → `compileDeclaredSql` (a real `DESCRIBE SELECT * FROM
+(…)` in a warehouse session that holds the connection's schemas — every table,
+column and type must resolve, else 400 with the sanitised message and NOTHING
+stored) → stored once (`transformation_status` stays `success`, `declared_by`
+/ `declared_at` set, `pending_rebuild = declared_at > last_run_at`) →
+`syncDeployCell`. It does NOT run the query, check the numbers or run the
+quality checks (those run at rebuild; a duplicate grain still blocks
+publishing there). NOTHING MATERIALISES on Save: *Rebuild now* on the table
+(`POST /tables/:id/run`), *Rebuild* on the subject (`refresh-start`) or the
+scheduled refresh does. *Preview* runs 12 rows and stores nothing. The Save
+button's tooltip now says exactly this.
+
+**WHAT MANAGE MODE AND THE WORKSHOP UNIQUELY HELD, AND WHERE IT WENT.** An
+inventory before deleting anything: whole-subject rebuild with live progress
+(Manage *Deploy changes* / workshop *Refresh*), *Deploy all*, metric editing
+(`KpiManager`), the star diagram (`StarSchemaFlow`), the per-table lineage
+graph, the per-subject quality table (`QualityTab`), refresh history
+(`RefreshHistoryChart`), RefineChat, delete subject, add table, the notebook
+cells, `plain_summary` editing. **Ported onto the catalog's subject page —
+`components/catalog/ProductFullView.tsx`, REWRITTEN (854 lines)**: tabs
+Overview · Metrics · Tables · **Relations** · Lineage · Quality · History
+(curator); header actions **Rebuild** (admin — `refresh-start` is admin-only;
+streams `/products/bus-matrix/:jobId/stream` into a strip: *Rebuilt — your
+team sees the new data now* / the error line), **Ask AI**, `⋯` → *Sync the
+source, then rebuild* (admin) / *Add a table* / *Delete this subject*
+(admin). Metrics = `KpiManager` for curators, read-only cards for viewers.
+Tables = the list with columns + `PreviewTable`, each name navigating to the
+table panel. Add a table = NEW `AddTableForm` (name `^[a-z][a-z0-9_]{0,62}$`,
+kind Measures / Lookup / Bridge, optional "what is one row") →
+`POST /products/:id/tables` → the tree refreshes and the new table OPENS ON
+ITS SQL TAB (`CatalogNavTarget` `table` gained `tab?: 'sql'`; `page.tsx`'s
+`navigateTo` sets the initial tab). Lineage = a table-picker chip row over
+`LineageGraph` (curators) / one sentence *built from these N source tables*
+(viewers, from `GET /products/:id/sources`). Quality = `QualityTab` filtered
+to the subject / a viewer sentence. History = `RefreshHistoryChart` per
+table. **Deleted (6,167 lines)**: `app/products/{page,[id]/page,AskAIPanel,
+badges,layout}.tsx` (the workshop), `components/products/{ProductRootPanel,
+TableNotebook,CellOutput,RefineChat}.tsx`, `components/build/BuildDashboard
+.tsx` (the folder is gone), `components/topics/{ManageLayer,ManageTables}
+.tsx`. **Moved**: `app/products/{types,helpers}.ts` and `QualityTab.tsx` →
+`components/products/` (imports rewritten). **NOT carried over, on purpose**:
+*Deploy all* (Save is the deploy), the notebook cells (the SQL tab is the
+declaration), RefineChat + AskAIPanel (the floating assistant and the Build
+chat are the two conversations — the design doc's retirement list),
+`plain_summary` editing (the column stays; nothing reads it now).
+`/topics/[productId]` is the topic layer ONLY: `?manage=1` REDIRECTS curators
+to `/catalog?productId=`, the curator button reads *Open in the Catalog*
+(`TopicLayer` takes `{ topic, canManage }`), `topics/types.ts` lost
+ManageTab / TableSubTab / DeployState. Doors retargeted: `/definitions` *Edit
+in the Catalog*, `PulsePanel`, ⌘K (the `products` action became **Build**).
+`EntityDetailPanel` threads `onChanged` / `onDeleted` so a rebuild, an added
+table or a delete refreshes the tree.
+
+**SUBJECTS ARE SOURCE-INDEPENDENT NOW.** `CatalogBrowser` lists subjects
+directly under SUBJECTS, sorted by label — the per-source buckets, their
+headers and their state are gone; a source appears exactly once, under
+SOURCES. `ProductFullView`'s header carries the subject glyph
+(`iconForAnalytics`) and no source badge.
+
+**THE SQL IS FORMATTED BY DEFAULT.** `SqlDeclaration` formats the declaration
+on load (`formatSql`, never throws) and sets BOTH `sql` and `saved` to the
+formatted text, so formatting is not an unsaved change; a proposal is
+formatted BEFORE it is diffed, so the diff shows the change and not the
+reformatting (render-checked: the fixture's one-line proposal diffs as
+`+2 −1`). *Format* stays for after editing.
+
+**RELATIONS BESIDE LINEAGE, on both table panels.** NEW
+`components/catalog/SubjectRelations.tsx`: `SubjectRelations` = the subject's
+`StarSchemaFlow` (curators) + `JoinsList` (display names, *many to one* in
+words; column names curator-only), focusable on one table; used by
+`ProductFullView`'s Relations tab and by `ProductTableDetailPanel`'s new
+**Relations** tab (all roles). NEW `components/catalog/SourceTableRelations
+.tsx` on `TableDetailPanel` (curators): `GET /relationships/graph?
+anchorTableId&depth=1&withColumns=1` rendered as rows `from.col → to.col`
+(≈ for a match, *across sources*, a flag marker) with the canvas's own chips
+— *Laid by the source* / *Laid manually* (`laidBy`) and *Holds* / *Worth a
+look* / *Doesn't hold* / *Couldn't check* (`outcomeOf`) — and a door *Open on
+the canvas ↗* (`/relationships?table=`). Both panels lost their MoreMenu
+(*Manage this topic* / *Open in the workshop*) and the *Relations ↗* header
+link.
+
+**A LABEL BUG THE RENDER CHECK CAUGHT, on the tab the owner asked for**: the
+star diagram's node flag was `isFact: t.id === anchor.id` — "is the anchor",
+not "is a measures table" — so every measures table but the centre one read
+*lookup*, and production's Finance subject has THREE (transaction lines,
+receivables, payables). `StarSchemaFlow`: the wording and the colour follow
+`table_role` (`roleWord`: *the measures table* / *measures table* / *lookup*
+/ *bridge table*), the ring stays the anchor's, and with several facts the
+MOST-LINKED one anchors (the comment promised it; the code took `facts[0]`).
+
+**BACKEND (small)**: `POST /products/:id/tables` gained
+`createProductTableSchema` (Zod; name regex, role enum, description ≤ 2000)
+— validate-coverage baseline LOWERED 139 → 138 — and calls
+`syncProductToNeo4j` before answering (best-effort), so the new table is in
+the tree immediately instead of after the next run.
+
+**CALLER-LESS NOW, deliberately left for a cleanup slice**: `routes/products/
+cells.ts` (`product_table_cells`), `refineChat.ts`, `refine.ts`, `deploy-all`
+and `run-full` in `build.ts` — the design doc §3.5 says to delete them with
+the workshop; this slice is the frontend half. Role-table note: the subject's
+*Rebuild* is admin (it is `refresh-start`); the per-table *Rebuild now* stays
+admin + analyst.
+
+- Validation: frontend `tsc` clean; touched files lint-clean (the two errors
+  + one warning in `PulsePanel.tsx` are pre-existing on untouched lines,
+  re-verified at HEAD — the diff there is one href); vitest **9 files / 76
+  passed**; `next build` green; backend `npm run check` clean; ratchet
+  138/226; suites `table-declaration` + `products-topic` +
+  `products-build-overview` **3 files / 36 passed**. **RENDER-CHECKED IN
+  HEADLESS CHROMIUM against the real build with a mocked API** — 22 screens,
+  curator and viewer, 18 checks, zero page errors: the tree without buckets,
+  the subject header without a mark, the overflow menu, every subject tab,
+  the rebuild strip, add a table → its SQL tab, SQL formatted on load with
+  Save disabled, the proposal diff at `+2 −1`, the table's Relations tab
+  (a second measures table NOT labelled lookup), the source table's
+  Relations chips, an old `?manage=1` link landing in the catalog, and the
+  viewer seeing no Rebuild / menu / diagram / key names / SQL tab /
+  technical name / *Manage this topic* / catalog door. The check found the
+  diagram label bug above and nothing else.
+- No migration, no env var. SANDBOX: Postgres had died again between
+  commands (restarted before the suites).
+- **WATCH AFTER DEPLOY** (when the owner merges): the first *Rebuild* from
+  the subject page is the first `refresh-start` call from the catalog (it
+  was the workshop's) — the strip must settle to *Rebuilt*, not the error
+  line; the first *Add a table* is the first `POST /products/:id/tables`
+  through the Zod schema and the graph mirror — the table must appear in the
+  tree without a reload; and on the real Finance subject the Relations tab
+  must show three measures tables, one in the centre.
+
+**Prior last updated:** 2026-09-23 (THE CATALOG EXPLORER IS SHAPED LIKE DATABRICKS' —
 owner, with a screenshot of Databricks Catalog Explorer: *"I think I want it a
 little bit like databricks. Can you combine this layout with the way of working
 in clarion? Do you understand what I mean?"* Yes: take the INFORMATION
@@ -11958,19 +12101,14 @@ clarion/                              ← on disk: databridge/
     │   ├── semantic/page.tsx         ← definitions: tables/columns/relationships/glossary tabs (KPIs moved to /products)
     │   ├── topics/                   ← TOPIC-FIRST FRONT DOOR (business user's home)
     │   │   ├── layout.tsx            ← ShellLayout wrap
-    │   │   ├── types.ts              ← Topic, TopicQuestion, ManageTab, TableSubTab, DeployState
-    │   │   └── [productId]/page.tsx  ← topic layer + manage layer (?manage=1) + cross-fade
+    │   │   ├── types.ts              ← Topic, TopicQuestion (the Manage-mode types went with Manage mode)
+    │   │   └── [productId]/page.tsx  ← the topic layer only; ?manage=1 redirects curators to /catalog?productId=
     │   ├── shared-data/              ← conformed lookups (was the "Core dimensions" product)
     │   │   ├── layout.tsx
     │   │   └── page.tsx
     │   ├── build/                    ← Studio → Build: source → topics (plan, create, show/hide, warned rebuild)
     │   │   ├── layout.tsx
     │   │   └── page.tsx
-    │   ├── products/                 ← build workshop — off the nav, deep-link only
-    │   │   ├── page.tsx              ← orchestrator + tabs (overview, bus-matrix, schema, lineage, kpis)
-    │   │   ├── types.ts              ← Connection, DataProduct, StarSchema, ProductTable/Column/Relationship, KPI, ActiveTab
-    │   │   ├── helpers.ts            ← statusBorderColor, productIcon, cleanTopicName
-    │   │   └── badges.tsx            ← StatusDot, StatusBadge, RoleBadge, ColumnRoleBadge, Spinner
     │   ├── query/                    ← NL chat with repair loop + disambiguation
     │   │   ├── page.tsx              ← stateful orchestrator
     │   │   ├── types.ts              ← Message, DebugInfo, Conversation, RepairState, EntityMismatch/Ambiguity, ForecastData
@@ -12042,12 +12180,13 @@ clarion/                              ← on disk: databridge/
     │   │   ├── CommandPalette.tsx    ← Cmd+K palette (nav + actions)
     │   │   └── PillNav.tsx           ← pill-style tab switcher
     │   ├── topics/
-    │   │   ├── TopicLayer.tsx        ← screen 1 — no SQL, no counts, no warehouse vocabulary
-    │   │   ├── ManageLayer.tsx       ← screen 2 — mode bar + header + 6 tabs (analyst+)
-    │   │   └── ManageTables.tsx      ← Tables tab: measures / shared lookups / "How it's built"
-    │   ├── products/
-    │   │   ├── StarSchemaFlow.tsx    ← ReactFlow star schema diagram (Observatory palette)
-    │   │   └── LineageFlow.tsx       ← ReactFlow data lineage visualization (Observatory palette)
+    │   │   └── TopicLayer.tsx        ← the topic page — no SQL, no counts, no warehouse vocabulary; curators get "Open in the Catalog"
+    │   ├── products/                 ← what the subject page composes (the workshop's survivors)
+    │   │   ├── StarSchemaFlow.tsx    ← ReactFlow star diagram: the most-linked measures table in the centre, wording by role
+    │   │   ├── KpiManager.tsx        ← the one metric editor (the subject page's Metrics tab, curators)
+    │   │   ├── QualityTab.tsx        ← the per-subject quality table (was app/products/QualityTab.tsx)
+    │   │   ├── RefreshHistoryChart.tsx ← refresh counts per table (compact sparkline / full chart)
+    │   │   └── types.ts / helpers.ts ← DataProduct, StarSchema, ProductTable/Column/Relationship, KPI; productIcon, cleanTopicName (were under app/products/)
     │   ├── ConnectorMarkIcon.tsx     ← a connector's brand mark as a tile (lib/connectorIcons), Database fallback
     │   ├── catalog/
     │   │   ├── ExplorerHeader.tsx    ← the ONE header: breadcrumb · icon · title · technical name+copy (curators) · badges · actions · tab strip; HeaderAction, MoreMenu
@@ -12063,7 +12202,9 @@ clarion/                              ← on disk: databridge/
     │   │   ├── CatalogAssistant.tsx  ← the floating chat: Ask / Change the SQL, aimed at the selected node
     │   │   ├── catalogAssistantContext.tsx ← the proposal handed from the chat to the declaration (Keep = Save)
     │   │   ├── SourceRootPanel.tsx   ← a source: overview · tables · relations door · data flow · quality · SQL snippets
-    │   │   ├── ProductFullView.tsx   ← a subject: overview · metrics · tables · quality · lineage
+    │   │   ├── ProductFullView.tsx   ← a subject: overview · metrics · tables · relations · lineage · quality · history; Rebuild, Add a table, Delete (absorbed Manage mode + the workshop)
+    │   │   ├── SubjectRelations.tsx  ← a subject's joins: the star diagram (curators) + JoinsList in business words, focusable on one table
+    │   │   ├── SourceTableRelations.tsx ← a source table's relationships off /relationships/graph with the canvas's laid-by / outcome chips
     │   │   └── ReferenceCard.tsx / useSchema.ts / entityIcons.ts / sourcePalette.ts
     │   ├── semantic/
     │   │   ├── ApprovalBadge.tsx     ← approval status indicator
@@ -12073,8 +12214,8 @@ clarion/                              ← on disk: databridge/
     │   │   ├── HistoryPanel.tsx      ← change history tracking
     │   │   ├── KpiPanel.tsx          ← KPI definitions management
     │   │   ├── PathFinderPanel.tsx   ← relationship path finder
-    │   │   ├── TableDetailPanel.tsx  ← a SOURCE table: explorer header · Overview (description, columns table with Dim/Mea, about rail) · Sample data · Lineage · Quality · History
-    │   │   ├── ProductTableDetailPanel.tsx ← a SUBJECT table: same shape + the SQL tab, State/Quality/terms/policies in the rail, Change with AI / Ask AI
+    │   │   ├── TableDetailPanel.tsx  ← a SOURCE table: explorer header · Overview (description, columns table with Dim/Mea, about rail) · Sample data · Relations (curators) · Lineage · Quality · History
+    │   │   ├── ProductTableDetailPanel.tsx ← a SUBJECT table: same shape + the SQL tab · Relations (all roles); State/Quality/terms/policies in the rail, Change with AI / Ask AI
     │   │   ├── GlossaryPanel.tsx     ← the tenant glossary editor: terms, definitions, LINKS to product columns/tables/KPIs
     │   │   ├── GlossaryLinkPicker.tsx ← searchable grouped picker over GET /semantic/glossary/link-targets
     │   │   ├── shared.tsx            ← de-duplicated helpers: parseDomains/parseExamples/classifyType/completenessBucket/PreviewTable
@@ -12267,7 +12408,7 @@ All output stored with `ai_draft: true` until a human confirms.
 | Edit product-layer definitions & summaries      | YES   | YES     | NO     | `PATCH /semantic/product-tables|product-columns/:id`, `PATCH /products/tables/:id` |
 | Declare a table's SQL (read, save, preview, propose, rebuild one table) | YES | YES | NO | `GET /products/tables/:id/declaration`, `PUT …/sql` (guard → compile → store once → deploy cell), `POST …/sql/preview`, `POST …/sql/propose`, `POST …/run`; the Catalog's SQL tab + assistant (`canCurate`) |
 | Create, design, extend, rebuild subjects        | YES   | YES     | NO     | `POST/PUT /products`, every `/products/bus-matrix*` and `/build-*` route, `/build` page |
-| Per-product workshop actions (run-full, refresh-start) | YES | NO | NO | `routes/products/build.ts` (`/:id/run-full`, `/:id/refresh-start`) — the `/propose*`, `/build-proposed` and `design.ts` routes were deleted 2026-09-07 (no callers) |
+| Rebuild a whole subject (*Rebuild* / *Sync the source, then rebuild* on the catalog's subject page) | YES | NO | NO | `routes/products/build.ts` (`/:id/refresh-start`); `/:id/run-full`, `deploy-all`, `cells.ts`, `refine.ts`, `refineChat.ts` have had no caller since the workshop was deleted 2026-09-23 — the `/propose*`, `/build-proposed` and `design.ts` routes went 2026-09-07 |
 | Pipelines / Refresh                             | YES   | YES     | NO     | `routes/pipelines.ts`, `/pipelines` page |
 | Relationships canvas (measure, flag, confirm)   | YES   | YES     | NO     | `routes/relationships.ts`, `/relationships` page |
 | Your tables (managed grids)                     | YES   | YES     | NO     | `routes/managedGrids.ts` (no viewer read yet) |

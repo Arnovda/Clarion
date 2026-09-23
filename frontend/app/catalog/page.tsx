@@ -293,6 +293,9 @@ function CatalogInner() {
       if (!found) return;
       const schema = await schemaFor('products', found.productId);
       handleSelectTable({ catalog: 'products', schemaSlug: schema?.id ?? '', schemaLabel: schema?.label ?? found.productName, tableId: String(found.graphId), tableLabel: found.label, tableName: null });
+      // After the select, which resets the tab: a table just added lands on
+      // its SQL so the next act is to declare it.
+      if (target.tab) setInitialTab(target.tab);
     }
   }, [clearSelection, schemaFor, handleSelectSchema, handleSelectTable, getProductTree]);
 

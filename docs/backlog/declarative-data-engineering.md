@@ -155,6 +155,67 @@ in headless Chromium: 20 screens, curator and viewer, zero page errors.
 
 ---
 
+## 0c. What shipped — 2026-09-23, second slice: the catalog absorbs Manage mode and the workshop (same branch, draft PR #177 — not merged, not deployed)
+
+The owner's five asks off the live explorer, with screenshots, and what each
+became:
+
+1. *"If I click save, does it check if it's correct? And does it immediately
+   materialize?"* — answered from the code, and the Save button's tooltip now
+   says it. Save runs the read-only guard and a real compile (`DESCRIBE` in a
+   warehouse session that holds the connection's schemas, so every table,
+   column and type must resolve — else 400 and nothing stored), stores the SQL
+   once and syncs the deploy cell. It does not run the query, check the
+   numbers or run the quality checks; those run when the table is rebuilt (a
+   duplicate grain still blocks publishing there). Nothing materialises on
+   Save: *Rebuild now* on the table, *Rebuild* on the subject or the
+   scheduled refresh does. *Preview* runs 12 rows and stores nothing.
+2. *Subjects are source-independent* — the tree lists them directly under
+   SUBJECTS, sorted by name, with no source bucket; the subject header
+   carries the subject's glyph and no source badge. A source appears in the
+   tree exactly once, under SOURCES.
+3. *Manage mode and the workshop overlap the catalog* — they did, and both
+   are gone. What only they held moved onto the catalog's subject page
+   (`ProductFullView`, rewritten): **Rebuild** with the live progress strip
+   (admin — `refresh-start` is admin-only), **Sync the source, then rebuild**,
+   **Metrics** editing (`KpiManager` stays as the one metric editor),
+   **Relations** (the star diagram plus a joins list), **Lineage** with a
+   table picker over the column-level graph, **Quality** (the per-subject
+   profile table), **History** (refresh counts per table), **Add a table**
+   (which opens the new table on its SQL tab) and **Delete this subject**.
+   `/topics/[id]?manage=1` redirects curators to `/catalog?productId=`; the
+   topic page's curator button reads *Open in the Catalog*. Deleted:
+   `app/products/*` (the workshop), `ProductRootPanel`, `TableNotebook`,
+   `CellOutput`, `RefineChat`, `AskAIPanel`, `BuildDashboard`, `ManageLayer`,
+   `ManageTables`. Not carried over, on purpose: *Deploy all* (Save is the
+   deploy), the notebook cells (the SQL tab is the declaration), RefineChat
+   and AskAIPanel (the floating assistant and the Build chat are the two
+   conversations) and `plain_summary` editing (the column stays; nothing
+   reads it now). The backend routes those pages called — `cells.ts`,
+   `refineChat.ts`, `refine.ts`, `deploy-all`, `run-full` — are caller-less
+   and wait for the cleanup slice §3.5 already lists.
+4. *Format the SQL by default* — the declaration is formatted when it loads
+   and a proposal is formatted before it is diffed, so the diff shows the
+   change and not the reformatting; formatting on load is not an unsaved
+   change. *Format* stays for after editing.
+5. *Relations beside Lineage* — a **Relations** tab on the subject table (the
+   subject's diagram for curators, focused on the table; a joins list in
+   business words for viewers) and on the source table (the canvas's own
+   relationships, who laid them and whether the check held, with a door to
+   the canvas).
+
+Found by the render check on the way: the star diagram labelled every
+measures table but the centre one *lookup* (its flag meant "is the anchor",
+not "is a fact"), which would have mislabelled two of Finance's three
+measures tables on the first real open — wording now follows the table's
+role and the most-linked measures table takes the centre. Backend:
+`POST /products/:id/tables` gained a Zod schema and mirrors the new table to
+the graph before answering, so it is in the tree at once. Render-checked in
+headless Chromium against a mocked API: 22 screens, curator and viewer,
+zero page errors.
+
+---
+
 ## 1. What "declarative" means here
 
 The user states **what**; Clarion owns **how**. Written as a contract, so the
@@ -447,17 +508,17 @@ Small, and each item closes one of D1–D4:
 |---|---|
 | Catalog chrome: Browse / Trust / Glossary tabs, All / Sources / Products chips, Grid / List / Structure control, hero, *New product* | **Gone.** One tree, one view, one assistant |
 | Catalog cards: CatalogSplitView (451), ProductCardGrid (396), AnalyticsCard + ReferenceCard (242), GlossaryMatchCards (102) | **Retired**; there is no cards view |
-| Catalog: ProductFullView (661), ProductPreviewPanel (561) | **Retired**; the subject declaration |
+| Catalog: ProductFullView (661), ProductPreviewPanel (561) | ProductPreviewPanel **retired** (09-22). ProductFullView **rewritten** (09-23) as the subject page — it absorbed Manage mode and the workshop (§0c) |
 | Catalog: ProductTableDetailPanel (1,002), TableDetailPanel (691), SourceRootPanel (1,061), CatalogBrowser (784), EntityDetailPanel (324) | **Rebuilt** as one tree + one declaration with three flavours (subject table · source table · source) |
 | Catalog: Trust facet (QualityOverview 222) | The landing board — what needs you |
 | Catalog: Glossary facet + GlossaryPanel (475) | **Moved** to `/definitions`; the facet redirects |
 | Rail: Studio → Build, Suggestions | **Removed**; both fold into Catalog (badge = what needs you) |
 | `/build` (883) + AskPanel (207) | **Retired** into the catalog's source node (plan panel, run panel) |
 | `/review` (252) | **Retired**; the landing's *To review* list + Keep / Discard on each source table |
-| `/products` workshop (915) + BuildDashboard (479) | **Retired**; the coverage map is the subject view |
-| `/products/[id]` + ProductRootPanel (1,053) + TableNotebook (681) + CellOutput (205) | **Retired**; Preview replaces cell execute |
-| AskAIPanel (640), RefineChat (986), KpiManager (506), `refine.ts` routes | **Retired**; one floating assistant + Definitions |
-| Topic page: *Manage this data* / Manage mode (ManageLayer 453 + ManageTables 670) | Manage mode **retired**; curator link *Open in the Catalog →*; the topic page keeps ask box, try-asking, trust line; Quality and Activity live in the declaration's context column; *Refresh* stays on `/pipelines` |
+| `/products` workshop (915) + BuildDashboard (479) | **Retired 2026-09-23** (deleted); `/build` keeps the plan panel |
+| `/products/[id]` + ProductRootPanel (1,053) + TableNotebook (681) + CellOutput (205) | **Retired 2026-09-23** (deleted); the SQL tab is the declaration, Preview replaces cell execute. `product_table_cells` + `routes/products/cells.ts` are caller-less — the cleanup slice deletes them |
+| AskAIPanel (640), RefineChat (986), KpiManager (506), `refine.ts` routes | AskAIPanel + RefineChat **retired 2026-09-23** (deleted); one floating assistant + the Build chat. KpiManager **kept** as the subject page's Metrics tab (the one metric editor). `refine.ts` / `refineChat.ts` are caller-less — the cleanup slice deletes them |
+| Topic page: *Manage this data* / Manage mode (ManageLayer 453 + ManageTables 670) | Manage mode **retired 2026-09-23** (deleted): `?manage=1` redirects curators to `/catalog?productId=`; the topic page keeps ask box, try-asking, trust line and the curator button *Open in the Catalog*; Quality, History and Relations are tabs on the subject page; *Rebuild* is on the subject page, *Refresh* (schedules, runs) stays on `/pipelines` |
 | `/shared-data` cards | Link into the catalog (`/catalog?table=`) |
 | `/relationships` Topics toggle + TopicsCanvas (600) | **Retired**; the subject view draws its joins. Sources canvas stays |
 | `/pipelines` | Unchanged (Refresh data, schedules, runs) |

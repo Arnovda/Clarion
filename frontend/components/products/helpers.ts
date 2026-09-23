@@ -1,5 +1,5 @@
 /**
- * Pure helpers for /products — no React, no state.
+ * Pure helpers for subject names and statuses — no React, no state.
  */
 
 export function statusBorderColor(status: string): string {

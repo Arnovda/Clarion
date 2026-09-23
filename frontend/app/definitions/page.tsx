@@ -129,10 +129,10 @@ function DefinitionsInner() {
                   </div>
                   {curator && (
                     <Link
-                      href={`/topics/${g.product.id}?manage=1`}
+                      href={`/catalog?productId=${g.product.id}`}
                       className="inline-flex items-center gap-1 text-[11.5px] text-muted hover:text-ocean shrink-0"
                     >
-                      Edit in the subject <ArrowUpRight className="w-3 h-3" strokeWidth={2} />
+                      Edit in the Catalog <ArrowUpRight className="w-3 h-3" strokeWidth={2} />
                     </Link>
                   )}
                 </div>
