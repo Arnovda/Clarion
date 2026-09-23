@@ -35,6 +35,7 @@ import {
   type CatalogSearchHit,
 } from '@/lib/catalog';
 import { useDebounce } from '@/lib/hooks/useDebounce';
+import { groupSearchHits, matchRange } from '@/lib/catalogSearchTree';
 
 export interface CatalogSelection {
   catalog: CatalogId;
@@ -65,9 +66,11 @@ interface Props {
   /** Optional: show row counts in the table list (default true). */
   showRowCounts?: boolean;
   /**
-   * When set to a non-empty string the tree is replaced by a flat fuzzy
-   * search across every table + column in scope. Clicking a hit selects
-   * the table (and the parent's detail panel handles the column focus).
+   * When set to a non-empty string the tree is FILTERED in place: the
+   * search hits are regrouped into the same root › schema › table shape
+   * (lib/catalogSearchTree.ts), matching text is bolded, and up to five
+   * matching columns show under each table. Clicking a hit selects the
+   * table (and the parent's detail panel handles the column focus).
    */
   searchValue?: string;
 }
@@ -305,6 +308,15 @@ export default function CatalogBrowser({ selected, selectedSchema, onSelectTable
     () => searchHits.filter((h) => h.catalog !== hide),
     [searchHits, hide],
   );
+  // The schema rows the tree already holds, keyed the way hits name them —
+  // so a source in the results wears the same mark as in the tree.
+  const schemaMetaBySlug = useMemo(() => {
+    const m = new Map<string, SchemaEntry>();
+    for (const [catalog, rows] of Object.entries(schemasByCatalog)) {
+      for (const row of rows) m.set(`${catalog}/${row.id}`, row);
+    }
+    return m;
+  }, [schemasByCatalog]);
 
   return (
     <div className="flex flex-col h-full min-h-0 bg-soft text-ink-2">
@@ -323,6 +335,7 @@ export default function CatalogBrowser({ selected, selectedSchema, onSelectTable
             error={searchError}
             selected={selected ?? null}
             onSelectTable={onSelectTable}
+            schemaMetaBySlug={schemaMetaBySlug}
           />
         )}
         {!isSearching && grids.length > 0 && (
@@ -645,15 +658,16 @@ export default function CatalogBrowser({ selected, selectedSchema, onSelectTable
 }
 
 // ───────────────────────────────────────────────────────────────────────────
-// Flat search result list — rendered in place of the tree while the user
-// has a query active. Hits are grouped by table so a single table that has
-// both a name match and several column matches doesn't appear N times.
-// Clicking the table row, or any of its column matches, selects the table
-// via the parent's onSelectTable (which also clears the search).
+// Search results — the tree, filtered. A query does not replace the tree
+// with a flat list; it keeps catalog › schema › table and drops what did
+// not match, with the matched text in bold (the Databricks explorer's
+// behaviour, asked for 2026-09-23). Sources keep their mark, subjects their
+// glyph, so a hit reads the same as the row it would be in the full tree.
+// Clicking the table row, or any of its column matches, selects the table.
 // ───────────────────────────────────────────────────────────────────────────
 
 function SearchResults({
-  query, hits, loading, error, selected, onSelectTable,
+  query, hits, loading, error, selected, onSelectTable, schemaMetaBySlug,
 }: {
   query: string;
   hits: CatalogSearchHit[];
@@ -661,43 +675,11 @@ function SearchResults({
   error: string | null;
   selected: CatalogSelection | null;
   onSelectTable?: (sel: CatalogSelection) => void;
+  /** The tree's own schema rows, for the marks — absent until loaded. */
+  schemaMetaBySlug: Map<string, SchemaEntry>;
 }) {
-  // Group hits by (catalog, schemaSlug, tableId). Preserve the order of
-  // first appearance so the backend's relevance ranking carries through.
-  type Group = {
-    catalog: CatalogId;
-    schemaSlug: string;
-    schemaLabel: string;
-    tableId: string;
-    tableLabel: string;
-    tableName: string;
-    role: string | null;
-    tableMatched: boolean;
-    columns: Array<{ name: string; label: string }>;
-  };
-  const groups: Group[] = [];
-  const byKey = new Map<string, Group>();
-  for (const h of hits) {
-    const key = `${h.catalog}/${h.schemaSlug}/${h.tableId}`;
-    let g = byKey.get(key);
-    if (!g) {
-      g = {
-        catalog: h.catalog,
-        schemaSlug: h.schemaSlug,
-        schemaLabel: h.schemaLabel,
-        tableId: h.tableId,
-        tableLabel: h.tableLabel,
-        tableName: h.tableName,
-        role: h.role,
-        tableMatched: false,
-        columns: [],
-      };
-      byKey.set(key, g);
-      groups.push(g);
-    }
-    if (h.kind === 'table') g.tableMatched = true;
-    else if (h.columnName) g.columns.push({ name: h.columnName, label: h.columnLabel ?? h.columnName });
-  }
+  const tree = useMemo(() => groupSearchHits(hits), [hits]);
+  const total = tree.reduce((n, c) => n + c.schemas.reduce((m, sc) => m + sc.tables.length, 0), 0);
 
   if (error) {
     return (
@@ -706,14 +688,14 @@ function SearchResults({
       </div>
     );
   }
-  if (loading && groups.length === 0) {
+  if (loading && total === 0) {
     return (
       <div className="px-4 py-3 flex items-center gap-2 text-[11px] text-muted-2">
         <Loader2 className="w-3 h-3 animate-spin" /> Searching…
       </div>
     );
   }
-  if (groups.length === 0) {
+  if (total === 0) {
     return (
       <div className="px-4 py-3 text-[12px] text-muted-2 italic">
         No tables or columns match &ldquo;{query}&rdquo;.
@@ -723,108 +705,102 @@ function SearchResults({
 
   return (
     <div>
-      <div className="px-4 py-1.5 text-[10px] font-mono uppercase tracking-[0.12em] text-muted-2">
-        {groups.length} {groups.length === 1 ? 'match' : 'matches'}
-      </div>
-      {groups.map((g) => {
-        const isSelected = selected?.catalog === g.catalog
-          && selected?.schemaSlug === g.schemaSlug
-          && selected?.tableId === g.tableId;
-        const abbrev = roleAbbrev(g.role);
-        return (
-          <div key={`${g.catalog}/${g.schemaSlug}/${g.tableId}`}>
-            {/* Table row */}
-            <button
-              onClick={() => onSelectTable?.({
-                catalog: g.catalog,
-                schemaSlug: g.schemaSlug,
-                schemaLabel: g.schemaLabel,
-                tableId: g.tableId,
-                tableLabel: g.tableLabel,
-                tableName: g.tableName,
-                role: g.role,
-              })}
-              className={cn(
-                'w-full flex items-center gap-2 px-4 py-1.5 text-left transition-colors border-l-2',
-                isSelected
-                  ? 'bg-ocean-softer border-ocean'
-                  : 'hover:bg-softer border-transparent',
-              )}
-            >
-              <TableIcon
-                className={cn('w-3.5 h-3.5 shrink-0', isSelected ? 'text-ocean' : 'text-muted-2')}
-                strokeWidth={1.5}
-              />
-              <span className="min-w-0 flex-1">
-                <span className={cn(
-                  'block text-[12px] truncate',
-                  isSelected ? 'text-ink font-medium' : 'text-ink-2',
-                )}>
-                  <HighlightMatch text={g.tableLabel} query={query} />
-                </span>
-                <span className="block text-[10px] font-mono text-muted-2 truncate">
-                  {g.schemaLabel}
-                </span>
-              </span>
-              {abbrev && (
-                <span className={cn(
-                  'text-[9px] font-mono uppercase tracking-[0.06em] px-1 py-0.5 rounded shrink-0',
-                  roleClass(g.role),
-                )}>
-                  {abbrev}
-                </span>
-              )}
-            </button>
-
-            {/* Column matches under this table — clicking selects the parent
-                table; the right-pane detail panel handles column focus via
-                its own focusColumnId mechanism. Keeping the click target on
-                the table row keeps the surface predictable. */}
-            {g.columns.length > 0 && (
-              <div className="pl-10 pr-3 pb-1">
-                {g.columns.slice(0, 5).map((c) => (
-                  <button
-                    key={c.name}
-                    onClick={() => onSelectTable?.({
-                      catalog: g.catalog,
-                      schemaSlug: g.schemaSlug,
-                      schemaLabel: g.schemaLabel,
-                      tableId: g.tableId,
-                      tableLabel: g.tableLabel,
-                      tableName: g.tableName,
-                      role: g.role,
-                    })}
-                    className="block w-full text-left py-0.5 text-[11px] text-muted-2 hover:text-ocean transition-colors truncate"
-                  >
-                    <span className="font-mono">→</span> <HighlightMatch text={c.label} query={query} />
-                  </button>
-                ))}
-                {g.columns.length > 5 && (
-                  <span className="block text-[10px] text-muted-2 italic py-0.5">
-                    +{g.columns.length - 5} more
-                  </span>
-                )}
-              </div>
-            )}
+      {tree.map((cat) => (
+        <div key={cat.catalog}>
+          <div className="w-full flex items-center gap-2 px-4 pt-3 pb-1.5">
+            <Chevron open />
+            <span className="text-[10px] font-mono tracking-[0.14em] uppercase text-muted-2 font-medium truncate flex-1">
+              {ROOT_LABEL[cat.catalog]}
+            </span>
           </div>
-        );
-      })}
+          {cat.schemas.map((schema) => {
+            const meta = schemaMetaBySlug.get(`${schema.catalog}/${schema.schemaSlug}`)?.meta;
+            return (
+              <div key={`${schema.catalog}/${schema.schemaSlug}`}>
+                <div className="flex items-center gap-2 pl-7 pr-3 py-1.5">
+                  <Chevron open />
+                  {cat.catalog === 'sources' ? (
+                    <ConnectorMarkIcon connectorType={meta?.connectorType ?? meta?.type} size="xs" />
+                  ) : (
+                    <Layers className="w-3.5 h-3.5 shrink-0 text-muted-2" strokeWidth={1.5} />
+                  )}
+                  <span className="text-[13px] text-ink-2 truncate flex-1">
+                    <HighlightMatch text={schema.schemaLabel} query={query} />
+                  </span>
+                  <span className="text-[10px] font-mono text-muted-2 tabular-nums">{schema.tables.length}</span>
+                </div>
+                {schema.tables.map((g) => {
+                  const isSelected = selected?.catalog === schema.catalog
+                    && selected?.schemaSlug === schema.schemaSlug
+                    && selected?.tableId === g.tableId;
+                  const abbrev = roleAbbrev(g.role);
+                  const select = () => onSelectTable?.({
+                    catalog: schema.catalog,
+                    schemaSlug: schema.schemaSlug,
+                    schemaLabel: schema.schemaLabel,
+                    tableId: g.tableId,
+                    tableLabel: g.tableLabel,
+                    tableName: g.tableName,
+                    role: g.role,
+                  });
+                  return (
+                    <div key={g.tableId}>
+                      <button
+                        onClick={select}
+                        className={cn(
+                          'w-full flex items-center gap-1.5 pl-10 pr-3 py-1 text-left transition-colors border-l-2 -ml-[2px]',
+                          isSelected ? 'bg-ocean-softer border-ocean' : 'hover:bg-softer border-transparent',
+                        )}
+                      >
+                        <TableIcon className={cn('w-3.5 h-3.5 shrink-0', isSelected ? 'text-ocean' : 'text-muted-2')} strokeWidth={1.5} />
+                        <span className={cn('text-[12px] truncate flex-1', isSelected ? 'text-ink font-medium' : 'text-ink-2')}>
+                          <HighlightMatch text={g.tableLabel} query={query} />
+                        </span>
+                        {abbrev && (
+                          <span className={cn('text-[9px] font-mono uppercase tracking-[0.06em] px-1 py-0.5 rounded shrink-0', roleClass(g.role))}>
+                            {abbrev}
+                          </span>
+                        )}
+                      </button>
+                      {g.columns.length > 0 && (
+                        <div className="pl-16 pr-3 pb-1">
+                          {g.columns.slice(0, 5).map((c) => (
+                            <button
+                              key={c.name}
+                              onClick={select}
+                              className="block w-full text-left py-0.5 text-[11px] text-muted-2 hover:text-ocean transition-colors truncate"
+                              title={c.name}
+                            >
+                              <HighlightMatch text={c.label} query={query} />
+                            </button>
+                          ))}
+                          {g.columns.length > 5 && (
+                            <span className="block text-[10px] text-muted-2 italic py-0.5">+{g.columns.length - 5} more columns</span>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            );
+          })}
+        </div>
+      ))}
     </div>
   );
 }
 
-/** Wrap occurrences of `query` (case-insensitive) in the ocean colour. */
+/** The matched text in bold — the explorer's "waterinfo_**meetreeksen**". */
 function HighlightMatch({ text, query }: { text: string; query: string }) {
-  if (!query) return <>{text}</>;
-  const lower = text.toLowerCase();
-  const q = query.toLowerCase();
-  const idx = lower.indexOf(q);
-  if (idx === -1) return <>{text}</>;
+  const range = matchRange(text, query);
+  if (!range) return <>{text}</>;
+  const [from, to] = range;
   return (
     <>
-      {text.slice(0, idx)}
-      <span className="text-ocean font-semibold">{text.slice(idx, idx + query.length)}</span>
-      {text.slice(idx + query.length)}
+      {text.slice(0, from)}
+      <span className="font-semibold text-ink">{text.slice(from, to)}</span>
+      {text.slice(to)}
     </>
   );
 }

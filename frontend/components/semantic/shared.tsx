@@ -5,7 +5,7 @@
  * Lives here so the two "layer" panels don't duplicate identical logic.
  */
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import api from '@/lib/api';
 
 // ─── Pure helpers ────────────────────────────────────────────────────────────
@@ -54,6 +54,8 @@ export function completenessBucket(
 interface PreviewTableProps {
   /** Endpoint that returns `{ data: { rows, columns } }`. Called on demand. */
   url: string;
+  /** Load on mount (a Sample data tab) instead of behind a "Preview" button. */
+  autoLoad?: boolean;
 }
 
 /**
@@ -61,11 +63,32 @@ interface PreviewTableProps {
  * Source panels pass `/semantic/preview?connectionId=...&table=...`.
  * Product panels pass `/semantic/product-preview?productTableId=...`.
  */
-export function PreviewTable({ url }: PreviewTableProps) {
+export function PreviewTable({ url, autoLoad = false }: PreviewTableProps) {
   const [state, setState] = useState<'idle' | 'loading' | 'done' | 'error'>('idle');
   const [rows, setRows]   = useState<Record<string, unknown>[]>([]);
   const [cols, setCols]   = useState<string[]>([]);
   const [errMsg, setErr]  = useState('');
+  // A tab that shows the data straight away: fetch once per url. The
+  // "Hide" affordance is withheld there (hiding would only refetch).
+  useEffect(() => {
+    if (!autoLoad) return;
+    let cancelled = false;
+    setState('loading');
+    api.get(url)
+      .then((res) => {
+        if (cancelled) return;
+        setRows(res.data.data.rows);
+        setCols(res.data.data.columns);
+        setState('done');
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        const msg = (err as { response?: { data?: { error?: string } } })?.response?.data?.error ?? 'Could not load preview';
+        setErr(msg);
+        setState('error');
+      });
+    return () => { cancelled = true; };
+  }, [autoLoad, url]);
 
   async function load() {
     setState('loading');
@@ -115,7 +138,9 @@ export function PreviewTable({ url }: PreviewTableProps) {
     <div className="mt-3 panel-enter">
       <div className="flex items-center justify-between mb-2">
         <span className="text-[10px] font-mono tracking-[0.1em] uppercase text-muted">First {rows.length} rows</span>
-        <button onClick={() => setState('idle')} className="text-[10px] font-mono tracking-[0.06em] uppercase text-muted-2 hover:text-ink-2 transition-colors">Hide</button>
+        {!autoLoad && (
+          <button onClick={() => setState('idle')} className="text-[10px] font-mono tracking-[0.06em] uppercase text-muted-2 hover:text-ink-2 transition-colors">Hide</button>
+        )}
       </div>
       <div className="preview-terminal rounded-md overflow-hidden">
         <div className="overflow-x-auto">

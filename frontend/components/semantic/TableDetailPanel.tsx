@@ -1,26 +1,39 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+/**
+ * <TableDetailPanel> — a SOURCE table's page in the catalog.
+ *
+ * The same explorer layout as a product table (breadcrumb › name · actions ·
+ * tabs; Overview = description + ONE columns table + the "About" rail),
+ * with what a source table is about: the source it came from (its mark),
+ * whether it is in the AI's context, which subjects are built from it,
+ * what it feeds, and the columns' roles — a dimension you group by, a
+ * measure you add up — set in the row. Confirm / Flag on a suggestion
+ * stays where it was, at the top.
+ */
+import { useEffect, useMemo, useState } from 'react';
 import dynamic from 'next/dynamic';
-import { Sparkles, Check, Flag, ArrowRight, Share2, X } from 'lucide-react';
+import { ArrowRight, Check, ChevronDown, ChevronRight, Flag, MessageSquareText, Share2, Sparkles } from 'lucide-react';
 import api from '@/lib/api';
 import { SourceTable, SourceColumn } from './types';
 import ApprovalBadge from './ApprovalBadge';
 import HistoryPanel from './HistoryPanel';
 import HelpTooltip from '@/components/HelpTooltip';
 import QualityPanel from '@/components/QualityPanel';
-import { parseDomains, parseExamples, classifyType, completenessBucket, PreviewTable } from './shared';
-import { useRole, canCurate } from '@/lib/role';
+import { parseDomains, parseExamples, PreviewTable } from './shared';
+import { useRole, canCurate, isAdminRole } from '@/lib/role';
+import { cn } from '@/lib/cn';
 import AiPromptDialog from './AiPromptDialog';
+import ConnectorMarkIcon from '@/components/ConnectorMarkIcon';
+import ExplorerHeader, { HeaderAction, type Crumb } from '@/components/catalog/ExplorerHeader';
+import AboutRail, { RailChip, type AboutSection } from '@/components/catalog/AboutRail';
+import ColumnsTable, { type ColumnRow } from '@/components/catalog/ColumnsTable';
 import LineageSummary from '@/components/catalog/LineageSummary';
+import type { AssistantOpenMode, CatalogConnection, CatalogNavTarget } from '@/components/catalog/navigation';
 
 const LineageGraph = dynamic(() => import('@/components/catalog/LineageGraph'), { ssr: false });
 
-// 'relationships' became 'lineage' on 2026-08-18: the per-table FK list
-// duplicated /relationships (the one editing surface), while "which topic
-// columns does this table feed, and how?" had no home at all. The tab now
-// answers the second question and links to Relations for the first.
-type ViewTab = 'overview' | 'columns' | 'lineage' | 'quality' | 'history';
+type ViewTab = 'overview' | 'sample' | 'lineage' | 'quality' | 'history';
 
 interface Props {
   table: SourceTable;
@@ -28,80 +41,71 @@ interface Props {
   focusColumnId: number | null;
   connectionDomains?: string[];
   onSaved: () => void;
-  /** Dismiss the panel. Wired by /catalog so the right inset can be
-   *  closed; left unset when the panel is the whole pane (Structure mode). */
   onClose?: () => void;
+  onNavigate?: (target: CatalogNavTarget) => void;
+  onAskAssistant?: (mode: AssistantOpenMode) => void;
+  connections?: CatalogConnection[];
 }
 
-interface UsedInProduct {
-  id: number;
-  name: string;
-  status: string;
-}
+interface UsedInProduct { id: number; name: string; status: string }
+interface PolicyRow { id: number; name: string; table_name: string; column_name: string | null; policy_type: string }
 
-const columnCompleteness = (col: SourceColumn) =>
-  completenessBucket(
-    !!col.description && col.description.trim().length > 0,
-    !!(col.is_dimension || col.is_measure),
-    !col.ai_draft,
-  );
-
-export default function TableDetailPanel({ table, columns, focusColumnId, connectionDomains = [], onSaved, onClose }: Props) {
+export default function TableDetailPanel({
+  table, columns, focusColumnId, connectionDomains = [], onSaved, onClose, onNavigate, onAskAssistant, connections = [],
+}: Props) {
   const role = useRole();
   const curator = canCurate(role);
+  const admin = isAdminRole(role);
   const [tbl, setTbl]               = useState<SourceTable>(table);
   const [cols, setCols]             = useState<SourceColumn[]>(columns);
   const [savingTable, setSavingTable] = useState(false);
-  const [savingCol, setSavingCol]   = useState<number | null>(null);
   const [savedMsg, setSavedMsg]     = useState('');
   const [confirmingAi, setConfirmingAi] = useState(false);
   const [flaggingAi, setFlaggingAi] = useState(false);
-  // "Ask AI to change this description" target (table or a specific column).
-  const [aiTarget, setAiTarget] = useState<{ kind: 'table' } | { kind: 'column'; col: SourceColumn } | null>(null);
+  const [aiTarget, setAiTarget]     = useState<{ kind: 'table' } | { kind: 'column'; col: SourceColumn } | null>(null);
+  const [moreOpen, setMoreOpen]     = useState(false);
+  const [domainInput, setDomainInput] = useState('');
+  const [showColHistory, setShowColHistory] = useState<number | null>(null);
+  const [viewTab, setViewTab]       = useState<ViewTab>('overview');
+  const [usedIn, setUsedIn]         = useState<UsedInProduct[]>([]);
+  const [policies, setPolicies]     = useState<PolicyRow[]>([]);
 
   if (table.id !== tbl.id) { setTbl(table); setCols(columns); }
 
-  const [domainInput, setDomainInput] = useState('');
-  const [showColHistory, setShowColHistory] = useState<number | null>(null);
-  const [colView, setColView] = useState<'cards' | 'grid'>('grid');
-
-  const [viewTab, setViewTab] = useState<ViewTab>('overview');
-
-  const [usedIn, setUsedIn] = useState<UsedInProduct[]>([]);
-
-  // Fetch "used in" products when table changes
   useEffect(() => {
     let cancelled = false;
-    api.get(`/products/by-source-table/${tbl.id}`).then((res) => {
-      if (!cancelled) setUsedIn((res.data.data ?? []) as UsedInProduct[]);
-    }).catch(() => { if (!cancelled) setUsedIn([]); });
+    api.get(`/products/by-source-table/${tbl.id}`)
+      .then((res) => { if (!cancelled) setUsedIn((res.data.data ?? []) as UsedInProduct[]); })
+      .catch(() => { if (!cancelled) setUsedIn([]); });
     return () => { cancelled = true; };
   }, [tbl.id]);
+  useEffect(() => {
+    let cancelled = false;
+    api.get('/policies/mine')
+      .then((r) => { if (!cancelled) setPolicies((r.data?.data ?? []) as PolicyRow[]); })
+      .catch(() => { if (!cancelled) setPolicies([]); });
+    return () => { cancelled = true; };
+  }, []);
 
-  function addDomain(value: string) {
-    const tag = value.trim().toLowerCase();
-    if (!tag) return;
-    const current: string[] = parseDomains(tbl.domains);
-    if (!current.includes(tag)) setTbl({ ...tbl, domains: [...current, tag] });
-    setDomainInput('');
-  }
+  const connection = useMemo(() => connections.find((c) => c.id === tbl.connection_id) ?? null, [connections, tbl.connection_id]);
 
-  function removeDomain(tag: string) {
-    setTbl({ ...tbl, domains: parseDomains(tbl.domains).filter((d) => d !== tag) });
-  }
-
+  // ── Writes ───────────────────────────────────────────────────────────────
   async function saveTable() {
     setSavingTable(true);
-    await api.patch(`/semantic/tables/${tbl.id}`, {
-      display_name: tbl.display_name,
-      description:  tbl.description,
-      is_active:    tbl.is_active,
-      domains:      parseDomains(tbl.domains),
-    });
+    try {
+      await api.patch(`/semantic/tables/${tbl.id}`, {
+        display_name: tbl.display_name,
+        description:  tbl.description,
+        is_active:    tbl.is_active,
+        domains:      parseDomains(tbl.domains),
+      });
+      setSavedMsg('Saved');
+      setTimeout(() => setSavedMsg(''), 2000);
+      onSaved();
+    } catch {
+      setSavedMsg('Could not save');
+    }
     setSavingTable(false);
-    setSavedMsg('Table saved');
-    setTimeout(() => setSavedMsg(''), 2000);
-    onSaved();
   }
 
   async function confirmAiTable() {
@@ -109,8 +113,6 @@ export default function TableDetailPanel({ table, columns, focusColumnId, connec
     try {
       await api.patch(`/semantic/tables/${tbl.id}`, { ai_draft: false, approval_status: 'approved' });
       setTbl({ ...tbl, ai_draft: false, approval_status: 'approved' });
-      setSavedMsg('AI suggestion confirmed');
-      setTimeout(() => setSavedMsg(''), 2000);
       onSaved();
     } finally { setConfirmingAi(false); }
   }
@@ -120,72 +122,175 @@ export default function TableDetailPanel({ table, columns, focusColumnId, connec
     try {
       await api.patch(`/semantic/tables/${tbl.id}`, { approval_status: 'flagged' });
       setTbl({ ...tbl, approval_status: 'flagged' });
-      setSavedMsg('Flagged for review');
-      setTimeout(() => setSavedMsg(''), 2000);
       onSaved();
     } finally { setFlaggingAi(false); }
   }
 
-  async function saveColumn(col: SourceColumn) {
-    setSavingCol(col.id);
+  function updateCol(id: number, patch: Partial<SourceColumn>) {
+    setCols((prev) => prev.map((c) => (c.id === id ? { ...c, ...patch } : c)));
+  }
+
+  async function saveColumn(col: SourceColumn, patch: Partial<SourceColumn> = {}) {
+    const next = { ...col, ...patch };
     await api.patch(`/semantic/columns/${col.id}`, {
-      display_name: col.display_name,
-      description:  col.description,
-      is_dimension: col.is_dimension,
-      is_measure:   col.is_measure,
+      display_name: next.display_name,
+      description:  next.description,
+      is_dimension: next.is_dimension,
+      is_measure:   next.is_measure,
     });
-    setSavingCol(null);
+    updateCol(col.id, patch);
     onSaved();
   }
 
-  function updateCol(id: number, patch: Partial<SourceColumn>) {
-    setCols((prev) => prev.map((c) => c.id === id ? { ...c, ...patch } : c));
-  }
-
-  function updateTbl(patch: Partial<SourceTable>) {
-    setTbl((prev) => ({ ...prev, ...patch }));
+  function addDomain(value: string) {
+    const tag = value.trim().toLowerCase();
+    if (!tag) return;
+    const current = parseDomains(tbl.domains);
+    if (!current.includes(tag)) setTbl({ ...tbl, domains: [...current, tag] });
+    setDomainInput('');
   }
 
   const isAiDraft = !!tbl.ai_draft && tbl.approval_status !== 'approved';
-  // History is an audit log — curator-only. Viewers see Overview + Columns
-  // + Relationships + Quality.
-  const tabs: { id: ViewTab; label: string; count?: number }[] = [
+  const title = tbl.display_name || tbl.table_name;
+  const ownDomains = parseDomains(tbl.domains).filter((tag) => !connectionDomains.includes(tag));
+  const tablePolicies = policies.filter((p) => p.table_name === tbl.table_name);
+
+  // ── Header ───────────────────────────────────────────────────────────────
+  const crumbs: Crumb[] = [
+    { label: 'Catalog', onClick: () => onNavigate?.({ kind: 'catalog' }) },
+    { label: connection?.name ?? 'Source', onClick: () => onNavigate?.({ kind: 'source', connectionId: tbl.connection_id }) },
+    { label: title },
+  ];
+  const tabs: Array<{ id: ViewTab; label: string; count?: number }> = [
     { id: 'overview', label: 'Overview' },
-    { id: 'columns', label: 'Columns', count: cols.length },
-    // Lineage is a curator surface (the endpoint carries transformation
-    // expressions and is analyst+), like History.
+    { id: 'sample', label: 'Sample data' },
     ...(curator ? [{ id: 'lineage' as const, label: 'Lineage' }] : []),
     { id: 'quality', label: 'Quality' },
     ...(curator ? [{ id: 'history' as const, label: 'History' }] : []),
   ];
 
+  // ── The rail ─────────────────────────────────────────────────────────────
+  const sections: AboutSection[] = [
+    {
+      title: 'About this table',
+      rows: [
+        { label: 'Type', value: 'Source table' },
+        {
+          label: 'Source',
+          value: connection ? (
+            <button type="button" onClick={() => onNavigate?.({ kind: 'source', connectionId: connection.id })} className="inline-flex items-center gap-1.5 text-ocean hover:text-ocean-hover transition-colors text-left min-w-0">
+              <ConnectorMarkIcon connectorType={connection.connector_type ?? connection.type} size="xs" />
+              <span className="truncate">{connection.name}</span>
+            </button>
+          ) : null,
+        },
+        { label: 'In answers', value: tbl.is_active ? <RailChip tone="ok">Yes</RailChip> : <RailChip tone="warn" title="Excluded from the AI's context">No</RailChip> },
+        {
+          label: 'Domains',
+          value: (connectionDomains.length > 0 || ownDomains.length > 0) ? (
+            <span className="flex flex-wrap gap-1">
+              {connectionDomains.map((d) => <RailChip key={`c-${d}`} title="From the source">{d}</RailChip>)}
+              {ownDomains.map((d) => <RailChip key={`t-${d}`} tone="ocean">{d}</RailChip>)}
+            </span>
+          ) : null,
+        },
+      ],
+    },
+    {
+      title: 'Used in',
+      body: usedIn.length === 0 ? (
+        <span className="text-muted">No subject is built from this table yet.</span>
+      ) : (
+        <span className="flex flex-wrap gap-1">
+          {usedIn.map((p) => (
+            <button key={p.id} type="button" onClick={() => onNavigate?.({ kind: 'subject', productId: p.id })} className="inline-flex items-center gap-1 rounded border border-line bg-softer px-1.5 py-0.5 text-[11.5px] text-ink-2 hover:border-ocean hover:text-ocean transition-colors">
+              {p.name}
+              <ArrowRight className="w-3 h-3 text-muted-2" strokeWidth={2} aria-hidden />
+            </button>
+          ))}
+        </span>
+      ),
+    },
+    ...(curator ? [{
+      title: 'What it feeds',
+      body: <LineageSummary layer="source" tableId={tbl.id} compact onOpenLineage={() => setViewTab('lineage')} />,
+    }] : []),
+    ...(tablePolicies.length > 0 || admin ? [{
+      title: 'Policies',
+      body: tablePolicies.length > 0 ? (
+        <ul className="space-y-1">
+          {tablePolicies.map((p) => (
+            <li key={p.id} className="text-[12.5px] text-ink-2">
+              <span className="font-medium">{p.name}</span>
+              <span className="text-muted"> · {p.policy_type === 'column_mask' ? `masks ${p.column_name ?? 'a column'}` : 'filters rows'}</span>
+            </li>
+          ))}
+        </ul>
+      ) : <span className="text-muted">None apply to you.</span>,
+      link: admin ? { label: 'Manage policies', href: '/policies' } : undefined,
+    }] : []),
+  ];
+
+  // ── The columns ──────────────────────────────────────────────────────────
+  const rows: ColumnRow[] = cols.map((col) => ({
+    id: col.id,
+    name: col.column_name,
+    displayName: col.display_name,
+    type: col.data_type,
+    description: col.description,
+    focused: col.id === focusColumnId,
+    extra: curator ? (
+      <span className="inline-flex items-center gap-3">
+        <label className="inline-flex items-center gap-1 text-[11.5px] text-ink-2 cursor-pointer" title="Used to group and filter">
+          <input type="checkbox" checked={!!col.is_dimension} onChange={(e) => { void saveColumn(col, { is_dimension: e.target.checked }); }} className="rounded w-3.5 h-3.5 accent-ocean" />
+          Dim
+        </label>
+        <label className="inline-flex items-center gap-1 text-[11.5px] text-ink-2 cursor-pointer" title="A number that adds up">
+          <input type="checkbox" checked={!!col.is_measure} onChange={(e) => { void saveColumn(col, { is_measure: e.target.checked }); }} className="rounded w-3.5 h-3.5 accent-ocean" />
+          Mea
+        </label>
+      </span>
+    ) : (
+      <span className="inline-flex items-center gap-1">
+        {col.is_dimension && <RailChip tone="ocean">Dimension</RailChip>}
+        {col.is_measure && <RailChip tone="ok">Measure</RailChip>}
+      </span>
+    ),
+    status: curator ? (
+      <ApprovalBadge
+        entityType="column" entityId={col.id}
+        status={col.approval_status} aiDraft={col.ai_draft}
+        rejectionReason={col.rejection_reason} onChanged={onSaved}
+        compact
+      />
+    ) : undefined,
+    details: curator ? (
+      <SourceColumnDetails
+        col={col}
+        onChange={(patch) => updateCol(col.id, patch)}
+        onSave={(patch) => saveColumn(col, patch)}
+        onAskAi={() => setAiTarget({ kind: 'column', col })}
+        historyOpen={showColHistory === col.id}
+        onToggleHistory={() => setShowColHistory(showColHistory === col.id ? null : col.id)}
+      />
+    ) : undefined,
+  }));
+
+  const hasRoleChips = !curator && cols.some((c) => c.is_dimension || c.is_measure);
+  const rowsShown = hasRoleChips || curator ? rows : rows.map((r) => ({ ...r, extra: undefined }));
+
   return (
     <div className="flex-1 flex flex-col overflow-hidden bg-bg panel-enter">
-      {/* Header */}
-      <div className="bg-raised border-b border-line px-6 pt-5 pb-0 flex-shrink-0">
-        <div className="flex items-start justify-between gap-4 mb-4">
-          <div className="min-w-0">
-            <p className="text-[10px] font-mono tracking-[0.12em] uppercase text-muted mb-1">Table</p>
-            <h2 className="font-display text-[22px] text-ink leading-tight tracking-[-0.02em] truncate">
-              {tbl.display_name || tbl.table_name}
-            </h2>
-            {/* Mono raw name only for curators — viewers see display name only. */}
-            {curator && (
-              <p className="text-[12px] font-mono text-muted-2 mt-1 truncate">{tbl.table_name}</p>
+      <ExplorerHeader
+        crumbs={crumbs}
+        icon={<ConnectorMarkIcon connectorType={connection?.connector_type ?? connection?.type} size="md" />}
+        title={title}
+        technicalName={curator ? tbl.table_name : undefined}
+        badges={(
+          <>
+            {!tbl.is_active && (
+              <span className="text-[10px] font-mono tracking-[0.08em] uppercase px-1.5 py-0.5 rounded border border-line bg-softer text-muted-2">Not in answers</span>
             )}
-            <div className="flex items-center gap-2 mt-2">
-              <span className="text-[10px] font-mono tracking-[0.08em] uppercase text-muted bg-softer border border-line px-2 py-0.5 rounded">
-                {cols.length} columns
-              </span>
-              {tbl.is_active ? (
-                <span className="text-[10px] font-mono tracking-[0.08em] uppercase text-ok bg-ok-soft border border-line px-2 py-0.5 rounded">Active</span>
-              ) : (
-                <span className="text-[10px] font-mono tracking-[0.08em] uppercase text-muted-2 bg-softer border border-line px-2 py-0.5 rounded">Inactive</span>
-              )}
-            </div>
-          </div>
-          {/* Approval badge is a governance signal — admin/analyst only. */}
-          <div className="flex items-start gap-2 flex-shrink-0">
             {curator && (
               <ApprovalBadge
                 entityType="table"
@@ -194,451 +299,171 @@ export default function TableDetailPanel({ table, columns, focusColumnId, connec
                 aiDraft={tbl.ai_draft}
                 rejectionReason={tbl.rejection_reason}
                 onChanged={onSaved}
+                compact
               />
             )}
-            {onClose && (
-              <button
-                onClick={onClose}
-                className="p-1.5 rounded hover:bg-soft text-muted hover:text-ink transition-colors"
-                title="Close"
-                aria-label="Close"
-              >
-                <X className="w-4 h-4" strokeWidth={1.75} />
-              </button>
+          </>
+        )}
+        actions={curator ? (
+          <>
+            {onAskAssistant && (
+              <HeaderAction onClick={() => onAskAssistant('ask')} primary icon={<MessageSquareText className="w-3.5 h-3.5" strokeWidth={1.75} aria-hidden />} title="Ask the assistant about this table">
+                Ask about it
+              </HeaderAction>
             )}
-          </div>
-        </div>
-
-        {/* Tab strip */}
-        <div className="flex items-center gap-0 -mb-px">
-          {tabs.map((t) => {
-            const active = viewTab === t.id;
-            return (
-              <button
-                key={t.id}
-                onClick={() => setViewTab(t.id)}
-                className={`px-4 py-2.5 text-[13px] transition-colors whitespace-nowrap relative ${
-                  active ? 'text-ink font-medium' : 'text-muted hover:text-ink-2'
-                }`}
-              >
-                {t.label}
-                {typeof t.count === 'number' && (
-                  <span className="ml-1.5 text-[11px] font-mono text-muted-2 tabular-nums">({t.count})</span>
-                )}
-                {active && <span className="absolute bottom-0 left-2 right-2 h-0.5 bg-ocean rounded-full" />}
-              </button>
-            );
-          })}
-        </div>
-      </div>
+            <HeaderAction href={`/relationships?table=${tbl.id}`} icon={<Share2 className="w-3.5 h-3.5" strokeWidth={1.75} aria-hidden />} title="Its relationships, on the canvas">
+              Relations
+            </HeaderAction>
+          </>
+        ) : undefined}
+        tabs={tabs}
+        activeTab={viewTab}
+        onTabChange={setViewTab}
+        onClose={onClose}
+      />
 
       {/* ── Overview ──────────────────────────────────────────────────────── */}
       {viewTab === 'overview' && (
-        <div className="flex-1 overflow-y-auto px-6 py-6 space-y-6">
-          {/* THE EASY LINEAGE — what this source table feeds, in two lines;
-              the column-level graph is on the Lineage tab. Curators only
-              (the endpoint is analyst+). */}
-          {curator && (
-            <LineageSummary layer="source" tableId={tbl.id} onOpenLineage={() => setViewTab('lineage')} />
-          )}
-
-          {/* AI suggested banner — curator-only. Viewers don't get the
-              Confirm/Flag buttons (the PATCH would 403 anyway), so we
-              hide the whole banner instead of leaving it as visual noise. */}
-          {curator && isAiDraft && (
-            <section className="bg-ocean-softer border border-ocean/30 rounded-lg p-4">
-              <div className="flex items-start justify-between gap-4">
-                <div className="flex items-start gap-3 min-w-0">
-                  <Sparkles className="w-4 h-4 text-ocean flex-shrink-0 mt-0.5" strokeWidth={2} />
-                  <div className="min-w-0">
-                    <p className="text-[10px] font-mono tracking-[0.12em] uppercase text-ocean mb-1">AI suggested</p>
+        <div className="flex-1 overflow-y-auto px-6 pt-5 pb-24">
+          <div className="flex gap-8 items-start">
+            <div className="flex-1 min-w-0 space-y-5">
+              {curator && isAiDraft && (
+                <section className="bg-ocean-softer border border-ocean/30 rounded-lg px-4 py-3 flex items-center justify-between gap-4">
+                  <div className="flex items-start gap-2.5 min-w-0">
+                    <Sparkles className="w-4 h-4 text-ocean shrink-0 mt-0.5" strokeWidth={2} aria-hidden />
                     <p className="text-[13px] text-ink leading-relaxed">
-                      Review the description below. Confirm if accurate, or flag if it needs work.
+                      <span className="font-medium">Suggested by Clarion.</span> Confirm the description if it is right, or flag it.
                     </p>
                   </div>
-                </div>
-                <div className="flex items-center gap-1.5 flex-shrink-0">
-                  <button
-                    onClick={confirmAiTable}
-                    disabled={confirmingAi || flaggingAi}
-                    className="flex items-center gap-1.5 px-3 py-1.5 rounded text-[12px] font-medium bg-ok-soft text-ok hover:bg-ok hover:text-white transition-colors disabled:opacity-50"
-                  >
-                    <Check className="w-3 h-3" strokeWidth={2.5} />
-                    {confirmingAi ? '...' : 'Confirm'}
-                  </button>
-                  <button
-                    onClick={flagAiTable}
-                    disabled={confirmingAi || flaggingAi}
-                    className="flex items-center gap-1.5 px-3 py-1.5 rounded text-[12px] font-medium bg-warn-soft text-warn hover:bg-warn hover:text-white transition-colors disabled:opacity-50"
-                  >
-                    <Flag className="w-3 h-3" strokeWidth={2} />
-                    {flaggingAi ? '...' : 'Flag'}
-                  </button>
-                </div>
-              </div>
-            </section>
-          )}
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    <button onClick={confirmAiTable} disabled={confirmingAi || flaggingAi} className="flex items-center gap-1.5 px-3 py-1.5 rounded text-[12px] font-medium bg-ok-soft text-ok hover:bg-ok hover:text-white transition-colors disabled:opacity-50">
+                      <Check className="w-3 h-3" strokeWidth={2.5} aria-hidden />{confirmingAi ? '…' : 'Confirm'}
+                    </button>
+                    <button onClick={flagAiTable} disabled={confirmingAi || flaggingAi} className="flex items-center gap-1.5 px-3 py-1.5 rounded text-[12px] font-medium bg-warn-soft text-warn hover:bg-warn hover:text-white transition-colors disabled:opacity-50">
+                      <Flag className="w-3 h-3" strokeWidth={2} aria-hidden />{flaggingAi ? '…' : 'Flag'}
+                    </button>
+                  </div>
+                </section>
+              )}
 
-          {/* Edit form */}
-          <section className="bg-raised border border-line rounded-lg p-6 space-y-5">
-            <div className="grid grid-cols-2 gap-5">
-              <div>
-                <label className="block text-[10px] font-mono tracking-[0.12em] uppercase text-muted mb-1.5">Display name</label>
-                <input
-                  value={tbl.display_name ?? ''}
-                  onChange={(e) => updateTbl({ display_name: e.target.value })}
-                  className="w-full bg-raised border border-line rounded-md px-3 py-2 text-[13px] text-ink-2 placeholder-muted-2 focus:outline-none focus:border-ocean focus:ring-1 focus:ring-ocean/30 transition-colors"
-                  placeholder="Human-readable name"
-                />
-              </div>
-              <div>
-                <label className="block text-[10px] font-mono tracking-[0.12em] uppercase text-muted mb-1.5">Active in AI context</label>
-                <select
-                  value={tbl.is_active ? 'yes' : 'no'}
-                  onChange={(e) => updateTbl({ is_active: e.target.value === 'yes' })}
-                  className="w-full bg-raised border border-line rounded-md px-3 py-2 text-[13px] text-ink-2 focus:outline-none focus:border-ocean focus:ring-1 focus:ring-ocean/30 transition-colors"
-                >
-                  <option value="yes">Yes — include in AI context</option>
-                  <option value="no">No — exclude from AI context</option>
-                </select>
-              </div>
-            </div>
-
-            <div>
-              <div className="flex items-center mb-1.5">
-                <label className="block text-[10px] font-mono tracking-[0.12em] uppercase text-muted">Description</label>
-                {curator && (
-                  <button
-                    type="button"
-                    onClick={() => setAiTarget({ kind: 'table' })}
-                    className="ml-auto inline-flex items-center gap-1 text-[11px] text-ocean hover:text-ocean-hover transition-colors"
-                    title="Ask AI to change this description in plain language"
-                  >
-                    <Sparkles className="w-3 h-3" strokeWidth={1.75} />
-                    Ask AI
-                  </button>
+              <section className="bg-raised border border-line rounded-lg p-5">
+                <div className="flex items-center justify-between gap-3 mb-2">
+                  <h3 className="text-[13px] font-medium text-ink">Description</h3>
+                  {curator && (
+                    <button type="button" onClick={() => setAiTarget({ kind: 'table' })} className="inline-flex items-center gap-1 text-[11.5px] text-ocean hover:text-ocean-hover transition-colors" title="Ask AI to write or change this description">
+                      <Sparkles className="w-3 h-3" strokeWidth={1.75} aria-hidden />
+                      Ask AI
+                    </button>
+                  )}
+                </div>
+                {curator ? (
+                  <>
+                    <textarea
+                      value={tbl.description ?? ''}
+                      onChange={(e) => setTbl({ ...tbl, description: e.target.value })}
+                      rows={3}
+                      className="w-full bg-raised border border-line rounded-md px-3 py-2 text-[13px] text-ink-2 placeholder:text-muted-2 focus:outline-none focus:border-ocean focus:ring-1 focus:ring-ocean/30 transition-colors resize-none"
+                      placeholder="What does this table contain?"
+                    />
+                    <button type="button" onClick={() => setMoreOpen((o) => !o)} className="mt-3 inline-flex items-center gap-1 text-[12px] text-muted hover:text-ink-2 transition-colors" aria-expanded={moreOpen}>
+                      {moreOpen ? <ChevronDown className="w-3.5 h-3.5" strokeWidth={2} aria-hidden /> : <ChevronRight className="w-3.5 h-3.5" strokeWidth={2} aria-hidden />}
+                      Name, answers and domains
+                    </button>
+                    {moreOpen && (
+                      <div className="mt-3 grid grid-cols-2 gap-4">
+                        <div>
+                          <label className="block text-[11px] text-muted mb-1">Display name</label>
+                          <input
+                            value={tbl.display_name ?? ''}
+                            onChange={(e) => setTbl({ ...tbl, display_name: e.target.value })}
+                            className="w-full bg-raised border border-line rounded-md px-3 py-1.5 text-[13px] text-ink-2 focus:outline-none focus:border-ocean focus:ring-1 focus:ring-ocean/30"
+                            placeholder="A name people use"
+                          />
+                        </div>
+                        <div>
+                          <label className="flex items-center gap-1 text-[11px] text-muted mb-1">
+                            In the AI&apos;s answers
+                            <HelpTooltip text="Whether Ask AI may read this table when it answers questions." />
+                          </label>
+                          <select
+                            value={tbl.is_active ? 'yes' : 'no'}
+                            onChange={(e) => setTbl({ ...tbl, is_active: e.target.value === 'yes' })}
+                            className="w-full bg-raised border border-line rounded-md px-3 py-1.5 text-[13px] text-ink-2 focus:outline-none focus:border-ocean focus:ring-1 focus:ring-ocean/30"
+                          >
+                            <option value="yes">Yes — the AI may use it</option>
+                            <option value="no">No — keep it out</option>
+                          </select>
+                        </div>
+                        <div className="col-span-2">
+                          <label className="flex items-center gap-1 text-[11px] text-muted mb-1">
+                            Data domains
+                            <HelpTooltip text="Business areas this table belongs to (sales, hr, finance). Helps scope the AI's reading." />
+                          </label>
+                          <div className="flex flex-wrap items-center gap-1.5">
+                            {connectionDomains.map((tag) => <RailChip key={`c-${tag}`} title="From the source">{tag}</RailChip>)}
+                            {ownDomains.map((tag) => (
+                              <span key={tag} className="inline-flex items-center gap-1 text-[11px] bg-ai-soft text-ai border border-line rounded px-1.5 py-0.5">
+                                {tag}
+                                <button type="button" onClick={() => setTbl({ ...tbl, domains: parseDomains(tbl.domains).filter((d) => d !== tag) })} className="hover:text-ai/70 leading-none" aria-label={`Remove ${tag}`}>&times;</button>
+                              </span>
+                            ))}
+                            <input
+                              value={domainInput}
+                              onChange={(e) => setDomainInput(e.target.value)}
+                              onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ',') { e.preventDefault(); addDomain(domainInput); } }}
+                              placeholder="Add a domain…"
+                              className="bg-raised border border-line rounded-md px-2 py-1 text-[12px] text-ink-2 focus:outline-none focus:border-ocean w-40"
+                            />
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                    <div className="flex items-center gap-3 mt-4">
+                      <button type="button" onClick={saveTable} disabled={savingTable} className="px-4 py-1.5 bg-ocean text-white text-[12.5px] font-medium rounded-md hover:bg-ocean-hover disabled:opacity-50 transition-colors">
+                        {savingTable ? 'Saving…' : 'Save'}
+                      </button>
+                      {savedMsg && <span className={cn('text-[12px]', savedMsg === 'Saved' ? 'text-ok' : 'text-err')}>{savedMsg}</span>}
+                    </div>
+                  </>
+                ) : (
+                  tbl.description
+                    ? <p className="text-[13px] text-ink-2 leading-relaxed">{tbl.description}</p>
+                    : <p className="text-[13px] text-muted-2 italic">No description yet.</p>
                 )}
-              </div>
-              <textarea
-                value={tbl.description ?? ''}
-                onChange={(e) => updateTbl({ description: e.target.value })}
-                rows={3}
-                className="w-full bg-raised border border-line rounded-md px-3 py-2 text-[13px] text-ink-2 focus:outline-none focus:border-ocean focus:ring-1 focus:ring-ocean/30 transition-colors resize-none placeholder:text-muted-2"
-                placeholder="What does this table contain?"
-              />
-            </div>
+              </section>
 
-            <div>
-              <label className="flex items-center gap-1.5 text-[10px] font-mono tracking-[0.12em] uppercase text-muted mb-2">
-                Data domains
-                <HelpTooltip text="Tags that categorize this table by business area (e.g. sales, hr, finance). Helps scope AI queries to relevant tables." />
-              </label>
-              {connectionDomains.length > 0 && (
-                <div className="flex flex-wrap gap-1.5 mb-2">
-                  {connectionDomains.map((tag) => (
-                    <span key={tag} title="Inherited from source" className="inline-flex items-center gap-1 text-[10px] bg-softer text-muted border border-line rounded-md px-2 py-0.5">
-                      {tag}
-                      <span className="text-[9px] text-muted-2 italic">source</span>
-                    </span>
-                  ))}
+              <section>
+                <div className="flex items-baseline justify-between gap-3 mb-2">
+                  <h3 className="text-[13px] font-medium text-ink">
+                    Columns <span className="font-mono text-[11px] text-muted-2 tabular-nums ml-1">{cols.length}</span>
+                  </h3>
+                  {curator && (
+                    <span className="text-[11.5px] text-muted">{cols.filter((c) => !c.ai_draft).length} of {cols.length} confirmed</span>
+                  )}
                 </div>
-              )}
-              <div className="flex flex-wrap gap-1.5 mb-2">
-                {parseDomains(tbl.domains)
-                  .filter((tag) => !connectionDomains.includes(tag))
-                  .map((tag) => (
-                    <span key={tag} className="inline-flex items-center gap-1.5 text-[10px] bg-ai-soft text-ai border border-line rounded-md px-2 py-0.5">
-                      {tag}
-                      <button onClick={() => removeDomain(tag)} className="hover:text-ai/80 leading-none">&times;</button>
-                    </span>
-                  ))}
-              </div>
-              <div className="flex gap-2">
-                <input
-                  value={domainInput}
-                  onChange={(e) => setDomainInput(e.target.value)}
-                  onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ',') { e.preventDefault(); addDomain(domainInput); } }}
-                  placeholder="Add domain tag..."
-                  className="flex-1 bg-raised border border-line rounded-md px-3 py-2 text-[13px] text-ink-2 placeholder-muted-2 focus:outline-none focus:border-ocean focus:ring-1 focus:ring-ocean/30 transition-colors"
+                <ColumnsTable
+                  rows={rowsShown}
+                  onSaveDescription={curator ? async (id, text) => {
+                    const col = cols.find((c) => c.id === id);
+                    if (col) await saveColumn(col, { description: text });
+                  } : undefined}
+                  extraHeader={(curator || hasRoleChips) ? (
+                    <span className="inline-flex items-center gap-1">Role <HelpTooltip text="Dimension: used to group and filter. Measure: a number that adds up." /></span>
+                  ) : undefined}
+                  statusHeader={curator ? 'Status' : undefined}
                 />
-                <button
-                  onClick={() => addDomain(domainInput)}
-                  className="px-4 py-2 text-sm bg-softer hover:bg-bg text-ink-2 border border-line rounded-md transition-colors"
-                >Add</button>
-              </div>
+              </section>
             </div>
 
-            <div className="flex items-center gap-3 pt-2">
-              <button
-                onClick={saveTable}
-                disabled={savingTable}
-                className="px-5 py-2 bg-ocean text-white text-[13px] font-medium rounded-md hover:bg-ocean-hover disabled:opacity-50 transition-colors"
-              >
-                {savingTable ? 'Saving...' : 'Save table'}
-              </button>
-              {savedMsg && (
-                <span className="text-xs text-ok font-semibold flex items-center gap-1">
-                  <span className="orb-approved" style={{ width: 6, height: 6 }} /> {savedMsg}
-                </span>
-              )}
-            </div>
-          </section>
-
-          {/* Used in: data products */}
-          <section className="bg-raised border border-line rounded-lg p-6">
-            <p className="text-[10px] font-mono tracking-[0.12em] uppercase text-muted mb-3">Used in — data products</p>
-            {usedIn.length === 0 ? (
-              <p className="text-[13px] text-muted-2 italic">Not referenced by any data product yet.</p>
-            ) : (
-              <div className="flex flex-wrap gap-2">
-                {usedIn.map((p) => (
-                  <a
-                    key={p.id}
-                    href={`/products?productId=${p.id}`}
-                    className="inline-flex items-center gap-1.5 text-[12px] text-ink-2 bg-softer border border-line rounded-md px-3 py-1.5 hover:bg-bg hover:border-line-strong transition-colors"
-                  >
-                    {p.name}
-                    <span className="text-[10px] font-mono uppercase tracking-[0.08em] text-muted-2">{p.status}</span>
-                    <ArrowRight className="w-3 h-3 text-muted-2" strokeWidth={2} />
-                  </a>
-                ))}
-              </div>
-            )}
-          </section>
-
-          {/* Data preview */}
-          <section className="bg-raised border border-line rounded-lg p-6">
-            <p className="text-[10px] font-mono tracking-[0.12em] uppercase text-muted mb-3">Data preview</p>
-            <PreviewTable url={`/semantic/preview?connectionId=${tbl.connection_id}&table=${encodeURIComponent(tbl.table_name)}&limit=10`} />
-          </section>
+            <AboutRail sections={sections} />
+          </div>
         </div>
       )}
 
-      {/* ── Columns ───────────────────────────────────────────────────────── */}
-      {viewTab === 'columns' && (
-        <div className="flex-1 overflow-y-auto px-6 py-6">
-          <div className="flex items-center justify-between mb-4">
-            <p className="text-[12px] text-muted-2">
-              {cols.filter((c) => !c.ai_draft).length}/{cols.length} columns confirmed
-            </p>
-            <div className="flex items-center bg-raised border border-line rounded-md overflow-hidden">
-              <button
-                onClick={() => setColView('grid')}
-                className={`px-3 py-1.5 text-xs transition-all ${colView === 'grid' ? 'bg-ocean text-white' : 'text-muted-2 hover:text-ink-2'}`}
-                title="Compact grid"
-              >
-                <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M3 10h18M3 14h18M3 6h18M3 18h18" />
-                </svg>
-              </button>
-              <button
-                onClick={() => setColView('cards')}
-                className={`px-3 py-1.5 text-xs transition-all border-l border-line ${colView === 'cards' ? 'bg-ocean text-white' : 'text-muted-2 hover:text-ink-2'}`}
-                title="Expanded cards"
-              >
-                <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                  <rect x="3" y="3" width="7" height="7" rx="1" /><rect x="14" y="3" width="7" height="7" rx="1" />
-                  <rect x="3" y="14" width="7" height="7" rx="1" /><rect x="14" y="14" width="7" height="7" rx="1" />
-                </svg>
-              </button>
-            </div>
-          </div>
-
-          {colView === 'grid' && (
-            <div className="bg-raised border border-line rounded-lg overflow-hidden">
-              <table className="w-full text-xs">
-                <thead>
-                  <tr className="bg-softer border-b border-line">
-                    <th className="text-left px-4 py-3 font-mono font-medium tracking-[0.1em] uppercase text-muted text-[10px]">Column</th>
-                    <th className="text-left px-3 py-3 font-mono font-medium tracking-[0.1em] uppercase text-muted text-[10px]">Type</th>
-                    <th className="text-left px-3 py-3 font-mono font-medium tracking-[0.1em] uppercase text-muted text-[10px]">Description</th>
-                    <th className="text-center px-2 py-3 font-mono font-medium tracking-[0.1em] uppercase text-muted text-[10px]">
-                      <span className="inline-flex items-center gap-0.5">Dim <HelpTooltip text="Dimension columns are used for grouping and filtering (e.g. country, category, date)." /></span>
-                    </th>
-                    <th className="text-center px-2 py-3 font-mono font-medium tracking-[0.1em] uppercase text-muted text-[10px]">
-                      <span className="inline-flex items-center gap-0.5">Mea <HelpTooltip text="Measure columns contain numeric values that can be aggregated (e.g. revenue, quantity, cost)." /></span>
-                    </th>
-                    <th className="text-center px-3 py-3 font-mono font-medium tracking-[0.1em] uppercase text-muted text-[10px]">Status</th>
-                    <th className="text-right px-4 py-3"></th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {cols.map((col) => {
-                    const isFocused = col.id === focusColumnId;
-                    const completeness = columnCompleteness(col);
-                    const heatClass = completeness === 'complete' ? 'heatmap-complete'
-                      : completeness === 'partial' ? 'heatmap-partial' : 'heatmap-incomplete';
-                    const typeInfo = classifyType(col.data_type);
-
-                    return (
-                      <tr
-                        key={col.id}
-                        id={`col-${col.id}`}
-                        className={`border-b border-slate-100/50 last:border-0 transition-all ${heatClass} ${
-                          isFocused ? 'ring-1 ring-inset ring-ocean/30' : 'hover:bg-softer'
-                        }`}
-                      >
-                        <td className="px-4 py-2.5">
-                          <span className="font-mono text-ink-2 text-[12px]">{col.column_name}</span>
-                          {col.display_name && col.display_name !== col.column_name && (
-                            <span className="block text-[10px] text-muted-2 truncate max-w-[140px]">{col.display_name}</span>
-                          )}
-                        </td>
-                        <td className="px-3 py-2.5">
-                          <span className={`inline-flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-md font-semibold ${typeInfo.cls}`}>
-                            <span dangerouslySetInnerHTML={{ __html: typeInfo.icon }} />
-                            {col.data_type}
-                          </span>
-                        </td>
-                        <td className="px-3 py-2.5 max-w-[220px]">
-                          <input
-                            value={col.description ?? ''}
-                            onChange={(e) => updateCol(col.id, { description: e.target.value })}
-                            placeholder="Add description..."
-                            className="w-full bg-transparent text-ink-2 placeholder:text-muted-2 focus:outline-none focus:bg-raised focus:ring-1 focus:ring-ocean/50 rounded-md px-2 py-1 -ml-2 text-xs transition-all"
-                          />
-                        </td>
-                        <td className="text-center px-2 py-2.5">
-                          <input type="checkbox" checked={col.is_dimension}
-                            onChange={(e) => updateCol(col.id, { is_dimension: e.target.checked })}
-                            className="rounded w-3.5 h-3.5 accent-ocean border-line" />
-                        </td>
-                        <td className="text-center px-2 py-2.5">
-                          <input type="checkbox" checked={col.is_measure}
-                            onChange={(e) => updateCol(col.id, { is_measure: e.target.checked })}
-                            className="rounded w-3.5 h-3.5 accent-ocean border-line" />
-                        </td>
-                        <td className="text-center px-3 py-2.5">
-                          <ApprovalBadge
-                            entityType="column" entityId={col.id}
-                            status={col.approval_status} aiDraft={col.ai_draft}
-                            rejectionReason={col.rejection_reason} onChanged={onSaved}
-                            compact
-                          />
-                        </td>
-                        <td className="px-4 py-2.5 text-right">
-                          <button onClick={() => saveColumn(col)} disabled={savingCol === col.id}
-                            className="px-2.5 py-1 bg-ocean text-white text-[10px] rounded-md hover:bg-ocean-hover disabled:opacity-50 transition-colors font-medium">
-                            {savingCol === col.id ? '...' : 'Save'}
-                          </button>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          )}
-
-          {colView === 'cards' && (
-            <div className="space-y-3">
-              {cols.map((col) => {
-                const isFocused  = col.id === focusColumnId;
-                const examples   = parseExamples(col.example_values);
-                const typeInfo   = classifyType(col.data_type);
-
-                return (
-                  <div
-                    key={col.id}
-                    id={`col-${col.id}`}
-                    className={`bg-raised border border-line rounded-lg p-5 transition-all panel-enter ${
-                      isFocused ? 'ring-1 ring-ocean/40 border-ocean/40' : ''
-                    }`}
-                  >
-                    <div className="flex items-center justify-between mb-3">
-                      <div className="flex items-center gap-2.5 flex-wrap">
-                        <span className="font-mono text-sm text-ink-2 font-semibold">{col.column_name}</span>
-                        <span className={`inline-flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-md font-semibold ${typeInfo.cls}`}>
-                          <span dangerouslySetInnerHTML={{ __html: typeInfo.icon }} />
-                          {col.data_type}
-                        </span>
-                        {col.is_dimension && <span className="text-[10px] font-mono tracking-[0.06em] uppercase text-ocean bg-ocean-softer border border-line px-2 py-0.5 rounded">dimension</span>}
-                        {col.is_measure   && <span className="text-[10px] font-mono tracking-[0.06em] uppercase text-ok bg-ok-soft border border-line px-2 py-0.5 rounded">measure</span>}
-                      </div>
-                      <ApprovalBadge
-                        entityType="column" entityId={col.id}
-                        status={col.approval_status} aiDraft={col.ai_draft}
-                        rejectionReason={col.rejection_reason} onChanged={onSaved}
-                      />
-                    </div>
-
-                    {examples.length > 0 && (
-                      <div className="flex flex-wrap gap-1.5 mb-3">
-                        {examples.map((v, i) => (
-                          <span key={i} className="text-[10px] bg-softer text-muted px-2 py-0.5 rounded font-mono border border-line">
-                            {v}
-                          </span>
-                        ))}
-                      </div>
-                    )}
-
-                    <div className="grid grid-cols-2 gap-4 mb-4">
-                      <div>
-                        <label className="block text-[10px] font-mono tracking-[0.12em] uppercase text-muted mb-1">Display name</label>
-                        <input
-                          value={col.display_name ?? ''}
-                          onChange={(e) => updateCol(col.id, { display_name: e.target.value })}
-                          className="w-full bg-raised border border-line rounded-md px-3 py-2 text-[13px] focus:outline-none focus:border-ocean focus:ring-1 focus:ring-ocean/30 transition-colors"
-                        />
-                      </div>
-                      <div className="flex items-end gap-4 pb-1">
-                        <label className="flex items-center gap-1.5 text-sm cursor-pointer">
-                          <input type="checkbox" checked={col.is_dimension}
-                            onChange={(e) => updateCol(col.id, { is_dimension: e.target.checked })}
-                            className="rounded accent-ocean" />
-                          <span className="text-ink-2 text-xs">Dimension</span>
-                        </label>
-                        <label className="flex items-center gap-1.5 text-sm cursor-pointer">
-                          <input type="checkbox" checked={col.is_measure}
-                            onChange={(e) => updateCol(col.id, { is_measure: e.target.checked })}
-                            className="rounded accent-ocean" />
-                          <span className="text-ink-2 text-xs">Measure</span>
-                        </label>
-                      </div>
-                    </div>
-
-                    <div className="mb-4">
-                      <div className="flex items-center mb-1">
-                        <label className="block text-[10px] font-mono tracking-[0.12em] uppercase text-muted">Description</label>
-                        {curator && (
-                          <button
-                            type="button"
-                            onClick={() => setAiTarget({ kind: 'column', col })}
-                            className="ml-auto inline-flex items-center gap-1 text-[11px] text-ocean hover:text-ocean-hover transition-colors"
-                            title="Ask AI to change this description in plain language"
-                          >
-                            <Sparkles className="w-3 h-3" strokeWidth={1.75} />
-                            Ask AI
-                          </button>
-                        )}
-                      </div>
-                      <input
-                        value={col.description ?? ''}
-                        onChange={(e) => updateCol(col.id, { description: e.target.value })}
-                        className="w-full bg-raised border border-line rounded-md px-3 py-2 text-[13px] focus:outline-none focus:border-ocean focus:ring-1 focus:ring-ocean/30 transition-colors"
-                      />
-                    </div>
-
-                    <div className="flex items-center gap-2">
-                      <button onClick={() => saveColumn(col)} disabled={savingCol === col.id}
-                        className="px-4 py-1.5 bg-ocean text-white text-[12px] rounded-md hover:bg-ocean-hover disabled:opacity-50 transition-colors font-medium">
-                        {savingCol === col.id ? 'Saving...' : 'Confirm column'}
-                      </button>
-                      <button onClick={() => setShowColHistory(showColHistory === col.id ? null : col.id)}
-                        className="px-3 py-1.5 text-xs text-muted-2 bg-raised border border-line rounded-md hover:bg-softer hover:border-line-strong transition-colors">
-                        {showColHistory === col.id ? 'Hide' : 'History'}
-                      </button>
-                    </div>
-                    {showColHistory === col.id && (
-                      <div className="mt-4 pt-4 border-t border-slate-200/30">
-                        <HistoryPanel entityType="column" entityId={col.id} entityName={col.display_name || col.column_name} />
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-          )}
+      {/* ── Sample data ───────────────────────────────────────────────────── */}
+      {viewTab === 'sample' && (
+        <div className="flex-1 overflow-y-auto px-6 py-5">
+          <PreviewTable url={`/semantic/preview?connectionId=${tbl.connection_id}&table=${encodeURIComponent(tbl.table_name)}&limit=25`} autoLoad />
         </div>
       )}
 
@@ -646,13 +471,8 @@ export default function TableDetailPanel({ table, columns, focusColumnId, connec
       {viewTab === 'lineage' && (
         <div className="flex-1 min-h-0 flex flex-col">
           <div className="flex items-center justify-between gap-3 border-b border-line bg-raised px-6 py-2">
-            <p className="text-[12px] text-muted">
-              Which topic columns this table feeds, and how.
-            </p>
-            <a
-              href={`/relationships?table=${tbl.id}`}
-              className="inline-flex shrink-0 items-center gap-1.5 text-[11px] font-mono uppercase tracking-[0.08em] text-ocean hover:text-ocean-hover transition-colors"
-            >
+            <p className="text-[12px] text-muted">Which subject columns this table feeds, and how.</p>
+            <a href={`/relationships?table=${tbl.id}`} className="inline-flex shrink-0 items-center gap-1.5 text-[11px] font-mono uppercase tracking-[0.08em] text-ocean hover:text-ocean-hover transition-colors">
               <Share2 className="h-3.5 w-3.5" strokeWidth={1.75} aria-hidden />
               Relations ↗
             </a>
@@ -669,18 +489,17 @@ export default function TableDetailPanel({ table, columns, focusColumnId, connec
       {/* ── History ───────────────────────────────────────────────────────── */}
       {viewTab === 'history' && (
         <div className="flex-1 overflow-y-auto px-6 py-6">
-          <HistoryPanel entityType="table" entityId={tbl.id} entityName={tbl.display_name || tbl.table_name} />
+          <HistoryPanel entityType="table" entityId={tbl.id} entityName={title} />
         </div>
       )}
 
-      {/* Ask AI to change a description — fills the field; user still saves. */}
       {aiTarget && aiTarget.kind === 'table' && (
         <AiPromptDialog
           entityType="table"
           entityId={tbl.id}
-          entityName={tbl.display_name || tbl.table_name}
+          entityName={title}
           currentDescription={tbl.description ?? ''}
-          onAccept={(text) => updateTbl({ description: text })}
+          onAccept={(text) => setTbl({ ...tbl, description: text })}
           onClose={() => setAiTarget(null)}
         />
       )}
@@ -690,9 +509,76 @@ export default function TableDetailPanel({ table, columns, focusColumnId, connec
           entityId={aiTarget.col.id}
           entityName={aiTarget.col.display_name || aiTarget.col.column_name}
           currentDescription={aiTarget.col.description ?? ''}
-          onAccept={(text) => updateCol(aiTarget.col.id, { description: text })}
+          onAccept={(text) => { void saveColumn(aiTarget.col, { description: text }); }}
           onClose={() => setAiTarget(null)}
         />
+      )}
+    </div>
+  );
+}
+
+/** Under a source column row: the display name, example values, history. */
+function SourceColumnDetails({
+  col, onChange, onSave, onAskAi, historyOpen, onToggleHistory,
+}: {
+  col: SourceColumn;
+  onChange: (patch: Partial<SourceColumn>) => void;
+  onSave: (patch: Partial<SourceColumn>) => Promise<void>;
+  onAskAi: () => void;
+  historyOpen: boolean;
+  onToggleHistory: () => void;
+}) {
+  const [saving, setSaving] = useState(false);
+  const [msg, setMsg] = useState('');
+  const examples = parseExamples(col.example_values);
+  return (
+    <div className="space-y-3">
+      <div className="flex flex-wrap items-end gap-4">
+        <div className="min-w-[240px]">
+          <label className="block text-[11px] text-muted mb-1">Display name</label>
+          <div className="flex items-center gap-2">
+            <input
+              value={col.display_name ?? ''}
+              onChange={(e) => onChange({ display_name: e.target.value })}
+              className="flex-1 bg-raised border border-line rounded-md px-2.5 py-1.5 text-[12.5px] text-ink-2 focus:outline-none focus:border-ocean focus:ring-1 focus:ring-ocean/30"
+              placeholder="A name people use"
+            />
+            <button
+              type="button"
+              disabled={saving}
+              onClick={async () => {
+                setSaving(true);
+                try { await onSave({ display_name: col.display_name }); setMsg('Saved'); }
+                catch { setMsg('Could not save'); }
+                finally { setSaving(false); setTimeout(() => setMsg(''), 1500); }
+              }}
+              className="px-3 py-1.5 bg-ocean text-white text-[12px] font-medium rounded-md hover:bg-ocean-hover disabled:opacity-50"
+            >
+              {saving ? '…' : 'Save'}
+            </button>
+            {msg && <span className={cn('text-[11.5px]', msg === 'Saved' ? 'text-ok' : 'text-err')}>{msg}</span>}
+          </div>
+        </div>
+        <button type="button" onClick={onAskAi} className="inline-flex items-center gap-1 text-[12px] text-ocean hover:text-ocean-hover transition-colors pb-2">
+          <Sparkles className="w-3 h-3" strokeWidth={1.75} aria-hidden />
+          Ask AI for a description
+        </button>
+        <button type="button" onClick={onToggleHistory} className="text-[12px] text-muted hover:text-ink-2 transition-colors pb-2">
+          {historyOpen ? 'Hide history' : 'History'}
+        </button>
+      </div>
+      {examples.length > 0 && (
+        <div className="flex flex-wrap items-center gap-1.5">
+          <span className="text-[11px] text-muted mr-1">Examples</span>
+          {examples.map((v, i) => (
+            <span key={i} className="text-[11px] bg-softer text-ink-3 px-1.5 py-0.5 rounded font-mono border border-line">{v}</span>
+          ))}
+        </div>
+      )}
+      {historyOpen && (
+        <div className="pt-3 border-t border-line/60">
+          <HistoryPanel entityType="column" entityId={col.id} entityName={col.display_name || col.column_name} />
+        </div>
       )}
     </div>
   );

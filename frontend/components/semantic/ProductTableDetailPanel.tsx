@@ -1,128 +1,110 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+/**
+ * <ProductTableDetailPanel> — a product table's page in the catalog.
+ *
+ * Laid out the way the Databricks Catalog Explorer lays a table out (the
+ * owner's ask, 2026-09-23): breadcrumb › name · the actions on the right ·
+ * a tab strip; the Overview is the description, then ONE columns table
+ * (filter, type, description edited in the cell, the team's term), with an
+ * "About this table" rail beside it — owner, type, source, built when, its
+ * state, quality, where it comes from, terms, the policies that apply.
+ *
+ * What stays Clarion's: the SQL tab is the DECLARATION (edited in place,
+ * one verb, Save; the assistant's proposals land there as a diff), the
+ * lineage line is the easy answer on the Overview, vocabulary is business
+ * words for viewers (Measures / Lookup, never fact / dimension), and SQL,
+ * the technical name and the audit trail are curator surfaces.
+ *
+ * The Columns tab of the previous layout is gone: two lists of the same
+ * columns on two tabs is the busyness the owner asked to end.
+ */
+import { useEffect, useMemo, useState } from 'react';
 import dynamic from 'next/dynamic';
-import { Code2, Gauge, X, Sparkles, BookOpen } from 'lucide-react';
+import { BookOpen, ChevronDown, ChevronRight, Gauge, MessageSquareText, Sparkles, Table2, WandSparkles, Wrench } from 'lucide-react';
 import api from '@/lib/api';
 import AiPromptDialog from './AiPromptDialog';
 import { ProductColumn, ProductTable, ProductTreeItem, type ResolvedGlossaryLink } from './types';
 import ApprovalBadge from './ApprovalBadge';
 import HistoryPanel from './HistoryPanel';
 import QualityPanel from '@/components/QualityPanel';
-import { parseDomains, classifyType, completenessBucket, PreviewTable } from './shared';
-import { useRole, canCurate } from '@/lib/role';
+import { parseDomains, PreviewTable } from './shared';
+import { useRole, canCurate, isAdminRole } from '@/lib/role';
+import { formatRelative } from '@/lib/dates';
+import { askAboutSubject } from '@/lib/askLink';
+import { cn } from '@/lib/cn';
+import ConnectorMarkIcon from '@/components/ConnectorMarkIcon';
+import ExplorerHeader, { HeaderAction, MoreMenu, type Crumb } from '@/components/catalog/ExplorerHeader';
+import AboutRail, { RailChip, type AboutSection } from '@/components/catalog/AboutRail';
+import ColumnsTable, { type ColumnRow } from '@/components/catalog/ColumnsTable';
 import LineageSummary from '@/components/catalog/LineageSummary';
+import { iconForReference } from '@/components/catalog/entityIcons';
 import { useSqlProposal } from '@/components/catalog/catalogAssistantContext';
+import type { AssistantOpenMode, CatalogConnection, CatalogNavTarget } from '@/components/catalog/navigation';
 
 const LineageGraph = dynamic(() => import('@/components/catalog/LineageGraph'), { ssr: false });
 // The SQL editor pulls in CodeMirror — loaded only when the tab opens.
 const SqlDeclaration = dynamic(() => import('@/components/catalog/SqlDeclaration'), { ssr: false });
 
-// 'relationships' became 'lineage' on 2026-08-18: the star-schema FK list
-// duplicated the topic's Manage mode ("How it fits together"), while "which
-// source columns feed this table, and through what transformation?" had no
-// home. The tab now answers that and links to Manage mode for the shape.
-// 'sql' (2026-09-22) is the DECLARATION: the one editor for the SELECT that
-// builds this table, with Preview and Save — the catalog is the workspace.
-type ViewTab = 'overview' | 'columns' | 'sql' | 'lineage' | 'quality' | 'history';
+type ViewTab = 'overview' | 'sample' | 'sql' | 'lineage' | 'quality' | 'history';
 
 interface Props {
-  /** Graph id OR Postgres product_tables id — the panel resolves both
-   *  (Browse reference cards hold PG ids, the Structure tree graph ids). */
+  /** Graph id OR Postgres product_tables id — the panel resolves both. */
   tableId: number;
   productTree: ProductTreeItem[];
   columns: ProductColumn[];
   focusColumnId: number | null;
   onSaved: () => void;
-  /** Dismiss the panel. Wired from the parent (e.g. /catalog) so cards
-   *  views can close the right inset; left unset when the panel is the
-   *  whole pane (Structure mode), where there's nothing to close to. */
   onClose?: () => void;
   /** Land on a specific tab — the assistant opens the SQL tab it proposed on. */
   initialTab?: 'sql';
+  /** Breadcrumb and "used in" clicks: the page owns the selection. */
+  onNavigate?: (target: CatalogNavTarget) => void;
+  /** "Change with AI" opens the floating assistant in that mode. */
+  onAskAssistant?: (mode: AssistantOpenMode) => void;
+  /** GET /connections, for the source's name and mark. */
+  connections?: CatalogConnection[];
 }
 
-const roleColor = (role: string | null): string => {
-  switch (role) {
-    case 'fact':       return 'bg-ocean-softer text-ocean';
-    case 'dimension':  return 'bg-ai-soft text-ai';
-    case 'bridge':     return 'bg-warn-soft text-warn';
-    case 'junk':       return 'bg-softer text-muted';
-    default:           return 'bg-softer text-muted';
-  }
+interface Declaration {
+  transformation_status: string | null;
+  last_run_at: string | null;
+  last_run_error: string | null;
+  row_count: number | null;
+  degraded_reason: string | null;
+  declared_by: string | null;
+  declared_at: string | null;
+  pending_rebuild: boolean;
+  shared_from: { tableId: number; productId: number; productName: string } | null;
+}
+
+interface QualityRow { product_table_id: number | null; overall_score: number | null; profiled_at: string | null }
+interface PolicyRow { id: number; name: string; table_name: string; column_name: string | null; policy_type: string }
+
+/** Business words for the table's shape — viewers never read "fact". */
+const TYPE_LABEL: Record<string, string> = {
+  fact: 'Measures table',
+  dimension: 'Lookup table',
+  bridge: 'Bridge table',
+  junk: 'Flags table',
 };
 
-const colRoleLabel = (role: string | null): string => {
+const colRoleChip = (role: string | null): { label: string; tone: ColumnRow['roleTone'] } | null => {
   switch (role) {
-    case 'surrogate_key':        return 'Surrogate Key';
-    case 'natural_key':          return 'Natural Key';
-    case 'foreign_key':          return 'Foreign Key';
-    case 'measure':              return 'Measure';
-    case 'attribute':            return 'Attribute';
-    case 'degenerate_dimension': return 'Degenerate Dim';
-    default:                     return role ?? '';
+    case 'measure':              return { label: 'Measure', tone: 'ok' };
+    case 'degenerate_dimension': return { label: 'Reference', tone: 'neutral' };
+    default:                     return null;
   }
 };
-
-const colRoleBadge = (role: string | null): string => {
-  switch (role) {
-    case 'surrogate_key':
-    case 'natural_key':          return 'bg-warn-soft text-warn';
-    case 'foreign_key':          return 'bg-ocean-softer text-ocean';
-    case 'measure':              return 'bg-ok-soft text-ok';
-    case 'attribute':            return 'bg-ai-soft text-ai';
-    case 'degenerate_dimension': return 'bg-err-soft text-err';
-    default:                     return 'bg-softer text-muted';
-  }
-};
-
-const columnCompleteness = (col: ProductColumn) =>
-  completenessBucket(
-    !!col.description && col.description.trim().length > 0,
-    !!col.column_role,
-    !col.ai_draft,
-  );
-
-// ---------------------------------------------------------------------------
-// Main panel — five-tab layout matching TableDetailPanel
-// ---------------------------------------------------------------------------
 
 export default function ProductTableDetailPanel({
-  tableId, productTree, columns, focusColumnId, onSaved, onClose, initialTab,
+  tableId, productTree, columns, focusColumnId, onSaved, onClose, initialTab, onNavigate, onAskAssistant, connections = [],
 }: Props) {
   const role = useRole();
   const curator = canCurate(role);
-  // Glossary terms linked to this table or its columns — "your team calls
-  // this …". The term is the soft document; the column is the hard address it
-  // points at (GlossaryPanel is where the link is made). One small fetch per
-  // panel mount; a failure simply shows no chips.
-  const [glossaryTerms, setGlossaryTerms] = useState<Array<{ id: number; term: string; links: ResolvedGlossaryLink[] }>>([]);
-  useEffect(() => {
-    let cancelled = false;
-    api.get('/semantic/glossary')
-      .then((r) => {
-        if (cancelled) return;
-        const rows = (r.data?.data ?? []) as Array<{ id: number; term: string; links?: ResolvedGlossaryLink[] }>;
-        setGlossaryTerms(rows.map((row) => ({
-          id: Number(row.id),
-          term: String(row.term ?? ''),
-          links: Array.isArray(row.links) ? row.links : [],
-        })));
-      })
-      .catch(() => { if (!cancelled) setGlossaryTerms([]); });
-    return () => { cancelled = true; };
-  }, []);
-  const termsForColumn = (tableName: string, columnName: string): string[] =>
-    glossaryTerms
-      .filter((g) => g.links.some((l) => l.kind === 'column' && l.table === tableName && l.column === columnName))
-      .map((g) => g.term);
-  const termsForTable = (tableName: string): string[] =>
-    glossaryTerms
-      .filter((g) => g.links.some((l) => l.kind === 'table' && l.table === tableName))
-      .map((g) => g.term);
-  // Find the table in the product tree. The incoming id may be the GRAPH id
-  // (Structure tree) or the Postgres id (Browse reference cards, ?refTableId
-  // deep links) — the tree rows carry both since 2026-08-27, so match either.
+  const admin = isAdminRole(role);
+
+  // ── Resolve the table in the tree (either id space) ────────────────────
   let table: ProductTable | null = null;
   let pgTableId: number | null = null;
   let productConnectionId: number | null = null;
@@ -147,37 +129,35 @@ export default function ProductTableDetailPanel({
   }
   if (table) {
     for (const product of productTree) {
+      if (product.productName === parentProductName) continue;
       for (const schema of product.starSchemas) {
-        if (schema.tables.some((t) => t.table_name === table!.table_name)) {
-          if (!usedByProducts.includes(product.productName)) {
-            usedByProducts.push(product.productName);
-          }
+        if (schema.tables.some((t) => t.table_name === table!.table_name) && !usedByProducts.includes(product.productName)) {
+          usedByProducts.push(product.productName);
         }
       }
     }
     usedByProducts.sort();
   }
+  const productIdByName = useMemo(() => new Map(productTree.map((p) => [p.productName, p.productId])), [productTree]);
+  const connection = connections.find((c) => c.id === productConnectionId) ?? null;
 
-  // Table state
-  const [tbl, setTbl]                 = useState(table);
-  const [cols, setCols]               = useState<ProductColumn[]>(columns);
-  // "Ask AI to change this description" target (table or a specific column).
-  const [aiTarget, setAiTarget] = useState<{ kind: 'table' } | { kind: 'column'; col: ProductColumn } | null>(null);
+  // ── State ────────────────────────────────────────────────────────────────
+  const [tbl, setTbl]               = useState(table);
+  const [cols, setCols]             = useState<ProductColumn[]>(columns);
   const [prevTableId, setPrevTableId] = useState(tableId);
-  const [prevColLen, setPrevColLen]    = useState(columns.length);
+  const [prevColLen, setPrevColLen] = useState(columns.length);
   const [savingTable, setSavingTable] = useState(false);
-  const [savingCol, setSavingCol]     = useState<number | null>(null);
-  const [savedMsg, setSavedMsg]       = useState('');
-  const [colView, setColView]         = useState<'cards' | 'grid'>('grid');
-  const [viewTab, setViewTab]         = useState<ViewTab>(initialTab ?? 'overview');
+  const [savedMsg, setSavedMsg]     = useState('');
+  const [moreOpen, setMoreOpen]     = useState(false);
   const [domainInput, setDomainInput] = useState('');
+  const [viewTab, setViewTab]       = useState<ViewTab>(initialTab ?? 'overview');
+  const [aiTarget, setAiTarget]     = useState<{ kind: 'table' } | { kind: 'column'; col: ProductColumn } | null>(null);
   const [showColHistory, setShowColHistory] = useState<number | null>(null);
-  // A proposal from the floating assistant lands ON the declaration: when
-  // one arrives for this table, the SQL tab opens so the diff is in view.
-  const { proposal } = useSqlProposal(pgTableId);
-  const proposalId = proposal?.id ?? null;
-  useEffect(() => { if (proposalId) setViewTab('sql'); }, [proposalId]);
-  // Keep local state in sync when parent switches table or columns arrive
+  const [decl, setDecl]             = useState<Declaration | null>(null);
+  const [quality, setQuality]       = useState<QualityRow | null>(null);
+  const [policies, setPolicies]     = useState<PolicyRow[]>([]);
+  const [glossaryTerms, setGlossaryTerms] = useState<Array<{ id: number; term: string; links: ResolvedGlossaryLink[] }>>([]);
+
   if (tableId !== prevTableId) {
     setPrevTableId(tableId);
     setPrevColLen(columns.length);
@@ -188,28 +168,64 @@ export default function ProductTableDetailPanel({
     setCols(columns);
   }
 
+  // A proposal from the floating assistant lands ON the declaration.
+  const { proposal } = useSqlProposal(pgTableId);
+  const proposalId = proposal?.id ?? null;
+  useEffect(() => { if (proposalId) setViewTab('sql'); }, [proposalId]);
+
+  // The rail's facts — one small read each; a failure leaves the row out.
+  const tableName = tbl?.table_name ?? null;
+  useEffect(() => {
+    let cancelled = false;
+    api.get('/semantic/glossary')
+      .then((r) => {
+        if (cancelled) return;
+        const rows = (r.data?.data ?? []) as Array<{ id: number; term: string; links?: ResolvedGlossaryLink[] }>;
+        setGlossaryTerms(rows.map((row) => ({ id: Number(row.id), term: String(row.term ?? ''), links: Array.isArray(row.links) ? row.links : [] })));
+      })
+      .catch(() => { if (!cancelled) setGlossaryTerms([]); });
+    api.get('/policies/mine')
+      .then((r) => { if (!cancelled) setPolicies((r.data?.data ?? []) as PolicyRow[]); })
+      .catch(() => { if (!cancelled) setPolicies([]); });
+    return () => { cancelled = true; };
+  }, []);
+  useEffect(() => {
+    if (pgTableId == null) return;
+    let cancelled = false;
+    if (curator) {
+      api.get(`/products/tables/${pgTableId}/declaration`)
+        .then((r) => { if (!cancelled) setDecl((r.data?.data ?? null) as Declaration | null); })
+        .catch(() => { if (!cancelled) setDecl(null); });
+    }
+    const q = productConnectionId != null ? `?connectionId=${productConnectionId}` : '';
+    api.get(`/quality/tables${q}`)
+      .then((r) => {
+        if (cancelled) return;
+        const rows = (r.data?.data ?? []) as QualityRow[];
+        setQuality(rows.find((row) => row.product_table_id === pgTableId) ?? null);
+      })
+      .catch(() => { if (!cancelled) setQuality(null); });
+    return () => { cancelled = true; };
+  }, [pgTableId, productConnectionId, curator]);
+
+  const termsForColumn = (columnName: string): string[] =>
+    glossaryTerms.filter((g) => g.links.some((l) => l.kind === 'column' && l.table === tableName && l.column === columnName)).map((g) => g.term);
+  const termsForTable = (): string[] =>
+    glossaryTerms.filter((g) => g.links.some((l) => l.kind === 'table' && l.table === tableName)).map((g) => g.term);
+
   if (!tbl) {
     return (
-      <div className="flex-1 flex items-center justify-center text-muted-2 text-sm">
-        Table not found
-      </div>
+      <div className="flex-1 flex items-center justify-center text-muted-2 text-sm">Table not found</div>
     );
   }
 
   const domains = parseDomains(tbl.domains);
+  const isAiDraft = !!tbl.ai_draft && tbl.approval_status !== 'approved';
+  const title = tbl.display_name || tbl.table_name;
+  const tablePolicies = policies.filter((p) => p.table_name === tbl.table_name);
+  const tableTerms = termsForTable();
 
-  function addDomain(value: string) {
-    const tag = value.trim().toLowerCase();
-    if (!tag || !tbl) return;
-    if (!domains.includes(tag)) setTbl({ ...tbl, domains: [...domains, tag] });
-    setDomainInput('');
-  }
-
-  function removeDomain(tag: string) {
-    if (!tbl) return;
-    setTbl({ ...tbl, domains: domains.filter((d) => d !== tag) });
-  }
-
+  // ── Writes ───────────────────────────────────────────────────────────────
   async function saveTable() {
     if (!tbl) return;
     setSavingTable(true);
@@ -220,318 +236,414 @@ export default function ProductTableDetailPanel({
         owner_name:   tbl.owner_name,
         domains:      parseDomains(tbl.domains),
       });
-      setSavedMsg('Table saved');
+      setSavedMsg('Saved');
       setTimeout(() => setSavedMsg(''), 2000);
       onSaved();
     } catch {
-      setSavedMsg('Failed to save');
+      setSavedMsg('Could not save');
     }
     setSavingTable(false);
   }
 
-  async function saveColumn(col: ProductColumn) {
-    setSavingCol(col.id);
-    try {
-      await api.patch(`/semantic/product-columns/${col.id}`, {
-        display_name: col.display_name,
-        description:  col.description,
-      });
-      onSaved();
-    } catch {
-      alert('Failed to save column');
-    }
-    setSavingCol(null);
-  }
-
   function updateCol(id: number, patch: Partial<ProductColumn>) {
-    setCols((prev) => prev.map((c) => c.id === id ? { ...c, ...patch } : c));
+    setCols((prev) => prev.map((c) => (c.id === id ? { ...c, ...patch } : c)));
   }
 
-  const isAiDraft = !!tbl.ai_draft && tbl.approval_status !== 'approved';
+  async function saveColumn(col: ProductColumn, patch: Partial<ProductColumn> = {}) {
+    const next = { ...col, ...patch };
+    await api.patch(`/semantic/product-columns/${col.id}`, {
+      display_name: next.display_name,
+      description:  next.description,
+    });
+    updateCol(col.id, patch);
+    onSaved();
+  }
 
-  // SQL, Lineage and History are curator surfaces (the SQL editor and the
-  // lineage endpoint are analyst+; History is the audit log).
-  const tabs: { id: ViewTab; label: string; count?: number }[] = [
+  function addDomain(value: string) {
+    const tag = value.trim().toLowerCase();
+    if (!tag || !tbl) return;
+    if (!domains.includes(tag)) setTbl({ ...tbl, domains: [...domains, tag] });
+    setDomainInput('');
+  }
+
+  // ── Header ───────────────────────────────────────────────────────────────
+  const crumbs: Crumb[] = [
+    { label: 'Catalog', onClick: () => onNavigate?.({ kind: 'catalog' }) },
+    ...(parentProductName && parentProductId != null
+      ? [{ label: parentProductName, onClick: () => onNavigate?.({ kind: 'subject', productId: parentProductId! }) }]
+      : []),
+    { label: title },
+  ];
+  const RefIcon = iconForReference(title);
+  const icon = tbl.table_role === 'dimension'
+    ? <span className="w-8 h-8 rounded-lg bg-ai-soft border border-ai/20 flex items-center justify-center text-ai"><RefIcon className="w-4 h-4" strokeWidth={1.75} aria-hidden /></span>
+    : <span className="w-8 h-8 rounded-lg bg-ocean-softer border border-ocean/20 flex items-center justify-center text-ocean"><Table2 className="w-4 h-4" strokeWidth={1.75} aria-hidden /></span>;
+
+  const tabs: Array<{ id: ViewTab; label: string; count?: number }> = [
     { id: 'overview', label: 'Overview' },
-    { id: 'columns', label: 'Columns', count: cols.length },
+    { id: 'sample', label: 'Sample data' },
     ...(curator ? [{ id: 'sql' as const, label: 'SQL' }] : []),
     ...(curator ? [{ id: 'lineage' as const, label: 'Lineage' }] : []),
-    { id: 'quality' as const, label: 'Quality' },
+    { id: 'quality', label: 'Quality' },
     ...(curator ? [{ id: 'history' as const, label: 'History' }] : []),
   ];
 
+  const askHref = parentProductId != null && parentProductName
+    ? askAboutSubject({ productId: parentProductId, productName: parentProductName, connectionId: productConnectionId })
+    : null;
+
+  // ── The rail ─────────────────────────────────────────────────────────────
+  const status = decl?.transformation_status ?? tbl.transformation_status;
+  const lastRunAt = decl?.last_run_at ?? tbl.last_run_at ?? null;
+  const rowCount = decl?.row_count ?? tbl.row_count ?? null;
+  let stateChip: React.ReactNode = null;
+  if (decl?.pending_rebuild) {
+    stateChip = (
+      <span className="space-y-1">
+        <RailChip tone="warn">Changed since the last build</RailChip>
+        <span className="block text-[11.5px] text-muted">
+          {decl.declared_by ? `by ${decl.declared_by}` : 'saved'}{decl.declared_at ? ` · ${formatRelative(decl.declared_at)}` : ''}
+        </span>
+      </span>
+    );
+  } else if (decl?.degraded_reason) {
+    stateChip = <RailChip tone="warn" title={decl.degraded_reason}>Missing a source column</RailChip>;
+  } else if (status === 'success') {
+    stateChip = <RailChip tone="ok">Built</RailChip>;
+  } else if (status === 'error' || status === 'failed') {
+    stateChip = <RailChip tone="err" title={decl?.last_run_error ?? undefined}>Last build failed</RailChip>;
+  } else if (status === 'running') {
+    stateChip = <RailChip tone="ocean">Building</RailChip>;
+  } else if (status) {
+    stateChip = <RailChip>Not built yet</RailChip>;
+  }
+
+  const sections: AboutSection[] = [
+    {
+      title: 'About this table',
+      rows: [
+        { label: 'Type', value: TYPE_LABEL[tbl.table_role] ?? tbl.table_role },
+        {
+          label: 'Subject',
+          value: parentProductName && parentProductId != null ? (
+            <button type="button" onClick={() => onNavigate?.({ kind: 'subject', productId: parentProductId! })} className="text-ocean hover:text-ocean-hover transition-colors text-left">
+              {parentProductName}
+            </button>
+          ) : null,
+        },
+        {
+          label: 'Source',
+          value: connection ? (
+            <button type="button" onClick={() => onNavigate?.({ kind: 'source', connectionId: connection.id })} className="inline-flex items-center gap-1.5 text-ocean hover:text-ocean-hover transition-colors text-left min-w-0">
+              <ConnectorMarkIcon connectorType={connection.connector_type ?? connection.type} size="xs" />
+              <span className="truncate">{connection.name}</span>
+            </button>
+          ) : null,
+        },
+        {
+          label: 'Shared from',
+          value: decl?.shared_from ? (
+            <button type="button" onClick={() => onNavigate?.({ kind: 'subject', productId: decl.shared_from!.productId })} className="text-ocean hover:text-ocean-hover transition-colors text-left">
+              {decl.shared_from.productName}
+            </button>
+          ) : null,
+        },
+        { label: 'Owner', value: tbl.owner_name || null },
+        {
+          label: 'Built',
+          value: lastRunAt
+            ? <span>{formatRelative(lastRunAt)}{rowCount != null ? <span className="text-muted"> · {rowCount.toLocaleString('en-GB')} rows</span> : null}</span>
+            : (rowCount != null ? `${rowCount.toLocaleString('en-GB')} rows` : null),
+        },
+        { label: 'State', value: stateChip },
+      ],
+    },
+    {
+      title: 'Quality',
+      body: quality?.overall_score != null ? (
+        <span className="inline-flex items-center gap-2">
+          <RailChip tone={quality.overall_score >= 0.9 ? 'ok' : quality.overall_score >= 0.7 ? 'warn' : 'err'}>
+            {Math.round(quality.overall_score * 100)}%
+          </RailChip>
+          {quality.profiled_at && <span className="text-[11.5px] text-muted">checked {formatRelative(quality.profiled_at)}</span>}
+        </span>
+      ) : <span className="text-muted">Not checked yet.</span>,
+      link: undefined,
+    },
+    ...(curator && pgTableId != null ? [{
+      title: 'Where it comes from',
+      body: <LineageSummary layer="product" tableId={pgTableId} compact onOpenLineage={() => setViewTab('lineage')} />,
+    }] : []),
+    {
+      title: 'Your team calls this',
+      body: tableTerms.length > 0 ? (
+        <span className="flex flex-wrap gap-1">
+          {tableTerms.map((t) => (
+            <RailChip key={t} tone="ocean"><BookOpen className="w-3 h-3" strokeWidth={2} aria-hidden /><span className="italic">{t}</span></RailChip>
+          ))}
+        </span>
+      ) : <span className="text-muted">No term linked yet.</span>,
+      link: curator ? { label: 'Definitions', href: '/definitions' } : undefined,
+    },
+    ...(tablePolicies.length > 0 || admin ? [{
+      title: 'Policies',
+      body: tablePolicies.length > 0 ? (
+        <ul className="space-y-1">
+          {tablePolicies.map((p) => (
+            <li key={p.id} className="text-[12.5px] text-ink-2">
+              <span className="font-medium">{p.name}</span>
+              <span className="text-muted"> · {p.policy_type === 'column_mask' ? `masks ${p.column_name ?? 'a column'}` : 'filters rows'}</span>
+            </li>
+          ))}
+        </ul>
+      ) : <span className="text-muted">None apply to you.</span>,
+      link: admin ? { label: 'Manage policies', href: '/policies' } : undefined,
+    }] : []),
+    ...(usedByProducts.length > 0 ? [{
+      title: 'Also used in',
+      body: (
+        <span className="flex flex-wrap gap-1">
+          {usedByProducts.map((name) => {
+            const pid = productIdByName.get(name);
+            return pid != null ? (
+              <button key={name} type="button" onClick={() => onNavigate?.({ kind: 'subject', productId: pid })} className="inline-flex rounded border border-line bg-softer px-1.5 py-0.5 text-[11.5px] text-ink-2 hover:border-ocean hover:text-ocean transition-colors">
+                {name}
+              </button>
+            ) : <RailChip key={name}>{name}</RailChip>;
+          })}
+        </span>
+      ),
+    }] : []),
+  ];
+
+  // ── The columns ──────────────────────────────────────────────────────────
+  const rows: ColumnRow[] = cols.map((col) => {
+    const chip = colRoleChip(col.column_role);
+    const isKey = col.column_role === 'surrogate_key' || col.column_role === 'natural_key';
+    const isFk = col.column_role === 'foreign_key';
+    return {
+      id: col.id,
+      name: col.column_name,
+      displayName: col.display_name,
+      type: col.data_type,
+      description: col.description,
+      keyKind: isKey ? 'key' : isFk ? 'fk' : null,
+      keyTitle: isKey
+        ? (col.column_role === 'surrogate_key' ? 'Identifies a row' : 'The natural key')
+        : isFk && col.fk_target_table ? `Points at ${col.fk_target_table}${col.fk_target_column ? `.${col.fk_target_column}` : ''}` : undefined,
+      roleLabel: chip?.label ?? null,
+      roleTone: chip?.tone,
+      terms: termsForColumn(col.column_name),
+      focused: col.id === focusColumnId,
+      status: curator ? (
+        <ApprovalBadge
+          entityType="product_column" entityId={col.id}
+          status={col.approval_status as 'draft' | 'pending_review' | 'approved' | 'rejected' | undefined}
+          aiDraft={!!col.ai_draft}
+          onChanged={onSaved}
+          compact
+        />
+      ) : undefined,
+      details: curator ? (
+        <ColumnDetails
+          col={col}
+          onChange={(patch) => updateCol(col.id, patch)}
+          onSave={(patch) => saveColumn(col, patch)}
+          onAskAi={() => setAiTarget({ kind: 'column', col })}
+          historyOpen={showColHistory === col.id}
+          onToggleHistory={() => setShowColHistory(showColHistory === col.id ? null : col.id)}
+        />
+      ) : undefined,
+    };
+  });
+
   return (
     <div className="flex-1 flex flex-col overflow-hidden bg-bg panel-enter">
-      {/* Header */}
-      <div className="bg-raised border-b border-line px-6 pt-5 pb-0 flex-shrink-0">
-        <div className="flex items-start justify-between gap-4 mb-4">
-          <div className="min-w-0">
-            <p className="text-[10px] font-mono tracking-[0.12em] uppercase text-muted mb-1">
-              {tbl.table_role === 'dimension' ? 'Reference data' : 'Product table'}
-              {parentProductName ? ` · ${parentProductName}` : ''}
-            </p>
-            <div className="flex items-center gap-2 flex-wrap">
-              <h2 className="font-display text-[22px] text-ink leading-tight tracking-[-0.02em] truncate">
-                {tbl.display_name || tbl.table_name}
-              </h2>
-              {/* Dimensional-modeling jargon (fact / dimension / bridge / junk)
-                  is curator vocabulary — viewers don't need it on a header. */}
-              {curator && (
-                <span className={`text-[10px] font-mono tracking-[0.08em] uppercase px-2 py-0.5 rounded border border-line ${roleColor(tbl.table_role)}`}>
-                  {tbl.table_role}
-                </span>
-              )}
-            </div>
-            {/* Mono raw name only for curators. */}
-            {curator && (
-              <p className="text-[12px] font-mono text-muted-2 mt-1 truncate">{tbl.table_name}</p>
+      <ExplorerHeader
+        crumbs={crumbs}
+        icon={icon}
+        title={title}
+        technicalName={curator ? tbl.table_name : undefined}
+        badges={curator ? (
+          <>
+            <span className="text-[10px] font-mono tracking-[0.08em] uppercase px-1.5 py-0.5 rounded border border-line bg-softer text-muted">
+              {tbl.table_role}
+            </span>
+            <ApprovalBadge
+              entityType="product_table"
+              entityId={tbl.id}
+              status={tbl.approval_status as 'draft' | 'pending_review' | 'approved' | 'rejected' | undefined}
+              aiDraft={!!tbl.ai_draft}
+              onChanged={onSaved}
+              compact
+            />
+          </>
+        ) : undefined}
+        actions={(
+          <>
+            {curator && onAskAssistant && (
+              <HeaderAction onClick={() => onAskAssistant('change')} icon={<WandSparkles className="w-3.5 h-3.5" strokeWidth={1.75} aria-hidden />} title="Ask the assistant to change this table's SQL — it proposes a diff you keep or discard">
+                Change with AI
+              </HeaderAction>
             )}
-            {termsForTable(tbl.table_name).length > 0 && (
-              <p className="mt-1.5 flex items-center gap-1.5 text-[12px] text-ink-3">
-                <BookOpen className="w-3.5 h-3.5 shrink-0 text-ocean" strokeWidth={2} aria-hidden />
-                <span>Your team calls this <span className="italic">{termsForTable(tbl.table_name).join(', ')}</span></span>
-              </p>
+            {askHref && (
+              <HeaderAction href={askHref} primary icon={<MessageSquareText className="w-3.5 h-3.5" strokeWidth={1.75} aria-hidden />} title="Ask a question about this subject in Ask AI">
+                Ask AI
+              </HeaderAction>
             )}
-
-            <div className="flex items-center gap-2 mt-2 flex-wrap">
-              <span className="text-[10px] font-mono tracking-[0.08em] uppercase text-muted bg-softer border border-line px-2 py-0.5 rounded">
-                {cols.length} columns
-              </span>
-              {tbl.row_count != null && (
-                <span className="text-[10px] font-mono tracking-[0.08em] uppercase text-muted bg-softer border border-line px-2 py-0.5 rounded">
-                  {tbl.row_count.toLocaleString()} rows
-                </span>
-              )}
-              {tbl.transformation_status && (
-                <span className={`text-[10px] font-mono tracking-[0.08em] uppercase px-2 py-0.5 rounded border border-line ${
-                  tbl.transformation_status === 'success' ? 'text-ok bg-ok-soft'
-                  : tbl.transformation_status === 'error' ? 'text-err bg-err-soft'
-                  : 'text-muted-2 bg-softer'
-                }`}>
-                  {tbl.transformation_status}
-                </span>
-              )}
-              {tbl.last_run_at && (
-                <span className="text-[10px] font-mono tracking-[0.06em] uppercase text-muted-2">
-                  Last run: {new Date(tbl.last_run_at).toLocaleDateString()}
-                </span>
-              )}
-            </div>
-          </div>
-
-          {/* Approval badge is governance — curator-only. */}
-          <div className="flex items-start gap-2 flex-shrink-0">
-            {curator && (
-              <ApprovalBadge
-                entityType="product_table"
-                entityId={tbl.id}
-                status={tbl.approval_status as 'draft' | 'pending_review' | 'approved' | 'rejected' | undefined}
-                aiDraft={!!tbl.ai_draft}
-                onChanged={onSaved}
-              />
+            {curator && parentProductId != null && (
+              <MoreMenu items={[
+                { label: 'Manage this topic', href: `/topics/${parentProductId}?manage=1`, icon: <Gauge className="w-3.5 h-3.5" strokeWidth={1.75} aria-hidden /> },
+                { label: 'Open in the workshop', href: `/products/${parentProductId}`, icon: <Wrench className="w-3.5 h-3.5" strokeWidth={1.75} aria-hidden /> },
+              ]} />
             )}
-            {onClose && (
-              <button
-                onClick={onClose}
-                className="p-1.5 rounded hover:bg-soft text-muted hover:text-ink transition-colors"
-                title="Close"
-                aria-label="Close"
-              >
-                <X className="w-4 h-4" strokeWidth={1.75} />
-              </button>
-            )}
-          </div>
-        </div>
-
-        {/* Tab strip */}
-        <div className="flex items-center gap-0 -mb-px">
-          {tabs.map((t) => {
-            const active = viewTab === t.id;
-            return (
-              <button
-                key={t.id}
-                onClick={() => setViewTab(t.id)}
-                className={`px-4 py-2.5 text-[13px] transition-colors whitespace-nowrap relative ${
-                  active ? 'text-ink font-medium' : 'text-muted hover:text-ink-2'
-                }`}
-              >
-                {t.label}
-                {typeof t.count === 'number' && (
-                  <span className="ml-1.5 text-[11px] font-mono text-muted-2 tabular-nums">({t.count})</span>
-                )}
-                {active && <span className="absolute bottom-0 left-2 right-2 h-0.5 bg-ocean rounded-full" />}
-              </button>
-            );
-          })}
-        </div>
-      </div>
+          </>
+        )}
+        tabs={tabs}
+        activeTab={viewTab}
+        onTabChange={setViewTab}
+        onClose={onClose}
+      />
 
       {/* ── Overview ──────────────────────────────────────────────────────── */}
       {viewTab === 'overview' && (
-        <div className="flex-1 overflow-y-auto px-6 py-6 space-y-6">
-          {/* SAMPLE ROWS FIRST (data-experience Release B): a person opening
-              "Item" wants to see the items — metadata comes after. All roles
-              (the preview endpoint is all-roles since Release A). */}
-          <section className="bg-raised border border-line rounded-lg p-6 space-y-3">
-            <p className="text-[10px] font-mono tracking-[0.12em] uppercase text-muted mb-2">The data</p>
-            <PreviewTable url={`/semantic/product-preview?productTableId=${pgTableId ?? tableId}&limit=10`} />
-          </section>
-
-          {/* THE EASY LINEAGE — which tables feed this one, in two lines.
-              The column-level graph is one click away on the Lineage tab. */}
-          {curator && pgTableId != null && (
-            <LineageSummary layer="product" tableId={pgTableId} onOpenLineage={() => setViewTab('lineage')} />
-          )}
-
-          {/* What is this — read-only for viewers; curators get the edit
-              form below instead. (The form used to render for viewers too,
-              offering a Save that the server would refuse.) */}
-          {!curator && (tbl.description || tbl.owner_name) && (
-            <section className="bg-raised border border-line rounded-lg p-6">
-              <p className="text-[10px] font-mono tracking-[0.12em] uppercase text-muted mb-2">What is this?</p>
-              {tbl.description && (
-                <p className="text-[13px] text-ink-2 leading-relaxed">{tbl.description}</p>
-              )}
-              {tbl.owner_name && (
-                <p className="text-[11.5px] text-muted-2 mt-2">Owned by {tbl.owner_name}</p>
-              )}
-            </section>
-          )}
-
-          {/* AI suggested banner — saving clears ai_draft via the update endpoint.
-              Curator-only — viewers don't get the inline edit form. */}
-          {curator && isAiDraft && (
-            <section className="bg-ocean-softer border border-ocean/30 rounded-lg p-4">
-              <div className="flex items-start gap-3 min-w-0">
-                <div className="min-w-0">
-                  <p className="text-[10px] font-mono tracking-[0.12em] uppercase text-ocean mb-1">AI suggested</p>
+        <div className="flex-1 overflow-y-auto px-6 pt-5 pb-24">
+          <div className="flex gap-8 items-start">
+            <div className="flex-1 min-w-0 space-y-5">
+              {curator && isAiDraft && (
+                <section className="bg-ocean-softer border border-ocean/30 rounded-lg px-4 py-3 flex items-start gap-2.5">
+                  <Sparkles className="w-4 h-4 text-ocean shrink-0 mt-0.5" strokeWidth={2} aria-hidden />
                   <p className="text-[13px] text-ink leading-relaxed">
-                    Review the description below. Saving will mark this table as confirmed.
+                    <span className="font-medium">Suggested by Clarion.</span> Read the description below; saving it confirms this table.
                   </p>
-                </div>
-              </div>
-            </section>
-          )}
-
-          {/* Edit form — curator-only (curation is annotation of the thing
-              you're looking at; viewers got the read-only card above). */}
-          {curator && (
-          <section className="bg-raised border border-line rounded-lg p-6 space-y-5">
-            <div className="grid grid-cols-2 gap-5">
-              <div>
-                <label className="block text-[10px] font-mono tracking-[0.12em] uppercase text-muted mb-1.5">Display name</label>
-                <input
-                  value={tbl.display_name ?? ''}
-                  onChange={(e) => setTbl({ ...tbl, display_name: e.target.value })}
-                  className="w-full bg-raised border border-line rounded-md px-3 py-2 text-[13px] text-ink-2 placeholder-muted-2 focus:outline-none focus:border-ocean focus:ring-1 focus:ring-ocean/30 transition-colors"
-                  placeholder="Human-readable name"
-                />
-              </div>
-              <div>
-                <label className="block text-[10px] font-mono tracking-[0.12em] uppercase text-muted mb-1.5">Owner</label>
-                <input
-                  value={tbl.owner_name ?? ''}
-                  onChange={(e) => setTbl({ ...tbl, owner_name: e.target.value })}
-                  className="w-full bg-raised border border-line rounded-md px-3 py-2 text-[13px] text-ink-2 placeholder-muted-2 focus:outline-none focus:border-ocean focus:ring-1 focus:ring-ocean/30 transition-colors"
-                  placeholder="Table owner"
-                />
-              </div>
-            </div>
-
-            <div>
-              <div className="flex items-center mb-1.5">
-                <label className="block text-[10px] font-mono tracking-[0.12em] uppercase text-muted">Description</label>
-                {curator && (
-                  <button
-                    type="button"
-                    onClick={() => setAiTarget({ kind: 'table' })}
-                    className="ml-auto inline-flex items-center gap-1 text-[11px] text-ocean hover:text-ocean-hover transition-colors"
-                    title="Ask AI to change this description in plain language"
-                  >
-                    <Sparkles className="w-3 h-3" strokeWidth={1.75} />
-                    Ask AI
-                  </button>
-                )}
-              </div>
-              <textarea
-                value={tbl.description ?? ''}
-                onChange={(e) => setTbl({ ...tbl, description: e.target.value })}
-                rows={3}
-                className="w-full bg-raised border border-line rounded-md px-3 py-2 text-[13px] text-ink-2 placeholder-muted-2 focus:outline-none focus:border-ocean focus:ring-1 focus:ring-ocean/30 transition-colors resize-none"
-                placeholder="What does this table contain?"
-              />
-            </div>
-
-            {/* Domain tags */}
-            <div>
-              <label className="block text-[10px] font-mono tracking-[0.12em] uppercase text-muted mb-2">Data domains</label>
-              <div className="flex flex-wrap gap-1.5 mb-2">
-                {domains.map((tag) => (
-                  <span key={tag} className="inline-flex items-center gap-1.5 text-[10px] bg-ai-soft text-ai border border-line rounded-md px-2 py-0.5">
-                    {tag}
-                    <button onClick={() => removeDomain(tag)} className="hover:text-ai/80 leading-none">&times;</button>
-                  </span>
-                ))}
-              </div>
-              <div className="flex gap-2">
-                <input
-                  value={domainInput}
-                  onChange={(e) => setDomainInput(e.target.value)}
-                  onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ',') { e.preventDefault(); addDomain(domainInput); } }}
-                  placeholder="Add domain tag..."
-                  className="flex-1 bg-raised border border-line rounded-md px-3 py-2 text-[13px] text-ink-2 placeholder-muted-2 focus:outline-none focus:border-ocean focus:ring-1 focus:ring-ocean/30 transition-colors"
-                />
-                <button
-                  onClick={() => addDomain(domainInput)}
-                  className="px-4 py-2 text-sm bg-softer hover:bg-bg text-ink-2 border border-line rounded-md transition-colors"
-                >Add</button>
-              </div>
-            </div>
-
-            <div className="flex items-center gap-3 pt-2">
-              <button
-                onClick={saveTable}
-                disabled={savingTable}
-                className="px-5 py-2 bg-ocean text-white text-[13px] font-medium rounded-md hover:bg-ocean-hover disabled:opacity-50 transition-colors"
-              >
-                {savingTable ? 'Saving...' : 'Save table'}
-              </button>
-              {savedMsg && (
-                <span className="text-xs text-ok font-semibold flex items-center gap-1">
-                  <span className="orb-approved" style={{ width: 6, height: 6 }} /> {savedMsg}
-                </span>
+                </section>
               )}
+
+              {/* Description — a sentence about the table, edited in place. */}
+              <section className="bg-raised border border-line rounded-lg p-5">
+                <div className="flex items-center justify-between gap-3 mb-2">
+                  <h3 className="text-[13px] font-medium text-ink">Description</h3>
+                  {curator && (
+                    <button
+                      type="button"
+                      onClick={() => setAiTarget({ kind: 'table' })}
+                      className="inline-flex items-center gap-1 text-[11.5px] text-ocean hover:text-ocean-hover transition-colors"
+                      title="Ask AI to write or change this description"
+                    >
+                      <Sparkles className="w-3 h-3" strokeWidth={1.75} aria-hidden />
+                      Ask AI
+                    </button>
+                  )}
+                </div>
+                {curator ? (
+                  <>
+                    <textarea
+                      value={tbl.description ?? ''}
+                      onChange={(e) => setTbl({ ...tbl, description: e.target.value })}
+                      rows={3}
+                      className="w-full bg-raised border border-line rounded-md px-3 py-2 text-[13px] text-ink-2 placeholder-muted-2 focus:outline-none focus:border-ocean focus:ring-1 focus:ring-ocean/30 transition-colors resize-none"
+                      placeholder="What is one row of this table?"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setMoreOpen((o) => !o)}
+                      className="mt-3 inline-flex items-center gap-1 text-[12px] text-muted hover:text-ink-2 transition-colors"
+                      aria-expanded={moreOpen}
+                    >
+                      {moreOpen ? <ChevronDown className="w-3.5 h-3.5" strokeWidth={2} aria-hidden /> : <ChevronRight className="w-3.5 h-3.5" strokeWidth={2} aria-hidden />}
+                      Name, owner and domains
+                    </button>
+                    {moreOpen && (
+                      <div className="mt-3 grid grid-cols-2 gap-4">
+                        <div>
+                          <label className="block text-[11px] text-muted mb-1">Display name</label>
+                          <input
+                            value={tbl.display_name ?? ''}
+                            onChange={(e) => setTbl({ ...tbl, display_name: e.target.value })}
+                            className="w-full bg-raised border border-line rounded-md px-3 py-1.5 text-[13px] text-ink-2 focus:outline-none focus:border-ocean focus:ring-1 focus:ring-ocean/30"
+                            placeholder="A name people use"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-[11px] text-muted mb-1">Owner</label>
+                          <input
+                            value={tbl.owner_name ?? ''}
+                            onChange={(e) => setTbl({ ...tbl, owner_name: e.target.value })}
+                            className="w-full bg-raised border border-line rounded-md px-3 py-1.5 text-[13px] text-ink-2 focus:outline-none focus:border-ocean focus:ring-1 focus:ring-ocean/30"
+                            placeholder="Who answers for it"
+                          />
+                        </div>
+                        <div className="col-span-2">
+                          <label className="block text-[11px] text-muted mb-1">Data domains</label>
+                          <div className="flex flex-wrap items-center gap-1.5">
+                            {domains.map((tag) => (
+                              <span key={tag} className="inline-flex items-center gap-1 text-[11px] bg-ai-soft text-ai border border-line rounded px-1.5 py-0.5">
+                                {tag}
+                                <button type="button" onClick={() => setTbl({ ...tbl, domains: domains.filter((d) => d !== tag) })} className="hover:text-ai/70 leading-none" aria-label={`Remove ${tag}`}>&times;</button>
+                              </span>
+                            ))}
+                            <input
+                              value={domainInput}
+                              onChange={(e) => setDomainInput(e.target.value)}
+                              onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ',') { e.preventDefault(); addDomain(domainInput); } }}
+                              placeholder="Add a domain…"
+                              className="bg-raised border border-line rounded-md px-2 py-1 text-[12px] text-ink-2 focus:outline-none focus:border-ocean w-40"
+                            />
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                    <div className="flex items-center gap-3 mt-4">
+                      <button
+                        type="button"
+                        onClick={saveTable}
+                        disabled={savingTable}
+                        className="px-4 py-1.5 bg-ocean text-white text-[12.5px] font-medium rounded-md hover:bg-ocean-hover disabled:opacity-50 transition-colors"
+                      >
+                        {savingTable ? 'Saving…' : 'Save'}
+                      </button>
+                      {savedMsg && <span className={cn('text-[12px]', savedMsg === 'Saved' ? 'text-ok' : 'text-err')}>{savedMsg}</span>}
+                    </div>
+                  </>
+                ) : (
+                  tbl.description
+                    ? <p className="text-[13px] text-ink-2 leading-relaxed">{tbl.description}</p>
+                    : <p className="text-[13px] text-muted-2 italic">No description yet.</p>
+                )}
+              </section>
+
+              {/* THE columns — one list, filterable, edited in the cell. */}
+              <section>
+                <div className="flex items-baseline justify-between gap-3 mb-2">
+                  <h3 className="text-[13px] font-medium text-ink">
+                    Columns <span className="font-mono text-[11px] text-muted-2 tabular-nums ml-1">{cols.length}</span>
+                  </h3>
+                  {curator && (
+                    <span className="text-[11.5px] text-muted">
+                      {cols.filter((c) => !c.ai_draft).length} of {cols.length} confirmed
+                    </span>
+                  )}
+                </div>
+                <ColumnsTable
+                  rows={rows}
+                  onSaveDescription={curator ? async (id, text) => {
+                    const col = cols.find((c) => c.id === id);
+                    if (col) await saveColumn(col, { description: text });
+                  } : undefined}
+                  statusHeader={curator ? 'Status' : undefined}
+                />
+              </section>
             </div>
-          </section>
-          )}
 
-          {/* Used in: products that share this dim */}
-          {usedByProducts.length > 0 && (
-            <section className="bg-raised border border-line rounded-lg p-6">
-              <p className="text-[10px] font-mono tracking-[0.12em] uppercase text-muted mb-3">Used in — data products</p>
-              <div className="flex flex-wrap gap-2">
-                {usedByProducts.map((pName) => (
-                  <span key={pName} className="inline-flex items-center gap-1.5 text-[12px] text-ink-2 bg-softer border border-line rounded-md px-3 py-1.5">
-                    {pName}
-                  </span>
-                ))}
-              </div>
-            </section>
-          )}
+            <AboutRail sections={sections} />
+          </div>
+        </div>
+      )}
 
-          {/* The SQL is engineering content and must never lead this page;
-              it has its own tab (the declaration editor). One door to it. */}
-          {curator && (
-            <button
-              type="button"
-              onClick={() => setViewTab('sql')}
-              className="w-full flex items-center gap-2 bg-raised border border-line rounded-lg px-5 py-3 text-left hover:border-line-strong transition-colors"
-            >
-              <Code2 className="w-4 h-4 text-ocean shrink-0" strokeWidth={1.75} aria-hidden />
-              <span className="text-[13px] text-ink-2 flex-1">How it&apos;s built — the SQL that makes this table, editable here.</span>
-              <span className="text-[12px] font-medium text-ocean">Open →</span>
-            </button>
-          )}
+      {/* ── Sample data ───────────────────────────────────────────────────── */}
+      {viewTab === 'sample' && (
+        <div className="flex-1 overflow-y-auto px-6 py-5">
+          <PreviewTable url={`/semantic/product-preview?productTableId=${pgTableId ?? tableId}&limit=25`} autoLoad />
         </div>
       )}
 
@@ -546,248 +658,11 @@ export default function ProductTableDetailPanel({
         </div>
       )}
 
-      {/* ── Columns ───────────────────────────────────────────────────────── */}
-      {viewTab === 'columns' && (
-        <div className="flex-1 overflow-y-auto px-6 py-6">
-          <div className="flex items-center justify-between mb-4">
-            <p className="text-[12px] text-muted-2">
-              {cols.filter((c) => !c.ai_draft).length}/{cols.length} columns confirmed
-            </p>
-            <div className="flex items-center bg-raised border border-line rounded-md overflow-hidden">
-              <button
-                onClick={() => setColView('grid')}
-                className={`px-3 py-1.5 text-xs transition-all ${colView === 'grid' ? 'bg-ocean text-white' : 'text-muted-2 hover:text-ink-2'}`}
-                title="Compact grid"
-              >
-                <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M3 10h18M3 14h18M3 6h18M3 18h18" />
-                </svg>
-              </button>
-              <button
-                onClick={() => setColView('cards')}
-                className={`px-3 py-1.5 text-xs transition-all border-l border-line ${colView === 'cards' ? 'bg-ocean text-white' : 'text-muted-2 hover:text-ink-2'}`}
-                title="Expanded cards"
-              >
-                <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                  <rect x="3" y="3" width="7" height="7" rx="1" /><rect x="14" y="3" width="7" height="7" rx="1" />
-                  <rect x="3" y="14" width="7" height="7" rx="1" /><rect x="14" y="14" width="7" height="7" rx="1" />
-                </svg>
-              </button>
-            </div>
-          </div>
-
-          {colView === 'grid' && (
-            <div className="bg-raised border border-line rounded-lg overflow-hidden">
-              <table className="w-full text-xs">
-                <thead>
-                  <tr className="bg-softer border-b border-line">
-                    <th className="text-left px-4 py-3 font-mono font-medium tracking-[0.1em] uppercase text-muted text-[10px]">Column</th>
-                    <th className="text-left px-3 py-3 font-mono font-medium tracking-[0.1em] uppercase text-muted text-[10px]">Type</th>
-                    <th className="text-left px-3 py-3 font-mono font-medium tracking-[0.1em] uppercase text-muted text-[10px]">Role</th>
-                    <th className="text-left px-3 py-3 font-mono font-medium tracking-[0.1em] uppercase text-muted text-[10px]">Description</th>
-                    <th className="text-center px-3 py-3 font-mono font-medium tracking-[0.1em] uppercase text-muted text-[10px]">Status</th>
-                    <th className="text-right px-4 py-3"></th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {cols.map((col) => {
-                    const isFocused = col.id === focusColumnId;
-                    const completeness = columnCompleteness(col);
-                    const heatClass = completeness === 'complete' ? 'heatmap-complete'
-                      : completeness === 'partial' ? 'heatmap-partial' : 'heatmap-incomplete';
-                    const typeInfo = classifyType(col.data_type);
-
-                    return (
-                      <tr
-                        key={col.id}
-                        id={`col-${col.id}`}
-                        className={`border-b border-slate-100/50 last:border-0 transition-all ${heatClass} ${
-                          isFocused ? 'ring-1 ring-inset ring-ocean/30' : 'hover:bg-softer'
-                        }`}
-                      >
-                        <td className="px-4 py-2.5">
-                          <span className="font-mono text-ink-2 text-[12px]">{col.column_name}</span>
-                          {col.display_name && col.display_name !== col.column_name && (
-                            <span className="block text-[10px] text-muted-2 truncate max-w-[140px]">{col.display_name}</span>
-                          )}
-                          <GlossaryChips terms={termsForColumn(tbl.table_name, col.column_name)} />
-                        </td>
-                        <td className="px-3 py-2.5">
-                          <span className={`inline-flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-md font-semibold ${typeInfo.cls}`}>
-                            <span dangerouslySetInnerHTML={{ __html: typeInfo.icon }} />
-                            {col.data_type}
-                          </span>
-                        </td>
-                        <td className="px-3 py-2.5">
-                          {col.column_role && (
-                            <span className={`text-[10px] px-2 py-0.5 rounded-md font-semibold ${colRoleBadge(col.column_role)}`}>
-                              {colRoleLabel(col.column_role)}
-                            </span>
-                          )}
-                        </td>
-                        <td className="px-3 py-2.5 max-w-[220px]">
-                          <input
-                            value={col.description ?? ''}
-                            onChange={(e) => updateCol(col.id, { description: e.target.value })}
-                            placeholder="Add description..."
-                            className="w-full bg-transparent text-ink-2 placeholder:text-muted-2 focus:outline-none focus:bg-raised focus:ring-1 focus:ring-ocean/50 rounded-md px-2 py-1 -ml-2 text-xs transition-all"
-                          />
-                        </td>
-                        <td className="text-center px-3 py-2.5">
-                          <ApprovalBadge
-                            entityType="product_column" entityId={col.id}
-                            status={col.approval_status as 'draft' | 'pending_review' | 'approved' | 'rejected' | undefined}
-                            aiDraft={!!col.ai_draft}
-                            onChanged={onSaved}
-                            compact
-                          />
-                        </td>
-                        <td className="px-4 py-2.5 text-right">
-                          <button onClick={() => saveColumn(col)} disabled={savingCol === col.id}
-                            className="px-2.5 py-1 bg-ocean text-white text-[10px] rounded-md hover:bg-ocean-hover disabled:opacity-50 transition-colors font-medium">
-                            {savingCol === col.id ? '...' : 'Save'}
-                          </button>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          )}
-
-          {colView === 'cards' && (
-            <div className="space-y-3">
-              {cols.map((col) => {
-                const isFocused = col.id === focusColumnId;
-                const typeInfo  = classifyType(col.data_type);
-
-                return (
-                  <div
-                    key={col.id}
-                    id={`col-${col.id}`}
-                    className={`bg-raised border border-line rounded-lg p-5 transition-all panel-enter ${
-                      isFocused ? 'ring-1 ring-ocean/40 border-ocean/40' : ''
-                    }`}
-                  >
-                    <div className="flex items-center justify-between mb-3">
-                      <div className="flex items-center gap-2.5 flex-wrap">
-                        <span className="font-mono text-sm text-ink-2 font-semibold">{col.column_name}</span>
-                        <span className={`inline-flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-md font-semibold ${typeInfo.cls}`}>
-                          <span dangerouslySetInnerHTML={{ __html: typeInfo.icon }} />
-                          {col.data_type}
-                        </span>
-                        {col.column_role && (
-                          <span className={`text-[10px] px-2 py-0.5 rounded-md font-semibold ${colRoleBadge(col.column_role)}`}>
-                            {colRoleLabel(col.column_role)}
-                          </span>
-                        )}
-                        <GlossaryChips terms={termsForColumn(tbl.table_name, col.column_name)} />
-                      </div>
-                      <ApprovalBadge
-                        entityType="product_column" entityId={col.id}
-                        status={col.approval_status as 'draft' | 'pending_review' | 'approved' | 'rejected' | undefined}
-                        aiDraft={!!col.ai_draft}
-                        onChanged={onSaved}
-                      />
-                    </div>
-
-                    {(col.fk_target_table || col.transformation_expression || col.additivity) && (
-                      <div className="flex flex-wrap gap-1.5 mb-3">
-                        {col.fk_target_table && (
-                          <span className="text-[10px] bg-ocean-softer text-ocean border border-line px-2 py-0.5 rounded font-mono">
-                            FK &rarr; {col.fk_target_table}.{col.fk_target_column}
-                          </span>
-                        )}
-                        {col.additivity && (
-                          <span className="text-[10px] bg-softer text-muted border border-line px-2 py-0.5 rounded">
-                            {col.additivity}
-                          </span>
-                        )}
-                        {col.scd_type > 1 && (
-                          <span className="text-[10px] bg-softer text-muted border border-line px-2 py-0.5 rounded">
-                            History Type {col.scd_type}
-                          </span>
-                        )}
-                        {col.transformation_expression && (
-                          <span className="text-[10px] bg-softer text-muted border border-line px-2 py-0.5 rounded font-mono truncate max-w-[300px]" title={col.transformation_expression}>
-                            {col.transformation_expression}
-                          </span>
-                        )}
-                      </div>
-                    )}
-
-                    <div className="grid grid-cols-2 gap-4 mb-4">
-                      <div>
-                        <label className="block text-[10px] font-mono tracking-[0.12em] uppercase text-muted mb-1">Display name</label>
-                        <input
-                          value={col.display_name ?? ''}
-                          onChange={(e) => updateCol(col.id, { display_name: e.target.value })}
-                          className="w-full bg-raised border border-line rounded-md px-3 py-2 text-[13px] focus:outline-none focus:border-ocean focus:ring-1 focus:ring-ocean/30 transition-colors"
-                        />
-                      </div>
-                      <div className="flex items-end gap-3 pb-1">
-                        {col.column_role && (
-                          <span className={`text-xs px-3 py-1.5 rounded-lg font-semibold ${colRoleBadge(col.column_role)}`}>
-                            {colRoleLabel(col.column_role)}
-                          </span>
-                        )}
-                      </div>
-                    </div>
-
-                    <div className="mb-4">
-                      <div className="flex items-center mb-1">
-                        <label className="block text-[10px] font-mono tracking-[0.12em] uppercase text-muted">Description</label>
-                        {curator && (
-                          <button
-                            type="button"
-                            onClick={() => setAiTarget({ kind: 'column', col })}
-                            className="ml-auto inline-flex items-center gap-1 text-[11px] text-ocean hover:text-ocean-hover transition-colors"
-                            title="Ask AI to change this description in plain language"
-                          >
-                            <Sparkles className="w-3 h-3" strokeWidth={1.75} />
-                            Ask AI
-                          </button>
-                        )}
-                      </div>
-                      <input
-                        value={col.description ?? ''}
-                        onChange={(e) => updateCol(col.id, { description: e.target.value })}
-                        className="w-full bg-raised border border-line rounded-md px-3 py-2 text-[13px] focus:outline-none focus:border-ocean focus:ring-1 focus:ring-ocean/30 transition-colors"
-                      />
-                    </div>
-
-                    <div className="flex items-center gap-2">
-                      <button onClick={() => saveColumn(col)} disabled={savingCol === col.id}
-                        className="px-4 py-1.5 bg-ocean text-white text-[12px] rounded-md hover:bg-ocean-hover disabled:opacity-50 transition-colors font-medium">
-                        {savingCol === col.id ? 'Saving...' : 'Confirm column'}
-                      </button>
-                      <button onClick={() => setShowColHistory(showColHistory === col.id ? null : col.id)}
-                        className="px-3 py-1.5 text-xs text-muted-2 bg-raised border border-line rounded-md hover:bg-softer hover:border-line-strong transition-colors">
-                        {showColHistory === col.id ? 'Hide' : 'History'}
-                      </button>
-                    </div>
-
-                    {showColHistory === col.id && (
-                      <div className="mt-4 pt-4 border-t border-slate-200/30">
-                        <HistoryPanel entityType="product_column" entityId={col.id} entityName={col.display_name || col.column_name} />
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </div>
-      )}
-
       {/* ── Lineage ───────────────────────────────────────────────────────── */}
       {viewTab === 'lineage' && (
         <div className="flex-1 min-h-0 flex flex-col">
           <div className="flex items-center justify-between gap-3 border-b border-line bg-raised px-6 py-2">
-            <p className="text-[12px] text-muted">
-              Which source columns feed this table, and how.
-            </p>
+            <p className="text-[12px] text-muted">Which source columns feed this table, and how.</p>
             {parentProductId != null && (
               <a
                 href={`/topics/${parentProductId}?manage=1`}
@@ -808,7 +683,7 @@ export default function ProductTableDetailPanel({
           <QualityPanel connId={productConnectionId} tableName={tbl.table_name} productTableId={tableId} />
         ) : (
           <div className="flex-1 flex items-center justify-center text-muted-2 text-sm p-6 text-center max-w-md mx-auto">
-            Quality requires a connection. This product is not yet linked to a source.
+            Quality needs a source. This subject is not linked to one yet.
           </div>
         )
       )}
@@ -816,16 +691,16 @@ export default function ProductTableDetailPanel({
       {/* ── History ───────────────────────────────────────────────────────── */}
       {viewTab === 'history' && (
         <div className="flex-1 overflow-y-auto px-6 py-6">
-          <HistoryPanel entityType="product_table" entityId={tbl.id} entityName={tbl.display_name || tbl.table_name} />
+          <HistoryPanel entityType="product_table" entityId={tbl.id} entityName={title} />
         </div>
       )}
 
-      {/* Ask AI to change a description — fills the field; user still saves. */}
+      {/* Ask AI to change a description — fills the field; the person saves. */}
       {aiTarget && aiTarget.kind === 'table' && (
         <AiPromptDialog
           entityType="table"
           entityId={tbl.id}
-          entityName={tbl.display_name || tbl.table_name}
+          entityName={title}
           currentDescription={tbl.description ?? ''}
           endpoint={`/semantic/product-tables/${tbl.id}/improve-description`}
           onAccept={(text) => setTbl({ ...tbl, description: text })}
@@ -839,7 +714,7 @@ export default function ProductTableDetailPanel({
           entityName={aiTarget.col.display_name || aiTarget.col.column_name}
           currentDescription={aiTarget.col.description ?? ''}
           endpoint={`/semantic/product-columns/${aiTarget.col.id}/improve-description`}
-          onAccept={(text) => updateCol(aiTarget.col.id, { description: text })}
+          onAccept={(text) => { void saveColumn(aiTarget.col, { description: text }); }}
           onClose={() => setAiTarget(null)}
         />
       )}
@@ -847,21 +722,76 @@ export default function ProductTableDetailPanel({
   );
 }
 
-/** "Your team's word for this column" — glossary terms linked to a column. */
-function GlossaryChips({ terms }: { terms: string[] }) {
-  if (terms.length === 0) return null;
+/** Under a column row: what a description cell cannot hold. Curators only. */
+function ColumnDetails({
+  col, onChange, onSave, onAskAi, historyOpen, onToggleHistory,
+}: {
+  col: ProductColumn;
+  onChange: (patch: Partial<ProductColumn>) => void;
+  onSave: (patch: Partial<ProductColumn>) => Promise<void>;
+  onAskAi: () => void;
+  historyOpen: boolean;
+  onToggleHistory: () => void;
+}) {
+  const [saving, setSaving] = useState(false);
+  const [msg, setMsg] = useState('');
+  const facts: Array<{ label: string; value: string }> = [];
+  if (col.fk_target_table) facts.push({ label: 'Points at', value: `${col.fk_target_table}${col.fk_target_column ? `.${col.fk_target_column}` : ''}` });
+  if (col.additivity) facts.push({ label: 'Adds up', value: col.additivity });
+  if (col.scd_type > 1) facts.push({ label: 'History', value: `Type ${col.scd_type}` });
+  if (col.transformation_expression) facts.push({ label: 'Computed as', value: col.transformation_expression });
+
   return (
-    <span className="mt-1 flex flex-wrap gap-1">
-      {terms.map((t) => (
-        <span
-          key={t}
-          title="Your team's word for this column (glossary)"
-          className="inline-flex items-center gap-1 rounded bg-ocean-softer px-1.5 py-0.5 text-[10px] text-ocean"
-        >
-          <BookOpen className="w-3 h-3" strokeWidth={2} aria-hidden />
-          <span className="italic">{t}</span>
-        </span>
-      ))}
-    </span>
+    <div className="space-y-3">
+      <div className="flex flex-wrap items-end gap-4">
+        <div className="min-w-[240px]">
+          <label className="block text-[11px] text-muted mb-1">Display name</label>
+          <div className="flex items-center gap-2">
+            <input
+              value={col.display_name ?? ''}
+              onChange={(e) => onChange({ display_name: e.target.value })}
+              className="flex-1 bg-raised border border-line rounded-md px-2.5 py-1.5 text-[12.5px] text-ink-2 focus:outline-none focus:border-ocean focus:ring-1 focus:ring-ocean/30"
+              placeholder="A name people use"
+            />
+            <button
+              type="button"
+              disabled={saving}
+              onClick={async () => {
+                setSaving(true);
+                try { await onSave({ display_name: col.display_name }); setMsg('Saved'); }
+                catch { setMsg('Could not save'); }
+                finally { setSaving(false); setTimeout(() => setMsg(''), 1500); }
+              }}
+              className="px-3 py-1.5 bg-ocean text-white text-[12px] font-medium rounded-md hover:bg-ocean-hover disabled:opacity-50"
+            >
+              {saving ? '…' : 'Save'}
+            </button>
+            {msg && <span className={cn('text-[11.5px]', msg === 'Saved' ? 'text-ok' : 'text-err')}>{msg}</span>}
+          </div>
+        </div>
+        <button type="button" onClick={onAskAi} className="inline-flex items-center gap-1 text-[12px] text-ocean hover:text-ocean-hover transition-colors pb-2">
+          <Sparkles className="w-3 h-3" strokeWidth={1.75} aria-hidden />
+          Ask AI for a description
+        </button>
+        <button type="button" onClick={onToggleHistory} className="text-[12px] text-muted hover:text-ink-2 transition-colors pb-2">
+          {historyOpen ? 'Hide history' : 'History'}
+        </button>
+      </div>
+      {facts.length > 0 && (
+        <dl className="flex flex-wrap gap-x-6 gap-y-1">
+          {facts.map((f) => (
+            <div key={f.label} className="flex items-baseline gap-2 text-[12px] min-w-0">
+              <dt className="text-muted shrink-0">{f.label}</dt>
+              <dd className="font-mono text-ink-2 truncate max-w-[420px]" title={f.value}>{f.value}</dd>
+            </div>
+          ))}
+        </dl>
+      )}
+      {historyOpen && (
+        <div className="pt-3 border-t border-line/60">
+          <HistoryPanel entityType="product_column" entityId={col.id} entityName={col.display_name || col.column_name} />
+        </div>
+      )}
+    </div>
   );
 }

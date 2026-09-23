@@ -31,7 +31,115 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-09-22 (THE DECLARATIVE WORKSPACE IS BUILT — owner, on
+**Last updated:** 2026-09-23 (THE CATALOG EXPLORER IS SHAPED LIKE DATABRICKS' —
+owner, with a screenshot of Databricks Catalog Explorer: *"I think I want it a
+little bit like databricks. Can you combine this layout with the way of working
+in clarion? Do you understand what I mean?"* Yes: take the INFORMATION
+ARCHITECTURE of that screen — breadcrumb · title with icon and technical name ·
+actions on the right · one horizontal tab strip · Overview = description + ONE
+filterable columns table + an "About this table" rail · a Sample data tab · a
+tree search that filters IN PLACE with the match in bold — and keep Clarion's
+WAY OF WORKING underneath: subjects / sources under their mark / your tables as
+the tree roots, the SQL declaration tab with Save · Preview · Rebuild now and
+the assistant's proposals as diffs, the easy lineage line, glossary terms,
+policies, business words for viewers (*Lookup table*, *Measures table* — never
+fact/dimension), SQL and technical names curator-only, the floating assistant.
+Frontend only, no backend change, no migration. Same branch; rides draft PR
+#176 beside the deploy record.)
+
+**ONE GRAMMAR, FOUR PANELS — the shared pieces, all NEW under
+`frontend/components/catalog/`:**
+- **`ExplorerHeader.tsx`** — the one header every catalog view wears:
+  breadcrumb (`Catalog › Finance › Accounts`, each crumb navigates), icon tile,
+  serif title, the TECHNICAL NAME in mono with a copy button (curators only —
+  a viewer never sees `dim_account`), badges, actions right (`HeaderAction`,
+  `MoreMenu` = the `⋯` overflow with outside-click / Escape close), the tab
+  strip (`role="tablist"`, underline in ocean). Generic over the tab id type,
+  so each panel keeps its own `ViewTab` union.
+- **`AboutRail.tsx`** — the right rail: `AboutRail({ sections })` skips empty
+  rows and empty sections; `RailChip` in ok / warn / err / ocean / neutral.
+- **`ColumnsTable.tsx`** — the ONE columns table (both panels' Columns TABS
+  are gone; the duplicated column lists were the busyness the owner
+  objected to): *Filter columns…* (Escape clears), Column · Type ·
+  Description · [Role] · Term · [Status], a key glyph on surrogate/natural
+  keys and a link glyph on foreign keys, a chevron per row that opens a
+  details row (`details` ReactNode per row — history, display name, examples,
+  *Ask AI for a description*), and `InlineDescription`: curators edit the
+  description IN the cell and it saves on blur / Enter (Escape reverts; a
+  spinner → tick → *not saved* state on the right; ellipsis when clipped).
+- **`navigation.ts`** — `CatalogNavTarget` (`catalog` | `subject` | `source` |
+  `table` | `source-table`), `CatalogConnection`, `AssistantOpenMode`. A panel
+  never writes the URL: crumbs, *Used in* chips and the rail's Subject /
+  Source rows call `onNavigate(target)`, and `app/catalog/page.tsx`'s new
+  `navigateTo` resolves it through the SAME `handleSelectSchema` /
+  `handleSelectTable` the tree uses, so the tree highlight, the address bar
+  and the view keep moving together.
+- **`lib/catalogSearchTree.ts`** — `groupSearchHits` regroups `/catalog/search`
+  hits into root › schema › table (+ up to 5 matching columns), Subjects
+  before Sources, ranking kept; `matchRange` finds the bold span. Pinned by NEW
+  `tests/catalogSearchTree.test.ts` (6). `CatalogBrowser`'s search results now
+  RENDER AS THE TREE (schema rows under their connector mark, the match in
+  `font-semibold`), instead of the old flat list; a *Catalog* header row with a
+  refresh button sits above the search box.
+
+**THE TWO TABLE PANELS, REWRITTEN ON THAT GRAMMAR.**
+- **`ProductTableDetailPanel.tsx` (867 → 797 lines)**: tabs Overview ·
+  **Sample data** · SQL (curator) · Lineage (curator) · Quality · History
+  (curator). Overview = the AI-suggested banner → Description card (curators: a
+  textarea with *Ask AI*, a collapsible *Name, owner and domains*, Save;
+  viewers: the text) → `ColumnsTable` (Measure / Reference role chips, glossary
+  terms, status) beside the rail: **About this table** (Type = *Lookup table* /
+  *Measures table* / *Bridge table* / *Flags table*, Subject, Source under its
+  mark, Shared from, Owner, Built *2h ago · 1,289 rows*, State chip: *Changed
+  since the last build · by Ines · 40m ago* / *Missing a source column* / *Built*
+  / *Last build failed* / *Building* / *Not built yet* — read off the
+  declaration endpoint for curators), **Quality** (score chip + *checked 2h
+  ago*), **Where it comes from** (`LineageSummary compact`), **Your team calls
+  this** (terms → Definitions), **Policies** (from `GET /policies/mine`, admins
+  get *Manage policies*), **Also used in** (the other subjects, navigating).
+  Actions: *Change with AI* (opens the floating assistant in change mode —
+  `onAskAssistant('change')`), *Ask AI* (`askAboutSubject`), `⋯` → *Manage this
+  topic* / *Open in the workshop*. Sample data = `PreviewTable` over
+  `/semantic/product-preview` with the new `autoLoad`. A column's display name
+  and description PATCH `/semantic/product-columns/:id` as before.
+- **`TableDetailPanel.tsx` (699 → 585 lines)**: tabs Overview · Sample data ·
+  Lineage (curator) · Quality · History (curator). Same overview shape;
+  `ColumnsTable`'s `extra` column carries the Dim / Mea checkboxes for curators
+  (saving immediately) and chips for viewers; rail = About (Type *Source
+  table*, Source mark, *In answers* Yes/No, Domains), **Used in** (subjects),
+  **What it feeds** (lineage line), Policies. Actions: *Ask about it* (the
+  assistant in ask mode), *Relations*. The Confirm / Flag banner stays.
+- `SourceRootPanel.tsx` and `ProductFullView.tsx` wear `ExplorerHeader` too
+  (source: mark · sync pill · draft chips · *Relations* / *Open in Sources*;
+  subject: glyph · source badge · *Refreshed …* · *Manage this topic* / *Ask
+  AI* / `⋯ Open in the workshop`); their tab bodies are unchanged.
+  `EntityDetailPanel` threads `connections`, `onNavigate` and `onAskAssistant`
+  to all four. `LineageSummary` gained `compact`; `PreviewTable` gained
+  `autoLoad`.
+- **What was NOT taken from Databricks, on purpose**: Permissions / Insights /
+  Popularity tabs (Clarion has policies, not per-table grants; no usage
+  telemetry per table — a fake popularity column would be decoration), the
+  star / favourite, per-column tags (the glossary term IS the tag), and the
+  catalog › schema vocabulary (ours stays subject · source · your tables).
+- Validation: frontend `tsc` clean; touched files lint-clean (the two findings
+  in `SourceRootPanel.tsx` are the documented pre-existing ones, re-verified at
+  HEAD); vitest **9 files / 76 passed** (+6); `next build` green (`/catalog`
+  50.5 kB / 345 kB). **RENDER-CHECKED IN HEADLESS CHROMIUM against the real
+  build with a mocked API** — 20 screens, curator and viewer, zero page errors:
+  landing, table overview (top and scrolled to the rail's end), column filter +
+  row details, sample data, SQL, propose → diff → Keep, ask, breadcrumb to the
+  subject, search-as-tree, source, source table, subject, viewer landing, viewer
+  table, viewer source table. **The check caught one real thing and one
+  false alarm**: the About rail's last section sat UNDER the floating assistant
+  pill (fixed: the overview scroll area carries `pb-24`, so the rail scrolls
+  clear), and a "9400 %" quality chip — which was the RENDER FIXTURE carrying
+  percentages where the API carries fractions (`ragStatus` thresholds are 0.9
+  / 0.75; `QualityPanel` multiplies by 100). The component was right; the
+  fixture is fixed. Read a wrong number's SOURCE before touching the consumer.
+- No backend change, no env var, no migration. Backend suites and ratchets
+  not re-run (nothing under `backend/` or `packages/` touched — `git status`).
+
+**Prior last updated:** 2026-09-22 (THE DECLARATIVE WORKSPACE IS BUILT — owner, on
 the revision-2 boards: *"I don't really like your mockups, they are too busy
 and somewhat wrong with what's already there. But I think that's just due to
 it being a mockup and not being the real app. Can you implement what we
@@ -11914,7 +12022,11 @@ clarion/                              ← on disk: databridge/
     │   │   └── LineageFlow.tsx       ← ReactFlow data lineage visualization (Observatory palette)
     │   ├── ConnectorMarkIcon.tsx     ← a connector's brand mark as a tile (lib/connectorIcons), Database fallback
     │   ├── catalog/
-    │   │   ├── CatalogBrowser.tsx    ← the ONE tree: subjects first, sources under their connector mark, your tables
+    │   │   ├── ExplorerHeader.tsx    ← the ONE header: breadcrumb · icon · title · technical name+copy (curators) · badges · actions · tab strip; HeaderAction, MoreMenu
+    │   │   ├── AboutRail.tsx         ← the right rail (sections of label/value rows, chips); RailChip
+    │   │   ├── ColumnsTable.tsx      ← the ONE columns table: filter, key/fk glyphs, role, term, status, per-row details, inline description saved on blur
+    │   │   ├── navigation.ts         ← CatalogNavTarget (panels ask the page to navigate), CatalogConnection, AssistantOpenMode
+    │   │   ├── CatalogBrowser.tsx    ← the ONE tree: subjects first, sources under their connector mark, your tables; search filters it in place
     │   │   ├── EntityDetailPanel.tsx ← selection → panel (source-root / source-table / product-root / product-table)
     │   │   ├── CatalogLanding.tsx    ← nothing selected: what needs you + the health overview
     │   │   ├── SqlDeclaration.tsx    ← the SQL tab: CodeMirror editor · Format · Preview · Rebuild now · Save; a proposal as a diff with Keep / Discard
@@ -11933,8 +12045,8 @@ clarion/                              ← on disk: databridge/
     │   │   ├── HistoryPanel.tsx      ← change history tracking
     │   │   ├── KpiPanel.tsx          ← KPI definitions management
     │   │   ├── PathFinderPanel.tsx   ← relationship path finder
-    │   │   ├── TableDetailPanel.tsx  ← source-layer table detail panel
-    │   │   ├── ProductTableDetailPanel.tsx ← product-layer table detail panel (+ "Your team calls this …" glossary chips)
+    │   │   ├── TableDetailPanel.tsx  ← a SOURCE table: explorer header · Overview (description, columns table with Dim/Mea, about rail) · Sample data · Lineage · Quality · History
+    │   │   ├── ProductTableDetailPanel.tsx ← a SUBJECT table: same shape + the SQL tab, State/Quality/terms/policies in the rail, Change with AI / Ask AI
     │   │   ├── GlossaryPanel.tsx     ← the tenant glossary editor: terms, definitions, LINKS to product columns/tables/KPIs
     │   │   ├── GlossaryLinkPicker.tsx ← searchable grouped picker over GET /semantic/glossary/link-targets
     │   │   ├── shared.tsx            ← de-duplicated helpers: parseDomains/parseExamples/classifyType/completenessBucket/PreviewTable
@@ -11956,6 +12068,7 @@ clarion/                              ← on disk: databridge/
         ├── sqlProvenance.ts         ← FROM/JOIN extraction for the "How it's built" provenance trail
         ├── askLink.ts               ← askAboutSubject() — the one /query deep-link builder
         ├── catalogUrl.ts            ← parseCatalogUrl / catalogHref — every /catalog deep link, read in one place
+        ├── catalogSearchTree.ts     ← groupSearchHits / matchRange — search hits regrouped as the tree, the match bolded (pinned by tests/catalogSearchTree.test.ts)
         ├── subjectAssistant.ts      ← the ONE subject chat: askSubjectAssistant + startSubjectAddition
         ├── observatory.ts           ← JS/SVG mirror of globals.css tokens + SERIES chart palette
         ├── freshness.ts             ← data-freshness helpers (formatRelativeTime, getFreshnessStatus)

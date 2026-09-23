@@ -26,7 +26,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import {
-  ArrowRight, Sparkles, BarChart3, Database, ShieldCheck, GitBranch, Boxes, FileText, Wrench, X,
+  ArrowRight, Sparkles, BarChart3, Database, ShieldCheck, GitBranch, Boxes, FileText, Wrench,
 } from 'lucide-react';
 import api from '@/lib/api';
 import { cn } from '@/lib/cn';
@@ -35,6 +35,9 @@ import { useRole, canCurate } from '@/lib/role';
 import { paletteForSource, type SourcePalette } from './sourcePalette';
 import { PreviewTable } from '@/components/semantic/shared';
 import { askAboutSubject } from '@/lib/askLink';
+import ExplorerHeader, { HeaderAction, MoreMenu } from './ExplorerHeader';
+import { iconForAnalytics } from './entityIcons';
+import type { AssistantOpenMode, CatalogNavTarget } from './navigation';
 
 // ───────────────────────────────────────────────────────────────────────────
 // Data shapes — mirrors the backend product detail + KPIs response
@@ -92,12 +95,13 @@ type Tab = 'overview' | 'metrics' | 'tables' | 'quality' | 'lineage';
 
 interface Props {
   productId: number;
-  /** Click "← Back to catalog" → return to cards grid. */
-  onBack?: () => void;
+  /** A breadcrumb click: the page owns the selection. */
+  onNavigate?: (target: CatalogNavTarget) => void;
+  /** Reserved for a header action; the subject page has none today. */
+  onAskAssistant?: (mode: AssistantOpenMode) => void;
 }
 
-export default function ProductFullView({ productId, onBack }: Props) {
-  const router = useRouter();
+export default function ProductFullView({ productId, onNavigate }: Props) {
   const role = useRole();
   const isCurator = canCurate(role);
   const [data, setData] = useState<ProductDetail | null>(null);
@@ -159,84 +163,58 @@ export default function ProductFullView({ productId, onBack }: Props) {
     );
   }
 
-  const refreshed = data.last_refreshed_at ? formatRelative(data.last_refreshed_at) : 'Not refreshed yet';
+  const refreshed = data.last_refreshed_at ? formatRelative(data.last_refreshed_at) : 'not yet';
+  const SubjectIcon = iconForAnalytics(data.name);
   const sourceLabel = data.source?.multiSource ? 'Multiple sources'
     : data.source?.sourceDeleted ? 'Source deleted'
     : (data.source?.connectorType ?? data.source?.name ?? 'Data product');
 
   return (
     <div className="flex-1 min-h-0 flex flex-col">
-      {/* ── Header ──────────────────────────────────────────────────────── */}
-      <div className="border-b border-line bg-raised px-7 pt-6 pb-0">
-        <div className="max-w-4xl mx-auto">
-          {onBack && (
-            <button
-              type="button"
-              onClick={onBack}
-              className="inline-flex items-center gap-1.5 px-2 py-1 -ml-2 mb-3 text-[12px] font-medium text-muted hover:text-ink rounded hover:bg-soft transition-colors"
-            >
-              <X className="w-3.5 h-3.5 rotate-45" strokeWidth={2} />
-              Back to catalog
-            </button>
-          )}
-
-          <div className="flex items-start justify-between gap-4 mb-4">
-            <div className="flex-1 min-w-0">
-              <div className="flex items-center gap-2.5 mb-2">
-                <span className={cn('inline-block w-2 h-2 rounded-full', palette.dot)} aria-hidden />
-                <span className={cn('text-[10.5px] font-mono uppercase tracking-[0.12em]', palette.eyebrow)}>
-                  {sourceLabel}
-                </span>
-                <span className="ml-auto text-[11px] font-mono text-muted-2 tabular-nums">
-                  Refreshed {refreshed}
-                </span>
-              </div>
-              <h1 className="font-display text-[28px] text-ink tracking-[-0.02em] leading-tight mb-2">
-                {data.name}
-              </h1>
-              {data.description && (
-                <p className="text-[14px] text-ink-2 leading-relaxed max-w-3xl">
-                  {data.description}
-                </p>
-              )}
-            </div>
-            {/* Curator-only deep link to the operator surface */}
+      <ExplorerHeader
+        crumbs={[{ label: 'Catalog', onClick: () => onNavigate?.({ kind: 'catalog' }) }, { label: data.name }]}
+        icon={(
+          <span className={cn('w-8 h-8 rounded-lg border border-line bg-softer flex items-center justify-center', palette.eyebrow)}>
+            <SubjectIcon className="w-4 h-4" strokeWidth={1.75} aria-hidden />
+          </span>
+        )}
+        title={data.name}
+        badges={(
+          <span className={cn('inline-flex items-center gap-1.5 text-[10.5px] font-mono uppercase tracking-[0.12em]', palette.eyebrow)}>
+            <span className={cn('inline-block w-2 h-2 rounded-full', palette.dot)} aria-hidden />
+            {sourceLabel}
+          </span>
+        )}
+        subtitle={(
+          <span className="block max-w-3xl">
+            {data.description && <span className="text-ink-2">{data.description} </span>}
+            <span className="text-muted-2 font-mono text-[11px] whitespace-nowrap">Refreshed {refreshed}</span>
+          </span>
+        )}
+        actions={(
+          <>
             {isCurator && (
-              <button
-                type="button"
-                onClick={() => router.push(`/products/${productId}`)}
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-[12px] font-medium text-ocean border border-ocean/30 rounded hover:bg-ocean/5 transition-colors flex-shrink-0"
-                title="Open the operator surface for this product (admin/analyst only)"
-              >
-                <Wrench className="w-3 h-3" strokeWidth={2} />
-                Open in Build
-              </button>
+              <HeaderAction href={`/topics/${productId}?manage=1`} icon={<Wrench className="w-3.5 h-3.5" strokeWidth={1.75} aria-hidden />} title="Tables, metrics, quality and activity — the topic's manage mode">
+                Manage this topic
+              </HeaderAction>
             )}
-          </div>
-
-          {/* Tab strip */}
-          <nav className="flex gap-0 -mb-px">
-            {tabsAvailable.map((t) => {
-              const active = tab === t.id;
-              return (
-                <button
-                  key={t.id}
-                  type="button"
-                  onClick={() => setTab(t.id)}
-                  className={cn(
-                    'flex items-center gap-1.5 px-4 py-2.5 text-[13px] transition-colors whitespace-nowrap relative',
-                    active ? 'text-ink font-medium' : 'text-muted hover:text-ink-2',
-                  )}
-                >
-                  <span className={cn(active ? 'text-ocean' : 'text-muted-2')}>{t.icon}</span>
-                  {t.label}
-                  {active && <span className="absolute bottom-0 left-2 right-2 h-0.5 bg-ocean rounded-full" />}
-                </button>
-              );
-            })}
-          </nav>
-        </div>
-      </div>
+            <HeaderAction
+              href={askAboutSubject({ productId: data.id, productName: data.name, connectionId: data.source?.id })}
+              primary
+              icon={<Sparkles className="w-3.5 h-3.5" strokeWidth={1.75} aria-hidden />}
+              title="Ask a question about this subject"
+            >
+              Ask AI
+            </HeaderAction>
+            {isCurator && (
+              <MoreMenu items={[{ label: 'Open in the workshop', href: `/products/${productId}` }]} />
+            )}
+          </>
+        )}
+        tabs={tabsAvailable.map(({ id, label }) => ({ id, label }))}
+        activeTab={tab}
+        onTabChange={setTab}
+      />
 
       {/* ── Tab body ─────────────────────────────────────────────────────── */}
       <div className="flex-1 min-h-0 overflow-y-auto px-7 py-6">

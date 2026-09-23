@@ -38,6 +38,7 @@ import type {
   ProductColumn as SemanticProductColumn,
   ProductTreeItem,
 } from '@/components/semantic/types';
+import type { AssistantOpenMode, CatalogConnection, CatalogNavTarget } from '@/components/catalog/navigation';
 
 export type EntitySelection =
   | { scope: 'source-table'; tableId: number; connectionId: number; columnId?: number | null }
@@ -47,19 +48,20 @@ export type EntitySelection =
   | { scope: 'source-root'; connectionId: number }
   | { scope: 'empty' };
 
-interface Connection {
-  id: number;
-  domains?: string[];
-}
+type Connection = CatalogConnection;
 
 interface Props {
   selection: EntitySelection;
   /** Fired after a save inside any panel so the parent can refresh tree data. */
   onSaved?: () => void;
-  /** Optional: parent-supplied connection list so we don't re-fetch domains. */
+  /** GET /connections, read once by the page: names, marks, domains. */
   connections?: Connection[];
   /** Close handler — clears the selection. */
   onClose?: () => void;
+  /** A breadcrumb or a chip asks the page to select something else. */
+  onNavigate?: (target: CatalogNavTarget) => void;
+  /** A header action opens the floating assistant. */
+  onAskAssistant?: (mode: AssistantOpenMode) => void;
   /** Landing when nothing is selected; defaults to a quiet hint. */
   empty?: React.ReactNode;
 }
@@ -69,6 +71,8 @@ export default function EntityDetailPanel({
   onSaved,
   connections = [],
   onClose,
+  onNavigate,
+  onAskAssistant,
   empty,
 }: Props) {
   if (selection.scope === 'empty') return <>{empty ?? <EmptyHint />}</>;
@@ -77,11 +81,20 @@ export default function EntityDetailPanel({
       <SourceRootPanel
         key={`sr-${selection.connectionId}`}
         connectionId={selection.connectionId}
+        onNavigate={onNavigate}
+        onAskAssistant={onAskAssistant}
       />
     );
   }
   if (selection.scope === 'product-root') {
-    return <ProductFullView key={`pf-${selection.productId}`} productId={selection.productId} />;
+    return (
+      <ProductFullView
+        key={`pf-${selection.productId}`}
+        productId={selection.productId}
+        onNavigate={onNavigate}
+        onAskAssistant={onAskAssistant}
+      />
+    );
   }
   if (selection.scope === 'source-table') {
     return (
@@ -93,6 +106,8 @@ export default function EntityDetailPanel({
         connections={connections}
         onSaved={onSaved}
         onClose={onClose}
+        onNavigate={onNavigate}
+        onAskAssistant={onAskAssistant}
       />
     );
   }
@@ -103,8 +118,11 @@ export default function EntityDetailPanel({
         tableId={selection.tableId}
         focusColumnId={selection.columnId ?? null}
         initialTab={selection.initialTab}
+        connections={connections}
         onSaved={onSaved}
         onClose={onClose}
+        onNavigate={onNavigate}
+        onAskAssistant={onAskAssistant}
       />
     );
   }
@@ -114,7 +132,7 @@ export default function EntityDetailPanel({
 // ── Loaders ────────────────────────────────────────────────────────────────
 
 function SourceTableLoader({
-  tableId, connectionId, focusColumnId, connections, onSaved, onClose,
+  tableId, connectionId, focusColumnId, connections, onSaved, onClose, onNavigate, onAskAssistant,
 }: {
   tableId: number;
   connectionId: number;
@@ -122,6 +140,8 @@ function SourceTableLoader({
   connections: Connection[];
   onSaved?: () => void;
   onClose?: () => void;
+  onNavigate?: (target: CatalogNavTarget) => void;
+  onAskAssistant?: (mode: AssistantOpenMode) => void;
 }) {
   const [table, setTable] = useState<SourceTable | null>(null);
   const [cols, setCols] = useState<SourceColumn[]>([]);
@@ -148,7 +168,8 @@ function SourceTableLoader({
 
   useEffect(() => { load(); }, [load]);
 
-  const domains = connections.find((c) => c.id === connectionId)?.domains ?? [];
+  const rawDomains = connections.find((c) => c.id === connectionId)?.domains;
+  const domains = Array.isArray(rawDomains) ? rawDomains : [];
 
   if (loading) return <Spinner label="Loading table" />;
   if (!table) return <EmptyHint message="Table not found." />;
@@ -159,22 +180,28 @@ function SourceTableLoader({
       columns={cols}
       focusColumnId={focusColumnId}
       connectionDomains={domains}
+      connections={connections}
       onSaved={() => { load(); onSaved?.(); }}
       onClose={onClose}
+      onNavigate={onNavigate}
+      onAskAssistant={onAskAssistant}
     />
   );
 }
 
 function ProductTableLoader({
-  tableId, focusColumnId, initialTab, onSaved, onClose,
+  tableId, focusColumnId, initialTab, connections, onSaved, onClose, onNavigate, onAskAssistant,
 }: {
   /** Graph id (the tree) OR Postgres product_tables id (deep links) —
    *  resolved against the tree below. */
   tableId: number;
   focusColumnId: number | null;
   initialTab?: 'sql';
+  connections: Connection[];
   onSaved?: () => void;
   onClose?: () => void;
+  onNavigate?: (target: CatalogNavTarget) => void;
+  onAskAssistant?: (mode: AssistantOpenMode) => void;
 }) {
   const [tree, setTree] = useState<ProductTreeItem[]>([]);
   const [cols, setCols] = useState<SemanticProductColumn[]>([]);
@@ -217,8 +244,11 @@ function ProductTableLoader({
       columns={cols}
       focusColumnId={focusColumnId}
       initialTab={initialTab}
+      connections={connections}
       onSaved={() => { load(); onSaved?.(); }}
       onClose={onClose}
+      onNavigate={onNavigate}
+      onAskAssistant={onAskAssistant}
     />
   );
 }

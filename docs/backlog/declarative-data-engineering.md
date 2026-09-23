@@ -131,6 +131,28 @@ the catalog. Each is one deletion PR once the workspace has been used for real
 — the boards in `docs/handoffs/declarative-workspace/` stay the design of
 record for exactly those parts.
 
+## 0b. What shipped — 2026-09-23: the explorer wears Databricks' layout, Clarion's way of working
+
+The owner, with a screenshot of Databricks Catalog Explorer: *"I think I want
+it a little bit like databricks. Can you combine this layout with the way of
+working in clarion?"* What was taken is the **information architecture** of
+that screen; what stayed is everything §3 decided:
+
+| From Databricks | Kept from Clarion (§3) |
+|---|---|
+| Breadcrumb · icon · title · technical name with copy · actions on the right · ONE horizontal tab strip (`ExplorerHeader`) | The tree roots are subjects · sources under their connector mark · your tables — not catalog › schema |
+| Overview = description + ONE filterable columns table + an *About this table* rail (`ColumnsTable`, `AboutRail`) | The SQL declaration tab: Save · Preview · Rebuild now; the assistant's proposal as a diff with Keep / Discard |
+| A *Sample data* tab | The easy lineage line, glossary terms, policies, quality — in the rail, not as tabs |
+| Tree search that filters in place, the match in bold (`lib/catalogSearchTree.ts`) | Viewers read *Lookup table* / *Measures table*; SQL, technical names and the copy button are curator-only |
+| Inline column comments | Edit in the cell, saved on blur — and *Change with AI* opens the floating assistant in change mode |
+
+Not taken, deliberately: Permissions / Insights / Popularity (Clarion has
+policies, not grants, and no per-table usage telemetry to be honest about),
+the star, per-column tags (the glossary term is the tag). Both table panels
+lost their Columns tab — the one columns table on Overview is the columns tab.
+Frontend only; every endpoint the panels read existed already. Render-checked
+in headless Chromium: 20 screens, curator and viewer, zero page errors.
+
 ---
 
 ## 1. What "declarative" means here

@@ -21,11 +21,13 @@ interface Response {
 }
 
 export default function LineageSummary({
-  layer, tableId, onOpenLineage,
+  layer, tableId, onOpenLineage, compact = false,
 }: {
   layer: 'source' | 'product';
   tableId: number;
   onOpenLineage?: () => void;
+  /** Rail form: no card, no heading — the rail supplies the section title. */
+  compact?: boolean;
 }) {
   const [data, setData] = useState<Response | null | undefined>(undefined);
 
@@ -47,6 +49,34 @@ export default function LineageSummary({
     : data?.products.map((p) => ({ key: `p:${p.productTableId}`, label: p.displayName || p.tableName, sub: p.productName, n: p.columns.length })) ?? [];
 
   const heading = layer === 'product' ? 'Where it comes from' : 'What it feeds';
+
+  if (compact) {
+    return (
+      <div>
+        {feeds.length === 0 ? (
+          <p className="text-[12px] text-muted">
+            {layer === 'product' ? 'Written when the table is built.' : 'Nothing built from this table yet.'}
+          </p>
+        ) : (
+          <ul className="space-y-1">
+            {feeds.map((f) => (
+              <li key={f.key} className="flex items-baseline gap-1.5 text-[12.5px] text-ink-2 min-w-0">
+                <ArrowRight className="w-3 h-3 shrink-0 self-center text-muted-2" strokeWidth={2} aria-hidden />
+                <span className="font-medium text-ink truncate">{f.label}</span>
+                {f.sub && <span className="text-muted truncate">in {f.sub}</span>}
+              </li>
+            ))}
+          </ul>
+        )}
+        {onOpenLineage && feeds.length > 0 && (
+          <button type="button" onClick={onOpenLineage} className="mt-2 inline-flex items-center gap-1 text-[12px] font-medium text-ocean hover:text-ocean-hover transition-colors">
+            <GitBranch className="w-3 h-3" strokeWidth={2} aria-hidden />
+            See every column
+          </button>
+        )}
+      </div>
+    );
+  }
 
   return (
     <section className="bg-raised border border-line rounded-lg p-5">
