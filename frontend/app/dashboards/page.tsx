@@ -2,12 +2,11 @@
 
 import { useState, useEffect, useCallback, useRef } from 'react';
 import nextDynamic from 'next/dynamic';
-import { GridLayout, useContainerWidth } from 'react-grid-layout';
 import type { Layout as RglLayout, LayoutItem as RglLayoutItem } from 'react-grid-layout';
 import 'react-grid-layout/css/styles.css';
 import { motion, AnimatePresence } from 'framer-motion';
 import { ChartSkeleton } from './components/WidgetSkeletons';
-import { Copy, Star, X, Lightbulb, Zap, FileText, Settings, LayoutGrid, Check } from 'lucide-react';
+import { Copy, Star, X, Lightbulb, Zap, FileText, Settings, LayoutGrid, Check, Trash2 } from 'lucide-react';
 // We import only the helpers — the picker buttons need to recolor based on
 // selection state, so they can't use <SourceBadge> directly. Keeping the
 // grouping rule shared via the helpers preserves cross-page consistency.
@@ -152,6 +151,8 @@ import { DrillDetailModal } from './components/DrillDetailModal';
 import { WidgetContextMenu, type ContextMenuState } from './components/WidgetContextMenu';
 import { isWasmSupported } from '@/lib/wasm/duckdb';
 import { loadCube, runWidgetSql, type CubeHandle } from '@/lib/wasm/cube';
+import { canRemoveWidget, removeWidget, restoreWidget, type RemovedWidget } from './utils/arrange';
+import { ArrangeGrid } from './components/ArrangeGrid';
 import { resolveFilters as resolveFiltersLocal, injectCrossFilter as injectCrossFilterLocal } from '@/lib/wasm/sql';
 import { InsightsStrip, InsightsStripSkeleton } from './components/InsightsStrip';
 import { InvestigationPanel } from './components/InvestigationPanel';
@@ -224,8 +225,9 @@ export default function DashboardsPage() {
   const [connectionId,      setConnectionId]      = useState<number>(1);
   const [fixingWidgets,     setFixingWidgets]     = useState<Set<string>>(new Set());
   const [editLayout,        setEditLayout]        = useState(false);
-  // react-grid-layout needs a measured pixel width for the arrange grid
-  const { width: rglWidth, containerRef: rglContainerRef, mounted: rglMounted } = useContainerWidth();
+  // The card removed last in Arrange mode, kept so it can be put back. Its
+  // rows travel with it: Undo shows the card again instantly, no re-query.
+  const [lastRemoved,       setLastRemoved]       = useState<{ removed: RemovedWidget; data?: WidgetData } | null>(null);
   const [connections,       setConnections]       = useState<{ id: number; name: string; domains: string[] }[]>([]);
   // Build this dashboard across every source rather than one. Chosen at
   // creation because it decides the SQL the model writes; persisted onto the
@@ -689,6 +691,7 @@ export default function DashboardsPage() {
       // Stamp the layer onto the spec so saves + re-executions stay consistent
       spec.dataLayer = useSourceLayer ? 'source' : 'product';
       const defaults = buildDefaultFilters(spec.filters);
+      setLastRemoved(null);
       setCurrentSpec(spec);
       setFilterValues(defaults);
       setCrossFilter(null);
@@ -801,6 +804,7 @@ export default function DashboardsPage() {
         : buildDefaultFilters(spec.filters);
       // Clear client-side cache so new dashboard shows skeletons, not stale data
       widgetCacheRef.current = {};
+      setLastRemoved(null);
       setCurrentSpec(spec);
       setFilterValues(defaults);
       setCrossFilter(null);
@@ -890,6 +894,7 @@ export default function DashboardsPage() {
       if (activeId === id) {
         setActiveId(null);
         setCurrentSpec(null);
+        setLastRemoved(null);
         setMode('empty');
       }
       await loadDashboards();
@@ -1016,6 +1021,79 @@ export default function DashboardsPage() {
     if (changed) {
       setCurrentSpec({ ...currentSpec, widgets });
       setIsUnsaved(true);
+    }
+  }
+
+  // ── Arrange mode: remove a card, and put it back ─────────────────────────
+  //
+  // Removing is instant and undoable rather than confirmed: nothing is final
+  // until Save, the header's Discard throws the whole edit away, and a dialog
+  // on every click would punish the person tidying up a generated dashboard.
+  // The rules (never the last card; Undo restores list position AND grid
+  // placement, including the neighbours the grid compacted into the gap)
+  // live in utils/arrange.ts, where they are tested.
+  //
+  // Removal and Undo pause while something else is rewriting the spec — a
+  // refine, a summary, a fix. Each of those lands a spec it copied when it
+  // started; landing after a removal would silently bring the card back.
+
+  const specBusy = chatLoading || insightsLoading || fixingWidgets.size > 0;
+
+  function handleRemoveWidget(widgetId: string) {
+    if (!currentSpec || specBusy) return;
+    const out = removeWidget(currentSpec, widgetId);
+    if (!out) return;
+    setCurrentSpec(out.spec);
+    setIsUnsaved(true);
+    setLastRemoved({ removed: out.removed, data: widgetData[widgetId] });
+    // Its rows leave with it — a card added later under the same id must
+    // never inherit them.
+    delete widgetCacheRef.current[widgetId];
+    setWidgetData((prev) => {
+      const next = { ...prev };
+      delete next[widgetId];
+      return next;
+    });
+    if (investigationTarget?.spec.id === widgetId) setInvestigationTarget(null);
+    if (editScope?.id === widgetId) setEditScope(null);
+    if (contextMenu?.widgetId === widgetId) setContextMenu(null);
+    if (crossFilter?.widgetId === widgetId) {
+      // The card driving the cross-filter is gone, and with it the only place
+      // the user could click to clear it.
+      setCrossFilter(null);
+      executeAllWidgets(out.spec, filterValues, null, connectionId);
+    }
+  }
+
+  function handleUndoRemove() {
+    if (!currentSpec || !lastRemoved || specBusy) return;
+    const restored = restoreWidget(currentSpec, lastRemoved.removed);
+    setLastRemoved(null);
+    if (restored === currentSpec) return;
+    setCurrentSpec(restored);
+    setIsUnsaved(true);
+    const id = lastRemoved.removed.widget.id;
+    const data = lastRemoved.data;
+    if (data && !data.loading) {
+      widgetCacheRef.current[id] = data;
+      setWidgetData((prev) => ({ ...prev, [id]: data }));
+    } else {
+      // Nothing was on screen for it yet — run the dashboard so it fills in.
+      executeAllWidgets(restored, filterValues, crossFilter, connectionId);
+    }
+  }
+
+  // A move or resize by the user makes "as it was" something they no longer
+  // expect, so the Undo for a removal is withdrawn. The compaction that
+  // follows a removal is not the user's move and does not come through here.
+  function handleArrangeStop(
+    _layout: RglLayout,
+    oldItem: RglLayoutItem | null,
+    newItem: RglLayoutItem | null,
+  ) {
+    if (!oldItem || !newItem) return;
+    if (oldItem.x !== newItem.x || oldItem.y !== newItem.y || oldItem.w !== newItem.w || oldItem.h !== newItem.h) {
+      setLastRemoved(null);
     }
   }
 
@@ -1465,6 +1543,7 @@ export default function DashboardsPage() {
 
   function discardDashboard() {
     widgetCacheRef.current = {};
+    setLastRemoved(null);
     setCurrentSpec(null);
     setMyViewSavedAt(null);   // belongs to the dashboard being left
     setMyViewValues(null);
@@ -1785,7 +1864,7 @@ export default function DashboardsPage() {
         <div className="flex items-center justify-between mb-3">
           <span className="text-[10px] font-mono tracking-[0.14em] uppercase text-muted">Dashboards</span>
           <button
-            onClick={() => { setMode('empty'); setActiveId(null); setCurrentSpec(null); setIsUnsaved(false); }}
+            onClick={() => { setMode('empty'); setActiveId(null); setCurrentSpec(null); setLastRemoved(null); setIsUnsaved(false); }}
             className="text-[11px] font-mono tracking-[0.08em] uppercase text-ocean hover:text-ocean-hover transition-colors"
           >
             + New
@@ -2570,11 +2649,28 @@ export default function DashboardsPage() {
                         Summarize
                       </button>
                     )}
-                    {editLayout && (
-                      <span className="text-[11px] text-muted">Drag to move · pull the corner to resize</span>
+                    {editLayout && lastRemoved && (
+                      <span className="flex items-center gap-2 min-w-0 text-[11px] text-ink-2" role="status">
+                        <span className="truncate max-w-[320px]" title={lastRemoved.removed.widget.title}>
+                          Removed “{lastRemoved.removed.widget.title}”
+                        </span>
+                        <button
+                          onClick={handleUndoRemove}
+                          aria-disabled={specBusy}
+                          className="shrink-0 font-mono tracking-[0.08em] uppercase text-ocean hover:text-ocean-hover aria-disabled:opacity-50 aria-disabled:cursor-not-allowed transition-colors"
+                        >
+                          Undo
+                        </button>
+                      </span>
+                    )}
+                    {editLayout && !lastRemoved && (
+                      <span className="text-[11px] text-muted">Drag to move · pull the corner to resize · the bin removes a card</span>
                     )}
                     <button
-                      onClick={() => setEditLayout((v) => !v)}
+                      onClick={() => {
+                        if (editLayout) setLastRemoved(null);
+                        setEditLayout((v) => !v);
+                      }}
                       className={cn(
                         'flex items-center gap-1.5 px-2.5 py-1 rounded-md border text-[11px] font-mono tracking-[0.08em] uppercase transition-colors',
                         editLayout
@@ -2587,22 +2683,45 @@ export default function DashboardsPage() {
                     </button>
                   </div>
                   {editLayout ? (
-                    <div ref={rglContainerRef as React.RefObject<HTMLDivElement>} className="p-6">
-                      {rglMounted && (
-                        <GridLayout
-                          width={rglWidth}
-                          layout={deriveRglLayout(currentSpec.widgets)}
-                          gridConfig={{ cols: 12, rowHeight: RGL_ROW_HEIGHT, margin: [16, 16], containerPadding: [0, 0] }}
-                          dragConfig={{ cancel: 'button, input, select, textarea, a' }}
-                          onLayoutChange={handleLayoutChange}
-                        >
-                          {currentSpec.widgets.map((widget) => (
-                            <div key={widget.id} className="h-full cursor-grab active:cursor-grabbing">
+                    <div className="p-6">
+                      <ArrangeGrid
+                        layout={deriveRglLayout(currentSpec.widgets)}
+                        rowHeight={RGL_ROW_HEIGHT}
+                        onLayoutChange={handleLayoutChange}
+                        onDragStop={handleArrangeStop}
+                        onResizeStop={handleArrangeStop}
+                      >
+                        {currentSpec.widgets.map((widget) => {
+                          const removable = canRemoveWidget(currentSpec) && !specBusy;
+                          const why = !canRemoveWidget(currentSpec)
+                            ? 'A dashboard keeps at least one card — delete the dashboard instead'
+                            : specBusy
+                              ? 'Wait for the change in progress to finish'
+                              : 'Remove this card';
+                          return (
+                            // The ring marks WHICH card the bin will remove while
+                            // the pointer is on it — cards sit edge to edge here.
+                            // A disabled bin removes nothing, so it rings nothing.
+                            <div
+                              key={widget.id}
+                              className="relative h-full rounded-lg cursor-grab active:cursor-grabbing [&:has(>[data-remove]:not([aria-disabled=true]):hover)]:ring-2 [&:has(>[data-remove]:not([aria-disabled=true]):hover)]:ring-err"
+                            >
                               {renderWidget(widget)}
+                              <button
+                                type="button"
+                                data-remove=""
+                                onClick={() => { if (removable) handleRemoveWidget(widget.id); }}
+                                aria-disabled={!removable}
+                                aria-label={`Remove “${widget.title}” from the dashboard`}
+                                title={why}
+                                className="absolute -top-2 -right-2 z-10 flex h-6 w-6 items-center justify-center rounded-full border border-line-strong bg-raised text-muted shadow-sm transition-colors hover:border-err hover:bg-err hover:text-white aria-disabled:cursor-not-allowed aria-disabled:opacity-40 aria-disabled:hover:border-line-strong aria-disabled:hover:bg-raised aria-disabled:hover:text-muted"
+                              >
+                                <Trash2 className="h-3.5 w-3.5" strokeWidth={1.75} />
+                              </button>
                             </div>
-                          ))}
-                        </GridLayout>
-                      )}
+                          );
+                        })}
+                      </ArrangeGrid>
                     </div>
                   ) : (
                     <motion.div

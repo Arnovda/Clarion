@@ -31,7 +31,129 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-09-23 (SECOND SLICE OF THE DAY — THE CATALOG ABSORBS
+**Last updated:** 2026-09-23 (THIRD SLICE OF THE DAY — A CARD CAN BE REMOVED IN
+ARRANGE MODE, AND WHY DASHBOARDS GOT SLOW AND RED; owner, with three
+screenshots of the live Product Performance dashboard: *"Are the individual
+widgets loading 1 by one? I thought previously it loaded in parallel and fast
+when filtering? And also I have errors?"* · *"the 'fix with AI' takes a long
+time, does this even work?"* · *"when I filter frequently and adapt the filter,
+the dashboards stops refreshing I think. Can this be compute limits or
+something?"* · a Fast-mode screenshot where every card read *Parser Error:
+syntax error at or near "Avenir"* · and the one change request: *"I want the
+possibility to delete a widget or visual in the dashboards when clicking
+'arrange'"*. Frontend-only change, same branch, rides PR #178 — NOT merged,
+NOT deployed.)
+
+**BUILT: REMOVE A CARD IN ARRANGE MODE.** Every card in Arrange mode wears a
+bin at its top-right corner; hovering it rings the card in the error colour so
+it is clear WHICH card goes (a disabled bin rings nothing). A click removes the
+card at once — no dialog: nothing is final until Save, the header's Discard
+throws the whole edit away, and a toolbar line *Removed "<title>" · Undo* puts
+it back. The rules live in NEW `frontend/app/dashboards/utils/arrange.ts`
+(pure, 9 tests in `tests/arrangeRemove.test.ts`, both guards verified RED under
+sabotage): **the last card cannot be removed** (bin disabled, title says to
+delete the dashboard instead), and **Undo restores the list position AND the
+grid placement — including the neighbours the grid compacted into the gap**
+(a removal snapshots every other card's `layout`; only placements are
+restored, never SQL, so a refine that landed in between is kept). The Undo is
+withdrawn when the user moves or resizes a card themselves (`onDragStop` /
+`onResizeStop`, compared old vs new item — the compaction a removal causes
+does not come through there), when Arrange is left, and on any dashboard
+switch / create / discard / delete / New. **Removal and Undo pause while a
+refine, a summary or a Fix is in flight** — each of those lands a spec it
+copied when it started, and landing after a removal would silently bring the
+card back (tooltip: *Wait for the change in progress to finish*). A removed
+card's rows leave the caches (a later card with the same id must not inherit
+them) but travel with the Undo, so putting it back costs no query. Removing the
+card that drives a cross-filter clears the cross-filter and re-runs.
+
+**FIXED ON THE WAY, FOUND BY THE RENDER CHECK: THE ARRANGE GRID WAS ALWAYS
+1280 PX WIDE.** `useContainerWidth` (react-grid-layout) measures its ref in an
+effect that runs when the hook MOUNTS; the page called it at page mount, long
+before Arrange rendered the element, so it never measured and kept the
+library's 1280 px default on every screen — running off the right edge of a
+laptop (the 1600 px screenshot showed the fourth KPI card and the right column
+cut off and the page scrolling sideways), narrower than the dashboard on a wide
+monitor. NEW `frontend/app/dashboards/components/ArrangeGrid.tsx` owns the
+hook, so it mounts with the grid (`measureBeforeMount`, no padding on the
+measured element so `offsetWidth` and the observer's content box agree).
+Verified: *arrange grid 1092px in a 1092px column*. Also: `ring-err/50` is not
+generated — the `err` token is a bare `var(--err)`, so Tailwind cannot apply an
+opacity modifier and the ring fell back to the default blue; the ring uses
+`ring-err`. (`bg-err/5` on the broken-widget banner has the same latent
+problem; not touched.)
+
+- Validation: frontend `tsc` clean, touched files lint-clean, vitest **10 files
+  / 85 passed** (+9), `next build` green (`/dashboards` 66 kB / 291 kB).
+  **RENDER-CHECKED IN HEADLESS CHROMIUM against the real build with the API
+  mocked at the network layer** (scratchpad only, no harness in the repo) —
+  18 checks, zero page errors: a bin on every card, the ring, removal with no
+  query, the Undo line, Undo restoring order and rows with no query, a real
+  drag moving a card (x 554→0 px) and withdrawing the Undo, view mode after
+  Done, Save PATCHing a spec without the card and with every placement, the
+  disabled last bin (click does nothing, no ring).
+
+**DIAGNOSED, NOT FIXED (the owner asked questions; the fixes wait for the
+word).** All four symptoms share one mechanism, measured with the REAL
+`DuckDBConnector` + child runner compiled from `backend/src` against a
+synthetic 10-widget dashboard (scratchpad `exp/`):
+1. **"Loading one by one" — true since the July hardening.** Every widget
+   query of a workspace waits for one of **2 slots**
+   (`DUCKDB_MAX_CONCURRENT_QUERIES_PER_TENANT`, default 2, set nowhere in
+   infra), and in practice **both slots run in ONE runner process with 1
+   thread and ~11% of the container's memory** (`70%`/6, `2 threads`/6 → 1).
+   `queryRunnerPool.runQuery` sets `busy` only AFTER `await runner.ready`, so
+   the two first queries both attach to the spawning runner, and the first to
+   finish clears `busy` while the other still runs — the pool keeps feeding
+   both lanes to that one process (measured: 1 fork per dashboard). Measured:
+   **5.9–6.8 s** for 10 widgets vs **2.8–3.1 s** on the old in-process path,
+   cards arriving ~0.2–0.6 s apart.
+2. **The red cards.** Each filter change starts a NEW
+   `batch-execute-stream` and the page never cancels the previous one
+   (controllers are aborted only on unmount); the server would not notice
+   anyway — its `req.on('close')` is attached after body parsing and never
+   fires on Node ≥16 (verified: `res.on('close')` fires on abort,
+   `req.on('close')` never). So every change adds a full set of queries to the
+   2-slot queue, newest LAST, and a query that waits **>15 s**
+   (`DUCKDB_QUEUE_TIMEOUT_MS`) fails *"The platform is busy"* — which the
+   stream route turns into *"This chart could not load data. Try regenerating
+   the dashboard."* (anything but *does not exist* / *Serialization* gets that
+   sentence; the real text is only in the server log line
+   `[batch-execute-stream] widget <id> FAILED`). Measured, four changes 0.7 s
+   apart on a 12M-row fact: **the last change ended with 9 of 10 cards as
+   errors and the tenth showing an older filter**; the same with 2 slots
+   in-process; with no cap, 9 of 10 current but 47 s. The two production
+   cards (cross-tab, detail table) sit last in the widget order, and the
+   detail table demonstrably worked at creation (the summary quotes its
+   per-item margins) — consistent with the queue, NOT confirmed from
+   production: no log signature exists for either line.
+3. **"Fix with AI" is slow and cannot fix these.** It re-checks the card with
+   `applyDefaultFilters` (`'all'`, 1900→2099), NOT the filters on screen,
+   through the same queue; a flagged card goes to
+   `validateAndFixDashboardSpec`, a **16K-token rewrite of the WHOLE spec** to
+   fix one card, then a re-execution. A queue timeout is not a SQL problem:
+   either the re-check passes and the page says *Could not repair
+   automatically* and leaves the red card (no re-run when `fixed:false`), or
+   the model rewrites a correct query.
+4. **Fast mode breaks on an apostrophe.** `frontend/lib/wasm/sql.ts`
+   `resolveFilters` never got the server's quote escaping (fixed server-side
+   2026-07-23 as M3): `L'Avenir Highway` → `'L'Avenir Highway'` → a parser
+   error on every card. Browser-only, so no server exposure; the server path
+   handles the same value.
+- **Recommended, in order** (none built): (a) cancel the previous stream on a
+  new filter change (+ a generation guard so late results cannot land) and
+  detect disconnects with `sse.signal`/`res.on('close')`, skipping queued
+  queries once the client left; (b) show the real reason instead of *Try
+  regenerating* (busy → "Busy — retrying", with an automatic retry for busy
+  cards); (c) fix the runner pool's `busy` race and give a workspace more
+  than 2 slots / more than 1 thread; (d) escape quotes in the Fast-mode copy;
+  (e) Fix with AI: re-check with the filters on screen, retry transient
+  failures before calling the model, and repair ONE card, not the spec;
+  (f) two `.ops/prod-logs` signatures (`duckdb queue timeout`,
+  `batch-execute-stream … FAILED`) to confirm from production — needs a push
+  to main.
+
+**Prior last updated:** 2026-09-23 (SECOND SLICE OF THE DAY — THE CATALOG ABSORBS
 MANAGE MODE AND THE WORKSHOP; owner, with five screenshots of the live
 explorer: *"If I click save, does it check if it's correct? And does it
 immediately materialize?"* · *"Subject don't need a source icon, they should
@@ -12157,7 +12279,8 @@ clarion/                              ← on disk: databridge/
     │   │   │   ├── format.ts         ← buildDefaultFilters, relTime, formatValue, yAxisFormatter (format-aware), looksLikeYearColumn, formatIsoTimestamp
     │   │   │   ├── motion.ts         ← Framer Motion variants (containerVariants, slideUp, shimmerClass)
     │   │   │   ├── chart-theme.ts    ← Recharts palette + style helpers
-    │   │   │   └── download.ts       ← authenticated file-download helper (CSV/XLSX/PDF)
+    │   │   │   ├── download.ts       ← authenticated file-download helper (CSV/XLSX/PDF)
+    │   │   │   └── arrange.ts        ← remove a card in Arrange mode + Undo (never the last card; restores placements), pure
     │   │   └── components/
     │   │       ├── CreateInput.tsx           ← reusable text-input + Go button
     │   │       ├── EmptyDashboardHero.tsx    ← empty-state hero + suggestion chips
@@ -12171,7 +12294,8 @@ clarion/                              ← on disk: databridge/
     │   │       ├── Sparkline.tsx             ← compact trend line for KPI cards
     │   │       ├── PremiumTooltip.tsx        ← styled Recharts tooltip
     │   │       ├── AnimatedNumber.tsx        ← counting animation for KPI values
-    │   │       └── EmailSchedulePanel.tsx    ← dashboard email report schedules (CRUD + send-now; slotted into settings dropdown)
+    │   │       ├── EmailSchedulePanel.tsx    ← dashboard email report schedules (CRUD + send-now; slotted into settings dropdown)
+    │   │       └── ArrangeGrid.tsx           ← the Arrange-mode grid; owns useContainerWidth so it measures its real width
     │   ├── catalog/page.tsx          ← THE WORKSPACE: one tree (subjects · sources by their mark · your tables) + one view; the floating assistant; deep links via lib/catalogUrl.ts
     │   ├── definitions/page.tsx      ← terms (the glossary editor) · metrics per subject · verified answers — documented once, read by the AI (all roles)
     │   ├── glossary/page.tsx         ← redirect → /definitions
