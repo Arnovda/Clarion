@@ -29,14 +29,16 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import dynamic from 'next/dynamic';
 import Link from 'next/link';
 import {
-  AlertTriangle, Boxes, ChevronRight, ChevronDown, Code as CodeIcon,
-  FileText, Loader2, Network, Play,
-  Search, ShieldCheck, Sparkles, Workflow, X,
+  AlertTriangle, Boxes, ChevronRight, ChevronDown,
+  Loader2, Network, Play,
+  Search, Sparkles, Workflow, X,
 } from 'lucide-react';
 import api from '@/lib/api';
 import { cn } from '@/lib/cn';
 import { useRole, canCurate } from '@/lib/role';
 import ConnectorMarkIcon from '@/components/ConnectorMarkIcon';
+import ExplorerHeader, { HeaderAction } from '@/components/catalog/ExplorerHeader';
+import type { AssistantOpenMode, CatalogNavTarget } from '@/components/catalog/navigation';
 import { useSchema, type RelationshipRow } from '@/components/catalog/useSchema';
 import type { SourceTable, SourceColumn } from '@/components/semantic/types';
 import { formatRelative } from '@/lib/dates';
@@ -85,9 +87,13 @@ type DetailTab = 'overview' | 'tables' | 'lineage' | 'quality' | 'sql';
 
 interface Props {
   connectionId: number;
+  /** A breadcrumb click: the page owns the selection. */
+  onNavigate?: (target: CatalogNavTarget) => void;
+  /** Reserved for a header action; the source page has none today. */
+  onAskAssistant?: (mode: AssistantOpenMode) => void;
 }
 
-export default function SourceRootPanel({ connectionId }: Props) {
+export default function SourceRootPanel({ connectionId, onNavigate }: Props) {
   const role = useRole();
   const curator = canCurate(role);
   const schema = useSchema(connectionId);
@@ -153,50 +159,60 @@ export default function SourceRootPanel({ connectionId }: Props) {
 
   return (
     <div className="flex-1 min-h-0 flex flex-col">
-      {/* ── Header ─────────────────────────────────────────────────────────── */}
-      <div className="border-b border-line bg-raised px-6 py-4 shrink-0">
-        <div className="flex items-start gap-4">
-          {/* The source's own mark — the same one the tree and Sources use. */}
-          <ConnectorMarkIcon connectorType={conn?.connector_type ?? conn?.type} size="lg" />
-          <div className="flex-1 min-w-0">
-            <div className="flex items-center gap-2 flex-wrap">
-              <h1 className="font-display text-[22px] tracking-[-0.01em] text-ink truncate">{name}</h1>
-              <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-mono uppercase tracking-[0.08em] bg-softer text-muted border border-line">
-                {sourceLabel}
+      <ExplorerHeader
+        crumbs={[{ label: 'Catalog', onClick: () => onNavigate?.({ kind: 'catalog' }) }, { label: name }]}
+        icon={<ConnectorMarkIcon connectorType={conn?.connector_type ?? conn?.type} size="md" />}
+        title={name}
+        badges={(
+          <>
+            <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-mono uppercase tracking-[0.08em] bg-softer text-muted border border-line">
+              {sourceLabel}
+            </span>
+            {conn?.last_sync_status && <SyncStatusPill status={conn.last_sync_status} />}
+            {draftTableCount > 0 && (
+              <span className="inline-flex items-center gap-1.5 text-[10px] font-mono uppercase tracking-[0.08em] text-warn bg-warn-soft border border-line px-2 py-0.5 rounded">
+                <span className="w-1.5 h-1.5 rounded-full bg-warn" />
+                {draftTableCount} table draft{draftTableCount === 1 ? '' : 's'} to review
               </span>
-              {conn?.last_sync_status && (
-                <SyncStatusPill status={conn.last_sync_status} />
-              )}
-            </div>
-            <p className="text-[11px] text-muted mt-1">
-              {schema.tables.length} table{schema.tables.length === 1 ? '' : 's'}
-              {totalColumns > 0 ? ` · ${totalColumns.toLocaleString('en-GB')} columns` : ''}
-              {schema.relationships.length > 0
-                ? ` · ${schema.relationships.length} relationship${schema.relationships.length === 1 ? '' : 's'}`
-                : ''}
-              {conn?.last_synced_at
-                ? ` · last synced ${formatRelative(conn.last_synced_at)}`
-                : ''}
-            </p>
-            {(draftCount > 0 || draftTableCount > 0) && (
-              <div className="mt-2 flex flex-wrap gap-1.5">
-                {draftTableCount > 0 && (
-                  <span className="inline-flex items-center gap-1.5 text-[10.5px] font-mono uppercase tracking-[0.08em] text-warn bg-warn-soft border border-line px-2 py-0.5 rounded">
-                    <span className="w-1.5 h-1.5 rounded-full bg-warn" />
-                    {draftTableCount} table draft{draftTableCount === 1 ? '' : 's'} pending review
-                  </span>
-                )}
-                {draftCount > 0 && (
-                  <span className="inline-flex items-center gap-1.5 text-[10.5px] font-mono uppercase tracking-[0.08em] text-warn bg-warn-soft border border-line px-2 py-0.5 rounded">
-                    <span className="w-1.5 h-1.5 rounded-full bg-warn" />
-                    {draftCount} relationship draft{draftCount === 1 ? '' : 's'}
-                  </span>
-                )}
-              </div>
             )}
-          </div>
-        </div>
-      </div>
+            {draftCount > 0 && (
+              <span className="inline-flex items-center gap-1.5 text-[10px] font-mono uppercase tracking-[0.08em] text-warn bg-warn-soft border border-line px-2 py-0.5 rounded">
+                <span className="w-1.5 h-1.5 rounded-full bg-warn" />
+                {draftCount} relationship draft{draftCount === 1 ? '' : 's'}
+              </span>
+            )}
+          </>
+        )}
+        subtitle={(
+          <>
+            {schema.tables.length} table{schema.tables.length === 1 ? '' : 's'}
+            {totalColumns > 0 ? ` · ${totalColumns.toLocaleString('en-GB')} columns` : ''}
+            {schema.relationships.length > 0
+              ? ` · ${schema.relationships.length} relationship${schema.relationships.length === 1 ? '' : 's'}`
+              : ''}
+            {conn?.last_synced_at ? ` · last synced ${formatRelative(conn.last_synced_at)}` : ''}
+          </>
+        )}
+        actions={curator ? (
+          <>
+            <HeaderAction href="/relationships" icon={<Network className="w-3.5 h-3.5" strokeWidth={1.75} aria-hidden />} title="Relationships have one editing surface — the canvas">
+              Relations
+            </HeaderAction>
+            <HeaderAction href={`/sources?connectionId=${connectionId}`} primary icon={<Play className="w-3.5 h-3.5" strokeWidth={1.75} aria-hidden />} title="Sync, analyse and configure this source">
+              Open in Sources
+            </HeaderAction>
+          </>
+        ) : undefined}
+        tabs={[
+          { id: 'overview' as const, label: 'Overview' },
+          { id: 'tables' as const, label: 'Tables', count: schema.tables.length },
+          { id: 'lineage' as const, label: 'Data flow' },
+          { id: 'quality' as const, label: 'Quality' },
+          ...(curator ? [{ id: 'sql' as const, label: 'SQL' }] : []),
+        ]}
+        activeTab={tab}
+        onTabChange={setTab}
+      />
 
       {/* Synced-but-unanalysed strip: tables were registered in the catalog
           straight after the first sync (structural pass, no AI), so the user
@@ -229,32 +245,6 @@ export default function SourceRootPanel({ connectionId }: Props) {
         </div>
       ) : (
         <>
-          {/* ── Tabs ─────────────────────────────────────────────────────── */}
-          {/* Schema diagram + SQL are curator surfaces (FK arrows, "Add
-              relationship" CTAs, paste-ready SELECT snippets). Viewers
-              never need them; admins/analysts keep full access. */}
-          <div className="border-b border-line bg-raised px-6 shrink-0 overflow-x-auto">
-            <nav className="flex gap-0">
-              <TabBtn active={tab === 'overview'}  onClick={() => setTab('overview')}  icon={<FileText className="w-3.5 h-3.5" />}>Overview</TabBtn>
-              <TabBtn active={tab === 'tables'}    onClick={() => setTab('tables')}    icon={<Boxes className="w-3.5 h-3.5" />}>Tables</TabBtn>
-              {curator && (
-                // Relationships have ONE editing surface. This is a door, not a tab.
-                <Link
-                  href="/relationships"
-                  className="flex items-center gap-1.5 px-3.5 py-2.5 text-[12px] font-mono uppercase tracking-[0.06em] text-muted hover:text-ocean transition-colors whitespace-nowrap"
-                >
-                  <Network className="w-3.5 h-3.5" />
-                  Relations ↗
-                </Link>
-              )}
-              <TabBtn active={tab === 'lineage'}   onClick={() => setTab('lineage')}   icon={<Workflow className="w-3.5 h-3.5" />}>Data flow</TabBtn>
-              <TabBtn active={tab === 'quality'}   onClick={() => setTab('quality')}   icon={<ShieldCheck className="w-3.5 h-3.5" />}>Quality</TabBtn>
-              {curator && (
-                <TabBtn active={tab === 'sql'} onClick={() => setTab('sql')} icon={<CodeIcon className="w-3.5 h-3.5" />}>SQL</TabBtn>
-              )}
-            </nav>
-          </div>
-
           {/* ── Tab body ─────────────────────────────────────────────────── */}
           <div className="flex-1 min-h-0 overflow-hidden flex flex-col">
             {tab === 'overview' && (
@@ -329,30 +319,6 @@ function SyncStatusPill({ status }: { status: string }) {
     )}>
       {status}
     </span>
-  );
-}
-
-// ─── Tab button ─────────────────────────────────────────────────────────────
-
-function TabBtn({
-  active, onClick, icon, children,
-}: {
-  active: boolean;
-  onClick: () => void;
-  icon: React.ReactNode;
-  children: React.ReactNode;
-}) {
-  return (
-    <button
-      onClick={onClick}
-      className={cn(
-        'inline-flex items-center gap-1.5 px-3 py-2.5 text-[12.5px] font-medium border-b-2 transition-colors whitespace-nowrap',
-        active ? 'border-ocean text-ocean' : 'border-transparent text-muted hover:text-ink-2',
-      )}
-    >
-      {icon}
-      {children}
-    </button>
   );
 }
 

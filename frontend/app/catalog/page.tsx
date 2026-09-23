@@ -24,7 +24,7 @@
 
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { Loader2, Search, X } from 'lucide-react';
+import { Loader2, RefreshCw, Search, X } from 'lucide-react';
 import RequireRole from '@/components/RequireRole';
 import CatalogBrowser, {
   type CatalogSchemaSelection,
@@ -48,8 +48,9 @@ import { canCurate, useRole } from '@/lib/role';
 import api from '@/lib/api';
 import { getItem, setItem, storageKeys } from '@/lib/storage';
 import type { ProductTreeItem } from '@/components/semantic/types';
+import type { AssistantOpenMode, CatalogConnection, CatalogNavTarget } from '@/components/catalog/navigation';
 
-interface Connection { id: number; name: string; domains?: string[] }
+type Connection = CatalogConnection;
 
 /** A product table resolved against the product tree: both id spaces, and
  *  the names the assistant's scope chip shows. */
@@ -185,6 +186,17 @@ function CatalogInner() {
     return () => { cancelled = true; };
   }, [tableSel, getProductTree]);
 
+  // The tree highlights by schema SLUG; a panel or a link knows an id. This
+  // finds the slug the way the tree does, so both agree on what is selected.
+  const schemaFor = useCallback(async (catalog: CatalogId, id: number): Promise<SchemaEntry | null> => {
+    try {
+      const schemas = await catalogApi.schemas(catalog);
+      return schemas.find((s) => (catalog === 'products'
+        ? (s.meta?.dataProductId ?? parseIdFromSlug(s.id)) === id
+        : (s.meta?.connectionId ?? parseIdFromSlug(s.id)) === id)) ?? null;
+    } catch { return null; }
+  }, []);
+
   // ── Deep links, read once on mount ────────────────────────────────────────
   // A pasted link must land on the thing it names AND light it in the tree,
   // so the slug the tree uses is looked up the way the tree itself does.
@@ -195,15 +207,6 @@ function CatalogInner() {
     const intent: CatalogIntent = parseCatalogUrl(new URLSearchParams(params.toString()));
     if (intent.kind === 'none') return;
     if (intent.kind === 'definitions') { router.replace('/definitions'); return; }
-
-    const schemaFor = async (catalog: CatalogId, id: number): Promise<SchemaEntry | null> => {
-      try {
-        const schemas = await catalogApi.schemas(catalog);
-        return schemas.find((s) => (catalog === 'products'
-          ? (s.meta?.dataProductId ?? parseIdFromSlug(s.id)) === id
-          : (s.meta?.connectionId ?? parseIdFromSlug(s.id)) === id)) ?? null;
-      } catch { return null; }
-    };
 
     (async () => {
       if (intent.kind === 'subject') {
@@ -264,7 +267,36 @@ function CatalogInner() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // ── Connections (domains for the source-table panel) ──────────────────────
+  // ── Navigation asked for by a panel (a breadcrumb, a "used in" chip) ──────
+  // Does what the matching tree click does, so the tree, the URL and the view
+  // move together — the page owns the selection, a panel never writes it.
+  const navigateTo = useCallback(async (target: CatalogNavTarget) => {
+    if (target.kind === 'catalog') { clearSelection(); return; }
+    if (target.kind === 'subject') {
+      const schema = await schemaFor('products', target.productId);
+      handleSelectSchema({ catalog: 'products', schemaSlug: schema?.id ?? `subject_${target.productId}`, schemaLabel: schema?.label ?? 'Subject', schemaMeta: schema?.meta ?? { dataProductId: target.productId } });
+      return;
+    }
+    if (target.kind === 'source') {
+      const schema = await schemaFor('sources', target.connectionId);
+      handleSelectSchema({ catalog: 'sources', schemaSlug: schema?.id ?? `source_${target.connectionId}`, schemaLabel: schema?.label ?? 'Source', schemaMeta: schema?.meta ?? { connectionId: target.connectionId } });
+      return;
+    }
+    if (target.kind === 'source-table') {
+      const schema = await schemaFor('sources', target.connectionId);
+      const slug = schema?.id ?? `source_${target.connectionId}`;
+      handleSelectTable({ catalog: 'sources', schemaSlug: slug, schemaLabel: schema?.label ?? 'Source', tableId: String(target.tableId), tableLabel: `Table ${target.tableId}`, tableName: null });
+      return;
+    }
+    if (target.kind === 'table') {
+      const found = findTreeTable(await getProductTree(), target.tableId);
+      if (!found) return;
+      const schema = await schemaFor('products', found.productId);
+      handleSelectTable({ catalog: 'products', schemaSlug: schema?.id ?? '', schemaLabel: schema?.label ?? found.productName, tableId: String(found.graphId), tableLabel: found.label, tableName: null });
+    }
+  }, [clearSelection, schemaFor, handleSelectSchema, handleSelectTable, getProductTree]);
+
+  // ── Connections (names, marks and domains for the panels) ─────────────────
   const [connections, setConnections] = useState<Connection[]>([]);
   useEffect(() => {
     api.get('/connections').then((res) => setConnections(res.data.data ?? [])).catch(() => {});
@@ -337,6 +369,13 @@ function CatalogInner() {
 
   // A change needs a product table under a curator; anywhere else the box asks.
   useEffect(() => { if (!scope.canChange && mode === 'change') setMode('ask'); }, [scope.canChange, mode]);
+
+  // A header action ("Change with AI", "Ask about it") opens the panel in
+  // that mode, aimed at the selection it already follows.
+  const openAssistant = useCallback((wanted: AssistantOpenMode) => {
+    setMode(wanted === 'change' && scope.canChange ? 'change' : 'ask');
+    updateAssistantOpen(true);
+  }, [scope.canChange, updateAssistantOpen]);
 
   const pushMessage = useCallback((msg: CatalogChatMessage) => {
     setMessages((prev) => [...prev, msg].slice(-MAX_MESSAGES));
@@ -436,7 +475,19 @@ function CatalogInner() {
     <CatalogAssistantProvider value={assistantContext}>
       <div className="flex flex-1 min-h-0">
         <aside className="flex-shrink-0 border-r border-line flex flex-col" style={{ width: 280 }}>
-          <div className="px-3 py-2 border-b border-line bg-soft">
+          <div className="px-3 pt-2.5 pb-2 border-b border-line bg-soft space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="text-[13px] font-medium text-ink">Catalog</span>
+              <button
+                type="button"
+                onClick={handleSaved}
+                className="p-1 rounded text-muted-2 hover:text-ink hover:bg-softer transition-colors"
+                title="Reload the tree"
+                aria-label="Reload the tree"
+              >
+                <RefreshCw className="w-3.5 h-3.5" strokeWidth={1.75} />
+              </button>
+            </div>
             <TreeSearchInput value={treeSearch} onChange={setTreeSearch} onClear={() => setTreeSearch('')} />
           </div>
           <div className="flex-1 min-h-0 overflow-hidden">
@@ -459,6 +510,8 @@ function CatalogInner() {
             connections={connections}
             onSaved={handleSaved}
             onClose={() => clearSelection()}
+            onNavigate={(target) => { void navigateTo(target); }}
+            onAskAssistant={curator ? openAssistant : undefined}
             empty={<CatalogLanding curator={curator} />}
           />
           {curator && (
