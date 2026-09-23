@@ -41,8 +41,37 @@ the dashboards stops refreshing I think. Can this be compute limits or
 something?"* · a Fast-mode screenshot where every card read *Parser Error:
 syntax error at or near "Avenir"* · and the one change request: *"I want the
 possibility to delete a widget or visual in the dashboards when clicking
-'arrange'"*. Frontend-only change, same branch, rides PR #178 — NOT merged,
-NOT deployed.)
+'arrange'"*. Frontend-only change, same branch, PR #178 — MERGED AND IN
+PRODUCTION the same afternoon, see the deploy record just below.)
+
+**IN MAIN AND PRODUCTION (2026-09-23, 13:29 UTC) — owner: *"Put in main
+and production pls"*.** PR #178 was taken out of draft and REBASE-merged as
+`beb8cd1` — two linear commits on top of `6c82ff1`: `0ff438d` (the 12:01
+deploy record for #177) and `beb8cd1` (this slice); no merge commit, and the
+merged tree is byte-identical to the branch head `a2dd30e`, on which all ten
+checks were green. **Build & Deploy run #619**: the `changes` job output
+`["frontend"]` (catch-up: nothing stale); the gate waited 6m09s for Tests +
+Lint on the merged sha; ONLY the frontend built, as **`main-beb8cd1`**
+(build-backend, build-worker and build-etl correctly skipped); `migrate-sql`
+correctly skipped (no migration); the frontend test revision deployed at 0%
+(13:26–13:28) while the backend, jobs-worker, ETL, the sync-worker pin
+and `neo4j-constraints` were skipped; **Go live shifted the frontend to
+`--main-beb8cd1` at 100% at 13:29:13 UTC** — with `BACKEND_CHANGED: false`
+there is no backend health check, which is how the workflow is written for a
+frontend-only deploy. Read from the job's own log, not inferred. **The backend
+stays on `main-6c82ff1`** (nothing under `backend/` changed), so the two live
+images now carry different tags — expected, not drift. Rollback if needed:
+Actions → **Rollback production**. **WATCH AFTER DEPLOY** — the render check
+ran against a MOCKED API, so the first real Arrange session is the first time
+the bin, the Undo and the grid width meet a real dashboard: the grid must fill
+the dashboard column on the owner's own screen (the fix was measured in
+headless Chromium at one viewport width), and the first Save after an Arrange
+removal is the first real `PATCH /dashboards/:id` carrying one. **This deploy
+does NOT fix the slow and red cards** — the six fixes in the diagnosis below
+are not built and still wait for the owner's word. Housekeeping:
+`claude/magical-faraday-6hh5gp` was restarted from main at `beb8cd1`
+(force-with-lease over already-merged history only); this record rides a NEW
+draft PR.
 
 **BUILT: REMOVE A CARD IN ARRANGE MODE.** Every card in Arrange mode wears a
 bin at its top-right corner; hovering it rings the card in the error colour so
