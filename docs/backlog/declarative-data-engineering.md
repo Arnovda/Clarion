@@ -131,7 +131,7 @@ the catalog. Each is one deletion PR once the workspace has been used for real
 — the boards in `docs/handoffs/declarative-workspace/` stay the design of
 record for exactly those parts.
 
-## 0b. What shipped — 2026-09-23: the explorer wears Databricks' layout, Clarion's way of working
+## 0b. What shipped — 2026-09-23: the explorer wears Databricks' layout, Clarion's way of working (PR #176, merged as `08ff4ee`, in production via Build & Deploy run #617)
 
 The owner, with a screenshot of Databricks Catalog Explorer: *"I think I want
 it a little bit like databricks. Can you combine this layout with the way of

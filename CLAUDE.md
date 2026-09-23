@@ -44,8 +44,36 @@ the tree roots, the SQL declaration tab with Save · Preview · Rebuild now and
 the assistant's proposals as diffs, the easy lineage line, glossary terms,
 policies, business words for viewers (*Lookup table*, *Measures table* — never
 fact/dimension), SQL and technical names curator-only, the floating assistant.
-Frontend only, no backend change, no migration. Same branch; rides draft PR
-#176 beside the deploy record.)
+Frontend only, no backend change, no migration. Same branch, draft PR #176 —
+MERGED AND IN PRODUCTION the same morning, see the deploy record just
+below.)
+
+**IN MAIN AND PRODUCTION (2026-09-23, 08:24 UTC) — owner: *"push to main and
+prd pls when finished"*.** PR #176 was REBASE-merged as `08ff4ee` (two linear
+commits on top of main — `3e631a1`, the 09-22 deploy record, and `08ff4ee`,
+this explorer — no merge commit, so the repo's rebase convention held; the PR
+was taken out of draft first, as with #175, because GitHub refuses to merge a
+draft). All ten checks were green on the branch head before the merge.
+**Build & Deploy run #617**: the `changes` job classified the diff as
+frontend + docs (catch-up: nothing stale); the gate waited 5m44s for Tests +
+Lint on the merged sha; ONLY the frontend built, as **`main-08ff4ee`**
+(build-backend, build-worker and build-etl correctly skipped); `migrate-sql`
+correctly skipped (no migration); the frontend test revision deployed at 0%
+while the backend, jobs-worker, ETL and the sync-worker pin were skipped;
+**Go live shifted the frontend to `--main-08ff4ee` at 100% at 08:24:15 UTC**
+— with `BACKEND_CHANGED: false` the backend health check does not run, which
+is how the workflow is written for a frontend-only deploy (there is no
+endpoint to ask; the revision reaching Provisioned is the smoke test).
+Rollback if needed: Actions → **Rollback production**. **WATCH AFTER DEPLOY**
+— the render check ran against a MOCKED API, so the first real catalog open
+on this build is the first time the header, the columns table, the rail and
+the in-place tree search meet the live endpoints: a curator's inline
+description save (`PATCH /semantic/product-columns/:id`), the State chip read
+off the declaration endpoint, the *Also used in* chips navigating, and — the
+one non-negotiable to look at as a viewer — no technical name and no SQL tab.
+Housekeeping: `claude/magical-faraday-6hh5gp` was restarted from main for
+this record (force-with-lease over already-merged history only); the record
+rides a NEW draft PR.
 
 **ONE GRAMMAR, FOUR PANELS — the shared pieces, all NEW under
 `frontend/components/catalog/`:**
