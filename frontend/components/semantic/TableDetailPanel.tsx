@@ -9,11 +9,12 @@
  * whether it is in the AI's context, which subjects are built from it,
  * what it feeds, and the columns' roles — a dimension you group by, a
  * measure you add up — set in the row. Confirm / Flag on a suggestion
- * stays where it was, at the top.
+ * stays where it was, at the top. Relations (who laid each link, whether
+ * it holds) sits beside Lineage; the canvas stays the place to draw one.
  */
 import { useEffect, useMemo, useState } from 'react';
 import dynamic from 'next/dynamic';
-import { ArrowRight, Check, ChevronDown, ChevronRight, Flag, MessageSquareText, Share2, Sparkles } from 'lucide-react';
+import { ArrowRight, Check, ChevronDown, ChevronRight, Flag, MessageSquareText, Sparkles } from 'lucide-react';
 import api from '@/lib/api';
 import { SourceTable, SourceColumn } from './types';
 import ApprovalBadge from './ApprovalBadge';
@@ -29,11 +30,12 @@ import ExplorerHeader, { HeaderAction, type Crumb } from '@/components/catalog/E
 import AboutRail, { RailChip, type AboutSection } from '@/components/catalog/AboutRail';
 import ColumnsTable, { type ColumnRow } from '@/components/catalog/ColumnsTable';
 import LineageSummary from '@/components/catalog/LineageSummary';
+import SourceTableRelations from '@/components/catalog/SourceTableRelations';
 import type { AssistantOpenMode, CatalogConnection, CatalogNavTarget } from '@/components/catalog/navigation';
 
 const LineageGraph = dynamic(() => import('@/components/catalog/LineageGraph'), { ssr: false });
 
-type ViewTab = 'overview' | 'sample' | 'lineage' | 'quality' | 'history';
+type ViewTab = 'overview' | 'sample' | 'relations' | 'lineage' | 'quality' | 'history';
 
 interface Props {
   table: SourceTable;
@@ -164,6 +166,7 @@ export default function TableDetailPanel({
   const tabs: Array<{ id: ViewTab; label: string; count?: number }> = [
     { id: 'overview', label: 'Overview' },
     { id: 'sample', label: 'Sample data' },
+    ...(curator ? [{ id: 'relations' as const, label: 'Relations' }] : []),
     ...(curator ? [{ id: 'lineage' as const, label: 'Lineage' }] : []),
     { id: 'quality', label: 'Quality' },
     ...(curator ? [{ id: 'history' as const, label: 'History' }] : []),
@@ -304,17 +307,10 @@ export default function TableDetailPanel({
             )}
           </>
         )}
-        actions={curator ? (
-          <>
-            {onAskAssistant && (
-              <HeaderAction onClick={() => onAskAssistant('ask')} primary icon={<MessageSquareText className="w-3.5 h-3.5" strokeWidth={1.75} aria-hidden />} title="Ask the assistant about this table">
-                Ask about it
-              </HeaderAction>
-            )}
-            <HeaderAction href={`/relationships?table=${tbl.id}`} icon={<Share2 className="w-3.5 h-3.5" strokeWidth={1.75} aria-hidden />} title="Its relationships, on the canvas">
-              Relations
-            </HeaderAction>
-          </>
+        actions={curator && onAskAssistant ? (
+          <HeaderAction onClick={() => onAskAssistant('ask')} primary icon={<MessageSquareText className="w-3.5 h-3.5" strokeWidth={1.75} aria-hidden />} title="Ask the assistant about this table">
+            Ask about it
+          </HeaderAction>
         ) : undefined}
         tabs={tabs}
         activeTab={viewTab}
@@ -467,15 +463,18 @@ export default function TableDetailPanel({
         </div>
       )}
 
+      {/* ── Relations — who laid each link, whether it holds ──────────────── */}
+      {viewTab === 'relations' && (
+        <div className="flex-1 overflow-y-auto px-6 py-5">
+          <SourceTableRelations tableId={tbl.id} onNavigate={onNavigate} />
+        </div>
+      )}
+
       {/* ── Lineage ───────────────────────────────────────────────────────── */}
       {viewTab === 'lineage' && (
         <div className="flex-1 min-h-0 flex flex-col">
-          <div className="flex items-center justify-between gap-3 border-b border-line bg-raised px-6 py-2">
+          <div className="border-b border-line bg-raised px-6 py-2">
             <p className="text-[12px] text-muted">Which subject columns this table feeds, and how.</p>
-            <a href={`/relationships?table=${tbl.id}`} className="inline-flex shrink-0 items-center gap-1.5 text-[11px] font-mono uppercase tracking-[0.08em] text-ocean hover:text-ocean-hover transition-colors">
-              <Share2 className="h-3.5 w-3.5" strokeWidth={1.75} aria-hidden />
-              Relations ↗
-            </a>
           </div>
           <LineageGraph layer="source" tableId={tbl.id} />
         </div>

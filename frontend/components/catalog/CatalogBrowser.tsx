@@ -4,9 +4,10 @@
  * <CatalogBrowser> — THE tree: the one view of everything on the left of the
  * catalog (revision 2 of the declarative-workspace design, 2026-09-22).
  *
- *   Subjects            products, grouped under the SOURCE they are built
- *     [mark] Exact      from — the source's own mark, not a folder glyph
- *       Finance         subject → tables → columns
+ *   Subjects            one row per subject under its own glyph — a subject is
+ *     Finance           built FROM a source but does not belong to it (owner,
+ *       Payments        2026-09-23), so no source level sits above it;
+ *                       subject → tables → columns
  *   Sources             every connection, under its mark; the source tables
  *     [mark] Exact      → columns
  *   Your tables         managed grids, one row each (a door to /grids)
@@ -118,26 +119,6 @@ const fmtRows = (n: number | null | undefined) => {
   return String(n);
 };
 
-// Stable key that uniquely identifies a product's source bucket. Mirrors
-// `productSourceGroupKey` in <SourceBadge> so URL params / persistence are
-// shared between surfaces. Null/empty source → 'unassigned'.
-function sourceBucketKeyForSchema(s: SchemaEntry): string {
-  if (s.catalog !== 'products') return '';
-  const m = s.meta;
-  if (!m) return 'unassigned';
-  if (m.sourceDeleted) return 'deleted';
-  if (m.multiSource) return 'multi';
-  if (m.sourceConnectionId != null) return `conn:${m.sourceConnectionId}`;
-  return 'unassigned';
-}
-
-function sourceBucketLabel(key: string, sample: SchemaEntry | undefined): string {
-  if (key === 'multi') return 'Multi-source';
-  if (key === 'deleted') return 'Source deleted';
-  if (key === 'unassigned') return 'Unassigned';
-  return sample?.meta?.sourceConnectionName ?? 'Unknown source';
-}
-
 // ── Component ───────────────────────────────────────────────────────────────
 
 export default function CatalogBrowser({ selected, selectedSchema, onSelectTable, onSelectSchema, hide, showRowCounts = true, searchValue }: Props) {
@@ -147,17 +128,6 @@ export default function CatalogBrowser({ selected, selectedSchema, onSelectTable
   const [openCatalogs, setOpenCatalogs] = useState<Set<CatalogId>>(new Set<CatalogId>(['products', 'sources']));
   const [openSchemas, setOpenSchemas] = useState<Set<string>>(new Set());
   const [openTables, setOpenTables] = useState<Set<string>>(new Set());
-  // Source-buckets within the products catalog. We track CLOSED buckets
-  // (inverse) so the default "all open" state is just an empty set —
-  // matching how users browse: see everything first, collapse to focus.
-  const [closedProductBuckets, setClosedProductBuckets] = useState<Set<string>>(new Set());
-  const toggleProductBucket = (key: string) => {
-    setClosedProductBuckets((s) => {
-      const n = new Set(s);
-      if (n.has(key)) n.delete(key); else n.add(key);
-      return n;
-    });
-  };
 
   const [schemasByCatalog, setSchemasByCatalog] = useState<Record<string, SchemaEntry[]>>({});
   const [tablesBySchema,   setTablesBySchema]   = useState<Record<string, TableEntry[]>>({});
@@ -396,72 +366,12 @@ export default function CatalogBrowser({ selected, selectedSchema, onSelectTable
                     </div>
                   )}
 
-                  {/*
-                    For the products catalog we sort schemas by their source
-                    bucket (alphabetical, with Multi-source / Source deleted /
-                    Unassigned sunk to the end) so consecutive same-bucket
-                    schemas group naturally. The render then emits a single
-                    bucket header before the first schema of each new bucket.
-                    Sources catalog stays flat — synthetic bucket keys are
-                    never assigned so no headers render.
-                  */}
+                  {/* Subjects sort by name; sources keep the API's order. No
+                      source level above a subject — see the header. */}
                   {(cat.id === 'products'
-                    ? [...schemas].sort((a, b) => {
-                        const ka = sourceBucketKeyForSchema(a);
-                        const kb = sourceBucketKeyForSchema(b);
-                        const rank = (k: string) =>
-                          k === 'multi' ? 1 : k === 'deleted' ? 2 : k === 'unassigned' ? 3 : 0;
-                        const ra = rank(ka), rb = rank(kb);
-                        if (ra !== rb) return ra - rb;
-                        if (ka !== kb) {
-                          const la = sourceBucketLabel(ka, a);
-                          const lb = sourceBucketLabel(kb, b);
-                          return la.localeCompare(lb);
-                        }
-                        return a.label.localeCompare(b.label);
-                      })
+                    ? [...schemas].sort((a, b) => a.label.localeCompare(b.label))
                     : schemas
-                  ).map((schema, i, arr) => {
-                    // ── Bucket header (products only) ──
-                    let bucketHeader: React.ReactNode = null;
-                    let bucketCollapsed = false;
-                    if (cat.id === 'products') {
-                      const myBucket = sourceBucketKeyForSchema(schema);
-                      const prevBucket = i > 0 ? sourceBucketKeyForSchema(arr[i - 1]) : null;
-                      bucketCollapsed = closedProductBuckets.has(myBucket);
-                      if (myBucket !== prevBucket) {
-                        const inThisBucket = arr.filter((s) => sourceBucketKeyForSchema(s) === myBucket).length;
-                        const synthetic = myBucket === 'multi' || myBucket === 'deleted' || myBucket === 'unassigned';
-                        bucketHeader = (
-                          <button
-                            key={`bh:${myBucket}`}
-                            onClick={() => toggleProductBucket(myBucket)}
-                            className="w-full flex items-center gap-2 pl-7 pr-3 py-1.5 hover:bg-softer transition-colors text-left"
-                            title={`${inThisBucket} subject${inThisBucket === 1 ? '' : 's'} built from ${sourceBucketLabel(myBucket, schema)}`}
-                          >
-                            <Chevron open={!bucketCollapsed} />
-                            {/* The source's own mark: recognised before the name is read. */}
-                            {!synthetic && (
-                              <ConnectorMarkIcon connectorType={schema.meta?.sourceConnectorType} size="xs" />
-                            )}
-                            <span className={cn(
-                              'text-[12px] truncate',
-                              synthetic ? 'text-muted-2 font-mono text-[10px] tracking-[0.12em] uppercase' : 'text-ink-2 font-medium',
-                            )}>
-                              {sourceBucketLabel(myBucket, schema)}
-                            </span>
-                            <span className="text-[10px] font-mono text-muted-2 tabular-nums ml-auto">
-                              {inThisBucket}
-                            </span>
-                          </button>
-                        );
-                      }
-                    }
-
-                    // Skip the schema row when its bucket is collapsed —
-                    // but still render the (one-shot) header above.
-                    if (bucketCollapsed) return bucketHeader;
-
+                  ).map((schema) => {
                     const schemaKey = `${cat.id}/${schema.id}`;
                     const schemaOpen = openSchemas.has(schemaKey);
                     const tables = tablesBySchema[schemaKey] ?? [];
@@ -472,12 +382,11 @@ export default function CatalogBrowser({ selected, selectedSchema, onSelectTable
 
                     return (
                       <div key={schema.id}>
-                        {bucketHeader}
                         {/* ── Schema row (split: chevron toggles, label selects) ── */}
                         <div
                           className={cn(
                             'w-full flex items-center gap-2 pr-3 py-1.5 group transition-colors border-l-2 -ml-[2px]',
-                            cat.id === 'products' ? 'pl-10' : 'pl-7',
+                            'pl-7',
                             schemaSelected
                               ? 'bg-ocean-softer border-ocean'
                               : 'hover:bg-softer border-transparent',
@@ -554,7 +463,7 @@ export default function CatalogBrowser({ selected, selectedSchema, onSelectTable
                                   <div
                                     className={cn(
                                       'w-full flex items-center gap-1.5 pr-3 py-1 group transition-colors',
-                                      cat.id === 'products' ? 'pl-[52px]' : 'pl-10',
+                                      'pl-10',
                                       isSelected
                                         ? 'bg-ocean-softer border-l-2 border-ocean -ml-[2px]'
                                         : 'hover:bg-softer border-l-2 border-transparent -ml-[2px]',
@@ -613,14 +522,14 @@ export default function CatalogBrowser({ selected, selectedSchema, onSelectTable
                                   {tableOpen && (
                                     <div>
                                       {colsLoading && cols.length === 0 && (
-                                        <div className={cn('py-1 flex items-center gap-2 text-[10px] text-muted-2', cat.id === 'products' ? 'pl-[76px]' : 'pl-16')}>
+                                        <div className={cn('py-1 flex items-center gap-2 text-[10px] text-muted-2', 'pl-16')}>
                                           <Loader2 className="w-3 h-3 animate-spin" /> Loading columns…
                                         </div>
                                       )}
                                       {cols.map((col) => (
                                         <div
                                           key={col.id}
-                                          className={cn('flex items-center gap-1.5 pr-3 py-0.5 hover:bg-softer', cat.id === 'products' ? 'pl-[76px]' : 'pl-16')}
+                                          className={cn('flex items-center gap-1.5 pr-3 py-0.5 hover:bg-softer', 'pl-16')}
                                           title={col.description ?? col.name ?? ''}
                                         >
                                           <Star className="w-2.5 h-2.5 text-muted-2 shrink-0" strokeWidth={1.5} />
@@ -635,7 +544,7 @@ export default function CatalogBrowser({ selected, selectedSchema, onSelectTable
                                         </div>
                                       ))}
                                       {!colsLoading && cols.length === 0 && (
-                                        <div className={cn('py-1 text-[10px] text-muted-2 italic', cat.id === 'products' ? 'pl-[76px]' : 'pl-16')}>no columns</div>
+                                        <div className={cn('py-1 text-[10px] text-muted-2 italic', 'pl-16')}>no columns</div>
                                       )}
                                     </div>
                                   )}

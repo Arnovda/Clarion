@@ -617,7 +617,7 @@ function PulseList({
             <div key={tile.id} className="relative">
               <PulseTile
                 state={tile}
-                onOpenProduct={(productId) => router.push(`/products/${productId}`)}
+                onOpenProduct={(productId) => router.push(`/catalog?productId=${productId}`)}
                 onEdit={(id) => setEditingId(id)}
               />
               {/* Floating delete — kept out of the tile so the tile renders

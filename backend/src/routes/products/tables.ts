@@ -11,6 +11,7 @@ import type { Database } from 'duckdb-async';
 import { requireAuth, requireRole } from '../../middleware/auth';
 import { validate } from '../../middleware/validate';
 import {
+  createProductTableSchema,
   updateProductTableSchema,
   updateProductTableSqlSchema,
   previewProductTableSqlSchema,
@@ -88,9 +89,13 @@ router.patch('/tables/:tableId', requireAuth, requireRole('admin', 'analyst'), v
 
 // ---------------------------------------------------------------------------
 // POST /api/products/:id/tables — Add a new table to a product
+//
+// The catalog's "Add a table" (2026-09-23, the workshop's only act that had
+// no other door). The table is created empty; its SQL is declared next, on
+// the catalog's SQL tab, through PUT /tables/:id/sql.
 // ---------------------------------------------------------------------------
 
-router.post('/:id/tables', requireAuth, requireRole('admin', 'analyst'), async (req: Request, res: Response, next: NextFunction) => {
+router.post('/:id/tables', requireAuth, requireRole('admin', 'analyst'), validate(createProductTableSchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const db = reqDb(req);
     const productId = Number(req.params.id);
@@ -145,6 +150,12 @@ router.post('/:id/tables', requireAuth, requireRole('admin', 'analyst'), async (
       position: 0,
       is_deploy_cell: true,
     }).returning('*');
+
+    // The catalog's tree reads the GRAPH mirror, and the caller is about to
+    // open this table there — so the mirror is written before the answer,
+    // not fire-and-forget as after a run. Best-effort: a graph that is down
+    // must not refuse the table (the next run mirrors it again).
+    try { await syncProductToNeo4j(productId, req.user!.tenantId); } catch { /* mirrored on the next run */ }
 
     res.json({ ok: true, data: { ...table, cells: [cell] } });
   } catch (err) { next(err); }

@@ -10,8 +10,9 @@ export type CatalogNavTarget =
   | { kind: 'catalog' }
   | { kind: 'subject'; productId: number }
   | { kind: 'source'; connectionId: number }
-  /** A product table by EITHER id space (the loader resolves both). */
-  | { kind: 'table'; tableId: number }
+  /** A product table by EITHER id space (the loader resolves both). `tab`
+   *  lands on that tab — a table just added opens on its SQL, to be declared. */
+  | { kind: 'table'; tableId: number; tab?: 'sql' }
   | { kind: 'source-table'; tableId: number; connectionId: number };
 
 /** The connection row as GET /connections returns it, the parts panels read. */

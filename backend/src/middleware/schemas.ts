@@ -667,6 +667,17 @@ export const updateProductTableSqlSchema = z.object({
   }).passthrough(),
 });
 
+// POST /products/:id/tables — add a table to a subject by hand (the catalog's
+// "Add a table"). The name becomes a warehouse identifier and part of a URL,
+// so its shape is decided here; the role is one of the three the star knows.
+export const createProductTableSchema = z.object({
+  body: z.object({
+    tableName: z.string().regex(/^[a-z][a-z0-9_]{0,62}$/, 'lowercase letters, digits and underscores, starting with a letter'),
+    tableRole: z.enum(['fact', 'dimension', 'bridge']).optional(),
+    description: z.string().max(2000).optional().nullable(),
+  }).passthrough(),
+});
+
 // POST /products/tables/:tableId/sql/preview — run a draft declaration for a
 // few rows. Nothing is stored.
 export const previewProductTableSqlSchema = z.object({

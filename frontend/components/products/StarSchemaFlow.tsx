@@ -84,19 +84,30 @@ export interface StarSchemaData {
   relationships: PTRelationship[];
 }
 
-// The two identities on this canvas: the measures table (fact) and its
+// The two identities on this canvas: a measures table (fact) and its
 // lookups (dims). Same spine-mark treatment as the relationship pane's
-// source colours — one strong mark reads as identity.
+// source colours — one strong mark reads as identity. The colour and the
+// wording follow the table's ROLE; the ring in the centre is the ANCHOR's.
+// The two are not the same thing: a subject can carry several measures
+// tables (Finance has transaction lines, receivables and payables), and
+// only one of them can sit in the middle — the others must not read as
+// lookups because they did not.
 const FACT_COLOR = '#6b4e8c';
 const DIM_COLOR = '#164e63';
 const EDGE_COLOR = '#164e63';
+
+function roleWord(role: string, isAnchor: boolean): string {
+  if (role === 'fact') return isAnchor ? 'the measures table' : 'measures table';
+  if (role === 'bridge') return 'bridge table';
+  return 'lookup';
+}
 
 // ---------------------------------------------------------------------------
 // Node — the relationship pane's TableNode, retargeted at product tables
 // ---------------------------------------------------------------------------
 interface SchemaNodeData {
   table: PTTable;
-  isFact: boolean;
+  isAnchor: boolean;
   /** Exactly the columns to render, in order. The parent decides which. */
   shown: PTColumn[];
   hiddenCount: number;
@@ -117,10 +128,10 @@ const HANDLE_STYLE: React.CSSProperties = {
 };
 
 function SchemaNodeImpl({ data, selected }: NodeProps<SchemaNodeData>) {
-  const { table, isFact, shown, hiddenCount, showingAll, dimmed, litColumns, linkCount } = data;
+  const { table, isAnchor, shown, hiddenCount, showingAll, dimmed, litColumns, linkCount } = data;
   const hasFooter = hiddenCount > 0 || showingAll;
   const height = nodeHeight(shown.length, hasFooter);
-  const color = isFact ? FACT_COLOR : DIM_COLOR;
+  const color = table.table_role === 'fact' ? FACT_COLOR : DIM_COLOR;
 
   return (
     <div
@@ -160,8 +171,8 @@ function SchemaNodeImpl({ data, selected }: NodeProps<SchemaNodeData>) {
         style={{
           width: NODE_W,
           height,
-          border: `1px solid ${isFact ? color : '#d0d5da'}`,
-          boxShadow: isFact
+          border: `1px solid ${isAnchor ? color : '#d0d5da'}`,
+          boxShadow: isAnchor
             ? `0 0 0 4px ${color}26, 0 10px 28px rgba(15,26,34,0.14)`
             : selected
               ? '0 0 0 3px rgba(22,78,99,0.14), 0 6px 18px rgba(15,26,34,0.10)'
@@ -171,11 +182,11 @@ function SchemaNodeImpl({ data, selected }: NodeProps<SchemaNodeData>) {
         <div className="relative flex items-start gap-2 pl-4 pr-3" style={{ height: HEADER_H }}>
           <span className="absolute inset-y-0 left-0 w-[5px]" style={{ background: color }} aria-hidden />
           <div className="min-w-0 flex-1 pt-[10px]">
-            <div className={`truncate leading-tight text-ink ${isFact ? 'text-[14px] font-semibold' : 'text-[13px] font-medium'}`}>
+            <div className={`truncate leading-tight text-ink ${isAnchor ? 'text-[14px] font-semibold' : 'text-[13px] font-medium'}`}>
               {table.display_name || table.table_name}
             </div>
             <div className="truncate text-[11px] leading-tight text-muted">
-              {isFact ? 'the measures table' : 'lookup'}
+              {roleWord(table.table_role, isAnchor)}
               {' · '}
               {linkCount === 0 ? 'not linked yet' : `${linkCount} link${linkCount === 1 ? '' : 's'}`}
             </div>
@@ -407,13 +418,16 @@ function StarSchemaFlowInner({ schema }: { schema: StarSchemaData }) {
   }, [activeTableId, schema, byName]);
 
   const { nodes, edges } = useMemo(() => {
-    // The measures table anchors the ring. A schema is one fact plus its
-    // lookups by construction; if the data carries no fact (or several),
-    // anchor on the most-linked table — the centre must be the table the
-    // picture is about, and that is the one everything joins to.
+    // The measures table anchors the ring. With several measures tables the
+    // most-linked one takes the centre (the others stay measures tables on
+    // the ring — see roleWord); with none, the most-linked table does — the
+    // centre must be the table the picture is about, and that is the one
+    // everything joins to.
+    const byLinks = (a: PTTable, b: PTTable) => (linkCounts.get(b.id) ?? 0) - (linkCounts.get(a.id) ?? 0);
     const facts = schema.tables.filter((t) => t.table_role === 'fact');
-    const anchor = facts[0]
-      ?? [...schema.tables].sort((a, b) => (linkCounts.get(b.id) ?? 0) - (linkCounts.get(a.id) ?? 0))[0];
+    const anchor = facts.length === 1
+      ? facts[0]
+      : [...(facts.length ? facts : schema.tables)].sort(byLinks)[0];
     if (!anchor) return { nodes: [] as Node[], edges: [] as Edge[] };
     const ringTables = schema.tables.filter((t) => t.id !== anchor.id);
 
@@ -439,7 +453,7 @@ function StarSchemaFlowInner({ schema }: { schema: StarSchemaData }) {
         position: pos,
         data: {
           table: t,
-          isFact: t.id === anchor.id,
+          isAnchor: t.id === anchor.id,
           shown,
           hiddenCount: (effectiveColumns.get(t.id) ?? t.columns).length - shown.length,
           showingAll: expanded.has(t.id),

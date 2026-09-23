@@ -60,9 +60,9 @@ const ACTIONS_ALL: ActionDef[] = [
   { type: 'action', id: 'connect',    title: 'Connect a source',   subtitle: 'Studio · add a data source',       icon: 'plug',  href: '/sources',    roles: ['admin', 'analyst'] },
   { type: 'action', id: 'shared',     title: 'Shared data',        subtitle: 'Studio · the lookups every topic slices by', icon: 'book', href: '/shared-data', roles: ['admin', 'analyst'] },
   { type: 'action', id: 'grids',      title: 'Your tables',        subtitle: 'Studio · budgets, mappings & lists you keep in Clarion', icon: 'columns', href: '/grids', roles: ['admin', 'analyst'] },
-  // The topic rows in the rail replaced this as the way IN to a subject area;
-  // the workshop is still where a NEW topic gets built, so it keeps a door here.
-  { type: 'action', id: 'products',   title: 'Build workshop',     subtitle: 'Studio · design a new topic',       icon: 'star',  href: '/products',   roles: ['admin', 'analyst'] },
+  // Build is where a source becomes subjects; the workshop it replaced is
+  // gone (2026-09-23 — the catalog's subject page holds what it had).
+  { type: 'action', id: 'build',      title: 'Build',              subtitle: 'Studio · turn a source into subjects', icon: 'star',  href: '/build',      roles: ['admin', 'analyst'] },
   { type: 'action', id: 'suggestions',title: 'Suggestions',        subtitle: 'Studio · confirm AI proposals',     icon: 'bolt',  href: '/review',     roles: ['admin', 'analyst'] },
   { type: 'action', id: 'team',       title: 'Team & roles',       subtitle: 'Settings · users & invites',        icon: 'users', href: '/users',      roles: ['admin'] },
 ];

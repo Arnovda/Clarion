@@ -13,12 +13,13 @@
  *     "data product", "bus matrix" are all banned from user-visible copy.
  *   • No counts of tables or rows. A row count answers a question nobody on
  *     this screen is asking.
- * Everything technical lives one door away, in Manage mode.
+ * Everything technical lives one door away, on the catalog's subject page
+ * (Manage mode was retired into it, 2026-09-23).
  */
 
 import { useRouter } from 'next/navigation';
 import { useState } from 'react';
-import { ArrowRight, MessageSquare, SlidersHorizontal } from 'lucide-react';
+import { ArrowRight, BookOpen, MessageSquare } from 'lucide-react';
 import { iconForAnalytics } from '@/components/catalog/entityIcons';
 import { formatRelativeLong } from '@/lib/dates';
 import { cn } from '@/lib/cn';
@@ -27,10 +28,8 @@ import { askAboutSubject } from '@/lib/askLink';
 
 interface Props {
   topic: Topic;
-  /** Analyst+ — shows the "Manage this data" affordance. */
+  /** Analyst+ — shows the door to the catalog's subject page. */
   canManage: boolean;
-  /** Enter Manage mode, optionally straight onto a tab. */
-  onManage: (tab?: 'quality') => void;
 }
 
 /** Ask AI, scoped to this topic, optionally with the question pre-filled.
@@ -84,12 +83,13 @@ function trustSentence(topic: Topic): string {
   return `Matches ${sourceName} as of ${when}`;
 }
 
-export default function TopicLayer({ topic, canManage, onManage }: Props) {
+export default function TopicLayer({ topic, canManage }: Props) {
   const router = useRouter();
+  const catalogHref = `/catalog?productId=${topic.id}`;
   const [draft, setDraft] = useState('');
-  // Viewers can't enter Manage mode, so "see data quality" resolves to a
-  // read-only summary inline. A link that does nothing for two thirds of
-  // the users is worse than no link.
+  // Viewers cannot open the catalog's quality table, so "see data quality"
+  // resolves to a read-only summary inline. A link that does nothing for two
+  // thirds of the users is worse than no link.
   const [qualityOpen, setQualityOpen] = useState(false);
   const Glyph = iconForAnalytics(topic.name);
 
@@ -210,7 +210,7 @@ export default function TopicLayer({ topic, canManage, onManage }: Props) {
                 {' · '}
                 <button
                   type="button"
-                  onClick={() => (canManage ? onManage('quality') : setQualityOpen((v) => !v))}
+                  onClick={() => (canManage ? router.push(catalogHref) : setQualityOpen((v) => !v))}
                   aria-expanded={canManage ? undefined : qualityOpen}
                   className="text-ocean underline-offset-2 hover:underline"
                 >
@@ -234,17 +234,16 @@ export default function TopicLayer({ topic, canManage, onManage }: Props) {
               <span className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted-2">
                 Only you can see this
               </span>
-              <button
-                type="button"
-                onClick={() => onManage()}
+              <a
+                href={catalogHref}
                 className={cn(
                   'flex shrink-0 items-center gap-[7px] whitespace-nowrap rounded-sm border border-line bg-raised px-3 py-2 text-[12.5px] text-ink-2',
                   'transition-colors duration-1 ease-observatory hover:border-ocean hover:bg-ocean-softer hover:text-ocean',
                 )}
               >
-                <SlidersHorizontal className="h-[13px] w-[13px]" strokeWidth={1.75} aria-hidden />
-                Manage this data
-              </button>
+                <BookOpen className="h-[13px] w-[13px]" strokeWidth={1.75} aria-hidden />
+                Open in the Catalog
+              </a>
             </div>
           )}
         </div>

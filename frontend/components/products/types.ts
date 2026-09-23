@@ -1,5 +1,6 @@
 /**
- * Shared types for /products.
+ * Shared types for subjects (data products): the GET /products/:id payload
+ * and the KPI rows, read by the catalog's subject page and its metrics editor.
  */
 
 export interface Connection {

@@ -1,111 +1,88 @@
 'use client';
 
 /**
- * <ProductFullView> — the consumer-grade full product page.
+ * <ProductFullView> — a SUBJECT's page in the catalog.
  *
- * Mounts in the catalog's "Open full view" mode. Replaces the previous
- * use of <ProductRootPanel> (the operator panel) inside Catalog so
- * viewers no longer see operator content — Rebuild, Refine, Delete,
- * SQL transformations, schema diagrams, edit forms.
+ * ONE page per subject. The topic's Manage mode and the build workshop
+ * overlapped with this page and sat behind doors nobody found (owner,
+ * 2026-09-23: "merge the 2 in catalog"); both are retired, and what only
+ * they had lives here now — Rebuild (with the source synced first, when
+ * wanted), Delete, Add a table, editable metrics, the star diagram
+ * (Relations), the lineage graph, the quality table and the refresh
+ * history. Everything else they showed was already here.
  *
- * Tabs (all read-only):
- *   - Overview   description, starter questions, key metrics, at-a-glance
- *   - Metrics    full KPI list with name + description (no formula, no SQL)
- *   - Tables     table list with description + sample data preview, no
- *                schema diagram and no transformation SQL
- *   - Quality    pass/fail status, freshness, score
- *   - Lineage    "this product is built from these source tables" — list,
- *                not a graph
+ * A subject is SOURCE-INDEPENDENT (owner, the same day): it is built from a
+ * source but does not belong to one, so the header carries the subject's
+ * glyph and no source mark; where the data comes from is the Lineage tab,
+ * table by table.
  *
- * Header includes an "Open in Build →" deep-link for admin/analyst —
- * one click to switch from showroom to workshop.
- *
- * Consumer-facing on every tab. No edit forms. No operator buttons.
+ * Roles: a viewer reads (overview, metrics, tables, joins as a list,
+ * lineage as a sentence, quality); a curator also edits metrics, adds a
+ * table and sees the diagrams; the whole-subject rebuild and delete are
+ * admin, as their routes are. No SQL on this page — a table's SQL is on the
+ * table's own page.
  */
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import dynamic from 'next/dynamic';
 import { useRouter } from 'next/navigation';
 import {
-  ArrowRight, Sparkles, BarChart3, Database, ShieldCheck, GitBranch, Boxes, FileText, Wrench,
+  ArrowRight, BarChart3, Boxes, Check, Database, GitBranch, Loader2,
+  Plus, RefreshCw, ShieldCheck, Sparkles, Trash2, X,
 } from 'lucide-react';
 import api from '@/lib/api';
 import { cn } from '@/lib/cn';
 import { formatRelative } from '@/lib/dates';
-import { useRole, canCurate } from '@/lib/role';
-import { paletteForSource, type SourcePalette } from './sourcePalette';
+import { useRole, canCurate, isAdminRole } from '@/lib/role';
+import { streamSSE } from '@/lib/sse';
+import { useToast } from '@/components/ui/Toast';
 import { PreviewTable } from '@/components/semantic/shared';
 import { askAboutSubject } from '@/lib/askLink';
+import type { FullDataProduct, ProductKpi } from '@/components/products/types';
 import ExplorerHeader, { HeaderAction, MoreMenu } from './ExplorerHeader';
+import SubjectRelations from './SubjectRelations';
 import { iconForAnalytics } from './entityIcons';
 import type { AssistantOpenMode, CatalogNavTarget } from './navigation';
 
-// ───────────────────────────────────────────────────────────────────────────
-// Data shapes — mirrors the backend product detail + KPIs response
-// ───────────────────────────────────────────────────────────────────────────
+// The heavy tabs load when opened: the diagram (ReactFlow), the lineage
+// graph, the metrics editor, the quality table, the history charts.
+const LineageGraph = dynamic(() => import('./LineageGraph'), { ssr: false });
+const KpiManager = dynamic(() => import('@/components/products/KpiManager'), { ssr: false });
+const QualityTab = dynamic(() => import('@/components/products/QualityTab'), { ssr: false });
+const RefreshHistoryChart = dynamic(() => import('@/components/products/RefreshHistoryChart'), { ssr: false });
 
-interface ProductTable {
-  id: number;
-  table_name: string;
-  display_name?: string | null;
-  description?: string | null;
-  table_role: string;
-  row_count?: number | null;
-  columns?: Array<{
-    id: number;
-    column_name: string;
-    display_name?: string | null;
-    description?: string | null;
-    data_type?: string | null;
-    column_role?: string | null;
-  }>;
-}
+const BACKEND_URL = process.env.NEXT_PUBLIC_API_URL?.replace('/api', '') ?? 'http://localhost:3001';
 
-interface ProductDetail {
-  id: number;
-  name: string;
-  description: string | null;
-  status: string;
-  last_refreshed_at?: string | null;
-  source?: {
-    id: number | null;
-    name: string | null;
-    connectorType: string | null;
-    multiSource?: boolean;
-    sourceDeleted?: boolean;
-  };
-  star_schemas?: Array<{
-    id: number;
-    name: string;
-    tables: ProductTable[];
-  }>;
-}
+type SubjectDetail = FullDataProduct & { last_refreshed_at?: string | null; hidden?: boolean | null };
+type SubjectTable = FullDataProduct['star_schemas'][number]['tables'][number];
 
-interface Kpi {
-  id: number;
-  name: string;
-  description?: string | null;
-  formula_plain_text?: string | null;
-}
-
-type Tab = 'overview' | 'metrics' | 'tables' | 'quality' | 'lineage';
-
-// ───────────────────────────────────────────────────────────────────────────
-// Public component
-// ───────────────────────────────────────────────────────────────────────────
+type Tab = 'overview' | 'metrics' | 'tables' | 'relations' | 'lineage' | 'quality' | 'history';
 
 interface Props {
   productId: number;
-  /** A breadcrumb click: the page owns the selection. */
+  /** A breadcrumb or a table name: the page owns the selection. */
   onNavigate?: (target: CatalogNavTarget) => void;
-  /** Reserved for a header action; the subject page has none today. */
+  /** Accepted for the panel contract; the subject's Ask AI is the deep link. */
   onAskAssistant?: (mode: AssistantOpenMode) => void;
+  /** Something about the subject changed (a table added, a rebuild landed). */
+  onChanged?: () => void;
+  /** The subject was deleted; the page clears the selection. */
+  onDeleted?: () => void;
 }
 
-export default function ProductFullView({ productId, onNavigate }: Props) {
+function errorText(err: unknown, fallback: string): string {
+  const e = err as { response?: { data?: { error?: string } }; message?: string };
+  return e.response?.data?.error ?? e.message ?? fallback;
+}
+
+export default function ProductFullView({ productId, onNavigate, onChanged, onDeleted }: Props) {
   const role = useRole();
-  const isCurator = canCurate(role);
-  const [data, setData] = useState<ProductDetail | null>(null);
-  const [kpis, setKpis] = useState<Kpi[]>([]);
+  const curator = canCurate(role);
+  const admin = isAdminRole(role);
+  const toast = useToast();
+
+  const [data, setData] = useState<SubjectDetail | null>(null);
+  const [kpis, setKpis] = useState<ProductKpi[]>([]);
   const [aiStarters, setAiStarters] = useState<string[] | null>(null);
   const [tab, setTab] = useState<Tab>('overview');
   const [loading, setLoading] = useState(true);
@@ -118,8 +95,8 @@ export default function ProductFullView({ productId, onNavigate }: Props) {
         api.get(`/products/${productId}/kpis`).catch(() => ({ data: { data: [] } })),
         api.get(`/products/${productId}/starters`).catch(() => ({ data: { data: { starters: [] } } })),
       ]);
-      setData(detailRes.data?.data ?? null);
-      setKpis((kpiRes.data?.data ?? []) as Kpi[]);
+      setData((detailRes.data?.data ?? null) as SubjectDetail | null);
+      setKpis((kpiRes.data?.data ?? []) as ProductKpi[]);
       const starters = (starterRes.data?.data?.starters ?? []) as Array<{ question: string }>;
       setAiStarters(starters.length > 0 ? starters.map((s) => s.question).slice(0, 3) : null);
     } catch {
@@ -128,29 +105,117 @@ export default function ProductFullView({ productId, onNavigate }: Props) {
       setLoading(false);
     }
   }, [productId]);
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => { void load(); }, [load]);
 
-  const allTables = useMemo<ProductTable[]>(
+  // A quiet reload after an edit — no skeleton over a page that is still there.
+  const reload = useCallback(async () => {
+    try {
+      const [detailRes, kpiRes] = await Promise.all([
+        api.get(`/products/${productId}`),
+        api.get(`/products/${productId}/kpis`).catch(() => ({ data: { data: [] } })),
+      ]);
+      setData((detailRes.data?.data ?? null) as SubjectDetail | null);
+      setKpis((kpiRes.data?.data ?? []) as ProductKpi[]);
+    } catch { /* what is on screen stays */ }
+  }, [productId]);
+
+  const allTables = useMemo<SubjectTable[]>(
     () => (data?.star_schemas ?? []).flatMap((s) => s.tables ?? []),
     [data],
   );
-  const palette = useMemo<SourcePalette>(
-    () => paletteForSource(
-      data?.source?.connectorType ?? null,
-      data?.source?.name ?? null,
-      data?.source?.sourceDeleted ?? false,
-    ),
-    [data],
-  );
 
-  // Tabs render conditionally — Quality + Lineage hidden if no data.
-  const tabsAvailable: Array<{ id: Tab; label: string; icon: React.ReactNode }> = [
-    { id: 'overview', label: 'Overview', icon: <FileText className="w-3.5 h-3.5" strokeWidth={1.75} /> },
-    { id: 'metrics',  label: 'Metrics',  icon: <BarChart3 className="w-3.5 h-3.5" strokeWidth={1.75} /> },
-    { id: 'tables',   label: 'Tables',   icon: <Boxes className="w-3.5 h-3.5" strokeWidth={1.75} /> },
-    { id: 'quality',  label: 'Quality',  icon: <ShieldCheck className="w-3.5 h-3.5" strokeWidth={1.75} /> },
-    { id: 'lineage',  label: 'Lineage',  icon: <GitBranch className="w-3.5 h-3.5" strokeWidth={1.75} /> },
-  ];
+  // ── Rebuild — the whole subject, streamed into a strip under the header ──
+  // The bus-matrix refresh job, exactly as Manage mode ran it: one call to
+  // start, then its stream. Deliberately not the Build page's terminal — this
+  // reads as "your subject is updating", which is what a curator here wants.
+  const [busy, setBusy] = useState(false);
+  const [progress, setProgress] = useState<string | null>(null);
+  const [outcome, setOutcome] = useState<'done' | 'error' | null>(null);
+  const abortRef = useRef<AbortController | null>(null);
+  useEffect(() => () => abortRef.current?.abort(), []);
+
+  const runRebuild = useCallback(async (syncSource: boolean) => {
+    if (busy) return;
+    setBusy(true);
+    setOutcome(null);
+    setProgress(syncSource ? 'Syncing the source first…' : 'Starting…');
+    const controller = new AbortController();
+    abortRef.current = controller;
+    try {
+      const res = await api.post(`/products/${productId}/refresh-start`, { syncSource });
+      const jobId = res.data?.data?.jobId as string | undefined;
+      if (!jobId) throw new Error('No job id returned');
+      await streamSSE(`${BACKEND_URL}/api/products/bus-matrix/${jobId}/stream`, {
+        method: 'GET',
+        signal: controller.signal,
+        onEvent: (raw) => {
+          const e = raw as Record<string, unknown>;
+          const type = e.type as string;
+          if (type === 'phase' || type === 'log') {
+            setProgress(String(e.friendly ?? e.text ?? ''));
+          } else if (type === 'error_detail') {
+            setProgress(`${String(e.tableName)}: ${String(e.error)}`);
+          } else if (type === 'completed') {
+            const result = e.result as { allOk?: boolean } | null;
+            setOutcome(result?.allOk === false ? 'error' : 'done');
+            void reload();
+            onChanged?.();
+          } else if (type === 'failed' || type === 'error') {
+            setOutcome('error');
+            toast.error('Rebuild failed', { description: String(e.error ?? e.message ?? 'Unknown error') });
+            void reload();
+            onChanged?.();
+          }
+        },
+      });
+    } catch (err) {
+      if ((err as { name?: string })?.name === 'AbortError') return;
+      setOutcome('error');
+      toast.error('Rebuild failed', { description: errorText(err, 'Unknown error') });
+    } finally {
+      if (abortRef.current === controller) abortRef.current = null;
+      setBusy(false);
+      setProgress(null);
+    }
+  }, [busy, productId, reload, onChanged, toast]);
+
+  async function handleDelete() {
+    if (!data) return;
+    if (!confirm(`Delete "${data.name}"? Everything built for this subject is removed — its tables, metrics and history. This cannot be undone.`)) return;
+    try {
+      await api.delete(`/products/${productId}`);
+      toast.success('Subject deleted');
+      onDeleted?.();
+    } catch (err) {
+      toast.error('Delete failed', { description: errorText(err, 'Unknown error') });
+    }
+  }
+
+  // ── Add a table: created empty, then opened on its SQL to be declared ────
+  const [adding, setAdding] = useState(false);
+  const handleAdded = useCallback((created: { id: number; table_name: string }) => {
+    setAdding(false);
+    toast.success('Table added', { description: `Now declare the SQL that builds ${created.table_name}.` });
+    onChanged?.();
+    void reload();
+    onNavigate?.({ kind: 'table', tableId: created.id, tab: 'sql' });
+  }, [toast, onChanged, reload, onNavigate]);
+
+  // ── Lineage: curators pick a table for the graph; viewers read a sentence ─
+  const [lineageTableId, setLineageTableId] = useState<number | null>(null);
+  const [sourceTables, setSourceTables] = useState<string[] | null>(null);
+  useEffect(() => {
+    if (tab !== 'lineage' || curator || sourceTables !== null) return;
+    let cancelled = false;
+    api.get(`/products/${productId}/sources`)
+      .then((r) => {
+        if (cancelled) return;
+        const rows = (r.data?.data ?? []) as Array<{ table_name: string }>;
+        setSourceTables(Array.from(new Set(rows.map((row) => row.table_name))).sort());
+      })
+      .catch(() => { if (!cancelled) setSourceTables([]); });
+    return () => { cancelled = true; };
+  }, [tab, curator, sourceTables, productId]);
 
   if (loading || !data) {
     return (
@@ -165,26 +230,43 @@ export default function ProductFullView({ productId, onNavigate }: Props) {
 
   const refreshed = data.last_refreshed_at ? formatRelative(data.last_refreshed_at) : 'not yet';
   const SubjectIcon = iconForAnalytics(data.name);
-  const sourceLabel = data.source?.multiSource ? 'Multiple sources'
-    : data.source?.sourceDeleted ? 'Source deleted'
-    : (data.source?.connectorType ?? data.source?.name ?? 'Data product');
+  const askHref = askAboutSubject({ productId: data.id, productName: data.name, connectionId: data.source?.id ?? data.connection_id });
+  const lineageAnchorId = lineageTableId
+    ?? allTables.find((t) => t.table_role === 'fact')?.id
+    ?? allTables[0]?.id
+    ?? null;
+
+  const tabs: Array<{ id: Tab; label: string; count?: number }> = [
+    { id: 'overview', label: 'Overview' },
+    { id: 'metrics', label: 'Metrics', count: kpis.length },
+    { id: 'tables', label: 'Tables', count: allTables.length },
+    { id: 'relations', label: 'Relations' },
+    { id: 'lineage', label: 'Lineage' },
+    { id: 'quality', label: 'Quality' },
+    ...(curator ? [{ id: 'history' as const, label: 'History' }] : []),
+  ];
+
+  const menuItems = [
+    ...(admin ? [{ label: 'Sync the source, then rebuild', onClick: () => { void runRebuild(true); }, icon: <RefreshCw className="w-3.5 h-3.5" strokeWidth={1.75} aria-hidden /> }] : []),
+    { label: 'Add a table', onClick: () => { setTab('tables'); setAdding(true); }, icon: <Plus className="w-3.5 h-3.5" strokeWidth={1.75} aria-hidden /> },
+    ...(admin ? [{ label: 'Delete this subject', onClick: () => { void handleDelete(); }, icon: <Trash2 className="w-3.5 h-3.5" strokeWidth={1.75} aria-hidden /> }] : []),
+  ];
 
   return (
     <div className="flex-1 min-h-0 flex flex-col">
       <ExplorerHeader
         crumbs={[{ label: 'Catalog', onClick: () => onNavigate?.({ kind: 'catalog' }) }, { label: data.name }]}
         icon={(
-          <span className={cn('w-8 h-8 rounded-lg border border-line bg-softer flex items-center justify-center', palette.eyebrow)}>
+          <span className="w-8 h-8 rounded-lg border border-ocean/20 bg-ocean-softer flex items-center justify-center text-ocean">
             <SubjectIcon className="w-4 h-4" strokeWidth={1.75} aria-hidden />
           </span>
         )}
         title={data.name}
-        badges={(
-          <span className={cn('inline-flex items-center gap-1.5 text-[10.5px] font-mono uppercase tracking-[0.12em]', palette.eyebrow)}>
-            <span className={cn('inline-block w-2 h-2 rounded-full', palette.dot)} aria-hidden />
-            {sourceLabel}
+        badges={curator && data.hidden ? (
+          <span className="text-[10px] font-mono tracking-[0.08em] uppercase px-1.5 py-0.5 rounded border border-line bg-softer text-muted" title="Not listed on the Subjects page">
+            hidden
           </span>
-        )}
+        ) : undefined}
         subtitle={(
           <span className="block max-w-3xl">
             {data.description && <span className="text-ink-2">{data.description} </span>}
@@ -193,46 +275,117 @@ export default function ProductFullView({ productId, onNavigate }: Props) {
         )}
         actions={(
           <>
-            {isCurator && (
-              <HeaderAction href={`/topics/${productId}?manage=1`} icon={<Wrench className="w-3.5 h-3.5" strokeWidth={1.75} aria-hidden />} title="Tables, metrics, quality and activity — the topic's manage mode">
-                Manage this topic
+            {admin && (
+              <HeaderAction onClick={() => { void runRebuild(false); }} icon={<RefreshCw className={cn('w-3.5 h-3.5', busy && 'animate-spin')} strokeWidth={1.75} aria-hidden />} title="Rebuild every table of this subject from its saved SQL">
+                Rebuild
               </HeaderAction>
             )}
-            <HeaderAction
-              href={askAboutSubject({ productId: data.id, productName: data.name, connectionId: data.source?.id })}
-              primary
-              icon={<Sparkles className="w-3.5 h-3.5" strokeWidth={1.75} aria-hidden />}
-              title="Ask a question about this subject"
-            >
+            <HeaderAction href={askHref} primary icon={<Sparkles className="w-3.5 h-3.5" strokeWidth={1.75} aria-hidden />} title="Ask a question about this subject">
               Ask AI
             </HeaderAction>
-            {isCurator && (
-              <MoreMenu items={[{ label: 'Open in the workshop', href: `/products/${productId}` }]} />
-            )}
+            {curator && <MoreMenu items={menuItems} />}
           </>
         )}
-        tabs={tabsAvailable.map(({ id, label }) => ({ id, label }))}
+        tabs={tabs}
         activeTab={tab}
         onTabChange={setTab}
       />
 
+      {/* The rebuild, as it happens; then its outcome, dismissable. */}
+      {busy && (
+        <div className="shrink-0 border-b border-line bg-ocean-softer px-7 py-1.5">
+          <div className="flex items-center gap-2 text-[12px] text-ocean">
+            <Loader2 className="h-3 w-3 animate-spin" strokeWidth={2} aria-hidden />
+            <span className="truncate">{progress ?? 'Working…'}</span>
+          </div>
+          <div className="mt-1 h-[2px] overflow-hidden rounded-sm bg-ocean/15">
+            <div className="h-full w-1/3 animate-pulse rounded-sm bg-ocean" />
+          </div>
+        </div>
+      )}
+      {!busy && outcome && (
+        <div className={cn('shrink-0 border-b border-line px-7 py-1.5 flex items-center gap-2 text-[12px]', outcome === 'done' ? 'bg-ok-soft text-ok' : 'bg-err-soft text-err')}>
+          {outcome === 'done'
+            ? <><Check className="w-3.5 h-3.5" strokeWidth={2.5} aria-hidden /> Rebuilt — your team sees the new data now.</>
+            : <><X className="w-3.5 h-3.5" strokeWidth={2.5} aria-hidden /> The rebuild did not finish cleanly — each table&apos;s state says what happened.</>}
+          <button type="button" onClick={() => setOutcome(null)} className="ml-auto text-[10.5px] font-mono uppercase tracking-[0.08em] opacity-70 hover:opacity-100">Dismiss</button>
+        </div>
+      )}
+
       {/* ── Tab body ─────────────────────────────────────────────────────── */}
-      <div className="flex-1 min-h-0 overflow-y-auto px-7 py-6">
-        <div className="max-w-4xl mx-auto">
+      <div className="flex-1 min-h-0 overflow-y-auto px-7 py-6 pb-24">
+        <div className="max-w-5xl mx-auto">
           {tab === 'overview' && (
-            <OverviewTab data={data} kpis={kpis} aiStarters={aiStarters} allTables={allTables} palette={palette} />
+            <OverviewTab data={data} kpis={kpis} aiStarters={aiStarters} allTables={allTables} askHref={askHref} />
           )}
           {tab === 'metrics' && (
-            <MetricsTab kpis={kpis} palette={palette} />
+            curator
+              ? <KpiManager productId={productId} kpis={kpis} onChanged={() => { void reload(); onChanged?.(); }} />
+              : <MetricsTab kpis={kpis} />
           )}
           {tab === 'tables' && (
-            <TablesTab tables={allTables} productId={productId} palette={palette} isCurator={isCurator} />
+            <TablesTab
+              tables={allTables}
+              productId={productId}
+              curator={curator}
+              adding={adding}
+              onAdding={setAdding}
+              onAdded={handleAdded}
+              onNavigate={onNavigate}
+            />
           )}
-          {tab === 'quality' && (
-            <CatalogQualityTab tables={allTables} palette={palette} />
+          {tab === 'relations' && (
+            <SubjectRelations productId={productId} detail={data} curator={curator} onNavigate={onNavigate} />
           )}
           {tab === 'lineage' && (
-            <LineageTab data={data} palette={palette} />
+            curator ? (
+              allTables.length === 0 || lineageAnchorId === null
+                ? <EmptyTabState message="Nothing to trace yet." />
+                : (
+                  <>
+                    {/* One table at a time — the graph is always anchored
+                        (no lineage hairball), so the picker IS the
+                        navigation. Default: the measures table. */}
+                    <div className="mb-3 flex flex-wrap gap-1.5">
+                      {allTables.map((t) => (
+                        <button
+                          key={t.id}
+                          type="button"
+                          onClick={() => setLineageTableId(t.id)}
+                          className={cn(
+                            'rounded-full border px-3 py-1 text-[12px] transition-colors',
+                            t.id === lineageAnchorId ? 'border-ocean bg-ocean-softer text-ocean' : 'border-line bg-raised text-ink-3 hover:border-ink-3',
+                          )}
+                        >
+                          {t.display_name || humanizeTable(t)}
+                        </button>
+                      ))}
+                    </div>
+                    <div className="overflow-hidden rounded-lg border border-line bg-raised">
+                      <LineageGraph layer="product" tableId={lineageAnchorId} />
+                    </div>
+                  </>
+                )
+            ) : (
+              <ViewerLineage name={data.name} sourceTables={sourceTables} />
+            )
+          )}
+          {tab === 'quality' && (
+            curator ? <QualityTab productNameFilter={data.name} /> : <ViewerQuality tables={allTables} />
+          )}
+          {tab === 'history' && (
+            allTables.length === 0
+              ? <EmptyTabState message="No refreshes have run yet." />
+              : (
+                <div className="space-y-5">
+                  {allTables.map((t) => (
+                    <div key={t.id} className="rounded-lg border border-line bg-raised px-5 py-4">
+                      <div className="mb-2 text-[13px] font-medium text-ink">{t.display_name || humanizeTable(t)}</div>
+                      <RefreshHistoryChart productTableId={t.id} variant="full" />
+                    </div>
+                  ))}
+                </div>
+              )
           )}
         </div>
       </div>
@@ -241,17 +394,17 @@ export default function ProductFullView({ productId, onNavigate }: Props) {
 }
 
 // ───────────────────────────────────────────────────────────────────────────
-// Overview tab — same content as preview, un-truncated
+// Overview
 // ───────────────────────────────────────────────────────────────────────────
 
 function OverviewTab({
-  data, kpis, aiStarters, allTables, palette,
+  data, kpis, aiStarters, allTables, askHref,
 }: {
-  data: ProductDetail;
-  kpis: Kpi[];
+  data: SubjectDetail;
+  kpis: ProductKpi[];
   aiStarters: string[] | null;
-  allTables: ProductTable[];
-  palette: SourcePalette;
+  allTables: SubjectTable[];
+  askHref: string;
 }) {
   const router = useRouter();
   const starters = aiStarters && aiStarters.length > 0 ? aiStarters : kpisToStarters(kpis, allTables, data.name);
@@ -259,9 +412,8 @@ function OverviewTab({
 
   return (
     <div className="space-y-8">
-      {/* Try asking */}
       {starters.length > 0 && (
-        <Section title="Try asking" icon={<Sparkles className="w-3.5 h-3.5" strokeWidth={1.75} />} palette={palette}>
+        <Section title="Try asking" icon={<Sparkles className="w-3.5 h-3.5" strokeWidth={1.75} />}>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
             {starters.map((q, i) => (
               <button
@@ -269,7 +421,7 @@ function OverviewTab({
                 type="button"
                 onClick={() => router.push(askAboutSubject({
                   productId: data.id, productName: data.name,
-                  connectionId: data.source?.id, question: q,
+                  connectionId: data.source?.id ?? data.connection_id, question: q,
                 }))}
                 className="group/q flex items-center gap-3 text-left px-4 py-3 bg-raised border border-line rounded-md hover:border-ocean/40 hover:bg-soft transition-colors"
               >
@@ -281,24 +433,18 @@ function OverviewTab({
         </Section>
       )}
 
-      {/* Top metrics */}
       {topKpis.length > 0 && (
-        <Section title="Top metrics" icon={<BarChart3 className="w-3.5 h-3.5" strokeWidth={1.75} />} palette={palette}>
+        <Section title="Top metrics" icon={<BarChart3 className="w-3.5 h-3.5" strokeWidth={1.75} />}>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-            {topKpis.map((k) => (
-              <KpiCard key={k.id} kpi={k} />
-            ))}
+            {topKpis.map((k) => <KpiCard key={k.id} kpi={k} />)}
           </div>
           {kpis.length > topKpis.length && (
-            <p className="text-[11.5px] text-muted-2 mt-2">
-              + {kpis.length - topKpis.length} more in the Metrics tab →
-            </p>
+            <p className="text-[11.5px] text-muted-2 mt-2">+ {kpis.length - topKpis.length} more in the Metrics tab →</p>
           )}
         </Section>
       )}
 
-      {/* At a glance */}
-      <Section title="At a glance" icon={<Database className="w-3.5 h-3.5" strokeWidth={1.75} />} palette={palette}>
+      <Section title="At a glance" icon={<Database className="w-3.5 h-3.5" strokeWidth={1.75} />}>
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
           <Stat label="Tables" value={allTables.length} />
           <Stat label="Metrics" value={kpis.length} />
@@ -306,111 +452,120 @@ function OverviewTab({
           <Stat label="Last refreshed" value={data.last_refreshed_at ? formatRelative(data.last_refreshed_at) : '—'} text />
         </div>
       </Section>
+
+      <p className="text-[12px] text-muted">
+        Anything else? <a href={askHref} className="text-ocean hover:text-ocean-hover">Ask about {data.name} →</a>
+      </p>
     </div>
   );
 }
 
 // ───────────────────────────────────────────────────────────────────────────
-// Metrics tab — full KPI list, read-only
+// Metrics — the read-only list (curators get KpiManager)
 // ───────────────────────────────────────────────────────────────────────────
 
-function MetricsTab({ kpis, palette }: { kpis: Kpi[]; palette: SourcePalette }) {
-  if (kpis.length === 0) {
-    return <EmptyTabState message="This product has no metrics defined yet." />;
-  }
+function MetricsTab({ kpis }: { kpis: ProductKpi[] }) {
+  if (kpis.length === 0) return <EmptyTabState message="This subject has no metrics defined yet." />;
   return (
-    <Section title={`All metrics (${kpis.length})`} icon={<BarChart3 className="w-3.5 h-3.5" strokeWidth={1.75} />} palette={palette}>
+    <Section title={`All metrics (${kpis.length})`} icon={<BarChart3 className="w-3.5 h-3.5" strokeWidth={1.75} />}>
       <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-        {kpis.map((k) => (
-          <KpiCard key={k.id} kpi={k} />
-        ))}
+        {kpis.map((k) => <KpiCard key={k.id} kpi={k} />)}
       </div>
     </Section>
   );
 }
 
-function KpiCard({ kpi }: { kpi: Kpi }) {
+function KpiCard({ kpi }: { kpi: ProductKpi }) {
   return (
     <div className="px-4 py-3 bg-raised border border-line rounded-md">
       <div className="text-[13px] font-medium text-ink mb-0.5">{humanize(kpi.name)}</div>
-      {kpi.description && (
-        <p className="text-[11.5px] text-muted leading-snug">{kpi.description}</p>
-      )}
+      {kpi.question_text && <p className="text-[12px] text-ink-2 leading-snug mb-0.5">{kpi.question_text}</p>}
+      {kpi.description && <p className="text-[11.5px] text-muted leading-snug">{kpi.description}</p>}
     </div>
   );
 }
 
 // ───────────────────────────────────────────────────────────────────────────
-// Tables tab — list with sample data, no schema diagram
+// Tables — the list, a door into each table's page, and "Add a table"
 // ───────────────────────────────────────────────────────────────────────────
 
 function TablesTab({
-  tables, productId, palette, isCurator,
+  tables, productId, curator, adding, onAdding, onAdded, onNavigate,
 }: {
-  tables: ProductTable[];
+  tables: SubjectTable[];
   productId: number;
-  palette: SourcePalette;
-  isCurator: boolean;
+  curator: boolean;
+  adding: boolean;
+  onAdding: (open: boolean) => void;
+  onAdded: (created: { id: number; table_name: string }) => void;
+  onNavigate?: (target: CatalogNavTarget) => void;
 }) {
   const [expandedId, setExpandedId] = useState<number | null>(null);
-  if (tables.length === 0) {
-    return <EmptyTabState message="This product has no tables yet — refresh it to materialise data." />;
-  }
   return (
-    <Section title={`All tables (${tables.length})`} icon={<Boxes className="w-3.5 h-3.5" strokeWidth={1.75} />} palette={palette}>
-      <div className="bg-raised border border-line rounded-md divide-y divide-line">
-        {tables.map((t) => (
-          <TableRow
-            key={t.id}
-            table={t}
-            productId={productId}
-            expanded={expandedId === t.id}
-            onToggle={() => setExpandedId((cur) => cur === t.id ? null : t.id)}
-            isCurator={isCurator}
-          />
-        ))}
-      </div>
+    <Section
+      title={`All tables (${tables.length})`}
+      icon={<Boxes className="w-3.5 h-3.5" strokeWidth={1.75} />}
+      aside={curator && !adding ? (
+        <button type="button" onClick={() => onAdding(true)} className="inline-flex items-center gap-1 text-[12px] font-medium text-ocean hover:text-ocean-hover transition-colors">
+          <Plus className="w-3.5 h-3.5" strokeWidth={2} aria-hidden /> Add a table
+        </button>
+      ) : undefined}
+    >
+      {curator && adding && (
+        <AddTableForm productId={productId} onAdded={onAdded} onCancel={() => onAdding(false)} />
+      )}
+      {tables.length === 0 ? (
+        <EmptyTabState message="This subject has no tables yet." />
+      ) : (
+        <div className="bg-raised border border-line rounded-md divide-y divide-line">
+          {tables.map((t) => (
+            <TableRow
+              key={t.id}
+              table={t}
+              expanded={expandedId === t.id}
+              onToggle={() => setExpandedId((cur) => (cur === t.id ? null : t.id))}
+              onOpen={onNavigate ? () => onNavigate({ kind: 'table', tableId: t.id }) : undefined}
+            />
+          ))}
+        </div>
+      )}
     </Section>
   );
 }
 
-function TableRow({
-  table, productId, expanded, onToggle, isCurator,
-}: {
-  table: ProductTable;
-  productId: number;
+function TableRow({ table, expanded, onToggle, onOpen }: {
+  table: SubjectTable;
   expanded: boolean;
   onToggle: () => void;
-  isCurator: boolean;
+  onOpen?: () => void;
 }) {
+  const name = table.display_name || humanizeTable(table);
   return (
     <div>
-      <button
-        type="button"
-        onClick={onToggle}
-        className="w-full text-left px-4 py-3 flex items-center gap-3 hover:bg-soft transition-colors"
-      >
+      <div className="px-4 py-3 flex items-center gap-3">
         <div className="flex-1 min-w-0">
-          <div className="text-[13px] font-medium text-ink truncate">
-            {table.display_name || humanizeTable(table)}
-          </div>
-          {table.description && (
-            <p className="text-[11.5px] text-muted leading-snug truncate mt-0.5">{table.description}</p>
+          {onOpen ? (
+            <button type="button" onClick={onOpen} className="text-[13px] font-medium text-ink hover:text-ocean transition-colors text-left truncate max-w-full" title="Open this table">
+              {name}
+            </button>
+          ) : (
+            <div className="text-[13px] font-medium text-ink truncate">{name}</div>
           )}
+          {table.description && <p className="text-[11.5px] text-muted leading-snug truncate mt-0.5">{table.description}</p>}
         </div>
+        <span className="text-[10px] font-mono uppercase tracking-[0.08em] text-muted-2 flex-shrink-0">
+          {table.table_role === 'fact' ? 'measures' : table.table_role === 'dimension' ? 'lookup' : table.table_role}
+        </span>
         <span className="text-[11px] font-mono text-muted-2 tabular-nums flex-shrink-0">
-          {(table.columns?.length ?? 0)} {(table.columns?.length === 1) ? 'col' : 'cols'}
+          {table.columns?.length ?? 0} {table.columns?.length === 1 ? 'col' : 'cols'}
         </span>
         {typeof table.row_count === 'number' && table.row_count > 0 && (
-          <span className="text-[11px] font-mono text-muted-2 tabular-nums flex-shrink-0">
-            {compactNumber(table.row_count)} rows
-          </span>
+          <span className="text-[11px] font-mono text-muted-2 tabular-nums flex-shrink-0">{compactNumber(table.row_count)} rows</span>
         )}
-        <ArrowRight
-          className={cn('w-3.5 h-3.5 text-muted-2 transition-transform flex-shrink-0', expanded && 'rotate-90')}
-          strokeWidth={2}
-        />
-      </button>
+        <button type="button" onClick={onToggle} className="p-1 rounded hover:bg-soft text-muted-2 hover:text-ink transition-colors" aria-expanded={expanded} aria-label={expanded ? 'Hide the columns' : 'Show the columns'}>
+          <ArrowRight className={cn('w-3.5 h-3.5 transition-transform', expanded && 'rotate-90')} strokeWidth={2} aria-hidden />
+        </button>
+      </div>
       {expanded && (
         <div className="px-4 py-3 bg-softer border-t border-line space-y-4">
           {table.columns && table.columns.length > 0 && (
@@ -420,9 +575,7 @@ function TableRow({
                 {table.columns.map((c) => (
                   <div key={c.id} className="text-[12.5px]">
                     <span className="text-ink font-medium">{c.display_name || humanize(c.column_name)}</span>
-                    {c.description && (
-                      <span className="text-muted ml-1.5">— {c.description}</span>
-                    )}
+                    {c.description && <span className="text-muted ml-1.5">— {c.description}</span>}
                   </div>
                 ))}
               </div>
@@ -432,15 +585,10 @@ function TableRow({
             <div className="text-[10px] font-mono uppercase tracking-[0.12em] text-muted-2 mb-2">Sample data</div>
             <PreviewTable url={`/semantic/product-preview?productTableId=${table.id}&limit=10`} />
           </div>
-          {/* Workshop link — curator-gated like "Open in Build": showing a
-              viewer a door into a role-gated route is a dead end. */}
-          {isCurator && (
-            <a
-              href={`/products/${productId}?table=${encodeURIComponent(table.table_name)}`}
-              className="inline-flex items-center gap-1.5 text-[11.5px] font-medium text-ocean hover:underline"
-            >
-              Edit in notebook →
-            </a>
+          {onOpen && (
+            <button type="button" onClick={onOpen} className="inline-flex items-center gap-1.5 text-[11.5px] font-medium text-ocean hover:underline">
+              Open this table →
+            </button>
           )}
         </div>
       )}
@@ -448,70 +596,145 @@ function TableRow({
   );
 }
 
+const ROLE_OPTIONS: Array<{ value: 'fact' | 'dimension' | 'bridge'; label: string }> = [
+  { value: 'fact', label: 'Measures table' },
+  { value: 'dimension', label: 'Lookup table' },
+  { value: 'bridge', label: 'Bridge table' },
+];
+
+/**
+ * A table by hand: a name and what kind of table it is. It is created EMPTY
+ * and opened on its SQL tab, where the declaration is written and saved —
+ * the one act the workshop had that nothing else covered.
+ */
+function AddTableForm({ productId, onAdded, onCancel }: {
+  productId: number;
+  onAdded: (created: { id: number; table_name: string }) => void;
+  onCancel: () => void;
+}) {
+  const [name, setName] = useState('');
+  const [tableRole, setTableRole] = useState<'fact' | 'dimension' | 'bridge'>('fact');
+  const [description, setDescription] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const valid = /^[a-z][a-z0-9_]{0,62}$/.test(name);
+
+  async function submit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!valid || saving) return;
+    setSaving(true);
+    setError(null);
+    try {
+      const r = await api.post(`/products/${productId}/tables`, {
+        tableName: name,
+        tableRole,
+        description: description.trim() || undefined,
+      });
+      const created = r.data?.data as { id: number; table_name: string };
+      onAdded(created);
+    } catch (err) {
+      setError(errorText(err, 'Could not add the table'));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <form onSubmit={submit} className="mb-3 bg-raised border border-ocean/40 rounded-lg p-4 space-y-3" aria-label="Add a table">
+      <div className="grid grid-cols-1 sm:grid-cols-[1fr_auto] gap-3">
+        <div>
+          <label className="block text-[11px] text-muted mb-1" htmlFor="new-table-name">Technical name</label>
+          <input
+            id="new-table-name"
+            value={name}
+            onChange={(e) => setName(e.target.value.trim().toLowerCase())}
+            placeholder="fact_returns"
+            autoFocus
+            spellCheck={false}
+            className="w-full font-mono bg-raised border border-line rounded-md px-3 py-1.5 text-[13px] text-ink-2 focus:outline-none focus:border-ocean focus:ring-1 focus:ring-ocean/30"
+          />
+          <p className="mt-1 text-[11px] text-muted-2">Lowercase letters, digits and underscores — it is the name the SQL uses.</p>
+        </div>
+        <div>
+          <label className="block text-[11px] text-muted mb-1" htmlFor="new-table-role">Kind</label>
+          <select
+            id="new-table-role"
+            value={tableRole}
+            onChange={(e) => setTableRole(e.target.value as 'fact' | 'dimension' | 'bridge')}
+            className="bg-raised border border-line rounded-md px-3 py-1.5 text-[13px] text-ink-2 focus:outline-none focus:border-ocean"
+          >
+            {ROLE_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+          </select>
+        </div>
+      </div>
+      <div>
+        <label className="block text-[11px] text-muted mb-1" htmlFor="new-table-description">What is one row? <span className="text-muted-2">(optional)</span></label>
+        <input
+          id="new-table-description"
+          value={description}
+          onChange={(e) => setDescription(e.target.value)}
+          placeholder="One row per returned item"
+          className="w-full bg-raised border border-line rounded-md px-3 py-1.5 text-[13px] text-ink-2 focus:outline-none focus:border-ocean focus:ring-1 focus:ring-ocean/30"
+        />
+      </div>
+      {error && <p className="text-[12px] text-err">{error}</p>}
+      <div className="flex items-center gap-2">
+        <button type="submit" disabled={!valid || saving} className="inline-flex items-center gap-1.5 px-3.5 py-1.5 text-[12.5px] font-medium bg-ocean text-white rounded-md hover:bg-ocean-hover disabled:opacity-50 disabled:cursor-not-allowed transition-colors">
+          {saving ? <Loader2 className="w-3.5 h-3.5 animate-spin" strokeWidth={2} aria-hidden /> : <Plus className="w-3.5 h-3.5" strokeWidth={2.5} aria-hidden />}
+          Add and declare its SQL
+        </button>
+        <button type="button" onClick={onCancel} className="px-3 py-1.5 text-[12.5px] text-muted hover:text-ink transition-colors">Cancel</button>
+      </div>
+    </form>
+  );
+}
+
 // ───────────────────────────────────────────────────────────────────────────
-// Quality tab — read-only summary of dataset_profiles
+// Lineage and quality for viewers — sentences and a list, no graph
 // ───────────────────────────────────────────────────────────────────────────
 
-// Named CatalogQualityTab to avoid confusion with app/products/QualityTab
-// (a different component with the same job on the workshop surface).
-function CatalogQualityTab({
-  tables, palette,
-}: {
-  tables: ProductTable[];
-  palette: SourcePalette;
-}) {
-  // For v1 we just point users at the per-table quality scores rather than
-  // building a fully-featured aggregate view. The card explains where to
-  // look and offers a CTA to open the catalog quality tab via the source.
-  if (tables.length === 0) {
-    return <EmptyTabState message="No data quality history yet — refresh the product first." />;
-  }
+function ViewerLineage({ name, sourceTables }: { name: string; sourceTables: string[] | null }) {
   return (
-    <Section title="Data quality" icon={<ShieldCheck className="w-3.5 h-3.5" strokeWidth={1.75} />} palette={palette}>
-      <div className="bg-raised border border-line rounded-md p-5">
-        <p className="text-[13px] text-ink-2 leading-relaxed">
-          Quality scores track how complete, unique, and valid each table&rsquo;s
-          data is. Click into the catalog table to see scores, sample failures,
-          and the underlying business rules.
-        </p>
-      </div>
-      <div className="bg-raised border border-line rounded-md divide-y divide-line mt-3">
-        {tables.map((t) => (
-          <div key={t.id} className="flex items-center gap-3 px-4 py-2.5">
-            <span className="text-[13px] text-ink flex-1 truncate">
-              {t.display_name || humanizeTable(t)}
-            </span>
-            <span className="text-[11px] font-mono text-muted-2 tabular-nums">
-              {typeof t.row_count === 'number' ? `${compactNumber(t.row_count)} rows` : '—'}
-            </span>
-          </div>
-        ))}
+    <Section title="Where this data comes from" icon={<GitBranch className="w-3.5 h-3.5" strokeWidth={1.75} />}>
+      <div className="bg-raised border border-line rounded-md p-5 leading-relaxed text-[13px] text-ink-2">
+        {sourceTables === null ? (
+          <span className="inline-flex items-center gap-2 text-muted"><Loader2 className="w-3.5 h-3.5 animate-spin" strokeWidth={2} aria-hidden /> Looking it up…</span>
+        ) : sourceTables.length === 0 ? (
+          <p><strong className="text-ink">{name}</strong> is built from your source systems; the tables it reads have not been recorded yet.</p>
+        ) : (
+          <>
+            <p className="mb-2">
+              <strong className="text-ink">{name}</strong> is built from {sourceTables.length === 1 ? 'this source table' : `these ${sourceTables.length} source tables`}:
+            </p>
+            <p className="flex flex-wrap gap-1.5">
+              {sourceTables.map((t) => (
+                <span key={t} className="inline-flex rounded border border-line bg-softer px-1.5 py-0.5 text-[12px] text-ink-2">{humanize(t)}</span>
+              ))}
+            </p>
+            <p className="mt-3 text-muted">Whenever the source changes, a refresh brings the tables here up to date.</p>
+          </>
+        )}
       </div>
     </Section>
   );
 }
 
-// ───────────────────────────────────────────────────────────────────────────
-// Lineage tab — readable, not a graph
-// ───────────────────────────────────────────────────────────────────────────
-
-function LineageTab({ data, palette }: { data: ProductDetail; palette: SourcePalette }) {
-  const sourceName = data.source?.name ?? 'unknown source';
+function ViewerQuality({ tables }: { tables: SubjectTable[] }) {
+  if (tables.length === 0) return <EmptyTabState message="No data quality history yet — the subject has no tables." />;
   return (
-    <Section title="Where this data comes from" icon={<GitBranch className="w-3.5 h-3.5" strokeWidth={1.75} />} palette={palette}>
-      <div className="bg-raised border border-line rounded-md p-5 leading-relaxed text-[13px] text-ink-2">
-        <p className="mb-2">
-          <strong className="text-ink">{data.name}</strong> is built from{' '}
-          {data.source?.multiSource
-            ? <>multiple sources</>
-            : <>the <strong className="text-ink">{sourceName}</strong> source</>
-          }.
+    <Section title="Data quality" icon={<ShieldCheck className="w-3.5 h-3.5" strokeWidth={1.75} />}>
+      <div className="bg-raised border border-line rounded-md p-5">
+        <p className="text-[13px] text-ink-2 leading-relaxed">
+          Quality scores track how complete, unique and valid each table&rsquo;s data is. Open a table to see its score and the checks behind it.
         </p>
-        <p>
-          Data flows automatically from the source through your refresh pipeline
-          into the tables you see here. Whenever the source data changes, run a
-          refresh to update everything.
-        </p>
+      </div>
+      <div className="bg-raised border border-line rounded-md divide-y divide-line mt-3">
+        {tables.map((t) => (
+          <div key={t.id} className="flex items-center gap-3 px-4 py-2.5">
+            <span className="text-[13px] text-ink flex-1 truncate">{t.display_name || humanizeTable(t)}</span>
+            <span className="text-[11px] font-mono text-muted-2 tabular-nums">{typeof t.row_count === 'number' ? `${compactNumber(t.row_count)} rows` : '—'}</span>
+          </div>
+        ))}
       </div>
     </Section>
   );
@@ -521,30 +744,25 @@ function LineageTab({ data, palette }: { data: ProductDetail; palette: SourcePal
 // Atoms
 // ───────────────────────────────────────────────────────────────────────────
 
-function Section({
-  title, icon, palette, children,
-}: {
+function Section({ title, icon, aside, children }: {
   title: string;
   icon: React.ReactNode;
-  palette: SourcePalette;
+  aside?: React.ReactNode;
   children: React.ReactNode;
 }) {
   return (
     <section>
       <div className="flex items-center gap-2 mb-3">
-        <span className={cn('inline-flex items-center', palette.eyebrow)}>{icon}</span>
-        <h2 className="text-[10.5px] font-mono uppercase tracking-[0.14em] text-muted-2 font-medium">
-          {title}
-        </h2>
+        <span className="inline-flex items-center text-ocean">{icon}</span>
+        <h2 className="text-[10.5px] font-mono uppercase tracking-[0.14em] text-muted-2 font-medium flex-1">{title}</h2>
+        {aside}
       </div>
       {children}
     </section>
   );
 }
 
-function Stat({
-  label, value, format, text,
-}: {
+function Stat({ label, value, format, text }: {
   label: string;
   value: number | string;
   format?: 'compact';
@@ -552,9 +770,7 @@ function Stat({
 }) {
   const display = text || typeof value === 'string'
     ? String(value)
-    : format === 'compact'
-      ? compactNumber(value as number)
-      : (value as number).toLocaleString();
+    : format === 'compact' ? compactNumber(value as number) : (value as number).toLocaleString();
   return (
     <div className="px-3 py-2.5 bg-raised border border-line rounded-md">
       <div className="text-[10px] font-mono uppercase tracking-[0.1em] text-muted-2 mb-0.5">{label}</div>
@@ -572,7 +788,7 @@ function EmptyTabState({ message }: { message: string }) {
 }
 
 // ───────────────────────────────────────────────────────────────────────────
-// Helpers (humanize, starters, compact numbers) — same logic as preview
+// Helpers (humanize, starters, compact numbers)
 // ───────────────────────────────────────────────────────────────────────────
 
 function humanize(name: string): string {
@@ -584,10 +800,9 @@ function humanize(name: string): string {
   return s.split(' ').map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
 }
 
-function humanizeTable(t: ProductTable): string {
+function humanizeTable(t: { display_name?: string | null; table_name: string }): string {
   if (t.display_name) return t.display_name;
-  const stripped = t.table_name.replace(/^(dim|fact|bridge|junk)_/, '');
-  return humanize(stripped);
+  return humanize(t.table_name.replace(/^(dim|fact|bridge|junk)_/, ''));
 }
 
 function pluralizeLower(s: string): string {
@@ -597,7 +812,7 @@ function pluralizeLower(s: string): string {
   return `${lower}s`;
 }
 
-function kpisToStarters(kpis: Kpi[], allTables: ProductTable[], productName: string): string[] {
+function kpisToStarters(kpis: ProductKpi[], allTables: SubjectTable[], productName: string): string[] {
   if (kpis.length > 0) {
     const names = kpis.slice(0, 3).map((k) => humanize(k.name).toLowerCase());
     const out: string[] = [];
@@ -613,7 +828,7 @@ function kpisToStarters(kpis: Kpi[], allTables: ProductTable[], productName: str
     return [
       `How many ${pluralizeLower(f0)} were recorded this year?`,
       `Show me ${pluralizeLower(f0)} by month.`,
-      `What's the most recent ${humanizeTable(facts[0]).toLowerCase()}?`,
+      `What's the most recent ${f0.toLowerCase()}?`,
     ];
   }
   const dims = allTables.filter((t) => t.table_role === 'dimension' || t.table_role === 'bridge');
@@ -625,7 +840,7 @@ function kpisToStarters(kpis: Kpi[], allTables: ProductTable[], productName: str
     ];
   }
   return [
-    `What's in the ${productName} product?`,
+    `What's in the ${productName} subject?`,
     `Show me the latest data from ${productName}.`,
     `What can I ask about ${productName}?`,
   ];

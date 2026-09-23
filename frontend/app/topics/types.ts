@@ -4,8 +4,7 @@
  * `Topic` mirrors `GET /api/products/:id/topic` — the single read model the
  * topic page mounts on. Deliberately small: the topic page must never learn
  * the words "fact", "dimension" or "star schema", so nothing here carries
- * them. Manage mode loads the full `FullDataProduct` separately, because
- * that is the surface where warehouse vocabulary is allowed.
+ * them. Everything technical is the catalog's subject page, one door away.
  */
 
 export type FreshnessState = 'ok' | 'warn' | 'err';
@@ -38,16 +37,8 @@ export interface Topic {
     /** Tables that ran without a column the source stopped providing. */
     degradedTables: Array<{ table: string; reason: string }>;
   };
-  /** Counts only — a viewer may read these; failure detail stays in Manage mode. */
+  /** Counts only — a viewer may read these; failure detail is the catalog's. */
   quality: { checksPassing: number; checksTotal: number };
   /** Tables whose deploy-cell SQL differs from what the warehouse was built from. */
   pendingChanges: number;
 }
-
-/** Manage mode's tab strip. Values are the plain-language labels' keys. */
-export type ManageTab = 'tables' | 'fits' | 'comes-from' | 'metrics' | 'quality' | 'activity';
-
-/** Sub-tabs on a selected table inside Manage mode's Tables tab. */
-export type TableSubTab = 'built' | 'columns' | 'relationships' | 'quality';
-
-export type DeployState = 'idle' | 'running' | 'done' | 'error';
