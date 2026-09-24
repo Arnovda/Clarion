@@ -37,8 +37,31 @@ Purchasing › Journal showed *"No data yet — run the transformation for this
 table first"* and an empty SQL editor. *"I think we should just not display
 reference tables in different subjects like Purchasing? … Give me your honest
 opinion."* Research first, then *"Do everything you propose, but keep the
-Reference subject for now instead of Shared Data"*. Branch
-`claude/kind-cori-98hpxi`, draft PR — NOT merged or deployed.)
+Reference subject for now instead of Shared Data"*. PR #180 — MERGED AND
+IN PRODUCTION the same morning, see the deploy record just below.)
+
+**IN MAIN AND PRODUCTION (2026-09-24, 08:52 UTC) — owner: *"Pls put in main
+and production and live"*.** PR #180 was taken out of draft and REBASE-merged
+as `6949c06`, a single linear commit on top of `8b77f70`; all ten checks were
+green on the branch head `18ae375` first. **Build & Deploy run #621**: the gate
+waited 5m40s for Tests + Lint on the merged sha; backend AND frontend built as
+**`main-6949c06`** (build-worker and build-etl correctly skipped);
+**`migrate-sql` recorded the recovery point, kept the pre-migration schema 30
+days and applied migration 102 (`Batch 60 run: 1 migrations`)** — the backfill
+that points every existing copy at its original ran against production data
+here; the backend test revision deployed at 0%, the jobs-worker took the same
+image, the frontend test revision at 0%; ETL, the sync-worker pin and
+`neo4j-constraints` skipped, all correctly. **Go live health-checked the new
+backend through the staging label on its first try (`/api/health` 200:
+postgres / redis / neo4j / blob / worker_transformation / worker_bus_matrix
+all `ok`, uptime 196s) and shifted backend + frontend to `--main-6949c06` at
+100%** at 08:52:16 / 08:52:44 UTC. Read from the job's own log, not inferred.
+Rollback if needed: Actions → **Rollback production** (note: the migration's
+`down` is a no-op by design — the pointer is harmless under old code, which
+simply never read it). **The WATCH AFTER DEPLOY block below is live now** —
+nobody has yet opened Purchasing in the catalog on this build. Housekeeping:
+`claude/kind-cori-98hpxi` was restarted from main at `6949c06`; this record
+rides a NEW draft PR.
 
 **THE ROOT CAUSE WAS NOT THE DISPLAY. A POINTER NOTHING EVER WROTE.** When a
 subject uses a lookup another subject builds, the builder writes a COPY row
