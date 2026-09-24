@@ -7,7 +7,7 @@
  *   - the pinned @anthropic-ai/sdk (params passed via cast, since the SDK
  *     version predates the feature),
  *   - the `structured-outputs-2025-11-13` beta header,
- *   - `output_format: { type: 'json_schema', schema: DASHBOARD_SPEC_JSON_SCHEMA }`,
+ *   - `output_config.format: { type: 'json_schema', schema: DASHBOARD_SPEC_JSON_SCHEMA }`,
  *   - the REAL dashboard system prompt.
  *
  * Run it anywhere with the API key available (your machine, or the prod
@@ -25,8 +25,9 @@ import 'dotenv/config';
 import Anthropic from '@anthropic-ai/sdk';
 import { getDashboardSystem } from '../src/ai/prompts/dashboardPrompt';
 import { DASHBOARD_SPEC_JSON_SCHEMA, AI_OUTPUT_SCHEMAS } from '../src/ai/outputSchemas';
+import { mainModel, shapeRequest, responseText } from '../src/ai/modelCapabilities';
 
-const MODEL = process.env.CLAUDE_MODEL ?? 'claude-sonnet-4-6';
+const MODEL = mainModel();
 
 async function main(): Promise<void> {
   const apiKey = process.env.ANTHROPIC_API_KEY;
@@ -52,7 +53,8 @@ Table orders (fact, grain: one row per order)
 
 Generate a SMALL dashboard: exactly 1 filter and 2 widgets (one kpi_card, one bar_chart).`;
 
-  console.log(`Calling ${MODEL} with output_format + beta header…`);
+  console.log(`Calling ${MODEL} with output_config.format + beta header…`);
+  const shaped = shapeRequest({ model: MODEL, maxTokens: 4000, temperature: 0, streaming: false });
   const start = Date.now();
 
   let message: Anthropic.Message;
@@ -60,11 +62,11 @@ Generate a SMALL dashboard: exactly 1 filter and 2 widgets (one kpi_card, one ba
     message = await client.messages.create(
       {
         model: MODEL,
-        max_tokens: 4000,
-        temperature: 0,
         system: getDashboardSystem('duckdb'),
         messages: [{ role: 'user', content: userPrompt }],
-        output_format: { type: 'json_schema', schema: DASHBOARD_SPEC_JSON_SCHEMA },
+        // Shaped exactly as AIService.callClaude shapes a dashboard call.
+        ...shaped,
+        output_config: { ...(shaped.output_config ?? {}), format: { type: 'json_schema', schema: DASHBOARD_SPEC_JSON_SCHEMA } },
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
       } as any,
       { headers: { 'anthropic-beta': 'structured-outputs-2025-11-13' } },
@@ -77,19 +79,21 @@ Generate a SMALL dashboard: exactly 1 filter and 2 widgets (one kpi_card, one ba
     process.exit(1);
   }
 
-  const block = message.content[0];
-  if (!block || block.type !== 'text') {
-    console.error(`\nFAIL: unexpected response block type: ${block?.type ?? 'none'}`);
+  let text: string;
+  try {
+    text = responseText(message);
+  } catch (err) {
+    console.error(`\nFAIL: ${err instanceof Error ? err.message : String(err)}`);
     process.exit(1);
   }
 
   // The whole point of structured outputs: this parse can no longer fail.
   let parsed: unknown;
   try {
-    parsed = JSON.parse(block.text);
+    parsed = JSON.parse(text);
   } catch {
     console.error('\nFAIL: response text is not valid JSON — constrained decoding did not apply.');
-    console.error(block.text.slice(0, 400));
+    console.error(text.slice(0, 400));
     process.exit(1);
   }
 

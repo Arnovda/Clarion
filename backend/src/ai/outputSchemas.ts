@@ -127,7 +127,7 @@ export const AI_OUTPUT_SCHEMAS = {
 };
 
 // ─── JSON Schema for Anthropic structured outputs (constrained decoding) ────
-// Passed as `output_format.schema` when AI_STRUCTURED_OUTPUTS=1 — the API then
+// Passed as `output_config.format.schema` when AI_STRUCTURED_OUTPUTS=1 — the API then
 // guarantees the response parses as JSON matching this schema. Mirrors the Zod
 // schema above (`additionalProperties: true` ≙ `.passthrough()`); the widget
 // type enum derives from REQUIRED_WIDGET_COLUMNS so all three spec surfaces

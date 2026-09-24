@@ -276,6 +276,26 @@ deploy triggered by the same push took the slot. Two workflows fired by one
 push must never share a group — the wait step is what keeps the two
 `az containerapp update`s from interleaving instead.
 
+## `claude-model` — which Claude models production runs
+
+Two lines: `main <model-id>` (`CLAUDE_MODEL` — Ask AI's SQL, dashboards,
+subject design, investigations, profiling) and `light <model-id>`
+(`CLAUDE_MODEL_HAIKU` — formatting, result checks, briefs, drafts). Editing
+it runs `claude-model.yml`, which sets both on the backend (new revision,
+provisioned, 100% traffic) and the jobs-worker (restart). No-op when the
+values already match — not a promote vehicle. A per-category override on
+`/admin/ai-usage` still wins for the categories it names.
+
+It **waits for its own commit's Build & Deploy run and refuses unless that
+run succeeded**, rather than only waiting for "nothing in flight": both
+workflows start on the same push and this one can look before the deploy is
+even queued. The order matters because model generations take different
+requests — Sonnet 5 refuses the fixed thinking budget and `temperature` that
+Sonnet 4.6 accepts — and `backend/src/ai/modelCapabilities.ts` is what
+shapes each request for the model it goes to. A model switch landing on
+code older than that module breaks every AI call. Rollback (`main
+claude-sonnet-4-6`) is safe with any code that has the module.
+
 ## `alerts` — who gets told when production is broken
 
 Contains an **email address**, or `off` — plus, optionally, `sms <country

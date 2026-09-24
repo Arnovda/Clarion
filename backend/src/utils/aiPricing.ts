@@ -21,7 +21,10 @@ interface ModelRates {
 }
 
 const RATES: Record<string, ModelRates> = {
-  // Sonnet family — heavyweight reasoning + SQL gen
+  // Sonnet family — heavyweight reasoning + SQL gen. Sonnet 5 counts ~30%
+  // more tokens than 4.6 for the same text (new tokenizer), so a like-for-
+  // like call costs roughly 13% less, not the 33% the per-token rate says.
+  'claude-sonnet-5':             { input: 2.00, output: 10.00 },
   'claude-sonnet-4-6':           { input: 3.00, output: 15.00 },
   'claude-sonnet-4-5-20250929':  { input: 3.00, output: 15.00 },
   'claude-sonnet-4-5':           { input: 3.00, output: 15.00 },
@@ -32,7 +35,12 @@ const RATES: Record<string, ModelRates> = {
   'claude-haiku-4-5':            { input: 1.00, output: 5.00 },
   'claude-3-5-haiku-20241022':   { input: 0.80, output: 4.00 },
 
-  // Opus — heaviest reasoning, used rarely
+  // Opus — heaviest reasoning, used rarely (only via a per-category override)
+  'claude-opus-5-5':             { input: 4.00, output: 20.00 },
+  'claude-opus-5':               { input: 5.00, output: 25.00 },
+  'claude-opus-4-8':             { input: 5.00, output: 25.00 },
+  'claude-opus-4-7':             { input: 5.00, output: 25.00 },
+  'claude-opus-4-6':             { input: 5.00, output: 25.00 },
   'claude-opus-4':               { input: 15.00, output: 75.00 },
 };
 
