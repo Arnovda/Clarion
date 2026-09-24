@@ -49,8 +49,10 @@ router.get('/', async (req: Request, res: Response, next: NextFunction) => {
     const mode = parseMode(row?.ai_routing_mode) ?? 'claude';
 
     const availableModels: Array<{ provider: string; model_id: string; label: string }> = [
-      { provider: 'anthropic', model_id: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6' },
+      { provider: 'anthropic', model_id: 'claude-sonnet-5', label: 'Claude Sonnet 5' },
       { provider: 'anthropic', model_id: 'claude-haiku-4-5-20251001', label: 'Claude Haiku 4.5' },
+      { provider: 'anthropic', model_id: 'claude-opus-5', label: 'Claude Opus 5' },
+      { provider: 'anthropic', model_id: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6 (previous)' },
     ];
     if (isAzureOpenAIConfigured()) {
       const deployments = getAzureOpenAIDeployments();

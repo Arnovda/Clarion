@@ -1,0 +1,27 @@
+main claude-sonnet-5
+light claude-haiku-4-5-20251001
+
+# The Claude models production runs, per role.
+#
+#   main <model-id>    CLAUDE_MODEL — SQL generation (Ask AI), dashboards,
+#                      subject design, investigations, schema profiling
+#   light <model-id>   CLAUDE_MODEL_HAIKU — answer formatting, result checks,
+#                      morning briefs, KPI drafts, query starters
+#
+# Editing this file on main runs .github/workflows/claude-model.yml, which
+# sets both variables on the backend (new revision, Provisioned, 100%
+# traffic) and on the jobs-worker (restart). No-op when the values already
+# match — NOT a promote vehicle. A per-category override on /admin/ai-usage
+# still wins over these for the categories it names.
+#
+# ROLLBACK: set `main claude-sonnet-4-6` and push. The request shaping in
+# backend/src/ai/modelCapabilities.ts serves both generations, so either
+# value is safe with the code that ships alongside this file. It is NOT safe
+# with code older than that: Sonnet 5 refuses the fixed thinking budget and
+# `temperature` the older code sent — which is why the workflow refuses to
+# apply while the Build & Deploy run for its own commit failed.
+#
+# 2026-09-24: Sonnet 4.6 → Sonnet 5 (owner: "Yes do it"). Sonnet 5 is the
+# successor at $2/$10 per MTok vs $3/$15, with a tokenizer that counts ~30%
+# more tokens for the same text — so ~13% cheaper like for like, and the
+# point of the move is quality, not price. Haiku 4.5 has no successor.

@@ -750,7 +750,7 @@ resource "azurerm_container_app" "backend" {
       }
       env {
         name  = "CLAUDE_MODEL"
-        value = "claude-sonnet-4-6"
+        value = "claude-sonnet-5"
       }
       env {
         name        = "CREDENTIALS_ENCRYPTION_KEY"
@@ -1079,7 +1079,7 @@ resource "azurerm_container_app" "jobs_worker" {
       }
       env {
         name  = "CLAUDE_MODEL"
-        value = "claude-sonnet-4-6"
+        value = "claude-sonnet-5"
       }
       env {
         name        = "CREDENTIALS_ENCRYPTION_KEY"

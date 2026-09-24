@@ -31,7 +31,84 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-09-24 (AI USAGE 500 = A CONNECTION-POOL DEADLOCK —
+**Last updated:** 2026-09-24 (CLAUDE SONNET 4.6 → SONNET 5 — owner asked
+whether cheaper or better Claude models exist and whether we were pinned to
+old ones; then *"Yes do it"*. Branch `claude/kind-cori-98hpxi`, new PR.)
+
+**WE WERE PINNED, AND A PLAIN MODEL SWAP WOULD HAVE BROKEN ASK AI.** The main
+model was `claude-sonnet-4-6` everywhere (`AIService.ts` default, both
+Terraform env blocks, the admin model picker); the light model
+`claude-haiku-4-5-20251001` has no successor and stays. Sonnet 5 is the
+successor at $2/$10 per MTok vs $3/$15, BUT its tokenizer counts ~30% more
+tokens for the same text — so ~13% cheaper like for like, and it thinks
+before answering unless told otherwise. **The move is for quality, not
+price.** Setting `CLAUDE_MODEL=claude-sonnet-5` alone would have 400'd: Sonnet
+5 refuses `thinking: {type:'enabled', budget_tokens}` (Ask AI's SQL stream
+and the subject-design stream both sent it) and any non-default
+`temperature` (dozens of Sonnet calls sent `temperature: 0`). And
+`callClaude` read `message.content[0]`, which on a thinking model is the
+thinking block — every reply would have been "unexpected non-text response".
+- **NEW `backend/src/ai/modelCapabilities.ts` — the one place the per-model
+  rules live** (pure, 11 tests in `modelCapabilities.test.ts`):
+  `acceptsSampling` / `supportsAdaptiveThinking` / `thinksByDefault` /
+  `supportsEffort` by id prefix; `shapeRequest({model, maxTokens,
+  temperature, effort, streaming, thinking})` returns the model-dependent
+  params; `responseText(message)` joins every text block and says WHY when
+  there is none (refusal / budget spent thinking). `mainModel()` /
+  `lightModel()` read the env; the router's category defaults use them.
+- **Shaping rules.** Temperature is dropped only where refused (Sonnet 4.6 and
+  Haiku keep it). Ordinary calls on a model that thinks unprompted get
+  `thinking: adaptive` + `output_config.effort: 'low'` (overridable per call
+  via the new `effort` option) and `max_tokens` + 8000 headroom — a cap, not
+  a charge — held under 21 000 on non-streaming calls because SDK 0.39
+  refuses larger ones. The two surfaces that SHOW reasoning (Ask AI's
+  thinking, the build page's "Show the working") ask for it on every model:
+  adaptive + `display: 'summarized'` where the default would stream empty
+  thinking text (effort `medium` for SQL, `high` for the warehouse design);
+  budget form only for an older model reached through an override. **Sonnet
+  4.6 gets exactly the old request on ordinary calls**, which is what makes
+  rollback safe. Structured outputs moved from the deprecated
+  `output_format` to `output_config.format`, merged with effort (still
+  env-gated by `AI_STRUCTURED_OUTPUTS`, still default off).
+- **SDK stays at 0.39.0** (latest is 0.128): the new fields are passed through
+  a cast, as `output_format` already was. Verified against the real SDK with
+  a stubbed fetch: the body carries `thinking`/`output_config`, no
+  `temperature`, and a thinking-first reply reads as its text. Upgrading the
+  SDK is its own slice.
+- **Admin model picker** (`routes/aiRouting.ts`) offers Sonnet 5, Haiku 4.5,
+  Opus 5 and Sonnet 4.6 (previous); **pricing table** (`aiPricing.ts`) gained
+  Sonnet 5, Opus 5.5 / 5 / 4.8 / 4.7 / 4.6 — an unknown id falls back to
+  Sonnet 4.6 rates, so without the row the cost page would have overstated
+  Sonnet 5 by 50%. Defaults changed in `.env.example` and both Terraform env
+  blocks; `scripts/verify-structured-outputs.ts` shapes its request the same
+  way production does.
+- **NEW GITOPS CONTROL `.ops/claude-model`** (`main <id>`, `light <id>`) +
+  `claude-model.yml`: sets `CLAUDE_MODEL` / `CLAUDE_MODEL_HAIKU` on the
+  backend (new revision → Provisioned → 100%) and the jobs-worker (restart);
+  no-op when applied. Terraform alone never reaches the running apps. **It
+  waits for its OWN commit's Build & Deploy run and refuses unless it
+  succeeded** — not just "nothing in flight", because both start on the same
+  push and the control could otherwise look before the deploy is queued,
+  switching the model onto code that cannot shape requests for it. Wait logic
+  dry-run against a stubbed `gh` both directions. **Rollback = `main
+  claude-sonnet-4-6` and push.**
+- **What changes on screen, honestly:** Sonnet 5 thinks a little on most
+  calls at `low` effort, so some responses are slower; `temperature: 0` is
+  gone for Sonnet calls, so "same request, same dashboard" is no longer
+  forced (it was never guaranteed); outputs follow instructions more
+  literally.
+- Validation: `modelCapabilities.test.ts` 11/11; backend `npm run check`
+  clean; all twelve ratchets green from the repo root; the verify script
+  type-checks. **NOT exercised against the live API** — no key in this
+  sandbox. **WATCH AFTER DEPLOY**: the claude-model run summary must show
+  `claude-sonnet-4-6 → claude-sonnet-5` on both apps; then one Ask AI
+  question, one dashboard and one subject rebuild. A 400 naming `thinking`,
+  `temperature` or `output_config` is the signature to roll back on. On
+  `/admin/ai-usage`, compare cost per call against last week — expect
+  roughly flat to ~13% lower per call; higher means the `low` effort default
+  is thinking more than it should.
+
+**Prior last updated:** 2026-09-24 (AI USAGE 500 = A CONNECTION-POOL DEADLOCK —
 owner, with a screenshot of /admin/ai-usage: *"Couldn't load AI usage data.
 Request failed with status code 500"*. PR #183 — IN MAIN AND PRODUCTION.)
 
@@ -12265,7 +12342,7 @@ The platform supports the full data lifecycle:
 - **Knowledge graph:** Neo4j 5 Community — stores semantic relationships, cross-source views
 - **Source connectors:** SQLite, PostgreSQL, MySQL, SQL Server (via `connectors/` abstraction)
 - **Query engine:** DuckDB — used to query ingested Parquet files (star schema products)
-- **AI:** Anthropic Claude API (`claude-sonnet-4-6`) via `@anthropic-ai/sdk`
+- **AI:** Anthropic Claude API (`claude-sonnet-5` main, `claude-haiku-4-5` light — set by `.ops/claude-model`) via `@anthropic-ai/sdk`
 - **Auth:** JWT-based with bcrypt password hashing; three roles: admin, analyst, viewer
 - **Job queue:** BullMQ + Redis (optional — falls back to inline execution)
 - **Logging:** Pino (structured JSON logging)
@@ -12389,6 +12466,7 @@ clarion/                              ← on disk: databridge/
 │       │
 │       ├── ai/
 │       │   ├── AIService.ts          ← single entry point for ALL Claude API calls
+│       │   ├── modelCapabilities.ts  ← which model, and how each request is shaped for it (sampling, thinking, effort)
 │       │   └── prompts/
 │       │       ├── schemaDraftPrompt.ts      ← schema profiling prompts
 │       │       ├── nlToSqlPrompt.ts          ← NL→SQL for source databases
@@ -12750,7 +12828,7 @@ clarion/                              ← on disk: databridge/
 ## AI Architecture — How Claude Is Used
 
 All AI calls go through `backend/src/ai/AIService.ts` — no exceptions.
-The model is `claude-sonnet-4-6` for all call types.
+The main model is `claude-sonnet-5` (Haiku 4.5 for formatting-class calls), set per role by `.ops/claude-model`; every request is shaped for its model by `ai/modelCapabilities.ts`.
 
 ### Call Type 1 — Schema Draft (setup phase)
 **When:** After a source database is connected and schema is read.
@@ -13023,7 +13101,8 @@ AUTH_STATUS_TTL_MS=30000
 
 # Claude API (get key from console.anthropic.com)
 ANTHROPIC_API_KEY=your_key_here
-CLAUDE_MODEL=claude-sonnet-4-6
+CLAUDE_MODEL=claude-sonnet-5
+CLAUDE_MODEL_HAIKU=claude-haiku-4-5-20251001
 
 # SQLite source database (optional — for local sample data)
 SQLITE_DB_PATH=./data/sample.db

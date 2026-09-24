@@ -1,4 +1,5 @@
 import Anthropic from '@anthropic-ai/sdk';
+import { mainModel, lightModel, shapeRequest, responseText, type Effort } from './modelCapabilities';
 import path from 'path';
 import dotenv from 'dotenv';
 import { z } from 'zod';
@@ -245,9 +246,12 @@ function getClient(): Anthropic {
   }
   return _client;
 }
-const MODEL = process.env.CLAUDE_MODEL ?? 'claude-sonnet-4-6';
-/** Cheaper model for summarisation-class calls (formatAnswer, validateQueryResult). ~12× cheaper than Sonnet. */
-const MODEL_HAIKU = process.env.CLAUDE_MODEL_HAIKU ?? 'claude-haiku-4-5-20251001';
+// Which model, and what each model accepts, live in modelCapabilities.ts —
+// every request below is shaped there, so a model switch cannot 400 on a
+// call site that still speaks the previous generation's API.
+const MODEL = mainModel();
+/** Cheaper model for summarisation-class calls (formatAnswer, validateQueryResult). */
+const MODEL_HAIKU = lightModel();
 
 // ---------------------------------------------------------------------------
 // Internal helpers
@@ -305,6 +309,12 @@ interface CallClaudeOptions {
    */
   temperature?: number;
   /**
+   * How hard to think, on a model that thinks before it answers (Sonnet 5).
+   * Default 'low' — see modelCapabilities.shapeRequest. Ignored on models
+   * that do not think unprompted (Sonnet 4.6, Haiku 4.5).
+   */
+  effort?: Effort;
+  /**
    * Privacy classification of the prompt. Drives the tenant-level
    * Claude/Hybrid/Azure routing toggle. Defaults to 'schema' (safe
    * for any backend). Set to 'row' for any call that includes
@@ -317,7 +327,7 @@ interface CallClaudeOptions {
   /**
    * JSON Schema for constrained decoding (Anthropic structured outputs,
    * GA on the Claude 4.6 line). When set AND the AI_STRUCTURED_OUTPUTS=1
-   * env flag is on, the Anthropic call includes `output_format:
+   * env flag is on, the Anthropic call includes `output_config.format:
    * {type:'json_schema', schema}` + the structured-outputs beta header, so
    * the response is GUARANTEED well-formed JSON matching the schema —
    * no fences, no truncated brackets, no unknown widget types.
@@ -436,19 +446,25 @@ export async function callClaude(
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
     try {
       const useStructured = !!opts.jsonOutputSchema && structuredOutputsEnabled();
+      const shaped = shapeRequest({
+        model: effectiveModel, maxTokens, temperature: opts.temperature,
+        effort: opts.effort, streaming: false,
+      });
+      // Structured outputs and effort share `output_config`; both postdate
+      // our pinned SDK's types, hence the cast. Structured outputs stay
+      // env-gated (see jsonOutputSchema).
+      const outputConfig = {
+        ...(shaped.output_config ?? {}),
+        ...(useStructured ? { format: { type: 'json_schema', schema: opts.jsonOutputSchema } } : {}),
+      };
       const message = await getClient().messages.create(
         {
           model: effectiveModel,
-          max_tokens: maxTokens,
           messages: [{ role: 'user', content: userPrompt }],
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           system: systemParam as any,
-          ...(opts.temperature !== undefined ? { temperature: opts.temperature } : {}),
-          // `output_format` postdates our pinned SDK's types — the cast is
-          // deliberate and the whole param is env-gated (see jsonOutputSchema).
-          ...(useStructured
-            ? { output_format: { type: 'json_schema', schema: opts.jsonOutputSchema } }
-            : {}),
+          ...shaped,
+          ...(Object.keys(outputConfig).length > 0 ? { output_config: outputConfig } : {}),
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
         } as any,
         useStructured
@@ -456,10 +472,9 @@ export async function callClaude(
           : undefined,
       );
 
-      const block = message.content[0];
-      if (block.type !== 'text') {
-        throw new Error('AIService: unexpected non-text response from Claude');
-      }
+      // Every text block, never `content[0]`: a thinking model puts its
+      // thinking block first.
+      const text = responseText(message);
 
       // Track AI call metrics, including cache hit/miss breakdown.
       const durationMs = Date.now() - start;
@@ -503,7 +518,7 @@ export async function callClaude(
         durationMs,
       });
 
-      return block.text;
+      return text;
     } catch (err: unknown) {
       const status = (err as { status?: number }).status;
       const isRetryable = status === 529 || status === 503 || status === 500 || status === 429;
@@ -674,12 +689,11 @@ async function callClaudeStreaming(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const params: any = {
     model: MODEL,
-    max_tokens: maxTokens,
     system: cacheSystem
       ? [{ type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } }]
       : systemPrompt,
     messages: [{ role: 'user', content: userPrompt }],
-    ...(temperature !== undefined ? { temperature } : {}),
+    ...shapeRequest({ model: MODEL, maxTokens, temperature, streaming: true }),
   };
 
   const opened = await openStreamWithRetry(() => getClient().messages.stream(params), { callLabel });
@@ -744,18 +758,14 @@ export async function callClaudeMultiTurn(
   const message = await getClient().messages.create(
     {
       model: MODEL,
-      max_tokens: 4096,
       system: systemPrompt,
       messages,
-      ...(opts.temperature !== undefined ? { temperature: opts.temperature } : {}),
-    },
+      ...shapeRequest({ model: MODEL, maxTokens: 4096, temperature: opts.temperature, streaming: false }),
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any,
     opts.signal ? { signal: opts.signal } : undefined,
   );
-
-  const block = message.content[0];
-  if (block.type !== 'text') {
-    throw new Error('AIService: unexpected non-text response from Claude');
-  }
+  const text = responseText(message);
 
   const inputTokens  = message.usage?.input_tokens  ?? 0;
   const outputTokens = message.usage?.output_tokens ?? 0;
@@ -777,7 +787,7 @@ export async function callClaudeMultiTurn(
     durationMs: Date.now() - start,
   });
 
-  return block.text;
+  return text;
 }
 
 /**
@@ -1463,7 +1473,7 @@ export async function validateQueryResultIfNeeded(
 
 // ---------------------------------------------------------------------------
 // Call Type 2a (streaming) — NL → SQL with extended thinking tokens live
-// Calls Claude with budget_tokens of thinking; fires onEvent for each delta
+// Calls Claude with adaptive thinking (summarized); fires onEvent for each delta
 // so the caller (SSE route) can stream them to the browser in real time.
 // ---------------------------------------------------------------------------
 
@@ -1498,8 +1508,9 @@ export async function generateSqlStreaming(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const params: any = {
     model: MODEL,
-    max_tokens: 16000,
-    thinking: { type: 'enabled', budget_tokens: 8000 },
+    // The reasoning streams to the asker live, so it is asked for on every
+    // model and summarized where the model would otherwise send it empty.
+    ...shapeRequest({ model: MODEL, maxTokens: 16000, streaming: true, thinking: 'visible', effort: 'medium' }),
     // cache_control on the NL→SQL system prompt — same big context that's
     // stable across all questions from a tenant.
     system: [{ type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } }],
@@ -1809,8 +1820,8 @@ export async function generateBusMatrixStreaming(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const params: any = {
     model: MODEL,
-    max_tokens: 64000,
-    thinking: { type: 'enabled', budget_tokens: 8000 },
+    // A whole warehouse design: the one call worth thinking hardest about.
+    ...shapeRequest({ model: MODEL, maxTokens: 64000, streaming: true, thinking: 'visible', effort: 'high' }),
     system: [{
       type: 'text',
       text: promptOverride?.system ?? BUS_MATRIX_SYSTEM(sourceTablesContext, currentDate),
@@ -1824,7 +1835,7 @@ export async function generateBusMatrixStreaming(
     try { onEvent('diag', msg); } catch { /* ignore */ }
   };
 
-  sendDiag(`AI call starting (model=${MODEL}, max_tokens=${params.max_tokens}, thinking_budget=${params.thinking.budget_tokens}, contextChars=${sourceTablesContext.length})`);
+  sendDiag(`AI call starting (model=${MODEL}, max_tokens=${params.max_tokens}, thinking=${JSON.stringify(params.thinking ?? null)} effort=${params.output_config?.effort ?? 'default'}, contextChars=${sourceTablesContext.length})`);
 
   const opened = await openStreamWithRetry(() => {
     const st = getClient().messages.stream(params);

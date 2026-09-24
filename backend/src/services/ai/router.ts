@@ -26,6 +26,7 @@ import { isAzureConfigured, isAzureOpenAIConfigured, callAzureChat, callAzureOpe
 import { getTenantAiMode, type AiRoutingMode } from './tenantAiMode';
 import { getCallCategoryConfig, type ModelOverride } from './callCategoryConfig';
 import { logger } from '../../utils/logger';
+import { mainModel, lightModel } from '../../ai/modelCapabilities';
 
 const log = logger.child({ component: 'ai-router' });
 
@@ -62,25 +63,25 @@ export const CALL_CATEGORY_META: Record<CallCategory, {
   schema_profiling: {
     label: 'Schema profiling',
     description: 'AI learns your source data — table/column descriptions, FK detection, naming conventions',
-    defaultModel: 'claude-sonnet-4-6',
+    defaultModel: mainModel(),
     callLabels: ['schema_conventions', 'table_context', 'column_descriptions', 'suggest_relationships', 'suggest_fk_matches', 'schema_draft'],
   },
   nl_to_sql: {
     label: 'Ask AI (NL→SQL)',
     description: 'Natural language questions converted to SQL queries',
-    defaultModel: 'claude-sonnet-4-6',
+    defaultModel: mainModel(),
     callLabels: ['nl_to_sql', 'generate_sql_streaming', 'cross_source_sql', 'multi_turn', 'forecast_query'],
   },
   query_support: {
     label: 'Query support',
     description: 'Result validation, answer formatting, SQL explanation',
-    defaultModel: 'claude-haiku-4-5-20251001',
+    defaultModel: lightModel(),
     callLabels: ['validate_result', 'format_answer', 'explain_sql_plain'],
   },
   dashboards: {
     label: 'Dashboards',
     description: 'Dashboard generation, refinement, validation, narration, insights',
-    defaultModel: 'claude-sonnet-4-6',
+    defaultModel: mainModel(),
     callLabels: [
       'dashboard_spec', 'dashboard_refine', 'dashboard_refinement',
       'dashboard_validate', 'widget_semantic_check', 'narrate_dashboard',
@@ -90,7 +91,7 @@ export const CALL_CATEGORY_META: Record<CallCategory, {
   products: {
     label: 'Data products',
     description: 'Star schema design, bus matrix, transformation SQL, product refinement',
-    defaultModel: 'claude-sonnet-4-6',
+    defaultModel: mainModel(),
     callLabels: [
       'star_schema', 'star_schema_streaming', 'bus_matrix_streaming',
       'edit_column_expression', 'refine_chat', 'refine_product',
@@ -100,7 +101,7 @@ export const CALL_CATEGORY_META: Record<CallCategory, {
   investigation: {
     label: 'Investigation',
     description: 'Diagnostic query planning, step summarization, conclusion synthesis',
-    defaultModel: 'claude-sonnet-4-6',
+    defaultModel: mainModel(),
     callLabels: [
       'investigate_plan_next', 'investigate_summarise', 'investigate_conclude',
       'investigate_plan', 'investigate_synthesize',
@@ -109,13 +110,13 @@ export const CALL_CATEGORY_META: Record<CallCategory, {
   formatting: {
     label: 'Formatting & summaries',
     description: 'Report narratives, quality alert context, morning briefs',
-    defaultModel: 'claude-haiku-4-5-20251001',
+    defaultModel: lightModel(),
     callLabels: ['report_narrative', 'quality_alert_context', 'morning_brief'],
   },
   suggestions: {
     label: 'Suggestions & misc',
     description: 'KPI drafting, pulse entries, query starters, product icons',
-    defaultModel: 'claude-haiku-4-5-20251001',
+    defaultModel: lightModel(),
     callLabels: ['kpi_draft', 'pulse_suggest', 'query_starters', 'product_icon'],
   },
 };
