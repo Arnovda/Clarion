@@ -33,7 +33,27 @@ with false assumptions and produces broken code.
 
 **Last updated:** 2026-09-24 (CLAUDE SONNET 4.6 → SONNET 5 — owner asked
 whether cheaper or better Claude models exist and whether we were pinned to
-old ones; then *"Yes do it"*. Branch `claude/kind-cori-98hpxi`, new PR.)
+old ones; then *"Yes do it"*. PR #185 — IN MAIN AND PRODUCTION, see below.)
+
+**IN MAIN AND PRODUCTION (2026-09-24, 13:04 UTC) — owner: *"Do it"*.** PR
+#185 (both commits: the Sonnet 5 switch and the per-category model choice)
+rebase-merged as `d833f24` after all ten checks were green on the head.
+**Build & Deploy run #626**: the gate waited 6 min for Tests + Lint, backend
+AND frontend built as `main-d833f24` (worker/ETL skipped, `migrate-sql`
+correctly skipped — no migration), jobs-worker on the same image, **Go live
+health-checked the new backend (`/api/health` 200, all six `ok`) and shifted
+backend + frontend to `--main-d833f24` at 100%** (13:01 UTC). **Claude model
+run #1** then waited for that deploy to SUCCEED (13:02) and applied, read
+from its own log: `worker: claude-sonnet-4-6 / <unset> → claude-sonnet-5 /
+claude-haiku-4-5-20251001 (restarted)` and `backend: … → claude-sonnet-5 /
+claude-haiku-4-5-20251001 (revision --main-d833f24 at 100%)`, value read
+back. So production runs Sonnet 5 on the code that shapes requests for it.
+**WATCH, still owed and nobody has done it yet**: one Ask AI question, one
+dashboard, one subject rebuild; a 400 naming `thinking` / `temperature` /
+`output_config` → roll back via `.ops/claude-model` (`main
+claude-sonnet-4-6`). Any rows already in production's `ai_model_config` are
+in force for the first time since this deploy. Housekeeping: the branch was
+restarted from main at `d833f24`; this record rides a new draft PR.
 
 **WE WERE PINNED, AND A PLAIN MODEL SWAP WOULD HAVE BROKEN ASK AI.** The main
 model was `claude-sonnet-4-6` everywhere (`AIService.ts` default, both
