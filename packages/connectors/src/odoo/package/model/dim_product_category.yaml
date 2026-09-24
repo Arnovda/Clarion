@@ -5,12 +5,18 @@ label: Product categories
 description: Hierarchical product categories.
 source: |-
   SELECT
+    clarion_key('product_category', id) AS product_category_key,
     id            AS category_id,
     name          AS category_name,
     complete_name AS category_path,
-    parent_id
+    clarion_key('product_category', parent_id) AS parent_key
   FROM product_category
 fields:
+  - name: product_category_key
+    label: Product categorie key
+    description: Stable integer key of the product categorie — clarion_key('product_category', category_id); every measures table computes the same value from its own column.
+    datatype: BIGINT
+    clarion: { role: surrogate_key, technical: true, lineage: { dataset: product_category, field: id } }
   - name: category_id
     label: Category ID
     description: Odoo product category id (primary key).
@@ -26,13 +32,13 @@ fields:
     description: Full hierarchical path (e.g. "All / Saleable / Office").
     datatype: VARCHAR
     clarion: { role: attribute, lineage: { dataset: product_category, field: complete_name } }
-  - name: parent_id
+  - name: parent_key
     label: Parent category
     description: Parent category in the hierarchy.
     datatype: BIGINT
     clarion:
       role: foreign_key
-      references: { dataset: dim_product_category, field: category_id }
+      references: { dataset: dim_product_category, field: product_category_key }
       technical: true
       lineage: { dataset: product_category, field: parent_id }
 clarion: { kind: dimension, product: Core dimensions, sourceEntities: [ product_category ] }

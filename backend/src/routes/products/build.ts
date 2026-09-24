@@ -11,10 +11,13 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { requireAuth, requireRole } from '../../middleware/auth';
 import { validate } from '../../middleware/validate';
-import { productRefreshStartSchema, buildChatSchema, busMatrixExtendStartSchema } from '../../middleware/schemas';
+import { productRefreshStartSchema, buildChatSchema, busMatrixExtendStartSchema, keyUpgradeStartSchema } from '../../middleware/schemas';
 import { reqDb } from '../../db/reqDb';
 import { startSSE } from '../../services/sse';
 import { log } from './shared';
+import { loadKeyGraph, loneRebuildRefusal, summariseKeyHealth } from '../../services/keyHealth';
+import { describeKeyUpgrade } from '../../services/keyUpgrade';
+import { getBusMatrixQueue } from '../../jobs/queues';
 
 const router = Router();
 
@@ -142,6 +145,16 @@ router.post('/:id/refresh-start', requireAuth, requireRole('admin'), validate(pr
     }
 
     const syncSource = !!(req.body as { syncSource?: boolean })?.syncSource;
+
+    // Same guard as a lone table rebuild: a subject that owns a lookup whose
+    // key renumbers per build cannot be rebuilt without the subjects holding
+    // its keys (they are elsewhere — that is what a shared lookup is).
+    if (product.connection_id) {
+      const graph = await loadKeyGraph(db, tenantId, Number(product.connection_id));
+      const own = graph.tables.filter((t) => t.product_id === productId).map((t) => t.id);
+      const refusal = loneRebuildRefusal(graph, own);
+      if (refusal) { res.status(409).json({ ok: false, error: refusal, code: 'unstable_keys' }); return; }
+    }
 
     const { getBusMatrixQueue } = await import('../../jobs/queues');
     const queue = getBusMatrixQueue();
@@ -290,6 +303,56 @@ router.post('/build-chat', requireAuth, requireRole('admin', 'analyst'), validat
 });
 
 // ---------------------------------------------------------------------------
+// POST /api/products/keys/upgrade-start — move every table of a source onto
+// clarion_key and rebuild them together (services/keyUpgrade.ts). Admin, like
+// refresh-start: it rebuilds every subject of the source. `dryRun: true`
+// answers what would change without starting anything.
+// ---------------------------------------------------------------------------
+router.post('/keys/upgrade-start', requireAuth, requireRole('admin'), validate(keyUpgradeStartSchema), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const db = reqDb(req);
+    const tenantId = req.user?.tenantId;
+    if (!tenantId) { res.status(403).json({ ok: false, error: 'Tenant context required' }); return; }
+    const { connectionId, dryRun } = req.body as { connectionId: number; dryRun?: boolean };
+
+    const connection = await db('connections').where({ id: connectionId, tenant_id: tenantId }).first();
+    if (!connection) { res.status(404).json({ ok: false, error: 'Connection not found' }); return; }
+
+    const graph = await loadKeyGraph(db, tenantId, connectionId);
+    const description = await describeKeyUpgrade(graph);
+    if (dryRun) { res.json({ ok: true, data: description }); return; }
+    if (description.blockers.length > 0) {
+      res.status(409).json({ ok: false, error: `The keys cannot be upgraded automatically: ${description.blockers.slice(0, 3).join('; ')}`, data: description });
+      return;
+    }
+    if (description.tables === 0) {
+      res.status(409).json({ ok: false, error: description.rebuildInstead.length > 0
+        ? 'These subjects have no key columns yet — Rebuild them to move to stable keys.'
+        : 'Every key already uses clarion_key — nothing to upgrade.', data: description });
+      return;
+    }
+
+    const queue = getBusMatrixQueue();
+    if (!queue) { res.status(503).json({ ok: false, error: 'Job queue not available — Redis is not configured.' }); return; }
+    // One build at a time per tenant: an upgrade rewrites and rebuilds every
+    // subject of the source, so nothing else may be building them.
+    const activeJobs = await queue.getJobs(['waiting', 'active', 'delayed'], 0, 50);
+    const existing = activeJobs.find((j) => j.data.tenantId === tenantId);
+    if (existing) {
+      res.status(409).json({ ok: false, error: 'A build is already running — wait for it to finish.', jobId: existing.id });
+      return;
+    }
+    const job = await queue.add('key-upgrade', {
+      connectionId,
+      tenantId,
+      triggeredBy: req.user?.email ?? 'unknown',
+      mode: 'keys' as const,
+    });
+    res.json({ ok: true, data: { jobId: job.id, queue: 'bus-matrix', mode: 'keys', ...description } });
+  } catch (err) { next(err); }
+});
+
+// ---------------------------------------------------------------------------
 // POST /api/products/bus-matrix/extend-start — enqueue an ADDITIVE build: one
 // new subject designed next to the existing ones. Guards run BEFORE the
 // queue check so they hold in every environment:
@@ -343,6 +406,21 @@ router.post('/bus-matrix/extend-start', requireAuth, requireRole('admin', 'analy
       res.status(409).json({
         ok: false,
         error: 'No subjects exist for this source yet — use "Create my topics" first; additions build on top of that.',
+      });
+      return;
+    }
+
+    // A new subject's facts compute clarion_key on their own columns; the
+    // lookups they reuse must be keyed the same way or no row would join.
+    const health = summariseKeyHealth(await loadKeyGraph(db, tenantId, connectionId));
+    const oldKeyed = [...health.unstable, ...health.raw].filter((t) => t.table_role === 'dimension');
+    if (oldKeyed.length > 0) {
+      res.status(409).json({
+        ok: false,
+        code: 'upgrade_keys_first',
+        // Counts, not table names: this lands in the Build page's chat, an
+        // outcome-language surface.
+        error: `${oldKeyed.length} of this source's shared lookups still use the old keys, so a new subject could not link to them. Upgrade the keys first (the "Upgrade keys" button under this source), then add the subject.`,
       });
       return;
     }

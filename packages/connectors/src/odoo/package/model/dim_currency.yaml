@@ -5,12 +5,18 @@ label: Currencies
 description: Currencies referenced by journals, orders and invoices.
 source: |-
   SELECT
+    clarion_key('res_currency', id) AS currency_key,
     id     AS currency_id,
     name   AS currency_code,
     symbol AS currency_symbol,
     active
   FROM res_currency
 fields:
+  - name: currency_key
+    label: Currencie key
+    description: Stable integer key of the currencie — clarion_key('res_currency', currency_id); every measures table computes the same value from its own column.
+    datatype: BIGINT
+    clarion: { role: surrogate_key, technical: true, lineage: { dataset: res_currency, field: id } }
   - name: currency_id
     label: Currency ID
     description: Odoo currency id (primary key).

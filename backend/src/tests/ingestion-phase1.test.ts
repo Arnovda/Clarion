@@ -95,7 +95,8 @@ describe('C1 — a key that renumbers per run is refused', () => {
       relationships: [], proposed_kpis: [], rationale: '', dim_date_range: { start: '2024-01-01', end: '2024-12-31' },
     } as unknown as BusMatrixOutput;
     const errors = validateBusMatrix(bad);
-    expect(errors.filter((e) => e.includes('minted per run'))).toHaveLength(2);
+    // The key rule (keys.ts) reports each renumbering key once, dim and fact.
+    expect(errors.filter((e) => e.includes('renumbered on every build'))).toHaveLength(2);
   });
 
   it('no design or repair prompt asks for ROW_NUMBER keys any more (source-level)', () => {
@@ -106,7 +107,9 @@ describe('C1 — a key that renumbers per run is refused', () => {
     const ai = read('ai/AIService.ts');
     expect(ai).not.toMatch(/ROW_NUMBER for dims/);
     expect(ai).not.toMatch(/surrogate key via ROW_NUMBER\(\) OVER/);
-    expect(ai).toMatch(/Never introduce ROW_NUMBER\(\)/);
+    // Since 2026-09-24 the rule is clarion_key; the repair may never change a key.
+    expect(ai).toMatch(/never replace it with a raw id, ROW_NUMBER\(\)/);
+    expect(ai).toMatch(/A repair that changes how a key is made is refused/);
   });
 });
 

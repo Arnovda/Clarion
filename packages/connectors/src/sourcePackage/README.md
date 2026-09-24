@@ -98,7 +98,9 @@ column descriptions) and are never written as a description.
   description, `source` (API path / model), `primary_key`, `clarion.kind:
   source`, category and cursor. The conformance suite holds it to the format.
 - **Changing the template**: edit the table's file under `model/`. A join is
-  written once, on the fact's FK field. Bump `clarion.template.version` on a
+  written once, on the fact's FK field. Keys follow the key rule
+  (`../keys.ts`): a dim's `<x>_key` is `clarion_key('<Entity>', <id>)`, a
+  fact's FK is the same call on its own column — both `BIGINT`. Bump `clarion.template.version` on a
   shape change — customers stay on the version they materialised.
 - **Format changes**: `types.ts` + `schema.json` + `validate.ts` together, and
   `sourcePackage.test.ts` pins both directions.

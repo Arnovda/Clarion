@@ -5,11 +5,17 @@ label: Companies
 description: Internal legal entities configured in Odoo.
 source: |-
   SELECT
+    clarion_key('res_company', id) AS company_key,
     id   AS company_id,
     name AS company_name,
-    currency_id
+    clarion_key('res_currency', currency_id) AS currency_key
   FROM res_company
 fields:
+  - name: company_key
+    label: Companie key
+    description: Stable integer key of the companie — clarion_key('res_company', company_id); every measures table computes the same value from its own column.
+    datatype: BIGINT
+    clarion: { role: surrogate_key, technical: true, lineage: { dataset: res_company, field: id } }
   - name: company_id
     label: Company ID
     description: Odoo company id (primary key).
@@ -20,13 +26,13 @@ fields:
     description: Name of the legal entity.
     datatype: VARCHAR
     clarion: { role: attribute, lineage: { dataset: res_company, field: name } }
-  - name: currency_id
+  - name: currency_key
     label: Currency
     description: Main currency of the company.
     datatype: BIGINT
     clarion:
       role: foreign_key
-      references: { dataset: dim_currency, field: currency_id }
+      references: { dataset: dim_currency, field: currency_key }
       technical: true
       lineage: { dataset: res_company, field: currency_id }
 clarion: { kind: dimension, product: Core dimensions, sourceEntities: [ res_company ] }

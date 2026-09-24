@@ -39,6 +39,26 @@ export { typeClass, typesJoinable, type TypeClass } from './columnTypes';
 // ─── Business keys (declared by the source, not guessed from the data) ────
 export { businessKeysFromCatalog, type EntityBusinessKey } from './businessKeys';
 
+// ─── The key rule (clarion_key: every product table's surrogate key) ─────
+export {
+  CLARION_KEY_FUNCTION,
+  CLARION_KEY_MACRO_SQL,
+  registerClarionKey,
+  keyFormOf,
+  keyFormOfExpression,
+  keyRuleViolations,
+  selectItemFor,
+  selectItemSpan,
+  replaceSelectItem,
+  isDateDimension,
+  hashedKeyColumns,
+  changedKeys,
+  type KeyForm,
+  type KeyRuleTable,
+  type KeyRuleJoin,
+  type KeyRuleOptions,
+} from './keys';
+
 // ─── Star-schema templates (deterministic modelling) ──────────────────────
 export {
   instantiateStarSchemaTemplate,

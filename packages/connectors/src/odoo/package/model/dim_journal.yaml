@@ -5,14 +5,20 @@ label: Journals
 description: Accounting journals (sales, purchases, bank, cash, miscellaneous).
 source: |-
   SELECT
+    clarion_key('account_journal', id) AS journal_key,
     id          AS journal_id,
     name        AS journal_name,
     code        AS journal_code,
     type        AS journal_type,
-    company_id,
-    currency_id
+    clarion_key('res_company', company_id) AS company_key,
+    clarion_key('res_currency', currency_id) AS currency_key
   FROM account_journal
 fields:
+  - name: journal_key
+    label: Journal key
+    description: Stable integer key of the journal — clarion_key('account_journal', journal_id); every measures table computes the same value from its own column.
+    datatype: BIGINT
+    clarion: { role: surrogate_key, technical: true, lineage: { dataset: account_journal, field: id } }
   - name: journal_id
     label: Journal ID
     description: Odoo journal id (primary key).
@@ -33,22 +39,22 @@ fields:
     description: sale, purchase, bank, cash or general.
     datatype: VARCHAR
     clarion: { role: attribute, lineage: { dataset: account_journal, field: type } }
-  - name: company_id
+  - name: company_key
     label: Company
     description: Company that owns this journal.
     datatype: BIGINT
     clarion:
       role: foreign_key
-      references: { dataset: dim_company, field: company_id }
+      references: { dataset: dim_company, field: company_key }
       technical: true
       lineage: { dataset: account_journal, field: company_id }
-  - name: currency_id
+  - name: currency_key
     label: Currency
     description: Currency of the journal (when set).
     datatype: BIGINT
     clarion:
       role: foreign_key
-      references: { dataset: dim_currency, field: currency_id }
+      references: { dataset: dim_currency, field: currency_key }
       technical: true
       lineage: { dataset: account_journal, field: currency_id }
 clarion: { kind: dimension, product: Core dimensions, sourceEntities: [ account_journal ] }

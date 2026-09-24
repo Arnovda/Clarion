@@ -114,8 +114,10 @@ export interface BusMatrixJobData extends CorrelatedJobData {
    *   • 'extend'   — design + build ONE additional subject next to the
    *                  existing build (additive; never touches existing
    *                  products — see runTopicExtensionWorkflow).
+   *   • 'keys'     — move every table of the connection onto clarion_key and
+   *                  rebuild them together (services/keyUpgrade.ts).
    */
-  mode?: 'design' | 'refresh' | 'pipeline' | 'extend';
+  mode?: 'design' | 'refresh' | 'pipeline' | 'extend' | 'keys';
   /** Required when mode='refresh' — which product to rebuild. */
   productId?: number;
   /**

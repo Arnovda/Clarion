@@ -152,14 +152,17 @@ The bus matrix identifies:
 ━━━ KIMBALL METHODOLOGY ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 **Dimensions:**
-- Keys are STABLE: every dim gets {entity}_key = its NATURAL key, carried through
-  unchanged (the source's own id / GUID / code; keep the natural key column too,
-  role natural_key). A composite natural key becomes CONCAT_WS('|', a, b) as VARCHAR.
-  The key's data_type is the natural key's type (VARCHAR for GUIDs and codes,
-  INTEGER/BIGINT for numeric ids). NEVER ROW_NUMBER(), UUID(), RANDOM() or any
-  expression that renumbers on the next run — a key that changes per run breaks
-  every saved dashboard, drill-through, incremental load and history table built
-  on it, and the build REFUSES such a design.
+- Keys are STABLE INTEGERS made by the platform function clarion_key:
+    clarion_key('<SourceEntity>', <the row's own source id>) AS {entity}_key
+  <SourceEntity> is the source table the dim's rows come from (e.g. 'Accounts',
+  'res_partner'), as a quoted literal; the id is the source's own id / GUID /
+  code for that row. Keep the raw id as its own column too (role natural_key,
+  e.g. a.ID AS account_id). The key's data_type is BIGINT. A composite natural
+  key: clarion_key('Entity', CONCAT_WS('|', a, b)).
+  clarion_key is deterministic: the same entity + id gives the same key on every
+  build, whichever table was rebuilt last, and joins on an integer are twice as
+  fast as on a GUID. NEVER ROW_NUMBER(), UUID(), RANDOM(), NEXTVAL() or the raw
+  id as the key — the build REFUSES such a design.
 - Denormalize lookups: fold classification/lookup tables INTO their parent dimension
   (customer_groups → dim_customer, product_categories → dim_product, btw_tarieven → dim_article).
   Only separate if the lookup has its own independent facts.
@@ -172,10 +175,15 @@ The bus matrix identifies:
 - Fact table types: transaction, periodic_snapshot, accumulating_snapshot, factless.
 - Measures: classify as additive, semi-additive, or non-additive.
   For ratios: store numerator + denominator as additive columns.
-- FKs in facts: named to match target dim's key and computed the SAME way from the
-  fact's own source column (e.g. TRY_CAST(l.Account AS VARCHAR) AS account_key), so
-  the fact's FK equals the dim's key without joining the dim. A missing FK is NULL —
-  except date keys, which use COALESCE(..., -1) (dim_date is INTEGER YYYYMMDD).
+- FKs in facts: named to match the target dim's key and computed with the SAME
+  call on the fact's OWN source column — clarion_key('<the dim's SourceEntity>',
+  l.Account) AS account_key — the entity literal must be EXACTLY the one the dim
+  uses, or no row will match (the build checks this and refuses a mismatch).
+  NEVER obtain a key by joining the dim. A missing FK is NULL (clarion_key
+  returns NULL for NULL or '') — except date keys, which use COALESCE(..., -1)
+  (dim_date is INTEGER YYYYMMDD and does NOT use clarion_key).
+  Role-playing FKs (InvoiceTo, OrderedBy → dim_account) all use the dim's entity:
+  clarion_key('Accounts', i.InvoiceTo) AS invoice_to_key.
 - Degenerate dims: transaction/document numbers stay in the fact as plain columns.
 - Never place text attributes in fact tables — move them to dimensions.
 - Role-playing dims: when one dim appears multiple times (order_date, ship_date),
@@ -202,7 +210,8 @@ Each table needs a standalone SELECT statement (no CREATE TABLE). Source tables 
 
 - Dimensions execute FIRST; facts execute SECOND (after dims are materialized as views)
 - Fact SQL may LEFT JOIN a materialized dim for descriptive lookups, never to mint
-  a key and never as an INNER JOIN that drops rows
+  a key and never as an INNER JOIN that drops rows; join on the key
+  (d.account_key = clarion_key('Accounts', l.Account)) or the natural key column
 - ALWAYS use TRY_CAST (not CAST) for type conversions — source data has 'None', 'null', '', 'N/A'
 - Use NULLIF(TRIM(CAST(col AS VARCHAR)), '') before TRY_CAST for string→number conversions
 - strftime(value, format) — DuckDB arg order (not format, value)
@@ -217,7 +226,7 @@ MUST exist in that dim's \`columns[]\` list. If you reference it, define it.
 Specifically forbidden patterns that crash the build:
 - \`LEFT JOIN dim_customer dc ON f.klant_id = dc.klant_id AND dc.source_system = 'klanten'\`
   ↳ ONLY valid if dim_customer has a \`source_system\` column in its columns[].
-  ↳ Otherwise drop the AND clause entirely and just join on the natural key.
+  ↳ Otherwise drop the AND clause entirely and just join on the key.
 - Filtering on a column that exists in the SOURCE table but you didn't carry into the dim.
 - Joining to a dim using a natural-key column you renamed in the dim's SELECT.
 
@@ -255,19 +264,19 @@ casualty of a token-budget overrun. Budget aggressively:
       "table_name": "dim_article",
       "display_name": "Article",
       "description": "Conformed article dimension with product hierarchy and pricing",
-      "transformation_sql": "SELECT a.artikel_id AS article_key, a.artikel_id, ... FROM artikelen a LEFT JOIN artikelgroepen ag ON ...",
+      "transformation_sql": "SELECT clarion_key('artikelen', a.artikel_id) AS article_key, a.artikel_id, ... FROM artikelen a LEFT JOIN artikelgroepen ag ON ...",
       "source_tables": ["artikelen", "artikelgroepen", "btw_tarieven"],
       "columns": [
         {
           "column_name": "article_key",
-          "data_type": "INTEGER",
+          "data_type": "BIGINT",
           "display_name": "Article Key",
-          "description": "Stable key — the article's own id",
+          "description": "Stable integer key of the article",
           "column_role": "surrogate_key",
-          "transformation_expression": "a.artikel_id",
+          "transformation_expression": "clarion_key('artikelen', a.artikel_id)",
           "scd_type": 1,
           "sort_order": 0,
-          "lineage": [{"source_table_name": "artikelen", "source_column_name": "artikel_id", "transformation_description": "Natural key carried as the key"}]
+          "lineage": [{"source_table_name": "artikelen", "source_column_name": "artikel_id", "transformation_description": "Stable key from the article's own id"}]
         }
       ]
     }
@@ -279,7 +288,7 @@ casualty of a token-budget overrun. Budget aggressively:
       "description": "One row per sales order line item",
       "grain": "One row per sales order line",
       "fact_table_type": "transaction",
-      "transformation_sql": "SELECT r.artikel_id AS article_key, ... FROM verkooporder_regels r JOIN verkooporders o ON ...",
+      "transformation_sql": "SELECT clarion_key('artikelen', r.artikel_id) AS article_key, ... FROM verkooporder_regels r JOIN verkooporders o ON ...",
       "source_tables": ["verkooporders", "verkooporder_regels"],
       "dimensions_used": ["dim_article", "dim_customer", "dim_date"],
       "columns": [...]
@@ -324,6 +333,8 @@ export interface ExistingDimContext {
   display_name: string;
   description: string;
   columns: Array<{ column_name: string; data_type: string; column_role: string | null }>;
+  /** How the dim's key is made — `account_key = clarion_key('Accounts', …)` — so a new fact computes its FK the same way. */
+  keyExpression?: string | null;
 }
 
 export function BUS_MATRIX_EXTEND_SYSTEM(
@@ -338,7 +349,8 @@ export function BUS_MATRIX_EXTEND_SYSTEM(
         const cols = d.columns
           .map((c) => `    ${c.column_name} (${c.data_type})${c.column_role ? ` [${c.column_role}]` : ''}`)
           .join('\n');
-        return `${d.table_name} — ${d.display_name}: ${d.description}\n${cols}`;
+        const key = d.keyExpression ? `\n    KEY: ${d.keyExpression}  ← a fact FK to this dim uses this exact clarion_key entity on its own column` : '';
+        return `${d.table_name} — ${d.display_name}: ${d.description}\n${cols}${key}`;
       }).join('\n\n');
 
   return `You are an expert Kimball data warehouse architect and DuckDB SQL engineer. An enterprise bus matrix has ALREADY been built for this source. Your task: design EXACTLY ONE additional data product (one new subject area) that slots in NEXT TO the existing build without touching it.
@@ -377,15 +389,17 @@ ${dimsText}
 
 ━━━ KIMBALL + DuckDB RULES (same as the original build) ━━━━━━━━━━━━━━━━━━
 
-- Grain: every fact declares "One row per ...". Keys are STABLE: a NEW dim's
-  {entity}_key is its natural key carried unchanged (never ROW_NUMBER()/UUID()/
-  RANDOM() — the build refuses a key that renumbers per run). ALWAYS TRY_CAST,
-  never CAST. strftime(value, format).
+- Grain: every fact declares "One row per ...". Keys are STABLE INTEGERS: a NEW
+  dim's {entity}_key is clarion_key('<SourceEntity>', <the row's own id>) AS
+  {entity}_key, data_type BIGINT, with the raw id kept as a natural_key column
+  (never ROW_NUMBER()/UUID()/RANDOM() or the raw id as the key — refused).
+  ALWAYS TRY_CAST, never CAST. strftime(value, format).
 - Every column referenced through a dim alias in fact SQL MUST exist on that
   dim — for reused dims that means the column lists printed above, exactly.
-- A fact's FK to a reused dim is computed from the fact's OWN source column,
-  the same way the dim computes its key (read the dim's key column above), e.g.
-  TRY_CAST(s.Item AS VARCHAR) AS item_key — no JOIN is needed to obtain the key.
+- A fact's FK to a reused dim is computed from the fact's OWN source column with
+  the SAME clarion_key entity the dim's KEY line shows, e.g.
+  clarion_key('Items', s.Item) AS item_key — no JOIN is needed to obtain the
+  key, and a different entity literal would match no row (the build refuses it).
 
 ━━━ OUTPUT FORMAT — the SAME JSON shape as the original bus matrix ━━━━━━━
 

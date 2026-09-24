@@ -9,8 +9,8 @@ source: |-
     pol.PurchaseOrderID               AS order_id,
     po.OrderNumber                    AS order_number,
     TRY_CAST(po.OrderDate AS DATE)    AS order_date,
-    po.Supplier                       AS supplier_id,
-    pol.Item                          AS item_id,
+    clarion_key('Accounts', po.Supplier) AS supplier_key,
+    clarion_key('Items', pol.Item) AS item_key,
     po.Currency                       AS currency,
     pol.Description                   AS line_description,
     pol.Quantity                      AS quantity,
@@ -41,22 +41,22 @@ fields:
     description: Date of the purchase order.
     datatype: DATE
     clarion: { role: attribute, lineage: { dataset: PurchaseOrders, field: OrderDate } }
-  - name: supplier_id
+  - name: supplier_key
     label: Supplier
     description: Supplier the order was placed with.
-    datatype: VARCHAR
+    datatype: BIGINT
     clarion:
       role: foreign_key
-      references: { dataset: dim_account, field: account_id }
+      references: { dataset: dim_account, field: account_key }
       technical: true
       lineage: { dataset: PurchaseOrders, field: Supplier }
-  - name: item_id
+  - name: item_key
     label: Item
     description: Item on the line.
-    datatype: VARCHAR
+    datatype: BIGINT
     clarion:
       role: foreign_key
-      references: { dataset: dim_item, field: item_id }
+      references: { dataset: dim_item, field: item_key }
       technical: true
       lineage: { dataset: PurchaseOrderLines, field: Item }
   - name: currency

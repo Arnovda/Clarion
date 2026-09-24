@@ -26,6 +26,8 @@
  * connection for the whole job); each query gets its own.
  */
 
+import { runKeyUpgradeWorkflow } from '../services/keyUpgrade';
+import { unstableKeyRefusalForProducts } from '../services/keyHealth';
 import { Worker, Job } from 'bullmq';
 import { getRedisConnection } from './redis';
 import { SchemaProfilingJobData, IngestionJobData, TransformationJobData, EmailReportJobData, BusMatrixJobData, ConnectionSyncScheduleJobData, PipelineScheduleJobData, getSchemaProfilingQueue, getBusMatrixQueue } from './queues';
@@ -180,6 +182,10 @@ async function processTransformationJob(job: Job<TransformationJobData>): Promis
     trx('data_products').where({ id: productId }).first(),
   );
   if (!product) throw new Error(`Product ${productId} not found`);
+  // Same guard as a manual rebuild: a lookup whose key renumbers per build is
+  // never rebuilt without the tables holding its keys (keyHealth.ts).
+  const keyRefusal = await unstableKeyRefusalForProducts(tenantId, [Number(productId)]);
+  if (keyRefusal) throw new Error(keyRefusal);
   const tables = await loadTransformableTables(tenantId, productId);
 
   const results = await runProductTransformation(product, tables, tenantId);
@@ -270,6 +276,25 @@ async function processBusMatrixJob(job: Job<BusMatrixJobData>): Promise<{ produc
       // Refresh jobs return the same shape ({ products, allOk }) to keep
       // the queue's return-value schema uniform — products=1 when refreshing.
       return { products: 1, allOk: result.allOk };
+    }
+
+    // ── Keys mode — move the connection's tables onto clarion_key ────
+    if (mode === 'keys') {
+      await job.updateProgress({ phase: 'starting', message: 'Upgrading keys…' });
+      const result = await runKeyUpgradeWorkflow({
+        connectionId,
+        tenantId,
+        userEmail: triggeredBy,
+        abortSignal: controller.signal,
+        isCancelled: () => isJobCancelled(jobId),
+        emit: emitToJob,
+      });
+      trackEvent('key_upgrade_complete', {
+        connectionId: String(connectionId),
+        tenantId: String(tenantId),
+        allOk: String(result.allOk),
+      }, { tables: result.tablesChanged });
+      return { products: result.rebuiltProducts, allOk: result.allOk };
     }
 
     // ── Extend mode — add ONE subject next to the existing build ─────

@@ -5,11 +5,17 @@ label: Payment conditions
 description: Payment terms (net 30, end-of-month, …). Code-keyed — documents reference them by code.
 source: |-
   SELECT
+    clarion_key('PaymentConditions', Code) AS payment_condition_key,
     Code        AS payment_condition_code,
     Description AS payment_condition_name,
     PaymentDays AS payment_days
   FROM PaymentConditions
 fields:
+  - name: payment_condition_key
+    label: Payment condition key
+    description: Stable integer key of the payment condition — clarion_key('PaymentConditions', payment_condition_code); every measures table computes the same value from its own column.
+    datatype: BIGINT
+    clarion: { role: surrogate_key, technical: true, lineage: { dataset: PaymentConditions, field: Code } }
   - name: payment_condition_code
     label: Payment condition code
     description: Payment condition code (natural key).

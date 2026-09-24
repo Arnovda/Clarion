@@ -5,11 +5,17 @@ label: Journals
 description: Journal definitions (sales, purchases, bank, memo). Code-keyed — facts reference journals by code.
 source: |-
   SELECT
+    clarion_key('Journals', Code) AS journal_key,
     Code        AS journal_code,
     Description AS journal_name,
     Type        AS journal_type
   FROM Journals
 fields:
+  - name: journal_key
+    label: Journal key
+    description: Stable integer key of the journal — clarion_key('Journals', journal_code); every measures table computes the same value from its own column.
+    datatype: BIGINT
+    clarion: { role: surrogate_key, technical: true, lineage: { dataset: Journals, field: Code } }
   - name: journal_code
     label: Journal code
     description: Journal code (natural key — facts reference this).

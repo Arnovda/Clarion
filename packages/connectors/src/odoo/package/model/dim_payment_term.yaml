@@ -5,10 +5,16 @@ label: Payment terms
 description: Payment terms applied to invoices and orders (e.g. 30 days net).
 source: |-
   SELECT
+    clarion_key('account_payment_term', id) AS payment_term_key,
     id   AS payment_term_id,
     name AS payment_term_name
   FROM account_payment_term
 fields:
+  - name: payment_term_key
+    label: Payment term key
+    description: Stable integer key of the payment term — clarion_key('account_payment_term', payment_term_id); every measures table computes the same value from its own column.
+    datatype: BIGINT
+    clarion: { role: surrogate_key, technical: true, lineage: { dataset: account_payment_term, field: id } }
   - name: payment_term_id
     label: Payment term ID
     description: Odoo payment term id (primary key).

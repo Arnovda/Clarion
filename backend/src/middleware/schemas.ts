@@ -756,6 +756,15 @@ export const buildChatSchema = z.object({
 });
 
 // POST /products/bus-matrix/extend-start — add ONE subject next to the build
+/** POST /products/keys/upgrade-start — move a source's tables onto clarion_key. */
+export const keyUpgradeStartSchema = z.object({
+  body: z.object({
+    connectionId: z.number().int().positive(),
+    /** Describe what would change; start nothing. */
+    dryRun: z.boolean().optional(),
+  }),
+});
+
 export const busMatrixExtendStartSchema = z.object({
   body: z.object({
     connectionId: z.number().int().positive(),

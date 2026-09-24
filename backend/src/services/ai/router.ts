@@ -98,7 +98,7 @@ export const CALL_CATEGORY_META: Record<CallCategory, {
       'star_schema', 'star_schema_streaming', 'bus_matrix_streaming',
       'edit_column_expression', 'refine_chat', 'refine_product',
       'refine_product_cross', 'transformation_from_scratch', 'transformation_repair',
-      'transformation_propose', 'build_chat',
+      'transformation_propose', 'build_chat', 'key_upgrade',
     ],
   },
   investigation: {

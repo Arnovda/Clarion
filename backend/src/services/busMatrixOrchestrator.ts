@@ -18,6 +18,8 @@
  *      between products).
  */
 
+import { keyFormOf } from '@databridge/connectors/dist/keys';
+import { unstableKeyRefusalForProducts } from './keyHealth';
 import { tenantQuery } from './tenantQuery';
 import { logger } from '../utils/logger';
 import { generateBusMatrixStreaming, generateProductIcon } from '../ai/AIService';
@@ -680,6 +682,11 @@ async function runPipelineWorkflowBody(
   if (scope.productIds.length > 0) {
     const { topoSortProducts, sourceIdsByProduct, upstreamProductsWithin } = await import('./pipelineService');
     const ordered = await topoSortProducts(scope.productIds, tenantId);
+    // A subject owning a lookup whose key renumbers per build may not be
+    // rebuilt without the subjects holding its keys (keyHealth.ts) — a
+    // scheduled "Refresh Reference" would otherwise move their rows.
+    const keyRefusal = await unstableKeyRefusalForProducts(tenantId, ordered);
+    if (keyRefusal) throw new Error(keyRefusal);
     emit({ type: 'phase', text: `Running ${ordered.length} product${ordered.length === 1 ? '' : 's'}…` });
 
     // Disambiguate duplicate product names in the log. Real-world hit: a
@@ -1193,16 +1200,30 @@ export async function runTopicExtensionWorkflow(
   await checkCancelled(opts as unknown as RunBusMatrixWorkflowOptions);
 
   // ── Phase B: AI design (cancellable), same streamer as the full build ─
-  const dimContext: ExistingDimContext[] = existing.reusableDims.map((d) => ({
-    table_name: d.table_name,
-    display_name: d.display_name,
-    description: d.description,
-    columns: d.columns.map((c) => ({
-      column_name: c.column_name,
-      data_type: c.data_type,
-      column_role: c.column_role ?? null,
-    })),
-  }));
+  // A new fact joins the reused lookups by computing clarion_key on its own
+  // column, so it must be told the exact entity each lookup hashes. A lookup
+  // still on an old key cannot be reused this way: the route refuses an
+  // extension until the keys are upgraded, and this repeats the guard.
+  const oldKeyed: string[] = [];
+  const dimContext: ExistingDimContext[] = existing.reusableDims.map((d) => {
+    const sk = d.columns.find((c) => c.column_role === 'surrogate_key');
+    const form = sk ? keyFormOf(d.transformation_sql, sk.column_name, sk.transformation_expression) : null;
+    if (sk && form && form.kind !== 'hashed') oldKeyed.push(d.table_name);
+    return {
+      table_name: d.table_name,
+      display_name: d.display_name,
+      description: d.description,
+      columns: d.columns.map((c) => ({
+        column_name: c.column_name,
+        data_type: c.data_type,
+        column_role: c.column_role ?? null,
+      })),
+      keyExpression: sk && form?.kind === 'hashed' ? `${sk.column_name} = clarion_key('${form.entity}', <id>)` : null,
+    };
+  });
+  if (oldKeyed.length > 0) {
+    throw new Error(`These lookups still use the old keys: ${oldKeyed.slice(0, 5).join(', ')}. Upgrade the keys first (Build → "Upgrade keys"), then add the subject.`);
+  }
 
   let designText = '';
   let lastDraftEmit = 0;

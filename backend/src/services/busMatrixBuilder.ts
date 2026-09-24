@@ -6,6 +6,7 @@
  * worker (new /bus-matrix/start job-based flow).
  */
 
+import { keyRuleViolations, type KeyRuleJoin, type KeyRuleTable } from '@databridge/connectors/dist/keys';
 import { linkSharedTables } from './sharedTables';
 import type { Knex } from 'knex';
 import { semanticDb } from '../db/knex';
@@ -409,7 +410,6 @@ export function validateBusMatrix(busMatrix: BusMatrixOutput): string[] {
     else if (!looksLikeSql(d.transformation_sql)) {
       errors.push(`conformed_dimensions[${i}] "${d.table_name}": transformation_sql is not SQL (must start with SELECT or WITH)`);
     }
-    errors.push(...unstableKeyViolations(d));
   });
   (busMatrix.fact_tables ?? []).forEach((f, i) => {
     if (!f.table_name) errors.push(`fact_tables[${i}].table_name missing`);
@@ -420,9 +420,51 @@ export function validateBusMatrix(busMatrix: BusMatrixOutput): string[] {
     else if (!looksLikeSql(f.transformation_sql)) {
       errors.push(`fact_tables[${i}] "${f.table_name}": transformation_sql is not SQL (must start with SELECT or WITH)`);
     }
-    errors.push(...unstableKeyViolations(f));
   });
+  errors.push(...busMatrixKeyViolations(busMatrix));
   return errors;
+}
+
+/**
+ * The key rule over a whole design (packages/connectors/src/keys.ts): every
+ * lookup key is `clarion_key('<Entity>', <source id>)` — a stable BIGINT —
+ * and every column that points at one hashes the SAME entity from its own
+ * column. Strict: a new design has no legacy to be consistent with. dim_date
+ * keeps its YYYYMMDD key. Shadows of reused dims (extension flow) are
+ * included, so a new fact that would not match an existing lookup is refused
+ * here rather than published with joins that match nothing.
+ */
+export function busMatrixKeyViolations(busMatrix: BusMatrixOutput): string[] {
+  const tables: KeyRuleTable[] = [
+    ...(busMatrix.conformed_dimensions ?? []).map((d) => ({ d, role: 'dimension' })),
+    ...(busMatrix.fact_tables ?? []).map((d) => ({ d, role: 'fact' })),
+  ].filter(({ d }) => !!d?.table_name).map(({ d, role }) => ({
+    table_name: d.table_name,
+    table_role: role,
+    transformation_sql: d.transformation_sql ?? null,
+    columns: (d.columns ?? []).map((c) => ({
+      column_name: c.column_name,
+      column_role: c.column_role ?? null,
+      transformation_expression: c.transformation_expression ?? null,
+    })),
+  }));
+  const joins: KeyRuleJoin[] = (busMatrix.relationships ?? [])
+    .filter((r) => r?.from_table_name && r.to_table_name && r.from_column_name && r.to_column_name)
+    .map((r) => ({ from_table: r.from_table_name, from_column: r.from_column_name, to_table: r.to_table_name, to_column: r.to_column_name }));
+  // The model reliably omits some relationships[] entries while the column
+  // metadata keeps them (synthesizeFkRelationships persists those) — check
+  // both, once each.
+  const seen = new Set(joins.map((j) => `${j.from_table}.${j.from_column}>${j.to_table}.${j.to_column}`.toLowerCase()));
+  for (const t of [...(busMatrix.conformed_dimensions ?? []), ...(busMatrix.fact_tables ?? [])]) {
+    for (const c of t?.columns ?? []) {
+      if (c.column_role !== 'foreign_key' || !c.fk_target_table || !c.fk_target_column) continue;
+      const k = `${t.table_name}.${c.column_name}>${c.fk_target_table}.${c.fk_target_column}`.toLowerCase();
+      if (seen.has(k)) continue;
+      seen.add(k);
+      joins.push({ from_table: t.table_name, from_column: c.column_name, to_table: c.fk_target_table, to_column: c.fk_target_column });
+    }
+  }
+  return keyRuleViolations(tables, joins, { mode: 'strict' });
 }
 
 /**

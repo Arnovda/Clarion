@@ -341,6 +341,18 @@ dimension and fact, `products` and `metrics` on the manifest — and
 platform contract (`starSchema.ts`, instantiation, validation) is
 unchanged; only where the template is authored moved.
 
+- **Keys are `clarion_key` (2026-09-24, binding).** Every dimension has a
+  surrogate key `<x>_key = clarion_key('<SourceEntity>', <natural id>)`
+  (datatype `BIGINT`, role `surrogate_key`, technical) beside its natural id
+  column; every foreign key is the SAME call on the fact's OWN column
+  (`clarion_key('Accounts', si.InvoiceTo) AS invoice_to_key`) and
+  `references` the dim's `<x>_key`. Facts never join a dimension to get a
+  key. Why: a key numbered per build (`ROW_NUMBER`) silently moves fact rows
+  to the wrong lookup row when one table is rebuilt alone; the raw GUID is
+  stable but joins twice as slow and stores 7.5× bigger (measured, DuckDB
+  1.4.2). `validateStarSchemaTemplate` refuses anything else; a template test
+  that runs the SQL must `registerClarionKey(db)` first. The function and the
+  rule live once, in `packages/connectors/src/keys.ts`.
 - A `model/` dataset carries `clarion.kind`, `clarion.product`,
   `clarion.sourceEntities`, `clarion.grain` (facts also `factTableType`),
   the tested transformation SQL as a literal block, and per field the

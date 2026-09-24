@@ -47,6 +47,7 @@ import { formatRelativeLong } from '@/lib/dates';
 import { iconForAnalytics } from '@/components/catalog/entityIcons';
 import { cleanTopicName } from '@/components/products/helpers';
 import { TOPICS_CHANGED_EVENT } from '@/lib/topicsChanged';
+import { useRole, isAdminRole } from '@/lib/role';
 import AskPanel from './AskPanel';
 
 const BACKEND_URL = process.env.NEXT_PUBLIC_API_URL?.replace('/api', '') ?? 'http://localhost:3001';
@@ -88,6 +89,8 @@ interface SourceOverview {
   hasTemplate: boolean;
   plan: { templateVersion: number; topics: PlannedTopic[] } | null;
   products: BuiltProduct[];
+  /** How the built tables link (counts only): see backend services/keyHealth.ts. */
+  keys: { toUpgrade: number; renumbering: number; rebuildInstead: number } | null;
 }
 
 interface Overview {
@@ -325,6 +328,23 @@ function Build() {
     }
   }, [attachToJob, toast]);
 
+  // Upgrade keys: rewrite how every table of the source links to its
+  // lookups (stable integer keys) and rebuild them together, in one job on
+  // the same queue — so the run panel, cancel and reattach work unchanged.
+  const startKeyUpgrade = useCallback(async (connectionId: number) => {
+    try {
+      const res = await api.post('/products/keys/upgrade-start', { connectionId });
+      const jobId = res.data?.data?.jobId as string | undefined;
+      if (!jobId) throw new Error('No job id returned');
+      await attachToJob(jobId, connectionId);
+    } catch (err) {
+      const ax = err as { response?: { data?: { error?: string; jobId?: string } }; message?: string };
+      const existingJobId = ax?.response?.data?.jobId;
+      if (existingJobId) { void attachToJob(existingJobId, connectionId); return; }
+      toast.error('Could not upgrade the keys', { description: ax?.response?.data?.error ?? ax?.message ?? 'Unknown error' });
+    }
+  }, [attachToJob, toast]);
+
   const cancelBuild = useCallback(async () => {
     const jobId = runRef.current?.jobId;
     if (!jobId) return;
@@ -408,6 +428,7 @@ function Build() {
             confirmingRebuild={confirmRebuild === src.id}
             onConfirmRebuild={(open) => setConfirmRebuild(open ? src.id : null)}
             onBuild={() => void startBuild(src.id)}
+            onUpgradeKeys={() => void startKeyUpgrade(src.id)}
             onCancel={() => void cancelBuild()}
             onDismissRun={() => setRun(null)}
             onToggleHidden={(p) => void toggleHidden(p)}
@@ -435,7 +456,7 @@ function Build() {
 
 function SourceSection({
   src, run, anyBuilding, intent, onIntent,
-  confirmingRebuild, onConfirmRebuild, onBuild, onCancel, onDismissRun, onToggleHidden,
+  confirmingRebuild, onConfirmRebuild, onBuild, onUpgradeKeys, onCancel, onDismissRun, onToggleHidden,
 }: {
   src: SourceOverview;
   run: BuildRun | null;
@@ -445,6 +466,7 @@ function SourceSection({
   confirmingRebuild: boolean;
   onConfirmRebuild: (open: boolean) => void;
   onBuild: () => void;
+  onUpgradeKeys: () => void;
   onCancel: () => void;
   onDismissRun: () => void;
   onToggleHidden: (p: BuiltProduct) => void;
@@ -491,6 +513,10 @@ function SourceSection({
               </a>
             ))}
           </div>
+
+          {src.keys && (src.keys.toUpgrade > 0 || src.keys.rebuildInstead > 0) && (
+            <KeysPanel keys={src.keys} disabled={anyBuilding} onUpgrade={onUpgradeKeys} />
+          )}
 
           {/* Rebuild — separate and warned on purpose: retire-and-replace
               re-creates the products, so edits made ON them (reworded
@@ -547,6 +573,93 @@ function SourceSection({
         <PlanPanel src={src} intent={intent} onIntent={onIntent} onBuild={onBuild} disabled={anyBuilding} />
       )}
     </section>
+  );
+}
+
+// ─── Keys: how the built tables link to their lookups ─────────────────────
+
+/**
+ * Tables built before 2026-09-24 link to their lookups one of two older ways:
+ * numbered per build (a lone rebuild of a lookup moves rows to the wrong
+ * customer), or on the raw text id (safe, about twice as slow to join). One
+ * upgrade moves every table of the source onto stable integer keys and
+ * rebuilds them together. Admin only — it rebuilds every topic of the source.
+ */
+function KeysPanel({ keys, disabled, onUpgrade }: {
+  keys: NonNullable<SourceOverview['keys']>;
+  disabled: boolean;
+  onUpgrade: () => void;
+}) {
+  const role = useRole();
+  const admin = isAdminRole(role);
+  const [confirming, setConfirming] = useState(false);
+  const urgent = keys.renumbering > 0;
+
+  if (keys.toUpgrade === 0) {
+    return (
+      <p className="mt-3 rounded-[10px] border border-line bg-raised px-4 py-3 text-[12.5px] leading-[1.55] text-ink-3">
+        These topics were built by an earlier version and have no stable keys yet. Rebuild them
+        (below) to move them onto stable keys — faster filters, and any table can then be rebuilt on its own.
+      </p>
+    );
+  }
+
+  return (
+    <div className={cn('mt-3 rounded-[10px] border px-4 py-3', urgent ? 'border-warn bg-warn-soft' : 'border-line bg-raised')}>
+      <p className="text-[13px] leading-[1.55] text-ink-2">
+        {urgent ? (
+          <>
+            <span className="font-medium">{keys.renumbering} {keys.renumbering === 1 ? 'lookup renumbers' : 'lookups renumber'} its keys on every build.</span>{' '}
+            Rebuilding one of them on its own would attach rows to the wrong customer or product, so that is
+            blocked until the keys are upgraded.
+          </>
+        ) : (
+          <>
+            {keys.toUpgrade} {keys.toUpgrade === 1 ? 'table still links' : 'tables still link'} to its lookups on long text ids.
+            Upgrading moves them onto stable integer keys — joins run about twice as fast on large tables.
+          </>
+        )}
+      </p>
+      {admin && !confirming && (
+        <button
+          type="button"
+          onClick={() => setConfirming(true)}
+          disabled={disabled}
+          className="mt-2 rounded-[8px] border border-line bg-raised px-3.5 py-1.5 text-[12.5px] font-medium text-ink hover:border-ocean hover:text-ocean disabled:opacity-40"
+        >
+          Upgrade keys…
+        </button>
+      )}
+      {admin && confirming && (
+        <div className="mt-2.5">
+          <p className="text-[12.5px] leading-[1.55] text-ink-3">
+            This rewrites how {keys.toUpgrade} {keys.toUpgrade === 1 ? 'table links' : 'tables link'} to each other,
+            checks every change before saving anything, and rebuilds every topic of this source once. What the
+            topics contain does not change and dashboards keep working.
+          </p>
+          <div className="mt-2 flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => { setConfirming(false); onUpgrade(); }}
+              disabled={disabled}
+              className="rounded-[8px] bg-ocean px-3.5 py-1.5 text-[12.5px] font-medium text-white hover:bg-ocean-hover disabled:opacity-40"
+            >
+              Upgrade keys
+            </button>
+            <button
+              type="button"
+              onClick={() => setConfirming(false)}
+              className="rounded-[8px] border border-line px-3.5 py-1.5 text-[12.5px] text-ink-3 hover:border-ink-3"
+            >
+              Not now
+            </button>
+          </div>
+        </div>
+      )}
+      {!admin && (
+        <p className="mt-1.5 text-[12px] text-muted-2">An admin can upgrade the keys from this page.</p>
+      )}
+    </div>
   );
 }
 

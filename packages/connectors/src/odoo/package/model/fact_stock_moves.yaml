@@ -9,8 +9,8 @@ source: |-
     TRY_CAST(sm.date AS DATE)    AS move_date,
     sm.state                     AS state,
     sm.reference                 AS reference,
-    sm.product_id                AS product_id,
-    sm.company_id                AS company_id,
+    clarion_key('product_product', sm.product_id) AS product_key,
+    clarion_key('res_company', sm.company_id) AS company_key,
     sm.product_uom_qty           AS quantity
   FROM stock_move sm
 fields:
@@ -34,22 +34,22 @@ fields:
     description: Picking / document reference of the move.
     datatype: VARCHAR
     clarion: { role: degenerate_dimension, lineage: { dataset: stock_move, field: reference } }
-  - name: product_id
+  - name: product_key
     label: Product
     description: Product being moved.
     datatype: BIGINT
     clarion:
       role: foreign_key
-      references: { dataset: dim_product, field: product_id }
+      references: { dataset: dim_product, field: product_key }
       technical: true
       lineage: { dataset: stock_move, field: product_id }
-  - name: company_id
+  - name: company_key
     label: Company
     description: Company of the move.
     datatype: BIGINT
     clarion:
       role: foreign_key
-      references: { dataset: dim_company, field: company_id }
+      references: { dataset: dim_company, field: company_key }
       technical: true
       lineage: { dataset: stock_move, field: company_id }
   - name: quantity

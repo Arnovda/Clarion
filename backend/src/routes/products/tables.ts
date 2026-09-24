@@ -7,6 +7,7 @@
  * order-is-load-bearing mounting contract.
  */
 import { sharedOriginalOf, sharedEditRefusal, sharedTableInfo } from '../../services/sharedTables';
+import { loadKeyGraph, declarationKeyViolations, loneRebuildRefusal } from '../../services/keyHealth';
 import { Router, Request, Response, NextFunction } from 'express';
 import type { Database } from 'duckdb-async';
 import { requireAuth, requireRole } from '../../middleware/auth';
@@ -58,6 +59,15 @@ router.post('/tables/:tableId/run', requireAuth, requireRole('admin', 'analyst')
 
     const schema = await db('star_schemas').where({ id: table.star_schema_id }).first();
     const product = await db('data_products').where({ id: schema.data_product_id }).first();
+
+    // A lookup whose key is ROW_NUMBER renumbers on every build; rebuilding it
+    // WITHOUT the tables holding its keys moves their rows to the wrong
+    // lookup row, silently. Refuse the lone rebuild and say what fixes it.
+    if (product?.connection_id) {
+      const graph = await loadKeyGraph(db, req.user!.tenantId, Number(product.connection_id));
+      const refusal = loneRebuildRefusal(graph, [Number(table.id)]);
+      if (refusal) { res.status(409).json({ ok: false, error: refusal, code: 'unstable_keys' }); return; }
+    }
 
     const { runProductTransformation } = await import('../../services/transformationRunner');
 
@@ -235,6 +245,13 @@ async function loadSharedFrom(req: Request, ownerTableId: number) {
     : null;
 }
 
+/** The key rule's refusal, as one readable paragraph (first problems only). */
+function keyRuleMessage(problems: string[]): string {
+  const shown = problems.slice(0, 3).join(' · ');
+  return `This change would break how tables join: ${shown}${problems.length > 3 ? ` (+${problems.length - 3} more)` : ''}. `
+    + "A lookup's key and every column pointing at it must be made the same way — clarion_key('<Entity>', <id>) on both sides.";
+}
+
 function tableIdParam(req: Request, res: Response): number | null {
   const id = Number(req.params.tableId);
   if (!Number.isFinite(id) || id <= 0) {
@@ -335,8 +352,19 @@ router.put('/tables/:tableId/sql', requireAuth, requireRole('admin', 'analyst'),
       return;
     }
 
-    // 3. Store ONCE, and keep the deploy cell in step so Deploy cannot revert it.
+    // 3. The key rule: a save must never make the two ends of a join
+    //    disagree (packages/connectors/src/keys.ts). Consistent mode — a
+    //    legacy table keeps saving while its partners are legacy too.
     const db = reqDb(req);
+    const keyProblems = declarationKeyViolations(
+      await loadKeyGraph(db, req.user!.tenantId, Number(row.connection_id)), tableId, inner,
+    );
+    if (keyProblems.length > 0) {
+      res.status(400).json({ ok: false, error: keyRuleMessage(keyProblems), code: 'key_rule', compiled: true });
+      return;
+    }
+
+    // 4. Store ONCE, and keep the deploy cell in step so Deploy cannot revert it.
     const now = new Date().toISOString();
     const declaredBy = (req.user?.displayName as string | undefined) ?? (req.user?.email as string | undefined) ?? null;
     const keepsServing = row.transformation_status === 'success';
@@ -452,6 +480,14 @@ router.post('/tables/:tableId/sql/propose', requireAuth, requireRole('admin', 'a
     }
     try {
       const columns = await compileDeclaredSql(session, inner);
+      const keyProblems = declarationKeyViolations(
+        await loadKeyGraph(reqDb(req), req.user!.tenantId, Number(row.connection_id)), tableId, inner,
+      );
+      if (keyProblems.length > 0) {
+        // Shown, not stored: Keep would be refused by the save anyway.
+        res.json({ ok: true, data: { proposed: true, sql: inner, summary: proposal.summary, compiled: false, columns, error: keyRuleMessage(keyProblems) } });
+        return;
+      }
       res.json({ ok: true, data: { proposed: true, sql: inner, summary: proposal.summary, compiled: true, columns } });
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'The proposal did not compile';

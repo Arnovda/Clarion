@@ -5,6 +5,7 @@ label: Accounts
 description: Customers, suppliers and prospects — one row per ExactOnline account.
 source: |-
   SELECT
+    clarion_key('Accounts', ID) AS account_key,
     ID          AS account_id,
     Code        AS account_code,
     Name        AS account_name,
@@ -16,9 +17,14 @@ source: |-
     Status      AS status,
     IsSales     AS is_customer,
     IsSupplier  AS is_supplier,
-    Parent      AS parent_id
+    clarion_key('Accounts', Parent) AS parent_key
   FROM Accounts
 fields:
+  - name: account_key
+    label: Account key
+    description: Stable integer key of the account — clarion_key('Accounts', account_id); every measures table computes the same value from its own column.
+    datatype: BIGINT
+    clarion: { role: surrogate_key, technical: true, lineage: { dataset: Accounts, field: ID } }
   - name: account_id
     label: Account ID
     description: ExactOnline account GUID (primary key).
@@ -74,13 +80,13 @@ fields:
     description: True when the account supplies to you.
     datatype: BOOLEAN
     clarion: { role: attribute, lineage: { dataset: Accounts, field: IsSupplier } }
-  - name: parent_id
+  - name: parent_key
     label: Parent account
     description: Parent account (e.g. holding company).
-    datatype: VARCHAR
+    datatype: BIGINT
     clarion:
       role: foreign_key
-      references: { dataset: dim_account, field: account_id }
+      references: { dataset: dim_account, field: account_key }
       technical: true
       lineage: { dataset: Accounts, field: Parent }
 clarion: { kind: dimension, product: Core dimensions, sourceEntities: [ Accounts ] }

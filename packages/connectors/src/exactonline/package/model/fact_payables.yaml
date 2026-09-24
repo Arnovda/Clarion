@@ -9,9 +9,9 @@ source: |-
     TRY_CAST(InvoiceDate AS DATE)       AS invoice_date,
     TRY_CAST(DueDate AS DATE)           AS due_date,
     InvoiceNumber                       AS invoice_number,
-    Account                             AS account_id,
-    GLAccount                           AS gl_account_id,
-    Journal                             AS journal_code,
+    clarion_key('Accounts', Account) AS account_key,
+    clarion_key('GLAccounts', GLAccount) AS gl_account_key,
+    clarion_key('Journals', Journal) AS journal_key,
     Currency                            AS currency,
     Description                         AS description,
     AmountDC                            AS amount_dc,
@@ -38,31 +38,31 @@ fields:
     description: Invoice number of the payable.
     datatype: BIGINT
     clarion: { role: degenerate_dimension, lineage: { dataset: Payments, field: InvoiceNumber } }
-  - name: account_id
+  - name: account_key
     label: Supplier
     description: Supplier the amount is owed to.
-    datatype: VARCHAR
+    datatype: BIGINT
     clarion:
       role: foreign_key
-      references: { dataset: dim_account, field: account_id }
+      references: { dataset: dim_account, field: account_key }
       technical: true
       lineage: { dataset: Payments, field: Account }
-  - name: gl_account_id
+  - name: gl_account_key
     label: GL account
     description: Payable GL account.
-    datatype: VARCHAR
+    datatype: BIGINT
     clarion:
       role: foreign_key
-      references: { dataset: dim_gl_account, field: gl_account_id }
+      references: { dataset: dim_gl_account, field: gl_account_key }
       technical: true
       lineage: { dataset: Payments, field: GLAccount }
-  - name: journal_code
+  - name: journal_key
     label: Journal
     description: Journal the payable is booked in.
-    datatype: VARCHAR
+    datatype: BIGINT
     clarion:
       role: foreign_key
-      references: { dataset: dim_journal, field: journal_code }
+      references: { dataset: dim_journal, field: journal_key }
       technical: true
       lineage: { dataset: Payments, field: Journal }
   - name: currency

@@ -25,6 +25,8 @@
  * admin+analyst: the role table grants "Design star schema products" to
  * both, and this page is the front door to that flow.
  */
+import { loadKeyGraph, summariseKeyHealth } from '../../services/keyHealth';
+import { planKeyUpgrade } from '../../services/keyUpgrade';
 import { Router, Request, Response, NextFunction } from 'express';
 import { requireAuth, requireRole } from '../../middleware/auth';
 import { reqDb } from '../../db/reqDb';
@@ -134,6 +136,21 @@ router.get('/build-overview', requireAuth, requireRole('admin', 'analyst'), asyn
       rowsTotal: p.rows_total === null || p.rows_total === undefined ? null : Number(p.rows_total),
     });
 
+    // How the built tables make their keys (keyHealth.ts). COUNTS ONLY — the
+    // Build page is an outcome-language surface; table names never reach it.
+    const keysByConn = new Map<number, { toUpgrade: number; renumbering: number; rebuildInstead: number }>();
+    for (const c of connections) {
+      if (!products.some((p) => p.connection_id === c.id)) continue;
+      const graph = await loadKeyGraph(db, tenantId, c.id);
+      const plan = planKeyUpgrade(graph);
+      const health = summariseKeyHealth(graph);
+      keysByConn.set(c.id, {
+        toUpgrade: plan.blockers.length > 0 ? health.raw.length + health.unstable.length : plan.steps.length,
+        renumbering: health.unstable.length,
+        rebuildInstead: plan.rebuildInstead.length,
+      });
+    }
+
     const sources = connections.map((c) => {
       const tableNames = tablesByConn.get(c.id) ?? [];
       // The plan is the REAL template instantiated against the REAL synced
@@ -179,6 +196,7 @@ router.get('/build-overview', requireAuth, requireRole('admin', 'analyst'), asyn
         hasTemplate: plan !== null,
         plan,
         products: products.filter((p) => p.connection_id === c.id).map(shapeProduct),
+        keys: keysByConn.get(c.id) ?? null,
       };
     });
 

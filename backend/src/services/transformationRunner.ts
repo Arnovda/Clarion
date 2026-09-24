@@ -6,6 +6,7 @@
  * Execution order follows the DAG: dimensions (dag_order=0) first, then facts (dag_order=1).
  */
 
+import { changedKeys } from '@databridge/connectors/dist/keys';
 import path from 'path';
 import fs from 'fs';
 import { Database } from 'duckdb-async';
@@ -858,6 +859,15 @@ export async function runProductTransformation(
           // higher-level shape check is the single source of truth.
           if (!isSqlShaped(repaired)) {
             log.warn(`${table.table_name} AI repair returned non-SQL — rejecting`);
+            throw firstErr;
+          }
+          // A repair may fix a column slip; it may never change how a key is
+          // made (clarion_key, packages/connectors/src/keys.ts). A lookup
+          // re-keyed by a repair would stop matching every fact that holds
+          // its keys — silently, and persisted. Failing the table is better.
+          const rekeyed = changedKeys(sql, repaired);
+          if (rekeyed.length > 0) {
+            log.warn({ table: table.table_name, rekeyed }, 'AI repair would change how keys are made — rejected');
             throw firstErr;
           }
           sql = repaired;

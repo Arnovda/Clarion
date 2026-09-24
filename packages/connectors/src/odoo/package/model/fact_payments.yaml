@@ -10,10 +10,10 @@ source: |-
     ap.payment_type              AS payment_type,
     ap.partner_type              AS partner_type,
     ap.state                     AS state,
-    ap.partner_id                AS partner_id,
-    ap.journal_id                AS journal_id,
-    ap.company_id                AS company_id,
-    ap.currency_id               AS currency_id,
+    clarion_key('res_partner', ap.partner_id) AS partner_key,
+    clarion_key('account_journal', ap.journal_id) AS journal_key,
+    clarion_key('res_company', ap.company_id) AS company_key,
+    clarion_key('res_currency', ap.currency_id) AS currency_key,
     ap.amount                    AS amount,
     CASE WHEN ap.payment_type = 'inbound' THEN ap.amount ELSE -ap.amount END AS amount_signed
   FROM account_payment ap
@@ -43,40 +43,40 @@ fields:
     description: Payment lifecycle state.
     datatype: VARCHAR
     clarion: { role: attribute, lineage: { dataset: account_payment, field: state } }
-  - name: partner_id
+  - name: partner_key
     label: Partner
     description: Customer / vendor the payment is with.
     datatype: BIGINT
     clarion:
       role: foreign_key
-      references: { dataset: dim_partner, field: partner_id }
+      references: { dataset: dim_partner, field: partner_key }
       technical: true
       lineage: { dataset: account_payment, field: partner_id }
-  - name: journal_id
+  - name: journal_key
     label: Journal
     description: Bank / cash journal of the payment.
     datatype: BIGINT
     clarion:
       role: foreign_key
-      references: { dataset: dim_journal, field: journal_id }
+      references: { dataset: dim_journal, field: journal_key }
       technical: true
       lineage: { dataset: account_payment, field: journal_id }
-  - name: company_id
+  - name: company_key
     label: Company
     description: Company of the payment.
     datatype: BIGINT
     clarion:
       role: foreign_key
-      references: { dataset: dim_company, field: company_id }
+      references: { dataset: dim_company, field: company_key }
       technical: true
       lineage: { dataset: account_payment, field: company_id }
-  - name: currency_id
+  - name: currency_key
     label: Currency
     description: Currency of the payment.
     datatype: BIGINT
     clarion:
       role: foreign_key
-      references: { dataset: dim_currency, field: currency_id }
+      references: { dataset: dim_currency, field: currency_key }
       technical: true
       lineage: { dataset: account_payment, field: currency_id }
   - name: amount

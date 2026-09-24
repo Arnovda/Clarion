@@ -16,7 +16,7 @@ clarion:
     - Purchasing
     - Inventory
   template:
-    version: 1
+    version: 2
     products:
       - name: Core dimensions
         description: "Conformed dimensions shared by every Odoo data product: partners, products, accounts, journals, companies, currencies."

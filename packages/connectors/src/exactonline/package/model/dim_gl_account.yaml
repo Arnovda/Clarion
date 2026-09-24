@@ -5,6 +5,7 @@ label: GL accounts
 description: The chart of accounts — one row per general-ledger account.
 source: |-
   SELECT
+    clarion_key('GLAccounts', ID) AS gl_account_key,
     ID              AS gl_account_id,
     Code            AS gl_account_code,
     Description     AS gl_account_name,
@@ -12,6 +13,11 @@ source: |-
     BalanceSide     AS balance_side
   FROM GLAccounts
 fields:
+  - name: gl_account_key
+    label: GL account key
+    description: Stable integer key of the gl account — clarion_key('GLAccounts', gl_account_id); every measures table computes the same value from its own column.
+    datatype: BIGINT
+    clarion: { role: surrogate_key, technical: true, lineage: { dataset: GLAccounts, field: ID } }
   - name: gl_account_id
     label: GL account ID
     description: ExactOnline GL account GUID (primary key).
