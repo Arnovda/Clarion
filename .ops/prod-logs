@@ -1,4 +1,12 @@
-14d
+2d
+request ai-usage
+
+# 2026-09-24: narrowed to the AI usage page. The owner saw /admin/ai-usage
+# answer 500 in production; locally every one of its seven endpoints answers
+# 200, as the superuser AND as databridge_app, so the cause is production data
+# or state and only production's own error line can say which. `request`
+# matches any substring, so `ai-usage` selects the URL. Put the window back to
+# 14d and drop the `request` line once this is read.
 
 # How far back to look in production logs. Widened 24h -> 7d on 2026-09-10:
 # the 24h window held no `sync-complete` at all, so the four phase-2 sync
