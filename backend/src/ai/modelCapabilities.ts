@@ -36,6 +36,25 @@ export function lightModel(): string {
   return process.env.CLAUDE_MODEL_HAIKU || 'claude-haiku-4-5-20251001';
 }
 
+/**
+ * The Anthropic models a tenant admin may assign to an AI category on
+ * /admin/ai-usage. The platform decides this list, not the tenant: an admin
+ * chooses among models we have checked against the shaping rules below and
+ * priced in utils/aiPricing.ts. Adding a model is a reviewed code change,
+ * the same rule as FEATURE_FLAGS. A stored choice that falls off the list
+ * is ignored at call time (the category uses its default), never sent.
+ */
+export const APPROVED_ANTHROPIC_MODELS: ReadonlyArray<{ id: string; label: string }> = [
+  { id: 'claude-sonnet-5', label: 'Claude Sonnet 5' },
+  { id: 'claude-haiku-4-5-20251001', label: 'Claude Haiku 4.5' },
+  { id: 'claude-opus-5', label: 'Claude Opus 5' },
+  { id: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6 (previous)' },
+];
+
+export function isApprovedAnthropicModel(id: string): boolean {
+  return APPROVED_ANTHROPIC_MODELS.some((m) => m.id === id);
+}
+
 // Model families by the generation that changed the rules. Matched on the
 // id prefix so a dated snapshot (`claude-haiku-4-5-20251001`) and a Bedrock
 // style id without the date both land in the right family.

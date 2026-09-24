@@ -2,7 +2,9 @@ import { describe, it, expect } from 'vitest';
 import {
   acceptsSampling, supportsAdaptiveThinking, thinksByDefault, supportsEffort,
   shapeRequest, responseText, THINKING_HEADROOM_TOKENS, NON_STREAMING_MAX_TOKENS,
+  APPROVED_ANTHROPIC_MODELS, isApprovedAnthropicModel, mainModel, lightModel,
 } from './modelCapabilities';
+import { listAllRates } from '../utils/aiPricing';
 
 describe('model capabilities', () => {
   it('knows which generation refuses sampling parameters', () => {
@@ -84,5 +86,30 @@ describe('responseText', () => {
     expect(() => responseText({ content: [{ type: 'thinking' }], stop_reason: 'max_tokens' }))
       .toThrow(/whole output budget/);
     expect(() => responseText({ content: [], stop_reason: 'refusal' })).toThrow(/declined/);
+  });
+});
+
+describe('the approved model list', () => {
+  it('holds the platform defaults, so the default is always choosable', () => {
+    expect(isApprovedAnthropicModel(mainModel())).toBe(true);
+    expect(isApprovedAnthropicModel(lightModel())).toBe(true);
+    expect(isApprovedAnthropicModel('claude-sonnet-4-6')).toBe(true); // the rollback target
+    expect(isApprovedAnthropicModel('claude-3-opus-20240229')).toBe(false);
+    expect(isApprovedAnthropicModel('')).toBe(false);
+  });
+
+  it('only lists models the cost page has a price for', () => {
+    // Without a row the cost page falls back to Sonnet 4.6 rates — a model
+    // an admin can pick must never be silently mispriced.
+    const priced = new Set(listAllRates().map((r) => r.model));
+    for (const m of APPROVED_ANTHROPIC_MODELS) expect(priced.has(m.id), m.id).toBe(true);
+  });
+
+  it('every approved model gets a request it accepts', () => {
+    for (const { id } of APPROVED_ANTHROPIC_MODELS) {
+      const p = shapeRequest({ model: id, maxTokens: 16000, temperature: 0, streaming: true, thinking: 'visible' });
+      if (!acceptsSampling(id)) expect(p.temperature, id).toBeUndefined();
+      if (supportsAdaptiveThinking(id)) expect(JSON.stringify(p), id).not.toContain('budget_tokens');
+    }
   });
 });

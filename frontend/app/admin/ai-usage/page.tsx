@@ -454,6 +454,15 @@ interface CategoryConfig {
   description: string;
   defaultModel: string;
   override: { provider: string; model_id: string } | null;
+  /** false = a stored choice the platform no longer offers; the default is used. */
+  overrideApproved: boolean | null;
+}
+
+/** The server's own sentence when it has one ("… is not one of the models …"). */
+function apiError(e: unknown, fallback: string): string {
+  const data = (e as { response?: { data?: { error?: string } } })?.response?.data;
+  if (data?.error) return data.error;
+  return e instanceof Error ? e.message : fallback;
 }
 
 interface AvailableModel {
@@ -504,7 +513,7 @@ function CategoryModelPanel() {
       setSavedCat(category);
       setTimeout(() => setSavedCat(null), 2200);
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Could not save model config.');
+      setError(apiError(e, 'Could not save model config.'));
     } finally {
       setSaving(null);
     }
@@ -539,6 +548,7 @@ function CategoryModelPanel() {
         </div>
         <p className="text-[12px] text-muted mt-0.5">
           Override the model for each type of AI call. Unset categories use the global routing mode above.
+          The list holds the models Clarion supports; a model is only offered once it has been checked and priced.
         </p>
       </header>
 
@@ -550,7 +560,10 @@ function CategoryModelPanel() {
 
       <div className="space-y-2">
         {categories.map((cat) => {
-          const currentValue = cat.override
+          // A choice that is no longer offered is not in force — show the
+          // select on "Use global setting", which is what the calls do.
+          const stale = !!cat.override && cat.overrideApproved === false;
+          const currentValue = cat.override && !stale
             ? `${cat.override.provider}:${cat.override.model_id}`
             : 'default';
           const isSaving = saving === cat.category;
@@ -574,6 +587,11 @@ function CategoryModelPanel() {
                 <p className="text-[10.5px] font-mono text-muted-2 mt-0.5">
                   Default: {cat.defaultModel}
                 </p>
+                {stale && (
+                  <p className="text-[11px] text-amber-800 mt-1 leading-snug">
+                    {cat.override!.model_id} is no longer offered, so this category uses the default. Pick another model to change it.
+                  </p>
+                )}
               </div>
               <div className="flex-shrink-0 w-56">
                 <select

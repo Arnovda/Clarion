@@ -595,6 +595,38 @@ function attachAbort(
 }
 
 // ---------------------------------------------------------------------------
+// The Claude model for a call that only Claude can serve.
+//
+// Streaming and multi-turn calls speak Anthropic's stream/turn format, so an
+// Azure override cannot reach them — they stay on Claude. But an ANTHROPIC
+// override (a tenant admin picking Opus 5 for Ask AI on /admin/ai-usage)
+// must reach them: before this, callClaude was the only path that read
+// overrides, so the two calls that matter most — Ask AI's SQL stream and the
+// subject design — silently ignored the choice the screen showed as saved.
+// resolveModel already refuses a model that is not on the approved list.
+// ---------------------------------------------------------------------------
+
+export async function claudeModelFor(
+  callLabel: string,
+  tenantId: number | null,
+  fallback: string,
+): Promise<string> {
+  if (!tenantId) return fallback;
+  try {
+    const resolved = await resolveModel({ callLabel, kind: 'schema', tenantId });
+    if (resolved?.provider === 'anthropic') return resolved.modelId;
+    if (resolved) {
+      logger.debug({ callLabel, tenantId, provider: resolved.provider },
+        'azure override does not apply to a streaming or multi-turn call — staying on Claude');
+    }
+  } catch (err) {
+    logger.warn({ callLabel, tenantId, err: err instanceof Error ? err.message : String(err) },
+      'model override lookup failed — using the default');
+  }
+  return fallback;
+}
+
+// ---------------------------------------------------------------------------
 // Stream-open retry.
 //
 // callClaude (non-streaming) has retried 529/503/500/429 with backoff for a
@@ -685,15 +717,16 @@ async function callClaudeStreaming(
 ): Promise<string> {
   if (!callLabel) callLabel = 'stream_' + systemPrompt.slice(0, 50).replace(/[^a-zA-Z0-9_ ]/g, '').trim().replace(/\s+/g, '_').toLowerCase();
   const tenantId = await enforceAiBudget(callLabel);
+  const model = await claudeModelFor(callLabel, tenantId, MODEL);
   const start = Date.now();
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const params: any = {
-    model: MODEL,
+    model,
     system: cacheSystem
       ? [{ type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } }]
       : systemPrompt,
     messages: [{ role: 'user', content: userPrompt }],
-    ...shapeRequest({ model: MODEL, maxTokens, temperature, streaming: true }),
+    ...shapeRequest({ model, maxTokens, temperature, streaming: true }),
   };
 
   const opened = await openStreamWithRetry(() => getClient().messages.stream(params), { callLabel });
@@ -711,7 +744,7 @@ async function callClaudeStreaming(
   }
 
   const durationMs = Date.now() - start;
-  const props = { callLabel, model: MODEL, streaming: 'true', ...(tenantId ? { tenantId: String(tenantId) } : {}) };
+  const props = { callLabel, model, streaming: 'true', ...(tenantId ? { tenantId: String(tenantId) } : {}) };
   trackMetric('ai_call_duration_ms', durationMs, props);
 
   // Usage attribution for streaming: the final message on the stream
@@ -731,14 +764,14 @@ async function callClaudeStreaming(
     }
     logAiCall({
       callLabel: callLabel!,
-      model: MODEL,
+      model,
       inputTokens,
       outputTokens,
       cacheReadTokens,
       cacheCreationTokens,
       durationMs,
     });
-    logger.info({ callLabel, durationMs, outputChars: fullText.length, inputTokens, outputTokens, streaming: true }, 'AI streaming call completed');
+    logger.info({ callLabel, model, durationMs, outputChars: fullText.length, inputTokens, outputTokens, streaming: true }, 'AI streaming call completed');
   } catch {
     logger.info({ callLabel, durationMs, outputChars: fullText.length, streaming: true }, 'AI streaming call completed (usage unavailable)');
   }
@@ -751,16 +784,20 @@ export async function callClaudeMultiTurn(
   systemPrompt: string,
   messages: Array<{ role: 'user' | 'assistant'; content: string }>,
   /** `signal` cancels the call when the requester goes away — see attachAbort. */
-  opts: { temperature?: number; signal?: AbortSignal } = {},
+  opts: { temperature?: number; signal?: AbortSignal; callLabel?: string } = {},
 ): Promise<string> {
-  const tenantId = await enforceAiBudget('multi_turn');
+  // The label decides which admin category (and so which model override)
+  // the call belongs to; 'multi_turn' is Ask AI's repair loop.
+  const callLabel = opts.callLabel ?? 'multi_turn';
+  const tenantId = await enforceAiBudget(callLabel);
+  const model = await claudeModelFor(callLabel, tenantId, MODEL);
   const start = Date.now();
   const message = await getClient().messages.create(
     {
-      model: MODEL,
+      model,
       system: systemPrompt,
       messages,
-      ...shapeRequest({ model: MODEL, maxTokens: 4096, temperature: opts.temperature, streaming: false }),
+      ...shapeRequest({ model, maxTokens: 4096, temperature: opts.temperature, streaming: false }),
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any,
     opts.signal ? { signal: opts.signal } : undefined,
@@ -778,8 +815,8 @@ export async function callClaudeMultiTurn(
     recordTenantAiUsage(tenantId, inputTokens, outputTokens).catch(() => { /* logged inside */ });
   }
   logAiCall({
-    callLabel: 'multi_turn',
-    model: MODEL,
+    callLabel,
+    model,
     inputTokens,
     outputTokens,
     cacheReadTokens,
@@ -1490,6 +1527,7 @@ export async function generateSqlStreaming(
 ): Promise<NlToSqlOutput> {
   const tenantId = await enforceAiBudget('generate_sql_streaming');
   const streamCallLabel = 'generate_sql_streaming';
+  const model = await claudeModelFor(streamCallLabel, tenantId, MODEL);
   const streamStart = Date.now();
   const glossary = await loadGlossaryBlock({ links: dialect === 'duckdb' });
   const systemPrompt = dialect === 'duckdb'
@@ -1507,10 +1545,10 @@ export async function generateSqlStreaming(
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const params: any = {
-    model: MODEL,
+    model,
     // The reasoning streams to the asker live, so it is asked for on every
     // model and summarized where the model would otherwise send it empty.
-    ...shapeRequest({ model: MODEL, maxTokens: 16000, streaming: true, thinking: 'visible', effort: 'medium' }),
+    ...shapeRequest({ model, maxTokens: 16000, streaming: true, thinking: 'visible', effort: 'medium' }),
     // cache_control on the NL→SQL system prompt — same big context that's
     // stable across all questions from a tenant.
     system: [{ type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } }],
@@ -1553,7 +1591,7 @@ export async function generateSqlStreaming(
     }
     logAiCall({
       callLabel: streamCallLabel,
-      model: MODEL,
+      model,
       inputTokens,
       outputTokens,
       cacheReadTokens,
@@ -1812,6 +1850,7 @@ export async function generateBusMatrixStreaming(
 ): Promise<BusMatrixOutput> {
   const tenantId = await enforceAiBudget('bus_matrix_streaming');
   const streamCallLabel = 'bus_matrix_streaming';
+  const model = await claudeModelFor(streamCallLabel, tenantId, MODEL);
   const streamStart = Date.now();
   const currentDate = currentDateStr();
   const corrId = `bm-${Date.now().toString(36)}`;
@@ -1819,9 +1858,9 @@ export async function generateBusMatrixStreaming(
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const params: any = {
-    model: MODEL,
+    model,
     // A whole warehouse design: the one call worth thinking hardest about.
-    ...shapeRequest({ model: MODEL, maxTokens: 64000, streaming: true, thinking: 'visible', effort: 'high' }),
+    ...shapeRequest({ model, maxTokens: 64000, streaming: true, thinking: 'visible', effort: 'high' }),
     system: [{
       type: 'text',
       text: promptOverride?.system ?? BUS_MATRIX_SYSTEM(sourceTablesContext, currentDate),
@@ -1835,7 +1874,7 @@ export async function generateBusMatrixStreaming(
     try { onEvent('diag', msg); } catch { /* ignore */ }
   };
 
-  sendDiag(`AI call starting (model=${MODEL}, max_tokens=${params.max_tokens}, thinking=${JSON.stringify(params.thinking ?? null)} effort=${params.output_config?.effort ?? 'default'}, contextChars=${sourceTablesContext.length})`);
+  sendDiag(`AI call starting (model=${model}, max_tokens=${params.max_tokens}, thinking=${JSON.stringify(params.thinking ?? null)} effort=${params.output_config?.effort ?? 'default'}, contextChars=${sourceTablesContext.length})`);
 
   const opened = await openStreamWithRetry(() => {
     const st = getClient().messages.stream(params);
@@ -1994,6 +2033,7 @@ export async function respondBuildChat(
   const raw = await callClaudeMultiTurn(
     BUILD_CHAT_SYSTEM(coverageContext, currentDateStr()),
     messages,
+    { callLabel: 'build_chat' },
   );
   return parseJson(raw, BuildChatResponseSchema);
 }
