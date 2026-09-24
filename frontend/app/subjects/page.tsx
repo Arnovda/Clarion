@@ -17,7 +17,8 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { ArrowRight, Layers, Library, Loader2, MessageSquare, Sparkles } from 'lucide-react';
+import { ArrowRight, Layers, Library, Loader2, MessageSquare } from 'lucide-react';
+import { ClarionMark } from '@/components/brand/ClarionMark';
 import api from '@/lib/api';
 import { getTokenPayload } from '@/lib/auth';
 import { formatRelativeLong } from '@/lib/dates';
@@ -119,7 +120,7 @@ export default function SubjectsPage() {
             <p className="text-[14px] text-ink-2">No subjects yet.</p>
             {role === 'admin' || role === 'analyst' ? (
               <a href="/build" className="mt-3 inline-flex items-center gap-1.5 rounded-[8px] bg-ocean px-4 py-2 text-[13px] font-medium text-white hover:opacity-90">
-                <Sparkles className="h-4 w-4" strokeWidth={1.8} aria-hidden />
+                <ClarionMark size={16} tone="mono" />
                 Create your topics
               </a>
             ) : (

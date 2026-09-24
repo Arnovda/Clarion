@@ -26,11 +26,13 @@ export const OBSERVATORY = {
   muted:  '#6b7680',
   muted2: '#8891a0',
 
-  // Ocean — primary accent
-  ocean:        '#164e63',
-  oceanHover:   '#103d4f',
-  oceanSoft:    '#d0e1e6',
-  oceanSofter:  '#e8f0f3',
+  // The accent — violet since the 2026-09-24 brand mark (the name stays
+  // `ocean`, as in globals.css). Chart series c1 below deliberately stays
+  // teal: a DATA colour, not the UI accent.
+  ocean:        '#7c3aed',
+  oceanHover:   '#6d28d9',
+  oceanSoft:    '#ede9fe',
+  oceanSofter:  '#f5f3ff',
 
   // AI accent (warm amber-tan)
   ai:     '#c08a5e',
@@ -45,7 +47,7 @@ export const OBSERVATORY = {
   errSoft:  '#f1d7d7',
 
   // Chart series (also --c1..--c6)
-  c1: '#164e63', // ocean
+  c1: '#164e63', // teal — data colour (was the accent before 2026-09-24)
   c2: '#3f7a5c', // ok
   c3: '#a06a1c', // warn
   c4: '#6b4e8c', // plum

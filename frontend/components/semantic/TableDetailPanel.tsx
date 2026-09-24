@@ -15,6 +15,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import dynamic from 'next/dynamic';
 import { ArrowRight, Check, ChevronDown, ChevronRight, Flag, MessageSquareText, Sparkles } from 'lucide-react';
+import { ClarionMark } from '@/components/brand/ClarionMark';
 import api from '@/lib/api';
 import { SourceTable, SourceColumn } from './types';
 import ApprovalBadge from './ApprovalBadge';
@@ -326,7 +327,7 @@ export default function TableDetailPanel({
               {curator && isAiDraft && (
                 <section className="bg-ocean-softer border border-ocean/30 rounded-lg px-4 py-3 flex items-center justify-between gap-4">
                   <div className="flex items-start gap-2.5 min-w-0">
-                    <Sparkles className="w-4 h-4 text-ocean shrink-0 mt-0.5" strokeWidth={2} aria-hidden />
+                    <ClarionMark size={16} className="shrink-0 mt-0.5" />
                     <p className="text-[13px] text-ink leading-relaxed">
                       <span className="font-medium">Suggested by Clarion.</span> Confirm the description if it is right, or flag it.
                     </p>

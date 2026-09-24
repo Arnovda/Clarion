@@ -18,7 +18,8 @@
  */
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { motion } from 'framer-motion';
-import { ChevronDown, Sparkles, Square } from 'lucide-react';
+import { ChevronDown, Square } from 'lucide-react';
+import { ClarionMark } from '@/components/brand/ClarionMark';
 import { MarkdownAnswer } from '@/app/dashboards/components/MarkdownAnswer';
 
 export interface AssistantScope {
@@ -129,11 +130,7 @@ export default function CatalogAssistant({
         className="absolute bottom-5 right-5 z-30 flex items-center gap-2 pl-3 pr-4 py-2.5 rounded-full border border-line bg-raised shadow-[0_6px_24px_-8px_rgba(15,32,45,0.30)] hover:border-line-strong transition-colors max-w-[min(420px,calc(100%-2.5rem))]"
         aria-label={working ? 'The assistant is working — open to watch' : 'Open the assistant'}
       >
-        {working ? (
-          <span className="w-2 h-2 rounded-full bg-ocean animate-pulse shrink-0" />
-        ) : (
-          <Sparkles className="w-3.5 h-3.5 text-ocean shrink-0" strokeWidth={2} />
-        )}
+        <ClarionMark size={16} state={working ? 'working' : 'idle'} className="shrink-0" />
         <span className="text-[13px] text-ink-2 truncate">
           {working ? (working.mode === 'change' ? 'Proposing a change…' : 'Answering…') : scope.kind === 'none' ? 'Ask about your data' : `Ask about ${scope.label}`}
         </span>
@@ -152,7 +149,7 @@ export default function CatalogAssistant({
       aria-label="Catalog assistant"
     >
       <div className="px-4 py-2.5 flex items-center gap-2 border-b border-line bg-soft shrink-0">
-        <Sparkles className="w-3.5 h-3.5 text-ocean shrink-0" strokeWidth={2} />
+        <ClarionMark size={16} state={working ? 'working' : 'idle'} className="shrink-0" />
         <span className="text-[10px] font-mono tracking-[0.12em] uppercase text-muted-2 flex-1">Assistant</span>
         <button
           type="button"
@@ -227,7 +224,7 @@ export default function CatalogAssistant({
                 {msg.text && <MarkdownAnswer text={msg.text} />}
                 {msg.working && (
                   <p className="text-[12px] text-muted italic mt-1.5 flex items-center gap-2">
-                    <span className="inline-block w-2 h-2 rounded-full bg-ocean animate-pulse shrink-0" />
+                    <ClarionMark size={16} state="working" className="shrink-0" />
                     {msg.mode === 'change' ? 'Reading the SQL and the tables it can use…' : 'Reading the catalog…'}
                   </p>
                 )}

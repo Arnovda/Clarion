@@ -5,6 +5,7 @@
  * viewer page (9-3): every door in here opens for every role.
  */
 import { BarChart3, ChevronRight, Library, Plus, Sparkles, Star } from 'lucide-react';
+import { ClarionMark } from '@/components/brand/ClarionMark';
 import { OBSERVATORY } from '@/lib/observatory';
 import { formatRelative } from '@/lib/dates';
 import type { HomeSummary } from './types';
@@ -93,7 +94,7 @@ export function RecentQuestionsSection({
       <div className="px-5 py-4">
         {questions.length === 0 ? (
           <div className="text-center py-6">
-            <Sparkles className="w-6 h-6 mx-auto mb-2 text-muted-2" strokeWidth={1.5} />
+            <ClarionMark size={24} tone="mono" className="mx-auto mb-2 text-muted-2 block" />
             <p className="text-[13px] text-ink-2 mb-3">No questions yet</p>
             <button
               onClick={() => onJump('/query')}

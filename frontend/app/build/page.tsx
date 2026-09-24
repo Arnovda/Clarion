@@ -35,8 +35,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   AlertTriangle, ArrowRight, Blocks, CheckCircle2, ChevronDown, ChevronRight,
-  Eye, EyeOff, Library, Loader2, Sparkles, X,
+  Eye, EyeOff, Library, Loader2, X,
 } from 'lucide-react';
+import { ClarionMark } from '@/components/brand/ClarionMark';
 import api from '@/lib/api';
 import { cn } from '@/lib/cn';
 import RequireRole from '@/components/RequireRole';
@@ -632,7 +633,7 @@ function PlanPanel({ src, intent, onIntent, onBuild, disabled }: {
             disabled={disabled}
             className="inline-flex items-center gap-2 rounded-[8px] bg-ocean px-4 py-2 text-[13.5px] font-medium text-white hover:opacity-90 disabled:opacity-40"
           >
-            <Sparkles className="h-4 w-4" strokeWidth={1.8} aria-hidden />
+            <ClarionMark size={16} tone="mono" />
             Create my topics
           </button>
           <p className="mt-1.5 text-[11.5px] text-muted-2">

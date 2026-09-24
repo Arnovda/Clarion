@@ -108,6 +108,8 @@ const config: Config = {
       fontFamily: {
         /* Observatory */
         display: ['var(--font-display)'],
+        /* The wordmark only (Cormorant Garamond) — never body or headings. */
+        brand:   ['var(--font-brand)'],
         sans:    ['var(--font-sans)'],
         mono:    ['var(--font-mono)'],
         /* Legacy (kept for existing call sites) */

@@ -1,5 +1,5 @@
 import type { Metadata } from 'next';
-import { Manrope, Inter, Source_Serif_4 } from 'next/font/google';
+import { Manrope, Inter, Source_Serif_4, Cormorant_Garamond } from 'next/font/google';
 import localFont from 'next/font/local';
 import './globals.css';
 import { Toaster } from '@/components/ui/Toast';
@@ -29,6 +29,14 @@ const sourceSerif = Source_Serif_4({
   display: 'swap',
 });
 
+// The WORDMARK only ("Clarion" beside the mark). Self-hosted like the rest.
+const cormorant = Cormorant_Garamond({
+  subsets: ['latin'],
+  weight: ['600'],
+  variable: '--font-cormorant',
+  display: 'swap',
+});
+
 const geistMono = localFont({
   src: './fonts/GeistMonoVF.woff',
   variable: '--font-geist-mono',
@@ -37,12 +45,12 @@ const geistMono = localFont({
 
 export const metadata: Metadata = {
   title: 'Clarion',
-  description: 'AI-powered semantic data platform',
+  description: 'Clear answers from your data',
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en" className={`${manrope.variable} ${inter.variable} ${sourceSerif.variable} ${geistMono.variable}`}>
+    <html lang="en" className={`${manrope.variable} ${inter.variable} ${sourceSerif.variable} ${cormorant.variable} ${geistMono.variable}`}>
       <body suppressHydrationWarning className="antialiased font-sans bg-bg text-ink">
         {children}
         <Toaster />
