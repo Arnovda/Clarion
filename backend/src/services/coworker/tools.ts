@@ -287,6 +287,7 @@ const openSourceTable: CoworkerTool = {
           columns: columns.filter((c) => Number(c.table_id) === Number(t.id)).slice(0, 40).map((c) => ({ id: c.id, name: c.column_name })),
         })),
         relationships: rels.slice(0, 30).map((r) => ({
+          id: r.id,
           from: `${nameOf(r.fromTableId)}.${colOf(r.fromColumnId)}`,
           to: `${nameOf(r.toTableId)}.${colOf(r.toColumnId)}`,
           type: r.relationshipType, kind: r.kind, flagged: r.flagged || undefined,
@@ -466,6 +467,7 @@ const proposeRelationship: CoworkerTool = {
     };
     return {
       proposal,
+      focus: { kind: 'relations', tableId: ids.fromTableId },
       detail: `${m?.verdict ?? 'unmeasurable'}${typeof ratio === 'number' ? ` · ${Math.round(ratio * 100)}% of values found` : ''}`,
       result: { verdict: m?.verdict, reason: m?.reason, containment: ratio, cardinality: m?.cardinality?.type, orphans: m?.orphans?.rows },
     };
@@ -615,9 +617,134 @@ const proposeNewSubject: CoworkerTool = {
   },
 };
 
+/**
+ * One existing relationship, re-measured on the data — the question a person
+ * asks on the Relations canvas ("does this one hold?"). The endpoints are read
+ * from the row (explicit tenant filter), the measurement goes through the SAME
+ * route the canvas's measure button calls. It does NOT store the result:
+ * measuring is not deciding, and caching it would be a write.
+ */
+const checkRelationship: CoworkerTool = {
+  kind: 'read',
+  definition: {
+    name: 'check_relationship',
+    description: 'Re-measure an existing relationship (by id) on the real data: how many values are found on the other side, the cardinality, orphans, plus who laid it and whether it is flagged. Use it when the person asks whether a relationship holds. Nothing is saved.',
+    input_schema: {
+      type: 'object',
+      properties: { relationship_id: { type: 'integer' } },
+      required: ['relationship_id'],
+      additionalProperties: false,
+    },
+  },
+  label: () => 'Checking the relationship against your data',
+  async run(ctx, input) {
+    const id = posInt(input, 'relationship_id');
+    const rel = await ctx.db('table_relationships as r')
+      .leftJoin('source_tables as ft', function () { this.on('ft.id', '=', 'r.from_table_id').andOn('ft.tenant_id', '=', 'r.tenant_id'); })
+      .leftJoin('source_tables as tt', function () { this.on('tt.id', '=', 'r.to_table_id').andOn('tt.tenant_id', '=', 'r.tenant_id'); })
+      .leftJoin('source_columns as fc', 'fc.id', 'r.from_column_id')
+      .leftJoin('source_columns as tc', 'tc.id', 'r.to_column_id')
+      .where('r.id', id).andWhere('r.tenant_id', ctx.tenantId)
+      .first(
+        'r.id', 'r.from_table_id', 'r.to_table_id', 'r.from_column_id', 'r.to_column_id',
+        'r.relationship_type', 'r.kind', 'r.ai_draft', 'r.confirmed_by_user', 'r.flagged_at', 'r.flagged_reason',
+        'r.semantic_source', 'ft.table_name as from_table', 'tt.table_name as to_table',
+        'fc.column_name as from_column', 'tc.column_name as to_column',
+      );
+    if (!rel) throw new ToolError('Not found in this workspace.');
+    const fromTableId = Number(rel.from_table_id);
+    const about = {
+      id,
+      link: `${rel.from_table}.${rel.from_column ?? '?'} → ${rel.to_table}.${rel.to_column ?? '?'}`,
+      stored_type: rel.relationship_type ?? undefined,
+      kind: rel.kind ?? 'join',
+      laid_by: rel.semantic_source === 'vendor_docs' || rel.semantic_source === 'declared' ? 'the source' : 'a person or Clarion',
+      status: rel.confirmed_by_user ? 'confirmed' : rel.ai_draft ? 'suggestion awaiting review' : 'confirmed',
+      flagged: rel.flagged_at ? (rel.flagged_reason || 'yes') : undefined,
+    };
+    const focus: CoworkerFocus = { kind: 'relations', tableId: fromTableId, relationshipId: id };
+    if (!rel.from_column_id || !rel.to_column_id) {
+      return { focus, detail: 'no column on one side', result: { ...about, measured: 'This link does not name a column on both sides, so it cannot be measured.' } };
+    }
+    if ((rel.kind ?? 'join') === 'match') {
+      return { focus, detail: 'a cross-source match', result: { ...about, measured: 'This is a match between two sources; it is judged by match rate on the canvas, not re-measured here.' } };
+    }
+    const m = await post(ctx, '/relationships/measure', {
+      fromTableId, fromColumnId: Number(rel.from_column_id),
+      toTableId: Number(rel.to_table_id), toColumnId: Number(rel.to_column_id),
+    });
+    const ratio = m?.containment?.ratio;
+    return {
+      focus,
+      detail: `${m?.verdict ?? 'unmeasurable'}${typeof ratio === 'number' ? ` · ${Math.round(ratio * 100)}% of values found` : ''}`,
+      result: {
+        ...about,
+        verdict: m?.verdict, reason: m?.reason, containment: ratio,
+        measured_type: m?.cardinality?.type, orphans: m?.orphans?.rows,
+      },
+    };
+  },
+};
+
+/**
+ * How a source is doing: its last syncs and what went wrong. The question a
+ * person asks on the Sources page. Names, statuses, counts and the (already
+ * redacted) error text — never the connection's configuration.
+ */
+const sourceStatus: CoworkerTool = {
+  kind: 'read',
+  definition: {
+    name: 'source_status',
+    description: 'A source system\'s sync health: its last syncs (status, when, rows per table), what failed and why, tables still loading, and whether it has been analysed. Use it for "why did the sync fail?" or "is my data current?". Get the id from describe_workspace or the page.',
+    input_schema: {
+      type: 'object',
+      properties: { connection_id: { type: 'integer' } },
+      required: ['connection_id'],
+      additionalProperties: false,
+    },
+  },
+  label: () => 'Looking at the source\'s recent syncs',
+  async run(ctx, input) {
+    const connectionId = posInt(input, 'connection_id');
+    const list = (await get(ctx, '/connections')) as Array<Record<string, unknown>> | null;
+    const conn = (list ?? []).find((c) => Number(c.id) === connectionId);
+    if (!conn) throw new ToolError('Not found in this workspace.');
+    const runs = ((await get(ctx, `/connections/${connectionId}/sync-runs?limit=5`)) ?? []) as Array<Record<string, unknown>>;
+    const rowTotal = (rc: unknown): number | undefined => {
+      if (!rc || typeof rc !== 'object') return undefined;
+      return Object.values(rc as Record<string, unknown>).reduce<number>((n, v) => n + (Number(v) || 0), 0);
+    };
+    const entities = Array.isArray(conn.selected_entities) ? conn.selected_entities.length : undefined;
+    const last = runs[0];
+    return {
+      focus: { kind: 'source', connectionId },
+      detail: last ? `last sync ${String(last.status)}` : 'never synced',
+      result: {
+        id: connectionId,
+        name: conn.name,
+        system: conn.connector_type ?? conn.type,
+        tables_selected: entities,
+        last_synced_at: conn.last_synced_at ?? undefined,
+        analysed: conn.profiling_status === 'done' ? 'yes' : conn.profiling_status === 'structural' ? 'tables registered, not analysed yet' : (conn.profiling_status ?? 'no'),
+        recent_syncs: runs.map((r) => ({
+          status: r.status,
+          mode: r.mode ?? undefined,
+          queued_at: r.queued_at,
+          finished_at: r.completed_at ?? undefined,
+          rows: rowTotal(r.row_counts),
+          error: r.error_message ? clip(r.error_message, 400) : undefined,
+          failed_tables: r.failed_entities && typeof r.failed_entities === 'object' ? Object.keys(r.failed_entities as object).slice(0, 12) : undefined,
+          still_loading: Array.isArray(r.incomplete_entities) && r.incomplete_entities.length ? r.incomplete_entities.slice(0, 12) : undefined,
+          warnings: Array.isArray(r.warnings) && r.warnings.length ? (r.warnings as unknown[]).slice(0, 3).map((w) => clip(w, 200)) : undefined,
+        })),
+      },
+    };
+  },
+};
+
 export const COWORKER_TOOLS: CoworkerTool[] = [
   describeWorkspace, searchCatalog, openSubject, openTable, openSourceTable,
-  previewRows, tableLineage, tableUsage, listDefinitions,
+  previewRows, tableLineage, tableUsage, listDefinitions, checkRelationship, sourceStatus,
   proposeSqlChange, proposeRelationship, proposeGlossaryTerm, proposeNewTable, proposeNewSubject,
 ];
 

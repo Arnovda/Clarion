@@ -317,7 +317,13 @@ export type CoworkerFocus =
   | { kind: 'subject'; productId: number }
   | { kind: 'table'; tableId: number; tab?: 'sql' }
   | { kind: 'source'; connectionId: number }
-  | { kind: 'source-table'; tableId: number; connectionId: number };
+  | { kind: 'source-table'; tableId: number; connectionId: number }
+  /**
+   * The Relations canvas, anchored on a SOURCE table (optionally with one
+   * relationship selected). Only auto-followed while the person is already on
+   * the canvas — it must not pull them out of the catalog mid-thought.
+   */
+  | { kind: 'relations'; tableId: number; relationshipId?: number };
 
 /** What the person is looking at, sent with every message. */
 export interface CoworkerPageContext {
@@ -329,6 +335,8 @@ export interface CoworkerPageContext {
   tableId?: number | null;
   sourceTableId?: number | null;
   connectionId?: number | null;
+  /** A relationship the person has selected on the Relations canvas. */
+  relationshipId?: number | null;
 }
 
 /** Who would notice a change to a table — shown BEFORE Keep. */

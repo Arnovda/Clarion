@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, Suspense, Fragment } from 'react';
+import { useState, useEffect, useCallback, useMemo, Suspense, Fragment } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import AppShell from '@/components/layout/AppShell';
 import RequireRole from '@/components/RequireRole';
@@ -9,6 +9,10 @@ import IngestionWizard from '@/components/IngestionWizard';
 import api from '@/lib/api';
 import { getToken } from '@/lib/auth';
 import { useRole } from '@/lib/role';
+import {
+  useCoworker, useCoworkerChanged, useCoworkerFocusHandler, useCoworkerPageContext,
+} from '@/lib/coworker/CoworkerProvider';
+import type { CoworkerFocus, CoworkerPageContext } from '@/lib/contract';
 import { streamSSE, SSEHttpError } from '@/lib/sse';
 
 // ---------------------------------------------------------------------------
@@ -2141,6 +2145,43 @@ function SourcesPageInner() {
   // Without this the two lists can each render the same product — which is
   // exactly what happened to Exact Online: a stale "coming soon" placeholder
   // beside the working tile.
+  // ── The Studio coworker (flag `ai_coworker`) ────────────────────────────
+  // "This source" is the one the person last touched (or the one a link
+  // pointed at, or the only one there is). When the coworker opens a source,
+  // the page scrolls to its card instead of leaving for the catalog; a Keep
+  // refreshes the list. Inert when the flag is off.
+  const cw = useCoworker();
+  const coworkerOn = cw?.enabled === true;
+  const [touchedConnId, setTouchedConnId] = useState<number | null>(urlConnectionId);
+  const [flashConnId, setFlashConnId] = useState<number | null>(null);
+  const activeConn = connections.find((c) => c.id === touchedConnId)
+    ?? (connections.length === 1 ? connections[0] : undefined);
+  const activeConnId = activeConn?.id ?? null;
+  const activeConnName = activeConn?.name ?? null;
+  const coworkerContext = useMemo<CoworkerPageContext | null>(() => (
+    coworkerOn
+      ? { path: '/sources', label: activeConnName ?? 'Sources', connectionId: activeConnId }
+      : null
+  ), [coworkerOn, activeConnId, activeConnName]);
+  useCoworkerPageContext(coworkerContext);
+  const showSource = useCallback((f: CoworkerFocus) => {
+    if (f.kind !== 'source' || !connections.some((c) => c.id === f.connectionId)) return false;
+    setTouchedConnId(f.connectionId);
+    setFlashConnId(f.connectionId);
+    document.getElementById(`source-card-${f.connectionId}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    return true;
+  }, [connections]);
+  useCoworkerFocusHandler(coworkerOn ? showSource : null);
+  useEffect(() => {
+    if (flashConnId == null) return;
+    const t = window.setTimeout(() => setFlashConnId(null), 1800);
+    return () => window.clearTimeout(t);
+  }, [flashConnId]);
+  const reloadConnections = useCallback(() => {
+    api.get('/connections').then((r) => setConnections(r.data.data ?? [])).catch(() => { /* keep what is shown */ });
+  }, []);
+  useCoworkerChanged(reloadConnections);
+
   const registryIds = new Set(registryConnectors.map((c) => c.id));
   const staticConnectors = CONNECTORS.filter((c) => !registryIds.has(c.id));
 
@@ -2430,8 +2471,14 @@ function SourcesPageInner() {
           ) : (
             <div className="space-y-3">
               {connections.map((conn) => (
-                <ConnectionCard
+                <div
                   key={conn.id}
+                  id={`source-card-${conn.id}`}
+                  onPointerDownCapture={() => setTouchedConnId(conn.id)}
+                  onFocusCapture={() => setTouchedConnId(conn.id)}
+                  className={`rounded-lg transition-shadow duration-500 ${flashConnId === conn.id ? 'ring-2 ring-ocean' : ''}`}
+                >
+                <ConnectionCard
                   conn={conn}
                   onDelete={handleDelete}
                   onStartReProfile={handleStartReProfile}
@@ -2441,6 +2488,7 @@ function SourcesPageInner() {
                   highlightedFromUrl={urlConnectionId === conn.id}
                   highlightedSchemaChangeId={urlConnectionId === conn.id ? urlSchemaChangeId ?? undefined : undefined}
                 />
+                </div>
               ))}
             </div>
           )}

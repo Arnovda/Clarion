@@ -176,6 +176,70 @@ describe('a proposal writes nothing', () => {
   });
 });
 
+describe('the Studio pages\' questions', () => {
+  it('source_status: the last syncs and what failed — never the source\'s configuration', async () => {
+    const db = getTestDb();
+    const [c] = await db('connections').insert({
+      tenant_id: tenantId, name: 'Odoo', type: 'duckdb', connector_type: 'odoo',
+      selected_entities: ['res_partner', 'sale_order'], config: JSON.stringify({ password: 'hunter2' }),
+      connector_config_encrypted: 'CIPHERTEXT',
+    }).returning('id');
+    const connectionId = Number((c as { id?: number }).id ?? c);
+    await db('source_sync_runs').insert({
+      tenant_id: tenantId, connection_id: connectionId, status: 'partial',
+      error_message: '1 of 2 entities failed: res_partner (HTTP 500)',
+      failed_entities: JSON.stringify({ res_partner: 'HTTP 500' }), row_counts: JSON.stringify({ sale_order: 40 }),
+      queued_at: new Date(), completed_at: new Date(),
+    });
+    mockModel
+      .mockImplementationOnce(async () => modelStep([{ type: 'tool_use', id: 'tu_src', name: 'source_status', input: { connection_id: connectionId } }]))
+      .mockImplementationOnce(async () => modelStep([{ type: 'text', text: 'res_partner failed.' }]));
+    const t = await turn(adminToken, { message: 'Why did the sync fail?', context: { path: '/sources', connectionId, label: 'Odoo' } });
+    expect(t.events.find((e) => e.type === 'focus')?.target).toEqual({ kind: 'source', connectionId });
+    const sent = String((mockModel.mock.calls[1][0].messages.at(-1)!.content as Array<Record<string, unknown>>)[0].content);
+    expect(sent).toContain('res_partner (HTTP 500)');
+    expect(sent).toContain('"rows":40');
+    expect(sent).not.toMatch(/hunter2|CIPHERTEXT/);
+    // The page's context reached the model as the "where" line.
+    expect(String(mockModel.mock.calls[0][0].messages[0].content)).toContain(`source id ${connectionId}`);
+  });
+
+  it('check_relationship: follows onto the canvas, and another tenant\'s relationship is not found', async () => {
+    const db = getTestDb();
+    const [c] = await db('connections').insert({ tenant_id: tenantId, name: 'EO', type: 'duckdb', connector_type: 'exactonline', selected_entities: ['A'], config: '{}' }).returning('id');
+    const connectionId = Number((c as { id?: number }).id ?? c);
+    const [ft] = await db('source_tables').insert({ tenant_id: tenantId, connection_id: connectionId, table_name: 'Invoices' }).returning('id');
+    const [tt] = await db('source_tables').insert({ tenant_id: tenantId, connection_id: connectionId, table_name: 'Accounts' }).returning('id');
+    const fromTableId = Number((ft as { id?: number }).id ?? ft);
+    const toTableId = Number((tt as { id?: number }).id ?? tt);
+    const [r] = await db('table_relationships').insert({ tenant_id: tenantId, from_table_id: fromTableId, to_table_id: toTableId, relationship_type: 'many_to_one', ai_draft: true }).returning('id');
+    const relId = Number((r as { id?: number }).id ?? r);
+    mockModel
+      .mockImplementationOnce(async () => modelStep([{ type: 'tool_use', id: 'tu_rel', name: 'check_relationship', input: { relationship_id: relId } }]))
+      .mockImplementationOnce(async () => modelStep([{ type: 'text', text: 'It names no columns.' }]));
+    const t = await turn(adminToken, { message: 'Does this hold?', context: { path: '/relationships', relationshipId: relId } });
+    expect(t.events.find((e) => e.type === 'focus')?.target).toEqual({ kind: 'relations', tableId: fromTableId, relationshipId: relId });
+    const sent = String((mockModel.mock.calls[1][0].messages.at(-1)!.content as Array<Record<string, unknown>>)[0].content);
+    expect(sent).toContain('Invoices.? → Accounts.?');
+    expect(sent).toContain('cannot be measured');
+    expect(String(mockModel.mock.calls[0][0].messages[0].content)).toContain(`relationship id ${relId}`);
+
+    // A relationship of another tenant: a failed step, never its content.
+    const other = await registerUser({ email: 'cw-other@test.com', companyName: 'OtherCo' });
+    const [oc] = await db('connections').insert({ tenant_id: other.user.tenantId, name: 'X', type: 'duckdb', connector_type: 'odoo', selected_entities: ['a'], config: '{}' }).returning('id');
+    const [ot] = await db('source_tables').insert({ tenant_id: other.user.tenantId, connection_id: Number((oc as { id?: number }).id ?? oc), table_name: 'SecretTable' }).returning('id');
+    const otId = Number((ot as { id?: number }).id ?? ot);
+    const [orl] = await db('table_relationships').insert({ tenant_id: other.user.tenantId, from_table_id: otId, to_table_id: otId, relationship_type: 'many_to_one' }).returning('id');
+    mockModel.mockReset();
+    mockModel
+      .mockImplementationOnce(async () => modelStep([{ type: 'tool_use', id: 'tu_x', name: 'check_relationship', input: { relationship_id: Number((orl as { id?: number }).id ?? orl) } }]))
+      .mockImplementationOnce(async () => modelStep([{ type: 'text', text: 'Not found.' }]));
+    const x = await turn(adminToken, { message: 'Check it' });
+    expect(x.events.find((e) => e.type === 'step' && e.status === 'failed')?.detail).toBe('Not found in this workspace.');
+    expect(JSON.stringify(mockModel.mock.calls[1][0].messages)).not.toContain('SecretTable');
+  });
+});
+
 describe('the tenant\'s privacy choice', () => {
   it('a tenant that keeps row data off Claude never gets the tool that reads rows', async () => {
     const tools = async () => {

@@ -14,6 +14,7 @@ HOW YOU WORK
 - Before EVERY tool call, write one short sentence (at most 15 words) saying what you are about to do and why. The person sees it live, as your thinking. Do not narrate anything else.
 - Use as few tool calls as the task needs. Stop looking once you can answer.
 - When you open something, the person's screen follows — so work in the order a person would want to watch.
+- "This" means what the person is looking at (the line in brackets before their message). On Relations that is usually a relationship — check_relationship tells you whether it holds. On Sources it is a source — source_status tells you how its syncs went. On Build, the subjects and what they are built from — describe_workspace.
 
 WHAT YOU MAY CHANGE — ALWAYS AS A PROPOSAL
 You never save anything yourself. Every change is a proposal the person reviews and keeps (or discards) with one click:
@@ -43,6 +44,7 @@ export function describeWhereTheUserIs(c: CoworkerPageContext): string {
   if (c.productId) parts.push(`subject id ${c.productId}`);
   if (c.sourceTableId) parts.push(`source table id ${c.sourceTableId}`);
   if (c.connectionId) parts.push(`source id ${c.connectionId}`);
+  if (c.relationshipId) parts.push(`relationship id ${c.relationshipId}`);
   const page = c.path ? `on ${c.path}` : 'in Studio';
   return `[Where the person is: ${page}${parts.length ? `, ${parts.join(', ')}` : ''}.]`;
 }

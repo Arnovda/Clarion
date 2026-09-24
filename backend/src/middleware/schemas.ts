@@ -1251,6 +1251,7 @@ export const coworkerTurnSchema = z.object({
       tableId: optionalPositiveId,
       sourceTableId: optionalPositiveId,
       connectionId: optionalPositiveId,
+      relationshipId: optionalPositiveId,
     }).optional(),
   }),
 });

@@ -11,8 +11,10 @@
  * Three things pages can plug into, none of which they have to:
  *   useCoworkerPageContext  — "this is what the person is looking at"
  *   useCoworkerFocusHandler — "when the coworker opens something, let ME
- *                              navigate" (the catalog does; elsewhere the
- *                              provider falls back to the catalog URL)
+ *                              navigate" (the catalog and the Relations
+ *                              canvas do; a handler returns false for what
+ *                              it cannot show and the provider falls back
+ *                              to that thing's own page)
  *   useCoworkerChanged      — "something was kept; refresh what you show"
  *
  * WRITES happen here, and only on a person's click: Keep calls the same route
@@ -112,12 +114,26 @@ interface CoworkerValue {
   markDecided: (id: string, decision: 'kept' | 'discarded', undoSql?: string) => void;
   pageContext: CoworkerPageContext;
   setPageContext: (ctx: CoworkerPageContext | null) => void;
-  registerFocusHandler: (fn: ((f: CoworkerFocus) => void) | null) => void;
+  registerFocusHandler: (fn: FocusHandler | null) => void;
   subscribeChanged: (fn: () => void) => () => void;
   /** Ask the panel to open and put words in the box (a header action). */
   prefill: string | null;
   openWith: (text?: string) => void;
   consumePrefill: () => void;
+}
+
+/** A page's own navigation. Return false for a target this page cannot show. */
+export type FocusHandler = (f: CoworkerFocus) => boolean | void;
+
+/** Where a target lives when no page on screen takes it. */
+export function coworkerFocusHref(target: CoworkerFocus): string {
+  switch (target.kind) {
+    case 'table': return catalogHref({ kind: 'table', tableId: target.tableId });
+    case 'subject': return catalogHref({ kind: 'subject', productId: target.productId });
+    case 'source': return catalogHref({ kind: 'source', connectionId: target.connectionId });
+    case 'source-table': return catalogHref({ kind: 'source-table', tableId: target.tableId, connectionId: target.connectionId });
+    case 'relations': return `/relationships?table=${target.tableId}${target.relationshipId ? `&rel=${target.relationshipId}` : ''}`;
+  }
 }
 
 const CoworkerContext = createContext<CoworkerValue | null>(null);
@@ -152,7 +168,9 @@ export function CoworkerProvider({ children }: { children: ReactNode }) {
   const [pageContext, setPageContextState] = useState<CoworkerPageContext>({ path: '' });
 
   const abortRef = useRef<AbortController | null>(null);
-  const focusHandlerRef = useRef<((f: CoworkerFocus) => void) | null>(null);
+  const focusHandlerRef = useRef<FocusHandler | null>(null);
+  const pathRef = useRef(pathname);
+  pathRef.current = pathname;
   const changedRef = useRef(new Set<() => void>());
   const followRef = useRef(true);
   const messagesRef = useRef<CwMessage[]>([]);
@@ -189,7 +207,7 @@ export function CoworkerProvider({ children }: { children: ReactNode }) {
   const setPageContext = useCallback((ctx: CoworkerPageContext | null) => {
     setPageContextState(ctx ?? { path: window.location.pathname });
   }, []);
-  const registerFocusHandler = useCallback((fn: ((f: CoworkerFocus) => void) | null) => { focusHandlerRef.current = fn; }, []);
+  const registerFocusHandler = useCallback((fn: FocusHandler | null) => { focusHandlerRef.current = fn; }, []);
   const subscribeChanged = useCallback((fn: () => void) => {
     changedRef.current.add(fn);
     return () => { changedRef.current.delete(fn); };
@@ -197,15 +215,15 @@ export function CoworkerProvider({ children }: { children: ReactNode }) {
   const notifyChanged = useCallback(() => { changedRef.current.forEach((fn) => { try { fn(); } catch { /* one listener must not stop the rest */ } }); }, []);
 
   const goTo = useCallback((target: CoworkerFocus) => {
-    if (focusHandlerRef.current) { focusHandlerRef.current(target); return; }
-    const href = target.kind === 'table' ? catalogHref({ kind: 'table', tableId: target.tableId })
-      : target.kind === 'subject' ? catalogHref({ kind: 'subject', productId: target.productId })
-        : target.kind === 'source' ? catalogHref({ kind: 'source', connectionId: target.connectionId })
-          : catalogHref({ kind: 'source-table', tableId: target.tableId, connectionId: target.connectionId });
-    router.push(href);
+    if (focusHandlerRef.current && focusHandlerRef.current(target) !== false) return;
+    router.push(coworkerFocusHref(target));
   }, [router]);
   const follow = useCallback((target: CoworkerFocus) => {
-    if (followRef.current) goTo(target);
+    if (!followRef.current) return;
+    // The canvas is followed only by someone already on it: measuring a link
+    // from the catalog must not pull the person out of the table they are on.
+    if (target.kind === 'relations' && !(pathRef.current ?? '').startsWith('/relationships')) return;
+    goTo(target);
   }, [goTo]);
 
   const patch = useCallback((id: string, fn: (m: CwMessage) => CwMessage) => {
@@ -449,7 +467,7 @@ export function useCoworkerPageContext(ctx: CoworkerPageContext | null) {
 }
 
 /** A page takes over navigation when the coworker opens something. */
-export function useCoworkerFocusHandler(fn: ((f: CoworkerFocus) => void) | null) {
+export function useCoworkerFocusHandler(fn: FocusHandler | null) {
   const cw = useCoworker();
   const register = cw?.registerFocusHandler;
   useEffect(() => {
