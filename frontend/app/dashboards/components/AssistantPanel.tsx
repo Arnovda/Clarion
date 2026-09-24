@@ -4,6 +4,9 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { motion } from 'framer-motion';
 import { ChevronDown, Square, X } from 'lucide-react';
 import { ClarionMark } from '@/components/brand/ClarionMark';
+import {
+  AssistantIdentity, LiveThought, WorkStep, assistantMarkState, useDoneMoment,
+} from '@/components/brand/AssistantKit';
 import { MarkdownAnswer } from './MarkdownAnswer';
 import type { ChatMessage, RefineStep } from '../types';
 
@@ -56,35 +59,19 @@ function Elapsed({ since, active }: { since?: number; active: boolean }) {
   return <span className="text-[11px] font-mono text-muted-2 tabular-nums shrink-0">{text}</span>;
 }
 
-function StepIcon({ status }: { status: RefineStep['status'] }) {
-  return (
-    <span className="mt-[3px] w-3.5 shrink-0 text-center">
-      {status === 'done' ? (
-        <span className="text-ok">✓</span>
-      ) : status === 'failed' ? (
-        <span className="text-warn">✗</span>
-      ) : status === 'running' ? (
-        <span className="inline-block w-2 h-2 rounded-full bg-ocean animate-pulse" />
-      ) : (
-        <span className="inline-block w-2 h-2 rounded-full border border-line-strong" />
-      )}
-    </span>
-  );
-}
+/** A verification step spins in the checking colour, like the mark does. */
+const isCheckingText = (t: string | undefined) => !!t && /^check|verif|double-check/i.test(t.trim());
 
 function StepRow({ step, depth }: { step: RefineStep; depth: number }) {
   return (
-    <li
-      className="flex items-start gap-2 text-[12.5px] leading-snug"
-      style={depth ? { paddingLeft: depth * 14 } : undefined}
-    >
-      <StepIcon status={step.status} />
-      <span className={`flex-1 min-w-0 ${step.status === 'pending' ? 'text-muted' : 'text-ink-2'}`}>
-        {step.label}
-        {step.note && step.status !== 'pending' && <span className="text-muted"> — {step.note}</span>}
-      </span>
-      <Elapsed since={step.startedAt} active={step.status === 'running'} />
-    </li>
+    <WorkStep
+      indent={depth * 14}
+      status={step.status}
+      label={step.label}
+      checking={isCheckingText(step.label)}
+      detail={step.note && step.status !== 'pending' ? step.note : undefined}
+      trailing={<Elapsed since={step.startedAt} active={step.status === 'running'} />}
+    />
   );
 }
 
@@ -108,7 +95,7 @@ function StepList({ steps }: { steps: RefineStep[] }) {
   }, [steps]);
 
   return (
-    <ul className="space-y-1 mt-2">
+    <ul className="space-y-1.5 mt-2">
       {ordered.map(({ step, depth }) => (
         <StepRow key={step.id} step={step} depth={depth} />
       ))}
@@ -180,6 +167,19 @@ export default function AssistantPanel({
     [messages],
   );
 
+  // The mark IS the status — the same rule as the Studio coworker and Ask
+  // (components/brand/AssistantKit): working, checking while it verifies the
+  // changed cards against the data, a moment of done, uncertain on an error.
+  const busy = loading || !!working;
+  const checking = isCheckingText(working?.phase)
+    || !!working?.steps?.some((st) => st.status === 'running' && isCheckingText(st.label));
+  const lastAssistant = messages.find((m) => m.id === lastAssistantId);
+  const justDone = useDoneMoment(busy);
+  const markState = assistantMarkState({ busy, checking, failed: !!lastAssistant?.errorDetail, justDone });
+  const status = busy
+    ? (checking ? 'Checking against your data' : 'Working')
+    : markState === 'uncertain' ? 'Stopped short' : 'Dashboard assistant';
+
   // Follow the tail while something is streaming into it.
   useEffect(() => {
     if (open) endRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
@@ -207,12 +207,12 @@ export default function AssistantPanel({
         initial={{ opacity: 0, y: 8 }}
         animate={{ opacity: 1, y: 0 }}
         onClick={() => onOpenChange(true)}
-        className="absolute bottom-5 right-5 z-30 flex items-center gap-2 pl-3 pr-4 py-2.5 rounded-full border border-line bg-raised shadow-[0_6px_24px_-8px_rgba(15,32,45,0.30)] hover:border-line-strong transition-colors max-w-[min(420px,calc(100%-2.5rem))]"
+        className="absolute bottom-5 right-5 z-30 flex items-center gap-2.5 pl-2.5 pr-4 py-2 rounded-full border border-line bg-raised shadow-[0_6px_24px_-8px_rgba(15,32,45,0.30)] hover:border-line-strong transition-colors max-w-[min(420px,calc(100%-2.5rem))]"
         aria-label={working ? 'Assistant is working — open to watch' : 'Open the dashboard assistant'}
       >
-        <ClarionMark size={16} state={working ? 'working' : 'idle'} className="shrink-0" />
+        <ClarionMark size={24} state={markState} className="shrink-0" />
         <span className="text-[13px] text-ink-2 truncate">
-          {working ? working.phase || 'Working…' : 'Ask or change this dashboard'}
+          {working ? working.phase || 'Working…' : busy ? 'Thinking…' : 'Ask or change this dashboard'}
         </span>
         {working && <Elapsed since={working.startedAt} active />}
       </motion.button>
@@ -231,11 +231,8 @@ export default function AssistantPanel({
       aria-label="Dashboard assistant"
     >
       {/* Header */}
-      <div className="px-4 py-2.5 flex items-center gap-2 border-b border-line bg-soft shrink-0">
-        <ClarionMark size={16} state={working ? 'working' : 'idle'} className="shrink-0" />
-        <span className="text-[10px] font-mono tracking-[0.12em] uppercase text-muted-2 flex-1">
-          Assistant
-        </span>
+      <div className="px-4 py-2.5 flex items-center gap-2 border-b border-line bg-raised shrink-0">
+        <AssistantIdentity size={24} state={markState} status={status} />
         <button
           type="button"
           onClick={() => onOpenChange(false)}
@@ -265,6 +262,18 @@ export default function AssistantPanel({
           >
             <X className="w-3.5 h-3.5" strokeWidth={2} />
           </button>
+        </div>
+      )}
+
+      {/* Nothing asked yet: the mark, at rest, and what it can do. */}
+      {messages.length === 0 && (
+        <div className="px-6 pt-6 pb-4 flex flex-col items-center text-center shrink-0">
+          <ClarionMark size={32} state={markState} />
+          <p className="mt-3 text-[13px] text-muted leading-relaxed max-w-[300px]">
+            {scope
+              ? <>Tell me how to change <span className="text-ink-2">{scope.title}</span>.</>
+              : 'Ask about this dashboard, or tell me what to change — a filter, a chart, a card.'}
+          </p>
         </div>
       )}
 
@@ -331,10 +340,7 @@ export default function AssistantPanel({
                 {msg.steps && msg.steps.length > 0 && <StepList steps={msg.steps} />}
 
                 {msg.working && msg.phase && (
-                  <p className="text-[12px] text-muted italic mt-1.5 flex items-center gap-2">
-                    <ClarionMark size={16} state="working" className="shrink-0" />
-                    {msg.phase}
-                  </p>
+                  <p className="mt-1.5"><LiveThought text={msg.phase} /></p>
                 )}
 
                 {msg.errorDetail && (
@@ -358,10 +364,9 @@ export default function AssistantPanel({
           })}
           {loading && !working && (
             <div className="flex justify-start">
-              <div className="bg-softer border border-line rounded-lg px-4 py-3 flex items-center gap-1.5">
-                <span className="w-1.5 h-1.5 bg-ocean rounded-full animate-bounce" style={{ animationDelay: '0s' }} />
-                <span className="w-1.5 h-1.5 bg-ocean rounded-full animate-bounce" style={{ animationDelay: '0.15s' }} />
-                <span className="w-1.5 h-1.5 bg-ocean rounded-full animate-bounce" style={{ animationDelay: '0.3s' }} />
+              <div className="bg-softer border border-line rounded-lg px-3.5 py-2.5 flex items-center gap-2.5">
+                <ClarionMark size={24} state="working" className="shrink-0" />
+                <LiveThought text="Thinking" />
               </div>
             </div>
           )}

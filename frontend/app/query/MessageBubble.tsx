@@ -1004,14 +1004,15 @@ export default function MessageBubble({
     return (
       <div className="flex justify-start">
         <div className={`${canvas ? 'w-full' : 'max-w-[80%]'} bg-err-soft border border-line rounded-lg px-5 py-4 text-[14px] text-ink-2`}>
-          <div className="flex items-start gap-2">
-            <span className="flex-shrink-0 mt-0.5 text-err">✕</span>
+          <div className="flex items-start gap-2.5">
+            {/* The same mark, stopped short — as in the coworker and the dashboard assistant. */}
+            <ClarionMark size={20} state="uncertain" className="shrink-0 mt-[1px]" title="Clarion stopped short" />
             <p className="leading-relaxed">{msg.text}</p>
           </div>
           {onRetry && msg.question && (
             <button
               onClick={onRetry}
-              className="mt-2 ml-5 px-3 py-1.5 text-[12px] font-medium border border-line rounded-md text-ink-3 hover:border-ocean/50 hover:text-ocean transition-colors"
+              className="mt-2 ml-[30px] px-3 py-1.5 text-[12px] font-medium border border-line rounded-md text-ink-3 hover:border-ocean/50 hover:text-ocean transition-colors"
             >
               Retry
             </button>

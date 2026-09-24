@@ -35,7 +35,9 @@
  */
 
 import { useState, useEffect, useRef } from 'react';
-import { ClarionMark } from '@/components/brand/ClarionMark';
+import {
+  AssistantIdentity, LiveThought, WorkStep, fmtElapsed, useNow,
+} from '@/components/brand/AssistantKit';
 import { formatSql } from './utils';
 import { humanizeTableName } from '@/lib/humanize';
 import type { RepairState } from './types';
@@ -44,20 +46,10 @@ import type { RepairState } from './types';
 
 type StepState = 'done' | 'active' | 'pending';
 
-function StepDot({ state }: { state: StepState }) {
-  if (state === 'done') {
-    return <span className="w-2 h-2 rounded-full bg-ok flex-shrink-0" />;
-  }
-  if (state === 'active') {
-    return (
-      <span className="relative flex-shrink-0 w-2 h-2">
-        <span className="absolute inset-0 rounded-full bg-ocean animate-ping opacity-40" />
-        <span className="absolute inset-0 rounded-full bg-ocean" />
-      </span>
-    );
-  }
-  return <span className="w-2 h-2 rounded-full bg-line-strong flex-shrink-0" />;
-}
+// The same pieces as the Studio coworker and the dashboard assistant
+// (components/brand/AssistantKit): the mark as the status, a ticking
+// "Working 6s", steps that spin and settle to ticks, reasoning with a cursor.
+const STEP_STATUS = { done: 'done', active: 'running', pending: 'pending' } as const;
 
 export function ThinkingBubble({
   phase, liveText, sql, confidence, tables, canSeeSql, bare,
@@ -88,6 +80,11 @@ export function ThinkingBubble({
     const el = reasoningRef.current;
     if (el) el.scrollTop = el.scrollHeight;
   }, [liveText]);
+
+  // The card mounts when the question is sent, so its own clock is the wait.
+  const [startedAt] = useState(() => Date.now());
+  const now = useNow(true);
+  const elapsed = now ? now - startedAt : 0;
 
   const tableLabel = tables.slice(0, 3).map(humanizeTableName).join(', ')
     + (tables.length > 3 ? '…' : '');
@@ -120,30 +117,32 @@ export function ThinkingBubble({
   return (
     <div className={bare ? '' : 'flex justify-start'}>
       <div className={`${bare ? 'w-full' : 'max-w-[85%] w-full'} bg-raised border border-line rounded-lg overflow-hidden`}>
-        <div className="px-4 py-3 flex items-start gap-3">
-          {/* The assistant itself, working — the brand mark in its Working state. */}
-          <ClarionMark size={24} state="working" className="shrink-0 mt-[1px]" title="Clarion is working" />
-          <div className="min-w-0 flex-1 space-y-2">
-          {steps.map((s) => (
-            <div key={s.key} className="flex items-start gap-2.5">
-              <span className="mt-[5px] flex"><StepDot state={s.state} /></span>
-              <div className="min-w-0 flex-1">
-                <span className={`text-[12.5px] leading-snug ${s.state === 'pending' ? 'text-muted-2' : s.state === 'active' ? 'text-ink' : 'text-ink-3'}`}>
-                  {s.label}{s.state === 'active' ? '…' : ''}
-                </span>
-                {s.sub && (
-                  <div
-                    ref={reasoningRef}
-                    className="text-[11px] text-muted leading-relaxed mt-1 max-h-40 overflow-y-auto pr-1 whitespace-pre-wrap break-words border-l-2 border-line pl-2.5"
-                  >
-                    {s.sub}
-                  </div>
-                )}
-              </div>
-            </div>
-          ))}
-          </div>
+        {/* The assistant itself, working — the mark is the status. */}
+        <div className="px-4 pt-3 pb-2.5 border-b border-line flex items-center">
+          <AssistantIdentity
+            size={24}
+            state="working"
+            status="Working"
+            trailing={elapsed >= 2000 ? <span className="text-[10.5px] font-mono text-muted-2 tabular-nums">{fmtElapsed(elapsed)}</span> : undefined}
+          />
         </div>
+        <ol className="px-4 py-3 space-y-2">
+          {steps.map((s) => (
+            <WorkStep
+              key={s.key}
+              status={STEP_STATUS[s.state]}
+              label={`${s.label}${s.state === 'active' ? '…' : ''}`}
+              detail={s.sub ? (
+                <div
+                  ref={reasoningRef}
+                  className="mt-1 max-h-40 overflow-y-auto pr-1 whitespace-pre-wrap break-words border-l-2 border-ocean-soft pl-2.5 not-italic"
+                >
+                  <LiveThought text={s.sub} className="!text-[11.5px] leading-relaxed" />
+                </div>
+              ) : undefined}
+            />
+          ))}
+        </ol>
 
         {/* SQL preview once generated — privileged roles only. The backend
             only emits sql_ready to admin/analyst since 2026-08-27; this is
@@ -193,34 +192,37 @@ export function ThinkingPanel({
         <div className="bg-raised border border-line rounded-lg overflow-hidden shadow-1 text-[12px]">
 
           {/* Header — diligence vocabulary, never "investigation failed" drama */}
-          <div className="flex items-center gap-2 px-4 py-2.5 border-b border-line bg-softer">
-            <ClarionMark size={16} state={repair.isActive ? 'checking' : 'done'} className="shrink-0" />
-            <span className="text-[11px] font-mono tracking-[0.08em] uppercase text-muted">
-              {repair.isActive ? 'Double-checking the result…' : 'Double-checked'}
-            </span>
+          <div className="flex items-center px-4 pt-3 pb-2.5 border-b border-line">
+            <AssistantIdentity
+              size={24}
+              state={repair.isActive ? 'checking' : 'done'}
+              status={repair.isActive ? 'Double-checking the result' : 'Double-checked'}
+            />
           </div>
 
           {/* Events */}
           <div className="p-4 space-y-3">
             {repair.events.map((ev, i) => {
               if (ev.kind === 'thinking') return (
-                <div key={i} className="flex gap-2.5">
-                  <span className="text-muted-2 flex-shrink-0 mt-0.5">💭</span>
-                  <div className="min-w-0">
-                    <p className="text-ink-3 leading-relaxed">{ev.text}</p>
-                    {canSeeSql && ev.detail && (
-                      <p className="text-[10.5px] font-mono text-muted mt-0.5 break-words">{ev.detail}</p>
-                    )}
-                  </div>
+                <div key={i} className="pl-5 min-w-0">
+                  {/* The newest thought is the one being thought right now. */}
+                  <LiveThought text={ev.text} live={repair.isActive && i === repair.events.length - 1} />
+                  {canSeeSql && ev.detail && (
+                    <p className="text-[10.5px] font-mono text-muted mt-0.5 break-words">{ev.detail}</p>
+                  )}
                 </div>
               );
 
               if (ev.kind === 'data_query') return (
                 <div key={i} className="space-y-1.5">
-                  <div className="flex items-center gap-2">
-                    <span className="text-ocean flex-shrink-0">🔍</span>
-                    <span className="text-[10px] font-mono tracking-[0.08em] uppercase text-ocean">Checking the data</span>
-                  </div>
+                  <ul>
+                    <WorkStep
+                      checking
+                      // Running until its result arrives (the next event).
+                      status={repair.isActive && i === repair.events.length - 1 ? 'running' : 'done'}
+                      label="Checking the data"
+                    />
+                  </ul>
                   {canSeeSql && ev.sql && (
                     <pre className="ml-6 text-white/80 font-mono text-[10px] bg-ink rounded-md px-3 py-2 overflow-x-auto whitespace-pre-wrap leading-relaxed">
                       {formatSql(ev.sql)}
@@ -246,10 +248,9 @@ export function ThinkingPanel({
 
               if (ev.kind === 'revised_sql') return (
                 <div key={i} className="space-y-1.5">
-                  <div className="flex items-center gap-2">
-                    <span className="text-warn flex-shrink-0">✏️</span>
-                    <span className="text-[10px] font-mono tracking-[0.08em] uppercase text-warn">Correcting the query</span>
-                  </div>
+                  <ul>
+                    <WorkStep status="done" label="Correcting the query" />
+                  </ul>
                   {canSeeSql && ev.sql && (
                     <pre className="ml-6 text-white/80 font-mono text-[10px] bg-ink rounded-md px-3 py-2 overflow-x-auto whitespace-pre-wrap leading-relaxed">
                       {formatSql(ev.sql)}
@@ -259,8 +260,8 @@ export function ThinkingPanel({
               );
 
               if (ev.kind === 'clarification') return (
-                <div key={i} className="flex gap-2.5">
-                  <span className="text-warn flex-shrink-0 mt-0.5">❓</span>
+                <div key={i} className="flex gap-2">
+                  <span className="w-3.5 h-3.5 mt-[2px] shrink-0 rounded-full border border-warn text-warn text-[9px] leading-[12px] text-center font-semibold" aria-hidden>?</span>
                   <p className="text-ink-2 leading-relaxed">{ev.question}</p>
                 </div>
               );

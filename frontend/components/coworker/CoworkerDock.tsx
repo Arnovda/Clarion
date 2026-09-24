@@ -20,9 +20,12 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
-  AlertTriangle, ArrowUp, Check, ChevronDown, ChevronRight, Eye, EyeOff, PanelRightClose, RotateCcw, Square,
+  AlertTriangle, ArrowUp, ChevronDown, ChevronRight, Eye, EyeOff, PanelRightClose, RotateCcw, Square,
 } from 'lucide-react';
-import { ClarionMark, type ClarionMarkState } from '@/components/brand/ClarionMark';
+import { ClarionMark } from '@/components/brand/ClarionMark';
+import {
+  AssistantIdentity, LiveThought, WorkStep, assistantMarkState, fmtElapsed, useDoneMoment, useNow,
+} from '@/components/brand/AssistantKit';
 import { MarkdownAnswer } from '@/app/dashboards/components/MarkdownAnswer';
 import ProposalCard from './ProposalCard';
 import { useCoworker, type CwMessage, type CwStep } from '@/lib/coworker/CoworkerProvider';
@@ -30,21 +33,7 @@ import type { CoworkerFocus, CoworkerProposal } from '@/lib/contract';
 
 export const COWORKER_WIDTH = 420;
 
-function useNow(active: boolean): number {
-  const [now, setNow] = useState<number>(0);
-  useEffect(() => {
-    if (!active) return;
-    setNow(Date.now());
-    const t = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(t);
-  }, [active]);
-  return now;
-}
-
-function fmtSecs(ms: number): string {
-  const s = Math.max(0, Math.round(ms / 1000));
-  return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${s % 60}s`;
-}
+const fmtSecs = fmtElapsed;
 
 function runningStep(m: CwMessage | undefined): CwStep | undefined {
   if (!m) return undefined;
@@ -67,7 +56,6 @@ export default function CoworkerDock() {
   const [input, setInput] = useState('');
   const endRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
-  const [justDone, setJustDone] = useState(false);
 
   const messages = useMemo(() => cw?.messages ?? [], [cw?.messages]);
   const busy = cw?.busy ?? false;
@@ -77,17 +65,14 @@ export default function CoworkerDock() {
   const now = useNow(!!working);
   const pendingCount = Object.values(cw?.proposals ?? {}).filter((p) => p.status === 'pending').length;
 
-  // "Done" is a moment, not a state to sit in.
-  const wasBusy = useRef(false);
-  useEffect(() => {
-    if (wasBusy.current && !busy) { setJustDone(true); const t = setTimeout(() => setJustDone(false), 2600); wasBusy.current = busy; return () => clearTimeout(t); }
-    wasBusy.current = busy;
-  }, [busy]);
-
-  const markState: ClarionMarkState = busy
-    ? (step?.tool === 'propose' ? 'checking' : 'working')
-    : last?.role === 'assistant' && (last.error || last.stoppedAtLimit) ? 'uncertain'
-      : justDone ? 'done' : 'idle';
+  // "Done" is a moment, not a state to sit in (shared rule: AssistantKit).
+  const justDone = useDoneMoment(busy);
+  const markState = assistantMarkState({
+    busy,
+    checking: step?.tool === 'propose',
+    failed: last?.role === 'assistant' && !!(last.error || last.stoppedAtLimit),
+    justDone,
+  });
 
   useEffect(() => { if (cw?.open) endRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' }); }, [messages, cw?.open]);
 
@@ -152,13 +137,10 @@ export default function CoworkerDock() {
     >
       {/* Header — the mark is the status. */}
       <div className="px-4 pt-3 pb-2.5 flex items-center gap-2.5 border-b border-line bg-raised shrink-0">
-        <ClarionMark size={32} state={markState} title="Clarion" className="shrink-0" />
-        <div className="flex-1 min-w-0">
-          <div className="font-brand text-[19px] leading-none text-ink">Clarion</div>
-          <div className="text-[10px] font-mono tracking-[0.12em] uppercase text-muted-2 mt-1 truncate">
-            {busy ? (step?.tool === 'propose' ? 'Checking a proposal' : 'Working') : markState === 'uncertain' ? 'Stopped short' : 'Studio coworker'}
-          </div>
-        </div>
+        <AssistantIdentity
+          state={markState}
+          status={busy ? (step?.tool === 'propose' ? 'Checking a proposal' : 'Working') : markState === 'uncertain' ? 'Stopped short' : 'Studio coworker'}
+        />
         <button
           type="button"
           onClick={() => cw.setFollowAlong(!cw.followAlong)}
@@ -309,12 +291,10 @@ function AssistantTurn({ m, now }: { m: CwMessage; now: number }) {
                 className="px-3 pb-2.5 space-y-1.5 overflow-hidden"
               >
                 {m.trail.map((t) => (t.kind === 'thought'
-                  ? <li key={t.id} className="pl-5 text-[12.5px] italic text-muted leading-snug">{t.text}</li>
+                  ? <li key={t.id} className="pl-5"><LiveThought text={t.text} live={false} /></li>
                   : <StepRow key={t.step.id} step={t.step} />))}
                 {m.working && m.live && (
-                  <li className="pl-5 text-[12.5px] italic text-ink-2 leading-snug">
-                    {m.live}<span className="inline-block w-[2px] h-[13px] bg-ocean align-[-2px] ml-0.5 animate-pulse" />
-                  </li>
+                  <li className="pl-5"><LiveThought text={m.live} /></li>
                 )}
                 {m.working && !m.live && !m.trail.some((t) => t.kind === 'step' && t.step.status === 'running') && (
                   <li className="pl-5 text-[12.5px] italic text-muted-2">Thinking…</li>
@@ -364,18 +344,11 @@ function AssistantTurn({ m, now }: { m: CwMessage; now: number }) {
 
 function StepRow({ step }: { step: CwStep }) {
   return (
-    <li className="flex items-start gap-2 text-[12.5px]">
-      <span className="w-3.5 h-3.5 mt-[2px] shrink-0 flex items-center justify-center">
-        {step.status === 'running'
-          ? <span className={`w-3 h-3 rounded-full border-2 border-t-transparent animate-spin ${step.tool === 'propose' ? 'border-sky-400' : 'border-ocean'}`} />
-          : step.status === 'done'
-            ? <Check className="w-3.5 h-3.5 text-ok" strokeWidth={2.5} />
-            : <AlertTriangle className="w-3.5 h-3.5 text-warn" />}
-      </span>
-      <span className="min-w-0 flex-1">
-        <span className={step.status === 'running' ? 'text-ink' : 'text-ink-2'}>{step.label}</span>
-        {step.detail && <span className="block text-[11px] text-muted-2 truncate" title={step.detail}>{step.detail}</span>}
-      </span>
-    </li>
+    <WorkStep
+      status={step.status}
+      label={step.label}
+      checking={step.tool === 'propose'}
+      detail={step.detail ? <span className="truncate block" title={step.detail}>{step.detail}</span> : undefined}
+    />
   );
 }

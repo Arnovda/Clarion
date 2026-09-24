@@ -9,6 +9,7 @@
  * KPI suggestions still take precedence.
  */
 
+import { ClarionMark } from '@/components/brand/ClarionMark';
 import { useEffect, useState, type FormEvent } from 'react';
 import api from '@/lib/api';
 import { getTokenPayload } from '@/lib/auth';
@@ -162,6 +163,8 @@ export default function EmptyState({
 
   return (
     <div className="flex-1 flex flex-col items-center justify-center text-center px-4 py-16 max-w-[680px] mx-auto w-full">
+      {/* The same mark that works through every answer, at rest. */}
+      <ClarionMark size={48} state="idle" className="mb-4" />
       <div className="font-mono text-[10.5px] uppercase tracking-[0.14em] text-muted font-medium mb-4">
         Ask
       </div>
