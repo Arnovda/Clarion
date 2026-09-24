@@ -31,7 +31,63 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-09-24 (ONE LOOK FOR THE ASSISTANT — owner: *"include
+**Last updated:** 2026-09-24 (THE COWORKER COULD NOT OPEN WHAT IT HAD JUST
+DESCRIBED — owner screenshot: asked "is receivables covered?" it answered
+correctly from describe_workspace, then on "Yes, open it" replied *"I'm having
+trouble opening it directly"*; *"investigate thoroughly and see if the AI can do
+everything it's meant to do"*. Branch `claude/peaceful-darwin-ccvj73`.)
+
+**ROOT CAUSE: the model was told WHAT exists but never HOW TO ADDRESS it.**
+`describe_workspace` listed subjects and tables by NAME with no ids, and
+`search_catalog` matched tables and columns but never a subject — so "Cash
+Flow" had no id anywhere, `open_subject` could only be called with a guess, and
+a guess 404'd as a bare "Not found in this workspace". The frontend navigation
+was never the problem (every page's focus handler either shows the target or
+hands it back and the provider routes to the catalog — re-read, correct).
+- **`describe_workspace` carries ids now** (`buildCoverageContext(db, tenant,
+  { withIds: true })` — product_id, subject table_id + technical name + role,
+  connection_id, source table_id). Opt-in, so the Build chat's prompt is
+  byte-identical. Its result limit is 14 000 chars: **the agent clipped EVERY
+  tool result at 6 000**, so the overview (built up to 9 000) had been silently
+  losing the sources at its end; tools now carry an optional `resultLimit`.
+- **`search_catalog` finds subjects by name/description** (tenant-filtered
+  `data_products` read) before the table/column hits.
+- **`open_subject` takes `product_id` OR `name`**, `open_table` and
+  `propose_sql_change` take `table_id` OR `table_name` (exact name first, one
+  partial match, several = a refusal listing them; a shared lookup's copy
+  resolves to its original). `open_subject` now also returns the METRICS with
+  their formulas (it claimed to and did not) and gives a copy's original
+  table_id so the model never opens a table it cannot change.
+- **A 404 tells the model what to do** ("take ids only from describe_workspace,
+  search_catalog or the bracket line — never guess; you can pass the name"), and
+  an unknown subject name lists the subjects that exist. The prompt gained the
+  addressing rule, "open it with the tool — that moves their screen; never say
+  you can't without calling it", and "fix a refused call and retry".
+- **Two Keep buttons that could only fail, fixed at the proposal:**
+  `propose_new_subject` allowed 25 tables / 600-char description / 400-char
+  focus while `extend-start` accepts 12 / 500 / 300 — Keep would 400; the tool
+  now refuses up front with the route's own limits. `propose_relationship`
+  labelled its card from the canvas graph of the FROM table, where the target of
+  a NEW relationship is by definition not a neighbour ("table 412.column 9031");
+  labels now come from a tenant-filtered read that also refuses a column that is
+  not on the table it was named with, before a measurement is spent.
+- **NEW `tests/coworker-e2e.test.ts` (18)**: a real workspace (Postgres, DuckDB
+  over real Parquet, the real loopback) with ONLY the two model calls mocked;
+  every one of the 16 tools is driven as the model would call it and must settle
+  `done`, then every Keep and Undo is sent exactly as the panel sends it (SQL
+  stored and restored, relationship row written and deleted, glossary term with
+  links, new table + its drafted SQL compiles, new subject passes the build
+  route's validation). A last test fails if a tool is added without coverage.
+  **Verified RED: against the pre-fix tools 9 of 18 fail**, including the
+  screenshot's path. `coworker.test.ts` + `products-build-chat.test.ts` still
+  green (40/40 across the three), `npm run check` clean, all twelve ratchets
+  green from the repo root. Neo4j is stubbed only for the relationship Keep's
+  graph write (tests run without Neo4j).
+- **Still not exercised against the live model** — the fix removes the reason
+  it failed; whether the light model now picks the name/id path unprompted is
+  what to watch in the next `'coworker turn done'` lines.
+
+**Prior last updated:** 2026-09-24 (ONE LOOK FOR THE ASSISTANT — owner: *"include
 the same symbol in Ask and in dashboards for the AI chat, also with the
 thinking animation and working animation … push to prd and live directly"*.
 Frontend only.)

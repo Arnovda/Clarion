@@ -141,7 +141,7 @@ export async function runCoworkerTurn(opts: {
         if (outcome.focus) opts.emit({ type: 'focus', target: outcome.focus });
         if (outcome.proposal) opts.emit({ type: 'proposal', proposal: outcome.proposal });
         opts.emit({ type: 'step', id: stepId, status: 'done', label, tool: tool.kind, ...(outcome.detail ? { detail: outcome.detail } : {}) });
-        results.push({ type: 'tool_result', tool_use_id: use.id, content: clipResult(outcome.result) });
+        results.push({ type: 'tool_result', tool_use_id: use.id, content: clipResult(outcome.result, tool.resultLimit) });
       } catch (err) {
         if (opts.signal?.aborted) return;
         const refusal = err instanceof ToolError;
@@ -162,7 +162,7 @@ function safeLabel(fn: () => string, fallback: string): string {
   try { return fn() || fallback; } catch { return fallback; }
 }
 
-export function clipResult(result: unknown): string {
+export function clipResult(result: unknown, limit: number = MAX_TOOL_RESULT_CHARS): string {
   const s = typeof result === 'string' ? result : JSON.stringify(result ?? null);
-  return s.length > MAX_TOOL_RESULT_CHARS ? `${s.slice(0, MAX_TOOL_RESULT_CHARS - 20)}… (truncated)` : s;
+  return s.length > limit ? `${s.slice(0, limit - 20)}… (truncated)` : s;
 }

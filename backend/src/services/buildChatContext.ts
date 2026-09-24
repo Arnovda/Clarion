@@ -30,7 +30,19 @@ const trim = (s: unknown, max: number): string => {
   return t.length > max ? `${t.slice(0, max - 1)}…` : t;
 };
 
-export async function buildCoverageContext(db: Knex, tenantId: number): Promise<CoverageContext> {
+export interface CoverageOptions {
+  /**
+   * Print the ids next to every subject, table and source (the Studio
+   * coworker's describe_workspace). A model that is told what exists but not
+   * how to address it can only guess an id — which is exactly how "open the
+   * Cash Flow subject" failed. The Build chat does not need them: it never
+   * opens anything, so its prompt stays as it was.
+   */
+  withIds?: boolean;
+}
+
+export async function buildCoverageContext(db: Knex, tenantId: number, opts: CoverageOptions = {}): Promise<CoverageContext> {
+  const withIds = opts.withIds === true;
   const [connections, sourceTables, products, kpis, productSources, productTables, profiles] = await Promise.all([
     db('connections').where({ tenant_id: tenantId }).select('id', 'name', 'connector_type'),
     db('source_tables').where({ tenant_id: tenantId, is_active: true })
@@ -50,7 +62,8 @@ export async function buildCoverageContext(db: Knex, tenantId: number): Promise<
       .join('data_products as dp', 'ss.data_product_id', 'dp.id')
       .where('dp.tenant_id', tenantId)
       .where('pt.is_shared_dimension', false)
-      .select('dp.id as product_id', 'pt.display_name'),
+      .orderBy('pt.id')
+      .select('dp.id as product_id', 'pt.id', 'pt.table_name', 'pt.display_name', 'pt.table_role'),
     db('dataset_profiles')
       .where({ tenant_id: tenantId })
       .whereNotNull('row_count')
@@ -72,10 +85,13 @@ export async function buildCoverageContext(db: Knex, tenantId: number): Promise<
   }
 
   const tablesByProduct = new Map<number, string[]>();
-  for (const t of productTables as Array<{ product_id: number; display_name: string | null }>) {
-    if (!t.display_name) continue;
+  for (const t of productTables as Array<{ product_id: number; id: number; table_name: string; display_name: string | null; table_role: string | null }>) {
+    const shown = withIds
+      ? `${t.display_name || t.table_name} (table_id ${t.id}, \`${t.table_name}\`${t.table_role ? `, ${t.table_role}` : ''})`
+      : t.display_name;
+    if (!shown) continue;
     const list = tablesByProduct.get(t.product_id) ?? [];
-    if (!list.includes(t.display_name)) list.push(t.display_name);
+    if (!list.includes(shown)) list.push(shown);
     tablesByProduct.set(t.product_id, list);
   }
 
@@ -102,16 +118,19 @@ export async function buildCoverageContext(db: Knex, tenantId: number): Promise<
     lines.push('  (none built yet)');
   }
   for (const p of analytics) {
-    lines.push(`- ${p.name}${p.hidden === true ? ' (hidden — the eye toggle on Build shows it back)' : ''} — ${trim(p.description, 140) || 'no description'}`);
+    lines.push(`- ${p.name}${withIds ? ` (product_id ${p.id})` : ''}${p.hidden === true ? ' (hidden — the eye toggle on Build shows it back)' : ''} — ${trim(p.description, 140) || 'no description'}`);
     const tbls = tablesByProduct.get(p.id) ?? [];
-    if (tbls.length) lines.push(`  Contains: ${tbls.slice(0, 10).join(', ')}`);
+    if (tbls.length) lines.push(`  Contains: ${tbls.slice(0, withIds ? 20 : 10).join(', ')}`);
     const pk = (kpisByProduct.get(p.id) ?? []).slice(0, 8);
     if (pk.length) {
       lines.push(`  Metrics: ${pk.map((k) => k.question_text ? `${k.name} ("${trim(k.question_text, 70)}")` : k.name).join('; ')}`);
     }
   }
   if (reference.length > 0) {
-    lines.push(`SHARED DATA (lookups every subject can slice by): ${reference.map((p) => (tablesByProduct.get(p.id) ?? []).join(', ') || p.name).join(', ')}`);
+    lines.push(`SHARED DATA (lookups every subject can slice by): ${reference.map((p) => {
+      const list = (tablesByProduct.get(p.id) ?? []).join(', ') || p.name;
+      return withIds ? `${p.name} (product_id ${p.id}): ${list}` : list;
+    }).join('; ')}`);
   }
 
   const connectionIds = new Set<number>();
@@ -119,7 +138,7 @@ export async function buildCoverageContext(db: Knex, tenantId: number): Promise<
 
   for (const conn of connections as Array<{ id: number; name: string; connector_type: string | null }>) {
     connectionIds.add(conn.id);
-    const tables = (sourceTables as Array<{ connection_id: number; table_name: string; display_name: string | null; description: string | null }>)
+    const tables = (sourceTables as Array<{ id: number; connection_id: number; table_name: string; display_name: string | null; description: string | null }>)
       .filter((t) => t.connection_id === conn.id);
     const nameSet = new Set(tables.map((t) => t.table_name));
     syncedTablesByConnection.set(conn.id, nameSet);
@@ -132,7 +151,7 @@ export async function buildCoverageContext(db: Knex, tenantId: number): Promise<
       const rcNote = rc === undefined ? '' : rc === 0 ? ' (NO ROWS — synced but empty)' : ` (~${rc} rows)`;
       const used = productsBySourceTable.get(t.table_name);
       const usedNote = used?.length ? ` — used by: ${used.join(', ')}` : ' — not part of any subject yet';
-      lines.push(`- ${t.table_name}${rcNote}${usedNote}`);
+      lines.push(`- ${t.table_name}${withIds ? ` (source table_id ${t.id})` : ''}${rcNote}${usedNote}`);
     }
     if (tables.length > 80) lines.push(`  (+${tables.length - 80} more tables not listed)`);
   }
