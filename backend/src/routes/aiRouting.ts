@@ -12,7 +12,10 @@
  *     Returns all call categories with their current model assignments.
  *
  *   PUT  /api/admin/ai-routing/categories/:category
- *     Set a per-category model override. Body: { provider, model_id }
+ *     Set a per-category model override. Body: { provider, model_id }.
+ *     Only a model on the platform's approved list is accepted
+ *     (services/ai/approvedModels.ts) — the tenant admin chooses, the
+ *     platform decides what can be chosen.
  *
  *   DELETE /api/admin/ai-routing/categories/:category
  *     Remove a per-category override (revert to global mode).
@@ -22,9 +25,12 @@ import { Router, Request, Response, NextFunction } from 'express';
 import { requireAuth, requireRole } from '../middleware/auth';
 import { reqDb } from '../db/reqDb';
 import { invalidateTenantAiMode, parseAiRoutingMode, type AiRoutingMode } from '../services/ai/tenantAiMode';
-import { isAzureConfigured, isAzureOpenAIConfigured, getAzureOpenAIDeployments } from '../services/ai/azureClient';
+import { isAzureConfigured, isAzureOpenAIConfigured } from '../services/ai/azureClient';
 import { getAllCallCategoryConfigs, invalidateCallCategoryCache } from '../services/ai/callCategoryConfig';
-import { ALL_CALL_CATEGORIES, CALL_CATEGORY_META } from '../services/ai/router';
+import { approvedModels, isApprovedModel } from '../services/ai/approvedModels';
+import { ALL_CALL_CATEGORIES, CALL_CATEGORY_META, type CallCategory } from '../services/ai/router';
+import { validate } from '../middleware/validate';
+import { setCategoryModelSchema, clearCategoryModelSchema } from '../middleware/schemas';
 import { recordAudit } from '../services/auditService';
 
 const router = Router();
@@ -34,8 +40,6 @@ router.use(requireAuth, requireRole('admin'));
 function parseMode(raw: unknown): AiRoutingMode | null {
   return parseAiRoutingMode(raw);
 }
-
-const VALID_PROVIDERS = ['anthropic', 'azure-openai', 'azure-foundry'] as const;
 
 // ─── GET / — global mode + available models ──────────────────────────────
 
@@ -48,32 +52,9 @@ router.get('/', async (req: Request, res: Response, next: NextFunction) => {
       .first() as { ai_routing_mode?: string } | undefined;
     const mode = parseMode(row?.ai_routing_mode) ?? 'claude';
 
-    const availableModels: Array<{ provider: string; model_id: string; label: string }> = [
-      { provider: 'anthropic', model_id: 'claude-sonnet-5', label: 'Claude Sonnet 5' },
-      { provider: 'anthropic', model_id: 'claude-haiku-4-5-20251001', label: 'Claude Haiku 4.5' },
-      { provider: 'anthropic', model_id: 'claude-opus-5', label: 'Claude Opus 5' },
-      { provider: 'anthropic', model_id: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6 (previous)' },
-    ];
-    if (isAzureOpenAIConfigured()) {
-      const deployments = getAzureOpenAIDeployments();
-      if (deployments.length > 0) {
-        for (const d of deployments) {
-          availableModels.push({ provider: 'azure-openai', model_id: d, label: `Azure OpenAI: ${d}` });
-        }
-      } else {
-        availableModels.push(
-          { provider: 'azure-openai', model_id: 'gpt-4o', label: 'Azure OpenAI: GPT-4o' },
-          { provider: 'azure-openai', model_id: 'gpt-4o-mini', label: 'Azure OpenAI: GPT-4o-mini' },
-          { provider: 'azure-openai', model_id: 'gpt-4.1', label: 'Azure OpenAI: GPT-4.1' },
-          { provider: 'azure-openai', model_id: 'gpt-4.1-mini', label: 'Azure OpenAI: GPT-4.1-mini' },
-          { provider: 'azure-openai', model_id: 'gpt-4.1-nano', label: 'Azure OpenAI: GPT-4.1-nano' },
-        );
-      }
-    }
-    if (isAzureConfigured()) {
-      const deployment = process.env.AZURE_AI_DEPLOYMENT ?? 'unknown';
-      availableModels.push({ provider: 'azure-foundry', model_id: deployment, label: `Azure Foundry: ${deployment}` });
-    }
+    // The approved list — Anthropic models the platform has checked and
+    // priced, plus only the Azure deployments this environment actually has.
+    const availableModels = approvedModels();
 
     res.json({
       ok: true,
@@ -117,7 +98,7 @@ router.put('/', async (req: Request, res: Response, next: NextFunction) => {
 router.get('/categories', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const tenantId = req.user!.tenantId;
-    const overrides = await getAllCallCategoryConfigs(tenantId);
+    const overrides = await getAllCallCategoryConfigs(reqDb(req), tenantId);
 
     const categories = ALL_CALL_CATEGORIES.map((cat) => {
       const meta = CALL_CATEGORY_META[cat];
@@ -128,6 +109,9 @@ router.get('/categories', async (req: Request, res: Response, next: NextFunction
         description: meta.description,
         defaultModel: meta.defaultModel,
         override: override ?? null,
+        // A stored choice the platform no longer offers is ignored at call
+        // time; the screen says so instead of showing it as in force.
+        overrideApproved: override ? isApprovedModel(override.provider, override.model_id) : null,
       };
     });
 
@@ -137,21 +121,17 @@ router.get('/categories', async (req: Request, res: Response, next: NextFunction
 
 // ─── PUT /categories/:category — set per-category override ───────────────
 
-router.put('/categories/:category', async (req: Request, res: Response, next: NextFunction) => {
+router.put('/categories/:category', validate(setCategoryModelSchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const tenantId = req.user!.tenantId;
     const { category } = req.params;
-    if (!ALL_CALL_CATEGORIES.includes(category as any)) {
+    if (!ALL_CALL_CATEGORIES.includes(category as CallCategory)) {
       res.status(400).json({ ok: false, error: `Unknown category: ${category}` });
       return;
     }
-    const { provider, model_id } = req.body as { provider?: string; model_id?: string };
-    if (!provider || !model_id) {
-      res.status(400).json({ ok: false, error: 'provider and model_id are required' });
-      return;
-    }
-    if (!VALID_PROVIDERS.includes(provider as any)) {
-      res.status(400).json({ ok: false, error: `provider must be one of: ${VALID_PROVIDERS.join(', ')}` });
+    const { provider, model_id } = req.body as { provider: string; model_id: string };
+    if (!isApprovedModel(provider, model_id)) {
+      res.status(400).json({ ok: false, error: `${model_id} is not one of the models this platform offers. Pick one from the list.` });
       return;
     }
 
@@ -182,11 +162,11 @@ router.put('/categories/:category', async (req: Request, res: Response, next: Ne
 
 // ─── DELETE /categories/:category — remove override ──────────────────────
 
-router.delete('/categories/:category', async (req: Request, res: Response, next: NextFunction) => {
+router.delete('/categories/:category', validate(clearCategoryModelSchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const tenantId = req.user!.tenantId;
     const { category } = req.params;
-    if (!ALL_CALL_CATEGORIES.includes(category as any)) {
+    if (!ALL_CALL_CATEGORIES.includes(category as CallCategory)) {
       res.status(400).json({ ok: false, error: `Unknown category: ${category}` });
       return;
     }

@@ -243,4 +243,19 @@ describe('worker-reachable services under databridge_app with no ambient tenant 
     // A finished run is not cancellable — and the lookup proves ownership.
     expect(await svc.requestCancellation(syncRunId, A.tenantId)).toBe('not_found');
   });
+  it('a per-category model override is read under the app role, per tenant (it used to read nothing)', async () => {
+    // The override lookup went to the bare pool: under this role the policy
+    // had no tenant to compare with, the read errored or came back empty,
+    // and every admin's model choice silently fell back to the default.
+    await superDb('ai_model_config').insert([
+      { tenant_id: A.tenantId, call_category: 'nl_to_sql', provider: 'anthropic', model_id: 'claude-opus-5' },
+      { tenant_id: B.tenantId, call_category: 'nl_to_sql', provider: 'anthropic', model_id: 'claude-sonnet-4-6' },
+    ]);
+    const { getCallCategoryConfig, invalidateCallCategoryCache } = await import('../services/ai/callCategoryConfig');
+    invalidateCallCategoryCache(A.tenantId);
+    invalidateCallCategoryCache(B.tenantId);
+    expect(await getCallCategoryConfig(A.tenantId, 'nl_to_sql')).toEqual({ provider: 'anthropic', model_id: 'claude-opus-5' });
+    expect(await getCallCategoryConfig(B.tenantId, 'nl_to_sql')).toEqual({ provider: 'anthropic', model_id: 'claude-sonnet-4-6' });
+    expect(await getCallCategoryConfig(A.tenantId, 'dashboards')).toBeNull();
+  });
 });

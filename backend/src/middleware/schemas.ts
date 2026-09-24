@@ -1205,3 +1205,19 @@ export const adminTenantImpersonateSchema = z.object({
     reason: z.string().trim().min(3).max(500),
   }),
 });
+
+// ─── AI routing: per-category model override (admin) ────────────────────
+// Shape only. Whether the (provider, model_id) pair is one the platform
+// approves is checked in the route, against services/ai/approvedModels.ts —
+// the list depends on this deployment's Azure configuration.
+const aiCategoryParams = z.object({ category: z.string().regex(/^[a-z_]{1,40}$/, 'Invalid category') }).passthrough();
+
+export const setCategoryModelSchema = z.object({
+  params: aiCategoryParams,
+  body: z.object({
+    provider: z.enum(['anthropic', 'azure-openai', 'azure-foundry']),
+    model_id: z.string().min(1).max(200),
+  }),
+});
+
+export const clearCategoryModelSchema = z.object({ params: aiCategoryParams });

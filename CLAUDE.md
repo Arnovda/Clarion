@@ -108,6 +108,60 @@ thinking block — every reply would have been "unexpected non-text response".
   roughly flat to ~13% lower per call; higher means the `low` effort default
   is thinking more than it should.
 
+**SAME PR — A TENANT ADMIN PICKS THE MODEL PER CATEGORY, FROM A LIST THE
+PLATFORM APPROVES** (owner: *"stay with the customer's own admins but
+limited to models you approve"*). The per-category picker on
+`/admin/ai-usage` already existed; three things made it a lie:
+- **THE OVERRIDES HAVE NEVER BEEN READ IN PRODUCTION.** `getCallCategoryConfig`
+  read `ai_model_config` on the bare root pool; under `databridge_app` the
+  policy (`current_setting('app.current_tenant')::int`, the pre-NULLIF shape)
+  has no tenant to compare with, so the read errored or matched nothing and
+  its catch returned null — every saved choice silently fell back to the
+  default. Now `tenantQuery` + explicit `tenant_id` filter; the admin
+  route's list read takes `reqDb(req)` (no second connection inside a
+  request). **Verified RED** in `services-under-app-role.test.ts` against the
+  old read. Consequence: the first deploy is the first time a tenant's
+  existing overrides take effect — check `ai_model_config` in production
+  before assuming "nothing changes".
+- **Any string was accepted as a model.** PUT `/admin/ai-routing/categories/
+  :category` had no validation of `model_id`. Now Zod
+  (`setCategoryModelSchema` / `clearCategoryModelSchema`) + an allowlist:
+  NEW `services/ai/approvedModels.ts` = `APPROVED_ANTHROPIC_MODELS` (in
+  `modelCapabilities.ts`: Sonnet 5, Haiku 4.5, Opus 5, Sonnet 4.6 previous —
+  a unit test pins that each is PRICED in `aiPricing.ts` and shaped
+  correctly) plus ONLY the Azure deployments this environment has
+  (`AZURE_OPENAI_DEPLOYMENTS`, `AZURE_AI_DEPLOYMENT`). The guessed gpt-4o /
+  4.1 names offered whenever an endpoint was set are GONE — picking one
+  failed over to Claude on every call. `resolveModel` re-checks the list at
+  call time: a stored choice that fell off it is IGNORED (default used,
+  warned once per process), and GET `/categories` ships `overrideApproved`
+  so the screen says "no longer offered". Adding a model = a reviewed code
+  change, the FEATURE_FLAGS rule.
+- **The two calls that matter most ignored the choice.** Only `callClaude`
+  read overrides; Ask AI's SQL stream (`generateSqlStreaming`), the subject
+  design (`generateBusMatrixStreaming`), `callClaudeStreaming` and
+  `callClaudeMultiTurn` all used the env model. NEW exported
+  `claudeModelFor(callLabel, tenantId, fallback)` resolves an ANTHROPIC
+  override for them (an Azure override cannot serve a Claude stream — they
+  stay on Claude); `shapeRequest` then shapes for the resolved model, and
+  logs/cost rows carry it. `callClaudeMultiTurn` gained `callLabel` (build
+  chat → `build_chat`, products). Unmapped labels added to categories:
+  `enrich_descriptions`, `read_query_repair`, `dashboard_edit_plan`,
+  `dashboard_add_widget`, `widget_sql_edit`, `transformation_propose`.
+  **Still unmapped, known**: calls that pass no label (it is derived from
+  the system prompt) and the notebook generator — they use the default.
+- Ratchets lowered per the covenant: bare-pool 17 → **15**,
+  validate-coverage 138 → **136**. NOT done: the policy on `ai_model_config`
+  is still the old throwing shape and RLS is still not FORCEd there
+  (harmless now that every read sets the context; bring it in line with a
+  migration when next touching the table).
+- Validation: NEW `tests/ai-model-choice.test.ts` (5 — refuse + nothing
+  stored, approved choice reaches the stream/multi-turn paths per tenant,
+  retired choice ignored + flagged, Azure can't reach a stream, analyst
+  403) **both guards verified RED**; `modelCapabilities.test.ts` 14;
+  app-role suite 13; `npm run check` clean; all twelve ratchets green from
+  the repo root; frontend `tsc` + lint clean on the touched page.
+
 **Prior last updated:** 2026-09-24 (AI USAGE 500 = A CONNECTION-POOL DEADLOCK —
 owner, with a screenshot of /admin/ai-usage: *"Couldn't load AI usage data.
 Request failed with status code 500"*. PR #183 — IN MAIN AND PRODUCTION.)
@@ -12948,7 +13002,7 @@ All output stored with `ai_draft: true` until a human confirms.
 | Catalog (browse, sample rows, lineage)          | YES   | YES     | YES    | `/catalog` page; `GET /semantic/preview` + `/product-preview` are any-role and policy-aware; lineage endpoint admin+analyst |
 | Data policies (row filters, column masks)       | YES   | NO      | NO     | `routes/policies.ts`, `/policies` page |
 | Manage team (users / invites / audit export)    | YES   | NO      | NO     | `routes/users.ts`, `/users` page |
-| AI usage & routing, tenant export               | YES   | NO      | NO     | `routes/aiUsage.ts`, `aiRouting.ts`, `GET /settings/export.zip` |
+| AI usage & routing (model per category from the approved list), tenant export | YES | NO | NO | `routes/aiUsage.ts`, `aiRouting.ts` + `services/ai/approvedModels.ts`, `GET /settings/export.zip` |
 | Ask questions (chat)                            | YES   | YES     | YES    | `routes/query.ts` |
 | Query the raw SOURCE layer explicitly           | YES   | YES     | NO     | `layerForRole` in `routes/query.ts` — a viewer's `dataLayer:'source'` is ignored |
 | See SQL, confidence detail, error detail        | YES   | YES     | NO     | `canCurate` in `frontend/lib/role.ts`; wire-gated on `/think` |
