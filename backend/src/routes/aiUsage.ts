@@ -20,13 +20,14 @@
  *   GET /api/admin/ai-usage/recent?limit=100
  *     Most recent calls (useful for debugging a sudden spike).
  *
- * All endpoints are tenant-scoped (RLS) + admin-only. The dashboard
+ * All endpoints are tenant-scoped (RLS AND an explicit tenant_id filter) +
+ * admin-only, and run on the request's own connection (withRequestDb). The dashboard
  * page lives at /admin/ai-usage on the frontend.
  */
 
 import { Router, Request, Response, NextFunction } from 'express';
 import { requireAuth, requireRole } from '../middleware/auth';
-import { tenantQuery } from '../services/tenantQuery';
+import { withRequestDb } from '../db/reqDb';
 
 const router = Router();
 
@@ -44,25 +45,28 @@ function parseDays(req: Request): number {
 router.get('/summary', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const tenantId = req.user!.tenantId;
-    const data = await tenantQuery(tenantId, async (trx) => {
+    const data = await withRequestDb(req, async (trx) => {
       // We compute everything from one base CTE so the numbers are
       // self-consistent (i.e. "today" + "earlier this month" = "this month").
       // Knex's .sum().count() chain doesn't always type clean, so use
       // raw selects that return a single row with both aggregates.
       type AggRow = { s: string | null; c: string };
       const todayRow = await trx('ai_call_log')
+        .where('tenant_id', tenantId)
         .whereRaw(`created_at >= date_trunc('day', now())`)
         .select(trx.raw(`COALESCE(SUM(cost_usd), 0) as s`))
         .select(trx.raw(`COUNT(*) as c`))
         .first() as unknown as AggRow | undefined;
 
       const monthRow = await trx('ai_call_log')
+        .where('tenant_id', tenantId)
         .whereRaw(`created_at >= date_trunc('month', now())`)
         .select(trx.raw(`COALESCE(SUM(cost_usd), 0) as s`))
         .select(trx.raw(`COUNT(*) as c`))
         .first() as unknown as AggRow | undefined;
 
       const priorMonthRow = await trx('ai_call_log')
+        .where('tenant_id', tenantId)
         .whereRaw(`created_at >= date_trunc('month', now()) - interval '1 month'`)
         .whereRaw(`created_at <  date_trunc('month', now())`)
         .select(trx.raw(`COALESCE(SUM(cost_usd), 0) as s`))
@@ -71,6 +75,7 @@ router.get('/summary', async (req: Request, res: Response, next: NextFunction) =
       // Top user this month — left-joined to users for display name.
       const topUserRow = await trx('ai_call_log as l')
         .leftJoin('users as u', 'l.user_id', 'u.id')
+        .where('l.tenant_id', tenantId)
         .whereRaw(`l.created_at >= date_trunc('month', now())`)
         .whereNotNull('l.user_id')
         .groupBy('l.user_id', 'u.display_name', 'u.email')
@@ -115,7 +120,7 @@ router.get('/daily', async (req: Request, res: Response, next: NextFunction) => 
   try {
     const tenantId = req.user!.tenantId;
     const days = parseDays(req);
-    const rows = await tenantQuery(tenantId, (trx) =>
+    const rows = await withRequestDb(req, (trx) =>
       trx
         .select(trx.raw(`gs.day::date as day`))
         .select(trx.raw(`COALESCE(SUM(acl.cost_usd), 0) as cost_usd`))
@@ -134,7 +139,9 @@ router.get('/daily', async (req: Request, res: Response, next: NextFunction) => 
           // full table — important when ai_call_log grows large.
           trx.raw(
             `date_trunc('day', acl.created_at)::date = gs.day::date `
-            + `AND acl.created_at >= now() - interval '${days} days'`,
+            + `AND acl.created_at >= now() - interval '${days} days' `
+            + `AND acl.tenant_id = ?`,
+            [tenantId],
           ),
         )
         .groupByRaw('gs.day')
@@ -164,8 +171,9 @@ router.get('/by-category', async (req: Request, res: Response, next: NextFunctio
   try {
     const tenantId = req.user!.tenantId;
     const days = parseDays(req);
-    const rows = await tenantQuery(tenantId, (trx) =>
+    const rows = await withRequestDb(req, (trx) =>
       trx('ai_call_log')
+        .where('tenant_id', tenantId)
         .select('category')
         .select(trx.raw(`COALESCE(SUM(cost_usd), 0) as cost_usd`))
         .select(trx.raw(`COUNT(*) as calls`))
@@ -193,9 +201,10 @@ router.get('/by-user', async (req: Request, res: Response, next: NextFunction) =
   try {
     const tenantId = req.user!.tenantId;
     const days = parseDays(req);
-    const rows = await tenantQuery(tenantId, (trx) =>
+    const rows = await withRequestDb(req, (trx) =>
       trx('ai_call_log as l')
         .leftJoin('users as u', 'l.user_id', 'u.id')
+        .where('l.tenant_id', tenantId)
         .select('l.user_id', 'u.display_name', 'u.email')
         .select(trx.raw(`COALESCE(SUM(l.cost_usd), 0) as cost_usd`))
         .select(trx.raw(`COUNT(*) as calls`))
@@ -227,8 +236,9 @@ router.get('/by-call-label', async (req: Request, res: Response, next: NextFunct
   try {
     const tenantId = req.user!.tenantId;
     const days = parseDays(req);
-    const rows = await tenantQuery(tenantId, (trx) =>
+    const rows = await withRequestDb(req, (trx) =>
       trx('ai_call_log')
+        .where('tenant_id', tenantId)
         .select('call_label', 'category', 'model')
         .select(trx.raw(`COALESCE(SUM(cost_usd), 0) as cost_usd`))
         .select(trx.raw(`COUNT(*) as calls`))
@@ -269,7 +279,7 @@ router.get('/recent', async (req: Request, res: Response, next: NextFunction) =>
   try {
     const tenantId = req.user!.tenantId;
     const limit = Math.min(Math.max(Number(req.query.limit) || 100, 10), 500);
-    const rows = await tenantQuery(tenantId, (trx) =>
+    const rows = await withRequestDb(req, (trx) =>
       trx('ai_call_log as l')
         .leftJoin('users as u', 'l.user_id', 'u.id')
         .select(
@@ -280,6 +290,7 @@ router.get('/recent', async (req: Request, res: Response, next: NextFunction) =>
           'l.cost_usd', 'l.duration_ms',
           'l.cache_used', 'l.failed', 'l.error_code',
         )
+        .where('l.tenant_id', tenantId)
         .orderBy('l.created_at', 'desc')
         .limit(limit),
     );
@@ -330,8 +341,9 @@ router.get('/answer-latency', async (req: Request, res: Response, next: NextFunc
     const tenantId = req.user!.tenantId;
     const days = Math.min(Math.max(Number(req.query.days) || 30, 1), 365);
 
-    const data = await tenantQuery(tenantId, async (trx) => {
+    const data = await withRequestDb(req, async (trx) => {
       const row = await trx('query_log')
+        .where('tenant_id', tenantId)
         .whereRaw(`created_at >= now() - (? || ' days')::interval`, [String(days)])
         .select(
           trx.raw(`COUNT(*) as total`),

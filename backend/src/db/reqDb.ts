@@ -22,10 +22,29 @@
 import type { Knex } from 'knex';
 import type { Request } from 'express';
 import { semanticDb } from './knex';
+import { tenantQuery } from '../services/tenantQuery';
 
 export function reqDb(req: Request): Knex | Knex.Transaction {
   // After a response starts streaming, `req.dbTrx` is the per-query scoped
   // handle from db/scopedRequestDb.ts rather than the request transaction
   // (assessment 11-1) — same call shape, one short transaction per query.
   return req.dbTrx ?? semanticDb;
+}
+
+/**
+ * Run `fn` on the request's OWN tenant-scoped handle. Use this — never
+ * `tenantQuery` — for a same-tenant read or write inside a request.
+ *
+ * `requireAuth` already holds one pool connection for the request's
+ * transaction; `tenantQuery` takes a SECOND one. With the backend's pool at
+ * 6 connections (`.ops/db-pool`), any page that fires more parallel requests
+ * than that deadlocks: each request waits for a second connection the others
+ * hold, until the 10 s acquire timeout. That was /admin/ai-usage in
+ * production on 2026-09-24 (seven parallel calls, every one a
+ * KnexTimeoutError). Outside a request there is no request transaction and
+ * the short `tenantQuery` transaction is the right tool; that is the fallback.
+ */
+export function withRequestDb<T>(req: Request, fn: (db: Knex) => Promise<T>): Promise<T> {
+  if (req.dbTrx) return fn(req.dbTrx as Knex);
+  return tenantQuery(req.user?.tenantId, fn);
 }

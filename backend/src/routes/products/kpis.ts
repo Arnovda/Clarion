@@ -9,8 +9,7 @@ import { requireAuth, requireRole } from '../../middleware/auth';
 import { validate } from '../../middleware/validate';
 import { createProductKpiSchema, updateProductKpiSchema } from '../../middleware/schemas';
 // tenantQuery removed — AI repair loops eliminated; deterministic auto-fix lives in transformationRunner
-import { tenantQuery } from '../../services/tenantQuery';
-import { reqDb } from '../../db/reqDb';
+import { reqDb, withRequestDb } from '../../db/reqDb';
 
 const router = Router();
 
@@ -37,7 +36,7 @@ router.post('/:id/kpis/ai-draft', requireAuth, requireRole('admin', 'analyst'), 
     }
 
     const tenantId = req.user?.tenantId;
-    const ctx = await tenantQuery(tenantId, async (trx) => {
+    const ctx = await withRequestDb(req, async (trx) => {
       const product = await trx('data_products').where({ id: productId }).first();
       if (!product) return null;
 
@@ -119,7 +118,7 @@ router.get('/:id/kpis', requireAuth, async (req: Request, res: Response, next: N
   try {
     const db = reqDb(req);
     const tenantId = req.user?.tenantId;
-    const kpis = await tenantQuery(tenantId, (trx) =>
+    const kpis = await withRequestDb(req, (trx) =>
       trx('product_kpis').where({ data_product_id: req.params.id }).orderBy('name'),
     );
     res.json({ ok: true, data: kpis });
@@ -165,7 +164,7 @@ router.post('/:id/kpis', requireAuth, requireRole('admin', 'analyst'), validate(
     };
 
     const tenantId = req.user?.tenantId;
-    const id = await tenantQuery(tenantId, async (trx) => {
+    const id = await withRequestDb(req, async (trx) => {
       const [row] = await trx('product_kpis')
         .insert({
           data_product_id:    Number(req.params.id),
@@ -198,7 +197,7 @@ router.put('/kpis/:kpiId', requireAuth, requireRole('admin', 'analyst'), validat
     }
 
     const tenantId = req.user?.tenantId;
-    await tenantQuery(tenantId, (trx) =>
+    await withRequestDb(req, (trx) =>
       trx('product_kpis').where({ id: req.params.kpiId }).update(updates),
     );
     res.json({ ok: true });
@@ -213,7 +212,7 @@ router.delete('/kpis/:kpiId', requireAuth, requireRole('admin', 'analyst'), asyn
   try {
     const db = reqDb(req);
     const tenantId = req.user?.tenantId;
-    await tenantQuery(tenantId, (trx) =>
+    await withRequestDb(req, (trx) =>
       trx('product_kpis').where({ id: req.params.kpiId }).delete(),
     );
     res.json({ ok: true });

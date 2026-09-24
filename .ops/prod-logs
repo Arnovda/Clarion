@@ -1,7 +1,11 @@
-2d
-request ai-usage
+14d
 
-# 2026-09-24: narrowed to the AI usage page. The owner saw /admin/ai-usage
+# 2026-09-24: the Production logs run of 1e90f26 was narrowed to the AI usage page (`2d` + `request
+# ai-usage`) and READ: every call was a KnexTimeoutError, a pool deadlock
+# (see CLAUDE.md, 2026-09-24). Back to the standing 14d, unnarrowed. The note
+# below is kept for the next narrowed read.
+#
+# Earlier note: narrowed to the AI usage page. The owner saw /admin/ai-usage
 # answer 500 in production; locally every one of its seven endpoints answers
 # 200, as the superuser AND as databridge_app, so the cause is production data
 # or state and only production's own error line can say which. `request`
