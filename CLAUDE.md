@@ -33,7 +33,16 @@ with false assumptions and produces broken code.
 
 **Last updated:** 2026-09-24 (AI USAGE 500 = A CONNECTION-POOL DEADLOCK —
 owner, with a screenshot of /admin/ai-usage: *"Couldn't load AI usage data.
-Request failed with status code 500"*. Branch `claude/kind-cori-98hpxi`.)
+Request failed with status code 500"*. PR #183 — IN MAIN AND PRODUCTION.)
+
+**DEPLOYED (2026-09-24, 09:59 UTC)**: PR #183 rebase-merged as `4678fdd`;
+**Build & Deploy run** gated on Tests + Lint, built the backend only as
+`main-4678fdd` (frontend/worker/ETL and `migrate-sql` correctly skipped), the
+jobs-worker took the same image, **Go live health-checked the new backend
+(`/api/health` 200, all six `ok`) and shifted it to 100%**. Read from the job's
+log. **WATCH**: reload /admin/ai-usage — every card should load; a
+`KnexTimeoutError` anywhere else in production is the same pattern at a
+`tenantQuery` call this pass did not convert.
 
 **PRODUCTION'S OWN LOG LINE SAID WHAT IT WAS, AND THE NEW READER FEATURE IS WHY
 WE COULD SEE IT.** Locally all seven `/admin/ai-usage/*` endpoints answered 200,
