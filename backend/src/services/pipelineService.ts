@@ -185,11 +185,9 @@ export async function getDag(tenantId: number): Promise<PipelineDag> {
 
 /**
  * Turn a pipeline's scope JSON into the concrete set of source + product
- * ids the runner needs to execute. Always honours dependencies: a custom
- * scope including a fact product but not its dimension product gets the
- * dimension added automatically (unless includeUpstream is explicitly false
- * AND skipSourceSync is true — at which point you've told us you know
- * what you're doing).
+ * ids the runner needs to execute. Product dependencies are always honoured:
+ * a custom scope including a fact but not its dimension gets the dimension
+ * added. Sources are NOT added implicitly to a custom scope — see below.
  */
 export async function resolveScope(scope: PipelineScope, tenantId: number): Promise<ResolvedScope> {
 
@@ -249,16 +247,23 @@ export async function resolveScope(scope: PipelineScope, tenantId: number): Prom
       };
 
     case 'custom': {
-      // Implicit policy for custom scopes:
-      //   • Upstream is ALWAYS pulled in. Refreshing a fact without its
-      //     dim or its source is meaningless — we'd ship stale data.
-      //   • Source sync ALWAYS runs for any source touched by an
-      //     in-scope product. Optional flags from the stored scope are
-      //     ignored at resolve time.
-      //   • Downstream is opt-in (skipDownstream not implemented yet —
-      //     kept as future hook).
+      // A custom pipeline runs what its canvas shows.
+      //   • Sources are synced ONLY when the user put them in the pipeline.
+      //     This used to add every source feeding an in-scope product and
+      //     sync it unconditionally — so a pipeline drawn as "0 sources,
+      //     5 products" (a transform-only refresh, with the source greyed
+      //     out on its own canvas) still started a source sync, and when
+      //     that sync failed the gate skipped every product. The run did the
+      //     one thing the pipeline said it would not, and then nothing it
+      //     said it would. Rebuilding over the data already synced is a
+      //     legitimate, common ask ("Transform products only" is the
+      //     built-in form of it); a pipeline that wants a fresh pull puts
+      //     the source on its canvas.
+      //   • Upstream PRODUCTS are still pulled in: a fact rebuilt without
+      //     the dimension it joins is wrong, and a transformation costs no
+      //     source call.
+      //   • Downstream is opt-in.
       const productIds = new Set<number>(scope.productIds);
-      // Always pull upstream products
       for (const pid of scope.productIds) {
         const ups = await resolveUpstreamProductsTopo(pid, tenantId);
         for (const u of ups) productIds.add(u);
@@ -267,15 +272,13 @@ export async function resolveScope(scope: PipelineScope, tenantId: number): Prom
         const downs = await expandDownstreamProducts(scope.productIds, tenantId);
         for (const d of downs) productIds.add(d);
       }
-      // Always include sources that feed any product in scope, in addition
-      // to whatever the user explicitly picked.
-      const expandedProducts = Array.from(productIds);
-      const autoSources = await sourcesForProducts(expandedProducts, tenantId);
-      const sourceSet = new Set<number>([...scope.sourceIds, ...autoSources]);
+      const sourceIds = scope.skipSourceSync
+        ? []
+        : scope.sourceIds.filter((id) => allSources.includes(id));
       return {
-        sourceIds: Array.from(sourceSet).filter((id) => allSources.includes(id)),
-        productIds: expandedProducts.filter((id) => allProducts.includes(id)),
-        shouldSyncSources: true, // implicit — always sync upstream
+        sourceIds,
+        productIds: Array.from(productIds).filter((id) => allProducts.includes(id)),
+        shouldSyncSources: sourceIds.length > 0,
       };
     }
 

@@ -31,7 +31,58 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-09-24 (THE CLARION MARK — the brand and the AI
+**Last updated:** 2026-09-24 (REFRESH PIPELINE: "0 SOURCES, 5 PRODUCTS" SYNCED A
+SOURCE, FAILED, AND SKIPPED EVERYTHING — owner screenshot of `/pipelines`:
+custom pipeline "Refresh Data Products", Exact Online greyed out on its own
+canvas, yet the run printed `Exact Online: Worker exited with code 1` and then
+every product `skipped — its source did not sync cleanly`, each line TWICE,
+while the pipeline list still said *queued*. Branch
+`claude/new-session-2p2zqv`, draft PR.)
+
+Four defects, one screen:
+- **A custom pipeline synced sources it did not contain.** `resolveScope`
+  'custom' added every source feeding an in-scope product and forced
+  `shouldSyncSources: true` ("implicit — always sync upstream"), while the
+  editor lets you click a source OFF and the canvas then greys it out. Now
+  the canvas IS the scope: only picked sources sync (`skipSourceSync` still
+  wins); upstream PRODUCTS are still pulled in (a fact without its dim is
+  wrong; a transform costs no source call). Built-in scopes unchanged. The
+  list summary says `Transform 5 products (no sync)` / `Sync 1 source,
+  transform …`, and the editor shows a line when no source is picked.
+  **Behaviour change for existing custom pipelines that relied on the
+  implicit sync**: they now rebuild over already-synced data — which is what
+  their canvas always showed.
+- **Why "Worker exited with code 1" said nothing (the real cause is still
+  unknown — watch the next failure).** `worker/src/main.ts` appended the
+  heartbeat fire-and-forget and called `process.exit` on the next line, so in
+  Azure mode the terminal `error` event (the ONLY channel back) never
+  reached the blob; the reason lived in the container's stdout. Appends are
+  now CHAINED (order preserved; byte length, not string length) and every
+  exit goes through `exitAfterFlush` (≤15s). The heartbeat is created BEFORE
+  the config fetch and is module-level, so early throws reach it too; an
+  `unhandledRejection` handler reports instead of dying silently. The Azure
+  launcher emits "stopped without reporting a reason (execution <name>) …
+  often out of memory" when an execution Fails with no error event (OOM,
+  native crash, or an image from before this fix). **Needs a sync-worker
+  image build to take effect** — deploy.yml builds it because `worker/`
+  changed.
+- **Doubled skip lines**: the runner emitted a `log` AND a `product` event per
+  skip and the dock prints both; the `log` is gone.
+- **"queued" forever**: `pipelines.last_status` was written once at enqueue.
+  New `mirrorPipelineStatus` sets running → succeeded/partial/failed, and a
+  run that THROWS (cancel, lost DB) is now settled on both `pipeline_runs`
+  and `pipelines` instead of sitting 'running' until the 4-hour reaper. A
+  run whose sources failed and whose products were ALL skipped is `failed`,
+  not `partial` — nothing was refreshed.
+- Validation: NEW `tests/pipeline-scope.test.ts` (7) — **4 verified RED
+  against the old code**; `services-under-app-role` 13/13; backend `npm run
+  check`, worker + frontend `tsc` clean; all twelve ratchets green;
+  `pipelines/page.tsx` carries only its two pre-existing lint findings.
+  `ingestion-phase2`'s createScanView case fails here identically on
+  untouched code (sandbox cannot load DuckDB extensions). NOT exercised
+  against a live Container Apps execution.
+
+**Prior last updated:** 2026-09-24 (THE CLARION MARK — the brand and the AI
 assistant are one symbol now, with five states; the app accent moved from
 ocean teal to violet. Owner designed the mark over several rounds of image-AI
 concepts, then supplied a construction spec; frontend only, branch

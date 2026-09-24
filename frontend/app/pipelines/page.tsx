@@ -892,7 +892,13 @@ function scopeSummary(s: PipelineScope): string {
     case 'from-source':      return `Sync source #${s.sourceId} + dependents`;
     case 'product':          return `Refresh product #${s.productId}`;
     case 'rebuild-product':  return `Rebuild product #${s.productId} (no sync)`;
-    case 'custom':           return `${s.sourceIds.length} source${s.sourceIds.length === 1 ? '' : 's'}, ${s.productIds.length} product${s.productIds.length === 1 ? '' : 's'}`;
+    case 'custom': {
+      // Says what a run does, not just what was clicked: with no source on
+      // the canvas the run rebuilds over the data already synced.
+      const products = `${s.productIds.length} product${s.productIds.length === 1 ? '' : 's'}`;
+      if (s.sourceIds.length === 0) return `Transform ${products} (no sync)`;
+      return `Sync ${s.sourceIds.length} source${s.sourceIds.length === 1 ? '' : 's'}, transform ${products}`;
+    }
   }
 }
 
@@ -1170,11 +1176,12 @@ function RunsListRow({
 /**
  * Canvas-based custom pipeline editor.
  *
- * Full-screen modal with the same DAG as the main page. Click any node to
- * include it AND all its upstream dependencies — implicit policy because
- * "refresh a fact without its dim or its source" is never what users want.
- * Click again to remove it (and any nodes that are now orphaned in the
- * selection).
+ * Full-screen modal with the same DAG as the main page. Click a product to
+ * include it AND all its upstream dependencies, sources included. Click a
+ * node again to remove just that node. What is on the canvas is what a run
+ * does: a source clicked OFF is not synced — the products rebuild over the
+ * data already synced (resolveScope, 'custom'). Upstream products are
+ * re-added at run time either way.
  *
  * No checkboxes, no toggles, no expansion options. The graph is the UI.
  */
@@ -1323,9 +1330,9 @@ function CustomPipelineEditor({
     }
     setSaving(true);
     try {
-      // includeUpstream + skipSourceSync are now resolver-side implicit
-      // ("always sync sources for in-scope products"); we just send the
-      // user's explicit picks. includeDownstream stays opt-in (false).
+      // The canvas IS the scope: a source is synced only when it is
+      // picked here (resolveScope, 'custom'). Upstream products are
+      // added at run time; includeDownstream stays opt-in (false).
       const scope: PipelineScope = {
         type: 'custom',
         sourceIds: Array.from(pickedSources),
@@ -1419,6 +1426,18 @@ function CustomPipelineEditor({
               <p className="text-[12.5px] text-ink">
                 Click a <span className="text-ai font-medium">data product</span> to include it (and everything it needs upstream),
                 or click a <span className="text-ocean font-medium">source</span> directly.
+              </p>
+            </div>
+          )}
+
+          {/* No source on the canvas → say what a run will do. The run
+              used to sync the sources anyway; now it doesn't, so this is
+              the one line that tells someone which of the two they built. */}
+          {pickedSources.size === 0 && pickedProducts.size > 0 && (
+            <div className="absolute top-6 left-1/2 -translate-x-1/2 bg-raised border border-line rounded-md px-4 py-2.5 shadow-md pointer-events-none">
+              <p className="text-[12.5px] text-ink">
+                No source in this pipeline — a run rebuilds the products from the data already synced.
+                Click a <span className="text-ocean font-medium">source</span> to sync it first.
               </p>
             </div>
           )}
