@@ -148,6 +148,30 @@ jobs:
           say '```'
           say ""
 
+          # ── Errors in scope (narrowed runs only) ────────────────────────────
+          # A narrowed run exists to answer "what happened to THIS request /
+          # tenant", and the signature table below can only COUNT: its one
+          # example per bucket is take_any, so the line carrying the actual
+          # error text may never be shown. List the error lines themselves.
+          # `request <text>` matches any substring, so a URL fragment such as
+          # `ai-usage` works too. No backslash reaches KQL (the rule below).
+          if [ -n "$NARROW" ]; then
+            ERR_Q="ContainerAppConsoleLogs_CL | where TimeGenerated > ago($WINDOW) $SCOPE | where Log_s contains '\"level\":50' or Log_s contains 'request failed' | project TimeGenerated, line = substring(Log_s, 0, 1500) | order by TimeGenerated desc | take 15"
+            say "### Errors in scope (newest first, max 15)"
+            say ""
+            if ! az monitor log-analytics query --workspace "$WS" \
+                   --analytics-query "$ERR_Q" -o json > /tmp/err.json 2>/tmp/qerr; then
+              say "**COULD NOT RUN** — the error-listing query failed. Read this as *unknown*."
+            elif [ "$(jq 'length' /tmp/err.json)" = "0" ]; then
+              say "no error lines in scope for this window"
+            else
+              say '```'
+              jq -r '.[] | "\(.TimeGenerated)  \(.line)"' /tmp/err.json | while IFS= read -r line; do say "$line"; done
+              say '```'
+            fi
+            say ""
+          fi
+
           # ── Sources seen (UNSCOPED, and that is the point) ──────────────────
           # The 2026-09-10 run came back with no `*-sync-worker` line and no
           # `sync-complete`, and those two facts are INDISTINGUISHABLE from
