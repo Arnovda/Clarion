@@ -190,6 +190,24 @@ the new name — production has been on `ai` design mode since 2026-08-18).
   (`schema_replaced` in the sidecar result) and each table's change chart shows
   one all-updated spike.
 
+**IN MAIN AND PRODUCTION (2026-09-24, 15:42 UTC)** — owner: *"You may push
+everything to main and to prd and live pls when finished"*. PR #191 went green
+on all ten checks, was taken out of draft and REBASE-merged as `1c3a111`.
+**Build & Deploy run #629**: the gate waited 5m41s for Tests + Lint on the
+merged sha; backend, frontend, worker and ETL built as **`main-1c3a111`**;
+`migrate-sql` correctly skipped (no migration in this slice); jobs-worker on
+the same image, the sync-worker job pinned to this build; **Go live
+health-checked the new backend through the staging label (`/api/health` 200:
+postgres / redis / neo4j / blob / worker_transformation / worker_bus_matrix
+all `ok`) and shifted backend + frontend to `--main-1c3a111` at 100%** at
+15:42:00 / 15:42:28 UTC. Read from the job's own log. The WATCH AFTER DEPLOY
+list above is live now — nobody has clicked Upgrade keys in production yet,
+and KeysPanel has not been seen in a browser. Rollback: Actions → **Rollback
+production** — but a rollback does NOT undo stored SQL: once anyone clicks
+Upgrade keys or designs a new subject, that SQL calls clarion_key, which the
+old code never registers, so those tables would fail to rebuild. After that
+point, roll forward instead.
+
 **Prior last updated:** 2026-09-24 (REFRESH PIPELINE: "0 SOURCES, 5 PRODUCTS" SYNCED A
 SOURCE, FAILED, AND SKIPPED EVERYTHING — owner screenshot of `/pipelines`:
 custom pipeline "Refresh Data Products", Exact Online greyed out on its own
