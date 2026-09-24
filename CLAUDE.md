@@ -37,6 +37,24 @@ correctly from describe_workspace, then on "Yes, open it" replied *"I'm having
 trouble opening it directly"*; *"investigate thoroughly and see if the AI can do
 everything it's meant to do"*. Branch `claude/peaceful-darwin-ccvj73`.)
 
+**IN MAIN AND PRODUCTION (2026-09-24, 17:59 UTC) — owner: *"Is it live in main
+and prd?"* → told plainly no → *"Do it"*.** PR #195 was rebased linearly onto
+`a7b309e` (it carried a merge commit, which blocks rebase-merge), all checks
+green, then REBASE-merged as `92b1f28`. **Build & Deploy run #633**: the gate
+waited ~7 min for Tests + Lint on the merged sha; ONLY the backend built, as
+**`main-92b1f28`** (frontend/worker/ETL, `migrate-sql` and `neo4j-constraints`
+correctly skipped — no migration, no frontend change); the jobs-worker took
+the same image; **Go live health-checked the new backend through the staging
+label (`/api/health` 200, all six components `ok`) and shifted it to
+`--main-92b1f28` at 100%**. Read from the job's own log. The coworker is still
+behind `ai_coworker` — only ticked tenants see it. **WATCH**: ask it "open
+receivables" (or any subject/table by name) and the screen must move; the
+`'coworker turn done'` log lines show whether the light model now takes the
+name/id path. If it still hesitates, set the *Studio coworker* category to
+Sonnet 5 on `/admin/ai-usage` (costs more). Rollback: Actions → **Rollback
+production**. Housekeeping: `claude/peaceful-darwin-ccvj73` was restarted from
+main at `92b1f28`; this record rides a NEW draft PR.
+
 **ROOT CAUSE: the model was told WHAT exists but never HOW TO ADDRESS it.**
 `describe_workspace` listed subjects and tables by NAME with no ids, and
 `search_catalog` matched tables and columns but never a subject — so "Cash
