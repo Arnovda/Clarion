@@ -40,6 +40,19 @@ do it. … it must look good and simple, with our new icon, show how it thinks
 and that it is working. … I follow you in what the AI may change and what
 not."* Branch `claude/wonderful-ramanujan-5pf4nh`, draft PR.)
 
+**IN MAIN AND PRODUCTION (2026-09-24, 16:41 UTC) — owner: *"Do b and then
+put in main and live"*.** PR #192 (both commits: the coworker + the
+Relations/Sources/Build slice) was rebased onto `1c3a111`, all ten checks
+green, then REBASE-merged as `bcc58ca`. **Build & Deploy run #630**: the gate
+waited 5 min for Tests + Lint on the merged sha; backend + frontend built as
+**`main-bcc58ca`** (worker/ETL skipped, `migrate-sql` skipped — no
+migration); the jobs-worker took the same image; **Go live health-checked the
+new backend (`/api/health` 200, all six components `ok`) and shifted backend +
+frontend to `--main-bcc58ca` at 100%**. Read from the job's own log.
+**STILL INVISIBLE TO EVERYONE until the flag is ticked**: `/admin/features` →
+"Studio coworker" → tick your own workspace; the panel appears within ~20 s.
+Rollback: untick (no deploy), or Actions → **Rollback production**.
+
 **THE UNDO BUTTON IS A FLAG, AND IT STARTS OFF.** `ai_coworker` is a
 `kind: 'feature'` entry in `FEATURE_FLAGS` (both contract copies) — the one
 deliberate exception to "no train is open", recorded in the registry comment.
