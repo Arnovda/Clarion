@@ -25,6 +25,7 @@ import { Database } from 'duckdb-async';
 import { registerUser } from './helpers';
 import { getTestDb, cleanTestDb, closeTestDb } from './db-helpers';
 import {
+  comparableKeyColumns,
   countChangesAgainstPrevious,
   duplicateKeyRows,
   maintainDeltaTables,
@@ -76,6 +77,31 @@ describe('countChangesAgainstPrevious + duplicateKeyRows (real DuckDB, parquet p
       expect(await countChangesAgainstPrevious(db, prevDir, newState, [])).toBeNull();
       expect(await duplicateKeyRows(db, `SELECT * FROM (VALUES (1), (1), (2), (2), (2)) t(id)`, ['id'])).toBe(3);
       expect(await duplicateKeyRows(db, `SELECT * FROM (VALUES (1), (2)) t(id)`, ['id'])).toBe(0);
+    } finally { await db.close(); }
+  });
+});
+
+describe('a key whose type changed between refreshes (the clarion_key upgrade)', () => {
+  it('is left out of the diff instead of failing the refresh; the natural key still identifies the row', async () => {
+    expect(comparableKeyColumns(['account_key', 'account_id'],
+      new Map([['account_key', 'VARCHAR'], ['account_id', 'VARCHAR']]),
+      new Map([['account_key', 'BIGINT'], ['account_id', 'VARCHAR']]))).toEqual(['account_id']);
+
+    const db = await session();
+    try {
+      const prevDir = path.join(root, 'prev-key-upgrade');
+      fs.mkdirSync(prevDir, { recursive: true });
+      const hash = rowHashExpression(['account_key', 'account_id', 'v'], ['account_key', 'account_id', 'v']);
+      // Before: the key was the GUID itself (or a ROW_NUMBER) — VARCHAR.
+      await db.exec(`COPY (SELECT *, ${hash} AS _row_hash FROM (VALUES ('3f2a-guid', '3f2a-guid', 'a'), ('9c1e-guid', '9c1e-guid', 'b')) t(account_key, account_id, v)) TO '${prevDir.replace(/'/g, "''")}/data.parquet' (FORMAT PARQUET)`);
+      // After: the hashed BIGINT. Joining VARCHAR to BIGINT here used to throw
+      // "Could not convert string '3f2a-guid' to INT64" and fail the refresh.
+      const newState = `SELECT *, ${hash} AS _row_hash FROM (SELECT clarion_key('Accounts', id) AS account_key, id AS account_id, v FROM (VALUES ('3f2a-guid', 'a'), ('7777-guid', 'c')) t(id, v))`;
+      const counts = await countChangesAgainstPrevious(db, prevDir, newState, ['account_key', 'account_id']);
+      expect(counts).toMatchObject({ rows_inserted: 1, rows_deleted: 1, rows_total: 2 });
+      // Only the key's hash input changed, so the kept row reads as updated — the known one-time effect.
+      expect((counts!.rows_unchanged) + (counts!.rows_updated)).toBe(1);
+      expect(await countChangesAgainstPrevious(db, prevDir, newState, ['account_key'])).toBeNull();
     } finally { await db.close(); }
   });
 });

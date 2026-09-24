@@ -11,11 +11,11 @@ source: |-
     TRY_CAST(aml.date AS DATE)  AS entry_date,
     am.state                    AS state,
     am.move_type                AS move_type,
-    aml.account_id              AS account_id,
-    aml.partner_id              AS partner_id,
-    aml.journal_id              AS journal_id,
-    aml.company_id              AS company_id,
-    aml.currency_id             AS currency_id,
+    clarion_key('account_account', aml.account_id) AS account_key,
+    clarion_key('res_partner', aml.partner_id) AS partner_key,
+    clarion_key('account_journal', aml.journal_id) AS journal_key,
+    clarion_key('res_company', aml.company_id) AS company_key,
+    clarion_key('res_currency', aml.currency_id) AS currency_key,
     aml.debit                   AS debit,
     aml.credit                  AS credit,
     aml.balance                 AS balance
@@ -52,49 +52,49 @@ fields:
     description: entry, out_invoice, in_invoice, … — what kind of document produced this line.
     datatype: VARCHAR
     clarion: { role: attribute, lineage: { dataset: account_move, field: move_type } }
-  - name: account_id
+  - name: account_key
     label: GL account
     description: GL account the line posts to.
     datatype: BIGINT
     clarion:
       role: foreign_key
-      references: { dataset: dim_account, field: account_id }
+      references: { dataset: dim_account, field: account_key }
       technical: true
       lineage: { dataset: account_move_line, field: account_id }
-  - name: partner_id
+  - name: partner_key
     label: Partner
     description: Customer / vendor on the line (when set).
     datatype: BIGINT
     clarion:
       role: foreign_key
-      references: { dataset: dim_partner, field: partner_id }
+      references: { dataset: dim_partner, field: partner_key }
       technical: true
       lineage: { dataset: account_move_line, field: partner_id }
-  - name: journal_id
+  - name: journal_key
     label: Journal
     description: Journal the line is booked in.
     datatype: BIGINT
     clarion:
       role: foreign_key
-      references: { dataset: dim_journal, field: journal_id }
+      references: { dataset: dim_journal, field: journal_key }
       technical: true
       lineage: { dataset: account_move_line, field: journal_id }
-  - name: company_id
+  - name: company_key
     label: Company
     description: Company of the line.
     datatype: BIGINT
     clarion:
       role: foreign_key
-      references: { dataset: dim_company, field: company_id }
+      references: { dataset: dim_company, field: company_key }
       technical: true
       lineage: { dataset: account_move_line, field: company_id }
-  - name: currency_id
+  - name: currency_key
     label: Currency
     description: Currency of the line.
     datatype: BIGINT
     clarion:
       role: foreign_key
-      references: { dataset: dim_currency, field: currency_id }
+      references: { dataset: dim_currency, field: currency_key }
       technical: true
       lineage: { dataset: account_move_line, field: currency_id }
   - name: debit

@@ -5,10 +5,16 @@ label: Units of measure
 description: Quantity units used on order and stock lines.
 source: |-
   SELECT
+    clarion_key('uom_uom', id) AS uom_key,
     id   AS uom_id,
     name AS uom_name
   FROM uom_uom
 fields:
+  - name: uom_key
+    label: Units of measure key
+    description: Stable integer key of the units of measure — clarion_key('uom_uom', uom_id); every measures table computes the same value from its own column.
+    datatype: BIGINT
+    clarion: { role: surrogate_key, technical: true, lineage: { dataset: uom_uom, field: id } }
   - name: uom_id
     label: UoM ID
     description: Odoo unit-of-measure id (primary key).

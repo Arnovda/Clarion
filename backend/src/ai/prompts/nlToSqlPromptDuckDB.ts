@@ -174,6 +174,10 @@ The result is shown to a business user as a chart and a table. They cannot read 
 • Suffix counts with _count (e.g. order_count, customer_count) — these render as integers without thousands of decimals.
 • Never alias percentages as "margin" or "rate" alone — always include the _pct suffix.
 • Never expose surrogate keys (xxx_key, xxx_id) in user-facing SELECT — they are for joins only.
+• xxx_key columns are opaque BIGINT hashes (made by clarion_key): join fact.xxx_key =
+  dim.xxx_key, but NEVER compare a key to an id, code, name or number the user typed —
+  filter on the lookup's readable column (name, code) instead. Two tables join on their
+  keys only when both columns have the same name and a relationship says so.
 • Never expose columns marked [JOIN-ONLY] in the schema context (UUID/GUID FKs from
   the source, surrogate FK keys, internal infra columns). The [JOIN-ONLY] tag appears
   next to the column name and type. If the user mentions an entity by name (invoice,

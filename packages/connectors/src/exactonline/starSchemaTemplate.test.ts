@@ -13,6 +13,7 @@
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { Database } from 'duckdb-async';
+import { registerClarionKey } from '../keys';
 import { EXACT_ONLINE_COLUMN_DOCS, EXACT_ONLINE_ENTITIES, EXACT_ONLINE_STAR_SCHEMA_TEMPLATE } from './catalog';
 import { instantiateStarSchemaTemplate, validateStarSchemaTemplate } from '../starSchema';
 
@@ -102,6 +103,7 @@ describe('EXACT_ONLINE_STAR_SCHEMA_TEMPLATE execution (DuckDB)', () => {
 
   beforeAll(async () => {
     db = await Database.create(':memory:');
+    await registerClarionKey(db);
     for (const [table, ddl] of Object.entries(SOURCE_DDL)) {
       await db.run(`CREATE TABLE "${table}" (${ddl})`);
     }
@@ -144,6 +146,31 @@ describe('EXACT_ONLINE_STAR_SCHEMA_TEMPLATE execution (DuckDB)', () => {
       const rows = await db.all(k.formulaSql);
       expect(rows, `KPI '${k.name}'`).toHaveLength(1);
     }
+  });
+
+  it('every fact key finds its lookup row, and the keys are integers (clarion_key)', async () => {
+    // The lookup rows the seeded invoices point at. `ACC-1` is upper case on
+    // purpose: an endpoint that spells the GUID differently must still join.
+    await db.run(`INSERT INTO Accounts (ID, Code, Name) VALUES ('ACC-1', '1', 'Van Damme BVBA')`);
+    await db.run(`INSERT INTO Items (ID, Code, Description) VALUES ('item-1', 'W1', 'Widget')`);
+    await db.run(`INSERT INTO GLAccounts (ID, Code, Description) VALUES ('gl-1', '700000', 'Sales')`);
+    await db.run(`INSERT INTO Journals (ID, Code, Description) VALUES ('j-1', 'VRK', 'Sales journal')`);
+    await db.run(`INSERT INTO PaymentConditions (ID, Code, Description) VALUES ('pc-1', '14', '14 days')`);
+    for (const t of [...T.dimensions, ...T.facts]) {
+      await db.run(`CREATE OR REPLACE TABLE ${t.tableName} AS ${t.sql}`);
+    }
+    for (const r of T.relationships.filter((x) => x.fromTable === 'fact_sales_invoice_lines')) {
+      const types = (await db.all(`SELECT typeof(${r.fromColumn}) AS a, (SELECT typeof(${r.toColumn}) FROM ${r.toTable} LIMIT 1) AS b FROM ${r.fromTable} LIMIT 1`)) as Array<{ a: string; b: string }>;
+      expect(types[0], `${r.fromTable}.${r.fromColumn}`).toEqual({ a: 'BIGINT', b: 'BIGINT' });
+      const orphans = (await db.all(`
+        SELECT COUNT(*) AS n FROM ${r.fromTable} f
+        WHERE f.${r.fromColumn} IS NOT NULL
+          AND NOT EXISTS (SELECT 1 FROM ${r.toTable} d WHERE d.${r.toColumn} = f.${r.fromColumn})`)) as Array<{ n: bigint }>;
+      expect(Number(orphans[0].n), `${r.fromTable}.${r.fromColumn} → ${r.toTable}.${r.toColumn}`).toBe(0);
+    }
+    const named = (await db.all(`
+      SELECT a.account_name FROM fact_sales_invoice_lines f JOIN dim_account a ON a.account_key = f.invoice_to_key LIMIT 1`)) as Array<{ account_name: string }>;
+    expect(named[0].account_name).toBe('Van Damme BVBA');
   });
 
   it('nets invoices and credit notes without sign-flip logic, and casts ISO dates', async () => {

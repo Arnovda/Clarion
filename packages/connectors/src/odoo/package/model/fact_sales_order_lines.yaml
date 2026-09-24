@@ -10,10 +10,10 @@ source: |-
     so.name                          AS order_reference,
     TRY_CAST(so.date_order AS DATE)  AS order_date,
     so.state                         AS state,
-    so.partner_id                    AS partner_id,
-    sol.product_id                   AS product_id,
-    so.company_id                    AS company_id,
-    so.currency_id                   AS currency_id,
+    clarion_key('res_partner', so.partner_id) AS partner_key,
+    clarion_key('product_product', sol.product_id) AS product_key,
+    clarion_key('res_company', so.company_id) AS company_key,
+    clarion_key('res_currency', so.currency_id) AS currency_key,
     sol.product_uom_qty              AS quantity_ordered,
     sol.qty_delivered                AS quantity_delivered,
     sol.qty_invoiced                 AS quantity_invoiced,
@@ -49,40 +49,40 @@ fields:
     description: draft (quotation), sent, sale (confirmed), done or cancel.
     datatype: VARCHAR
     clarion: { role: attribute, lineage: { dataset: sale_order, field: state } }
-  - name: partner_id
+  - name: partner_key
     label: Customer
     description: Customer on the order.
     datatype: BIGINT
     clarion:
       role: foreign_key
-      references: { dataset: dim_partner, field: partner_id }
+      references: { dataset: dim_partner, field: partner_key }
       technical: true
       lineage: { dataset: sale_order, field: partner_id }
-  - name: product_id
+  - name: product_key
     label: Product
     description: Product on the line.
     datatype: BIGINT
     clarion:
       role: foreign_key
-      references: { dataset: dim_product, field: product_id }
+      references: { dataset: dim_product, field: product_key }
       technical: true
       lineage: { dataset: sale_order_line, field: product_id }
-  - name: company_id
+  - name: company_key
     label: Company
     description: Company of the order.
     datatype: BIGINT
     clarion:
       role: foreign_key
-      references: { dataset: dim_company, field: company_id }
+      references: { dataset: dim_company, field: company_key }
       technical: true
       lineage: { dataset: sale_order, field: company_id }
-  - name: currency_id
+  - name: currency_key
     label: Currency
     description: Currency of the order.
     datatype: BIGINT
     clarion:
       role: foreign_key
-      references: { dataset: dim_currency, field: currency_id }
+      references: { dataset: dim_currency, field: currency_key }
       technical: true
       lineage: { dataset: sale_order, field: currency_id }
   - name: quantity_ordered

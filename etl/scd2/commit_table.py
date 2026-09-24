@@ -312,6 +312,36 @@ def rows_in_table(dt: Any) -> int:
         return -1
 
 
+def schema_mode_for(dt: Any, new_schema: pa.Schema) -> str:
+    """How a refresh may change the table's schema.
+
+    `merge` is the default: it adds a column the transformation started
+    producing. But a column whose TYPE changed is the one thing `merge` gets
+    silently wrong — delta-rs keeps the old type and casts the new values
+    into it (measured 2026-09-24, deltalake 1.6.3: a VARCHAR key rewritten as
+    BIGINT stays VARCHAR, holding the digits as text). That is exactly what a
+    key upgrade does (a GUID/ROW_NUMBER key → the hashed BIGINT
+    `clarion_key`), so the table would keep joining on strings and a fresh
+    table next to it would join on integers.
+
+    A refresh is a full overwrite of the table's rows, so replacing its
+    schema loses nothing that the new state does not already carry. It is
+    used only when a column's type actually changed; everything else keeps
+    the behaviour it had.
+    """
+    from deltalake import Schema
+
+    try:
+        old = {f.name: str(f.type) for f in dt.schema().fields}
+        new = {f.name: str(f.type) for f in Schema.from_arrow(new_schema).fields}
+    except Exception:
+        return "merge"
+    for name, t in new.items():
+        if name in old and old[name] != t:
+            return "overwrite"
+    return "merge"
+
+
 def run_scd1(cfg: dict[str, Any]) -> dict[str, Any]:
     from deltalake import DeltaTable, write_deltalake
 
@@ -375,10 +405,13 @@ def run_scd1(cfg: dict[str, Any]) -> dict[str, Any]:
         counts = dict(supplied) if isinstance(supplied, dict) and all(
             k in supplied for k in ("rows_unchanged", "rows_updated", "rows_inserted", "rows_deleted", "rows_total")
         ) else all_inserted(n_new)
+        schema_mode = schema_mode_for(dt, new_schema)
         write_deltalake(delta_path, new_state_reader(new_state_parquet, business_columns),
-                        mode="overwrite", schema_mode="merge", target_file_size=target_file_size,
+                        mode="overwrite", schema_mode=schema_mode, target_file_size=target_file_size,
                         writer_properties=writer_properties(), storage_options=storage_options)
         write_mode = "overwrite"
+        if schema_mode == "overwrite":
+            result["schema_replaced"] = True
         result["counts_measured"] = supplied is not None
 
     cleanup_msg: Optional[str] = None

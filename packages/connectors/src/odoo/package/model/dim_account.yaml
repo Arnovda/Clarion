@@ -5,12 +5,18 @@ label: GL accounts
 description: The chart of accounts — one row per general-ledger account.
 source: |-
   SELECT
+    clarion_key('account_account', id) AS account_key,
     id           AS account_id,
     code         AS account_code,
     name         AS account_name,
     account_type AS account_type
   FROM account_account
 fields:
+  - name: account_key
+    label: GL account key
+    description: Stable integer key of the gl account — clarion_key('account_account', account_id); every measures table computes the same value from its own column.
+    datatype: BIGINT
+    clarion: { role: surrogate_key, technical: true, lineage: { dataset: account_account, field: id } }
   - name: account_id
     label: Account ID
     description: Odoo GL account id (primary key).

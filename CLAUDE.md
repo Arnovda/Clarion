@@ -31,7 +31,166 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-09-24 (REFRESH PIPELINE: "0 SOURCES, 5 PRODUCTS" SYNCED A
+**Last updated:** 2026-09-24 (STABLE INTEGER KEYS — `clarion_key`. Owner, from
+Reference › Account's SQL tab (`ROW_NUMBER() OVER (ORDER BY a.ID) AS
+account_key`): *"If I click on rebuild of a dimension, then it will alter the
+account key each time… the facts will still point to outdated keys?"* Yes —
+and worse than broken joins: a new account lands mid-order, every key after it
+shifts, and fact rows attach to the NEIGHBOURING customer with no error. First
+answer (the raw GUID as the key, the phase-1 rule) was rejected by the owner on
+join speed; MEASURED on DuckDB 1.4.2 over Parquet, 20M fact rows / 300k
+accounts: GUID join 5.2 s vs 2.4 s for a dense integer (1 thread), key column
+720 MB vs 95 MB; an MD5-derived integer 2.7 s / 160 MB. Then *"build it, and
+inspect all possible consequences… think of everything"* and *"push everything
+to main and to prd and live"*.)
+
+**THE RULE, defined ONCE in `packages/connectors/src/keys.ts`:** a lookup's key
+is `clarion_key('<SourceEntity>', <its natural id>)` — a DuckDB MACRO returning
+a 63-bit BIGINT from MD5 (a fixed algorithm; DuckDB's `hash()` may change
+between versions) — and a fact's foreign key is the SAME call on the fact's OWN
+column. No counter, no state, no build order: either side can be rebuilt alone
+and they still agree. Normalisation inside the macro: entity + id trimmed and
+lower-cased (a GUID in two casings, SQL Server case-insensitive codes, padded
+Exact codes), a whole-number DOUBLE/DECIMAL id written without its fraction,
+NULL / '' → NULL. Composite ids: `concat_ws('|', a, b)`. **Pinned values in
+`keys.test.ts`: changing the macro body re-keys every tenant at once — a new
+versioned function plus a migration, never an edit.** Collisions (1 in ~20M at
+a million rows) fail the dimension's `bk_uniqueness` check, which is BLOCKING —
+a collision refuses the build, it never publishes a wrong join. Two ids that
+differ only in case share a key (same outcome if a source truly has both).
+- **Registered in EVERY warehouse session** (`setupDuckDBForWarehouse`, before
+  the opt-in lockdown): builds, previews, the SQL tab's compile, notebooks, the
+  child query runner. A session without it would fail "Scalar Function
+  clarion_key does not exist" — which the AI repair would then "fix" by
+  writing a different key.
+- **Also exported from keys.ts**: `keyFormOf` / `selectItemFor` /
+  `selectItemSpan` / `replaceSelectItem` (reads a column's select item out of
+  SQL: comments blanked, string literals masked, the LAST `AS col` wins so a
+  CTE that made the key is read when the final SELECT passes it through),
+  `keyRuleViolations(tables, joins, {mode: strict|consistent, onlyTables})`,
+  `changedKeys(before, after)`, `hashedKeyColumns`. dim_date's YYYYMMDD key is
+  exempt everywhere.
+
+**WHERE THE RULE IS ENFORCED — every door that can make or change a key:**
+- **New designs** (`validateBusMatrix` → `busMatrixKeyViolations`, STRICT):
+  every dim surrogate key must be clarion_key, every FK (relationships[] AND
+  the column fk_target metadata the model keeps when it drops relationships)
+  must hash the SAME entity. Replaces the per-table `unstableKeyViolations`
+  call (the function stays for its tests).
+- **The SQL tab** (`PUT /products/tables/:id/sql`, and `/sql/propose` shows it
+  on the diff): CONSISTENT mode — a legacy table keeps saving while its partner
+  is legacy too; switching ONE end of a join to clarion_key, a ROW_NUMBER key,
+  or two ends hashing different entities is 400 `code: key_rule`.
+- **The runner's AI repair**: a repaired SQL that changes how a key is made
+  (`changedKeys`) is rejected and the table fails with its original error —
+  a re-keyed lookup silently matching nothing is worse than a failed build.
+- **Every rebuild door refuses a lone rebuild of a lookup whose key still
+  renumbers** while tables holding its keys are outside the run
+  (`keyHealth.loneRebuildRefusal`): "Rebuild now" (`/tables/:id/run`, 409
+  `unstable_keys`), the subject's Rebuild (`/:id/refresh-start`), scheduled
+  transformations (`processTransformationJob`) and pipeline runs
+  (`runPipelineWorkflow` Phase 2). Running the lookup together with its
+  dependents is allowed. A copy of a shared lookup resolves to its original,
+  so Reference's lookup is guarded by the joins recorded in Sales.
+- **Adding a subject** (`/bus-matrix/extend-start` + the workflow) refuses
+  while any reused lookup is on an old key (409 `upgrade_keys_first`, counts
+  only — it lands in the Build chat); the extension prompt now prints each
+  reused lookup's KEY line (`account_key = clarion_key('accounts', <id>)`).
+
+**AI INSTRUCTIONS updated in one pass:** bus-matrix design + extend
+(`busMatrixPrompt.ts`: keys, facts, the LEFT JOIN rule, the JSON example),
+repair (keep every clarion_key exactly; a missing macro is the session's
+fault), from-scratch, the SQL-tab assistant (`PROPOSE_TRANSFORMATION_SYSTEM`),
+NL→SQL DuckDB (keys are opaque BIGINT hashes — join on them, never filter on
+them) and dashboard generation (never a label, filter or cross-filter key).
+New call label `key_upgrade` (products category).
+
+**TWO SILENT TRAPS FOUND ON THE WRITE PATH, both fixed and tested:**
+1. **Delta `schema_mode="merge"` KEEPS a column's old type and casts the new
+   values into it** (measured, deltalake 1.6.3: a BIGINT key written over a
+   VARCHAR column stays VARCHAR holding digits). `commit_table.py`
+   `schema_mode_for()` uses `overwrite` exactly when a column's type changed
+   (safe: a refresh is a full overwrite of the rows); reports
+   `schema_replaced`. Two pytests, verified RED.
+2. **The change-count diff joined old VARCHAR keys to new BIGINT ones** and
+   DuckDB failed the WHOLE refresh ("Could not convert string '3f2a-guid' to
+   INT64"). `deltaWriter.comparableKeyColumns` diffs only on key columns whose
+   type did not change (the natural id still identifies the row); one-time
+   all-updated spike on the chart, as with the 2026-09-10 hash change.
+
+**TEMPLATES v2** (`exactonline/` + `odoo/package/model/*.yaml`, 27 files,
+`clarion.template.version: 2`): first-generation templates had NO surrogate key
+— facts joined dims on the raw GUID/code. Every dim now has `<x>_key =
+clarion_key('<Entity>', <natural id>)` (BIGINT, surrogate_key, technical) beside
+its natural id; every FK field was renamed `*_id|*_code → *_key`, rewritten to
+clarion_key on the TARGET's entity and re-pointed at `<x>_key` (e.g.
+`invoice_to_key`, `parent_key`, `journal_key` hashing Journals' Code).
+`validateStarSchemaTemplate` enforces the rule (conformance); both template
+suites register the macro and gained a join-integrity test (zero orphans on
+every fact FK, `ACC-1` upper case still joins, keys typeof BIGINT). **A
+template-built workspace moves with a Rebuild**, not the upgrade (adding a key
+column changes the table's shape; saved SQL naming `invoice_to_id` would need
+the new name — production has been on `ai` design mode since 2026-08-18).
+
+**EXISTING WORKSPACES — `services/keyHealth.ts` + `services/keyUpgrade.ts`:**
+- `loadKeyGraph(db, tenantId, connectionId)`: originals only (a copy resolves
+  to its original, by pointer or by name), every join from ANY subject of the
+  tenant, explicit tenant filters. `tableKeyHealth` → hashed / raw / unstable /
+  no-key; `summariseKeyHealth`, `dependentsOf`, `loneRebuildRefusal`,
+  `unstableKeyRefusalForProducts`, `declarationKeyViolations`.
+- **Upgrade keys** — `POST /products/keys/upgrade-start {connectionId,
+  dryRun?}` (admin — it rebuilds every subject; Zod; 409 when a build runs,
+  blockers exist or there is nothing to do), job `mode: 'keys'` on the
+  bus-matrix queue (same SSE / cancel / reattach), `runKeyUpgradeWorkflow`:
+  PLAN (pure `planKeyUpgrade`: a lookup's key → clarion_key on its natural-key
+  column's expression, entity read off the alias; a pointing column in the
+  raw-id form is WRAPPED deterministically; a column that got its key by
+  JOINING the lookup — the ROW_NUMBER era — goes to the model, once, via
+  `AIService.rewriteForeignKeysToClarionKey`) → CHECK before storing anything
+  (guard, compile old and new, SAME column names in the same order, each
+  planned key hashes the planned entity, already-hashed keys unchanged, a
+  model rewrite may never return FEWER rows, the whole set passes the key
+  rule) → STORE in one transaction (SQL, `declared_by = "<email> (key
+  upgrade)"`, deploy cells, key columns' data_type BIGINT on originals AND
+  copies) → REBUILD every subject of the source through `runPipelineWorkflow`
+  → report failed `ref_integrity` checks. One failure anywhere and NOTHING is
+  written.
+- **Build page**: `build-overview` ships `keys {toUpgrade, renumbering,
+  rebuildInstead}` per source (counts only — pinned by test); `KeysPanel`
+  under the source (warn tone when a lookup renumbers, explaining the lone
+  rebuild is blocked; "Upgrade keys…" → confirm → the run panel; analysts see
+  the note, not the button; template-era topics are told to Rebuild).
+- **Not built, deliberately**: an automatic upgrade on deploy (it rebuilds
+  every subject and may call the model — the owner's click), and
+  re-describing old tables' prose.
+
+- Validation: connectors **30 files / 450 passed**, `tsc` clean, dist rebuilt
+  (keys 21 tests incl. the macro in real DuckDB and pinned values; both
+  template suites + join integrity); backend `npm run check` clean, full suite **104 files / 1024 passed / 4 skipped** (sidecar suites ran for real); NEW
+  `key-upgrade.test.ts` (17: guards, dry run, counts-only overview, a bad
+  model rewrite changes nothing ×2, a good one keeps every total, the lookup
+  then rebuilds alone after a new account lands MID-ORDER with the totals
+  unchanged — the owner's scenario, plan/pure + busMatrix strict), NEW
+  `key-guard-cross-subject.test.ts` (4: Reference/Sales copy shape, every
+  door), NEW `template-key-rule.test.ts` (2), `delta-topic-write` +1 (runs the
+  real sidecar); **the same upgrade suite also passed on Delta storage with
+  the real sidecar** (6 Delta writes, BIGINT read back through delta_scan);
+  **guards verified RED** (lone-rebuild refusal removed → 1 fails; entity
+  check removed → 1 fails; Delta merge restored → 1 fails); sidecar pytest
+  28; all TWELVE ratchets + both graph lints green from the repo root;
+  frontend `tsc` clean, `/build` lint-clean, vitest 11/94, `next build` green
+  (`/build` 11.3 kB). KeysPanel NOT render-checked in a browser.
+- **WATCH AFTER DEPLOY**: (1) the first design after deploy must emit
+  clarion_key keys — a `Bus matrix validation failed: … must be clarion_key`
+  means the model ignored the rule (re-run); (2) on the Exact workspace the
+  Build page should show "N lookups renumber…", and "Rebuild now" on Reference
+  › Account is now REFUSED until the upgrade — expected; (3) click Upgrade keys
+  once: the run should end "Keys upgraded: N table(s)…"; a refusal names the
+  table and changes nothing; (4) after it, Delta tables flip VARCHAR→BIGINT
+  (`schema_replaced` in the sidecar result) and each table's change chart shows
+  one all-updated spike.
+
+**Prior last updated:** 2026-09-24 (REFRESH PIPELINE: "0 SOURCES, 5 PRODUCTS" SYNCED A
 SOURCE, FAILED, AND SKIPPED EVERYTHING — owner screenshot of `/pipelines`:
 custom pipeline "Refresh Data Products", Exact Online greyed out on its own
 canvas, yet the run printed `Exact Online: Worker exited with code 1` and then
@@ -514,7 +673,7 @@ HAND — it pinned a state the product never produced.
   NEW problem. Also left: descriptions already edited on a copy before today
   are not merged into the original (no reader uses them now); raw codes such
   as Journal `Type` 90/10/20 are still untranslated.
-- Validation: backend `npm run check` clean; NEW
+- Validation: backend `npm run check` clean, full suite **104 files / 1024 passed / 4 skipped** (sidecar suites ran for real); NEW
   `tests/shared-lookups.test.ts` **11** (link written/idempotent/tenant-bound,
   the migration across tenants, catalog read-through, declaration + refusal
   incl. the unlinked copy, definition edits refused, subject payload, counts,
@@ -2662,7 +2821,7 @@ before it.**
   saved artefacts at once); `ai_verified` via the profiler writing
   `measured` on verified AI relationships (today only `/check` and the
   canvas write it — the rung reads it when present).
-- Validation: backend `npm run check` clean; NEW `tests/ingestion-phase1
+- Validation: backend `npm run check` clean, full suite **104 files / 1024 passed / 4 skipped** (sidecar suites ran for real); NEW `tests/ingestion-phase1
   .test.ts` (17: unstable-key matrix incl. dedupe-CTE and composite-key
   passes; validator carries it for dims and fact FKs; prompts no longer
   recommend ROW_NUMBER (source-level); the five error shapes; the
@@ -2795,7 +2954,7 @@ architecture; all of it was broken or leaking yesterday.**
   baseline of 87 (stale from prior sessions; my first draft added a 75th and
   was folded into the existing lazy `pipelineService` load) — **baseline
   LOWERED 87→74** per the covenant.
-- Validation: backend `npm run check` clean; NEW `tests/ingestion-phase0
+- Validation: backend `npm run check` clean, full suite **104 files / 1024 passed / 4 skipped** (sidecar suites ran for real); NEW `tests/ingestion-phase0
   .test.ts` (16: loader via star schema incl. stubs and no-schema; blocking
   rule matrix; runner throws BEFORE the write; per-product source/upstream
   maps; gate wired ahead of the run; sync invalidation wired and tenant-free;
@@ -3018,7 +3177,7 @@ rows past 12 are silently dropped).
   `repair-broke`. Read `repaired` against `to-model` — that ratio is the
   model's hit rate on the rewrites, and a run of `unresolved` means rule 9
   needs tightening, not that the gate is wrong.
-- Validation: backend `npm run check` clean; NEW `widget-readability.test.ts`
+- Validation: backend `npm run check` clean, full suite **104 files / 1024 passed / 4 skipped** (sidecar suites ran for real); NEW `widget-readability.test.ts`
   (41 — the first run had **3 real failures that were rule-order defects**:
   "Gross margin %" was excluded by the money-word list, so `%` now wins; and
   the scatter rule sat behind a label/value gate a scatter can never pass,
@@ -12595,6 +12754,7 @@ clarion/                              ← on disk: databridge/
 │   └── src/
 │       ├── types.ts                  ← SourceConnector contract (describeEntities, getKnownRelationships, getBusinessKeys, getSourceNotes, …)
 │       ├── syncEngine.ts             ← the ONE ingestion loop (runEntitySync / runReconcile)
+│       ├── keys.ts                   ← THE KEY RULE: clarion_key macro (defined once), key-form reader, keyRuleViolations, changedKeys
 │       ├── starSchema.ts             ← StarSchemaTemplate contract + instantiate/validate
 │       ├── conformance.ts            ← catalog / relationship / template invariants (merge gate)
 │       ├── sourcePackage/            ← THE SOURCE PACKAGE FORMAT (Ossie-aligned YAML, `clarion` extension)
@@ -12710,6 +12870,10 @@ clarion/                              ← on disk: databridge/
 │       │   ├── invites.ts                  ← inviteUser(), shared by tenant admin and operator doors
 │       │   ├── legal.ts                    ← in-force flag, acceptance status + record (P0-7)
 │       │   ├── tenantExport.ts             ← the streamed ZIP export (P0-7)
+│       │   ├── keyHealth.ts                ← how each table makes its keys (hashed/raw/unstable), the lone-rebuild refusal, the SQL-tab check
+│       │   ├── keyUpgrade.ts               ← "Upgrade keys": plan → check → store → rebuild together (mode 'keys')
+│       │   ├── keyHealth.ts                ← how each table makes its keys (hashed/raw/unstable), the lone-rebuild refusal, the SQL-tab check
+│       │   ├── keyUpgrade.ts               ← "Upgrade keys": plan → check → store → rebuild together (mode 'keys')
 │       │   ├── sharedTables.ts             ← a copy of a shared lookup → its original: linkSharedTables (the one writer of source_product_table_id), sharedOriginalOf, originalTableSql
 │       │   ├── tableDeclaration.ts         ← prepareDeclaredSql · openDeclarationSession · compileDeclaredSql (DESCRIBE in a real session) · previewDeclaredSql · describeSessionSchemas · sanitizeSqlError
 │       │   ├── notificationService.ts      ← notify(), notifyTenant()

@@ -13,6 +13,7 @@
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { Database } from 'duckdb-async';
+import { registerClarionKey } from '../keys';
 import { ODOO_ENTITIES, ODOO_STAR_SCHEMA_TEMPLATE } from './catalog';
 import { instantiateStarSchemaTemplate, validateStarSchemaTemplate } from '../starSchema';
 
@@ -97,6 +98,7 @@ describe('ODOO_STAR_SCHEMA_TEMPLATE execution (DuckDB)', () => {
 
   beforeAll(async () => {
     db = await Database.create(':memory:');
+    await registerClarionKey(db);
     for (const [table, ddl] of Object.entries(SOURCE_DDL)) {
       await db.run(`CREATE TABLE ${table} (${ddl})`);
     }
@@ -141,6 +143,30 @@ describe('ODOO_STAR_SCHEMA_TEMPLATE execution (DuckDB)', () => {
       const rows = await db.all(k.formulaSql);
       expect(rows, `KPI '${k.name}'`).toHaveLength(1);
     }
+  });
+
+  it('every fact key finds its lookup row, and the keys are integers (clarion_key)', async () => {
+    await db.run(`INSERT INTO res_partner (id, name) VALUES (10, 'Van Damme BVBA')`);
+    await db.run(`INSERT INTO product_product (id, product_tmpl_id) VALUES (5, 50)`);
+    await db.run(`INSERT INTO product_template (id, name) VALUES (50, 'Widget')`);
+    await db.run(`INSERT INTO account_account (id, code, name) VALUES (7, '700000', 'Sales')`);
+    await db.run(`INSERT INTO account_journal (id, name, code) VALUES (1, 'Customer invoices', 'INV')`);
+    await db.run(`INSERT INTO res_company (id, name) VALUES (1, 'Demo')`);
+    await db.run(`INSERT INTO res_currency (id, name) VALUES (1, 'EUR')`);
+    await db.run(`INSERT INTO account_payment_term (id, name) VALUES (1, '30 days')`);
+    for (const t of [...T.dimensions, ...T.facts]) {
+      await db.run(`CREATE OR REPLACE TABLE ${t.tableName} AS ${t.sql}`);
+    }
+    for (const r of T.relationships.filter((x) => x.fromTable === 'fact_invoice_lines')) {
+      const orphans = (await db.all(`
+        SELECT COUNT(*) AS n FROM ${r.fromTable} f
+        WHERE f.${r.fromColumn} IS NOT NULL
+          AND NOT EXISTS (SELECT 1 FROM ${r.toTable} d WHERE d.${r.toColumn} = f.${r.fromColumn})`)) as Array<{ n: bigint }>;
+      expect(Number(orphans[0].n), `${r.fromTable}.${r.fromColumn} → ${r.toTable}.${r.toColumn}`).toBe(0);
+    }
+    const named = (await db.all(`
+      SELECT p.partner_name, typeof(f.partner_key) AS t FROM fact_invoice_lines f JOIN dim_partner p ON p.partner_key = f.partner_key LIMIT 1`)) as Array<{ partner_name: string; t: string }>;
+    expect(named[0]).toEqual({ partner_name: 'Van Damme BVBA', t: 'BIGINT' });
   });
 
   it('fact_invoice_lines applies the sign convention and drops non-product lines', async () => {

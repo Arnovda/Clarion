@@ -5,10 +5,11 @@ label: Items
 description: Article master data — what is sold, purchased or stocked.
 source: |-
   SELECT
+    clarion_key('Items', ID) AS item_key,
     ID                 AS item_id,
     Code               AS item_code,
     Description        AS item_description,
-    ItemGroup          AS item_group_id,
+    clarion_key('ItemGroups', ItemGroup) AS item_group_key,
     Unit               AS unit_code,
     IsSalesItem        AS is_sales_item,
     IsStockItem        AS is_stock_item,
@@ -16,6 +17,11 @@ source: |-
     CostPriceStandard  AS cost_price_standard
   FROM Items
 fields:
+  - name: item_key
+    label: Item key
+    description: Stable integer key of the item — clarion_key('Items', item_id); every measures table computes the same value from its own column.
+    datatype: BIGINT
+    clarion: { role: surrogate_key, technical: true, lineage: { dataset: Items, field: ID } }
   - name: item_id
     label: Item ID
     description: ExactOnline item GUID (primary key).
@@ -31,13 +37,13 @@ fields:
     description: Description of the article.
     datatype: VARCHAR
     clarion: { role: attribute, lineage: { dataset: Items, field: Description } }
-  - name: item_group_id
+  - name: item_group_key
     label: Item group
     description: Reporting group of the item.
-    datatype: VARCHAR
+    datatype: BIGINT
     clarion:
       role: foreign_key
-      references: { dataset: dim_item_group, field: item_group_id }
+      references: { dataset: dim_item_group, field: item_group_key }
       technical: true
       lineage: { dataset: Items, field: ItemGroup }
   - name: unit_code

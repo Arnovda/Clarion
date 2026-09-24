@@ -12,13 +12,13 @@ source: |-
     am.state                               AS state,
     TRY_CAST(am.invoice_date AS DATE)      AS invoice_date,
     TRY_CAST(am.invoice_date_due AS DATE)  AS invoice_due_date,
-    am.partner_id                          AS partner_id,
-    aml.product_id                         AS product_id,
-    aml.account_id                         AS account_id,
-    am.journal_id                          AS journal_id,
-    am.company_id                          AS company_id,
-    am.currency_id                         AS currency_id,
-    am.invoice_payment_term_id             AS payment_term_id,
+    clarion_key('res_partner', am.partner_id) AS partner_key,
+    clarion_key('product_product', aml.product_id) AS product_key,
+    clarion_key('account_account', aml.account_id) AS account_key,
+    clarion_key('account_journal', am.journal_id) AS journal_key,
+    clarion_key('res_company', am.company_id) AS company_key,
+    clarion_key('res_currency', am.currency_id) AS currency_key,
+    clarion_key('account_payment_term', am.invoice_payment_term_id) AS payment_term_key,
     aml.quantity                           AS quantity,
     aml.price_unit                         AS price_unit,
     aml.price_subtotal                     AS amount_untaxed,
@@ -64,67 +64,67 @@ fields:
     description: Payment due date.
     datatype: DATE
     clarion: { role: attribute, lineage: { dataset: account_move, field: invoice_date_due } }
-  - name: partner_id
+  - name: partner_key
     label: Customer / vendor
     description: Partner billed or billing.
     datatype: BIGINT
     clarion:
       role: foreign_key
-      references: { dataset: dim_partner, field: partner_id }
+      references: { dataset: dim_partner, field: partner_key }
       technical: true
       lineage: { dataset: account_move, field: partner_id }
-  - name: product_id
+  - name: product_key
     label: Product
     description: Product on the line (when set).
     datatype: BIGINT
     clarion:
       role: foreign_key
-      references: { dataset: dim_product, field: product_id }
+      references: { dataset: dim_product, field: product_key }
       technical: true
       lineage: { dataset: account_move_line, field: product_id }
-  - name: account_id
+  - name: account_key
     label: GL account
     description: GL account the line posts to.
     datatype: BIGINT
     clarion:
       role: foreign_key
-      references: { dataset: dim_account, field: account_id }
+      references: { dataset: dim_account, field: account_key }
       technical: true
       lineage: { dataset: account_move_line, field: account_id }
-  - name: journal_id
+  - name: journal_key
     label: Journal
     description: Journal the invoice is booked in.
     datatype: BIGINT
     clarion:
       role: foreign_key
-      references: { dataset: dim_journal, field: journal_id }
+      references: { dataset: dim_journal, field: journal_key }
       technical: true
       lineage: { dataset: account_move, field: journal_id }
-  - name: company_id
+  - name: company_key
     label: Company
     description: Company the invoice belongs to.
     datatype: BIGINT
     clarion:
       role: foreign_key
-      references: { dataset: dim_company, field: company_id }
+      references: { dataset: dim_company, field: company_key }
       technical: true
       lineage: { dataset: account_move, field: company_id }
-  - name: currency_id
+  - name: currency_key
     label: Currency
     description: Currency of the invoice.
     datatype: BIGINT
     clarion:
       role: foreign_key
-      references: { dataset: dim_currency, field: currency_id }
+      references: { dataset: dim_currency, field: currency_key }
       technical: true
       lineage: { dataset: account_move, field: currency_id }
-  - name: payment_term_id
+  - name: payment_term_key
     label: Payment term
     description: Payment term on the invoice.
     datatype: BIGINT
     clarion:
       role: foreign_key
-      references: { dataset: dim_payment_term, field: payment_term_id }
+      references: { dataset: dim_payment_term, field: payment_term_key }
       technical: true
       lineage: { dataset: account_move, field: invoice_payment_term_id }
   - name: quantity

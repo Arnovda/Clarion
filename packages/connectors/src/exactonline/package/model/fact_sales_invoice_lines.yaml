@@ -12,12 +12,12 @@ source: |-
     TRY_CAST(si.DueDate AS DATE)        AS due_date,
     si.StatusDescription                AS status,
     si.TypeDescription                  AS document_type,
-    si.InvoiceTo                        AS invoice_to_id,
-    si.OrderedBy                        AS ordered_by_id,
-    sil.Item                            AS item_id,
-    sil.GLAccount                       AS gl_account_id,
-    si.Journal                          AS journal_code,
-    si.PaymentCondition                 AS payment_condition_code,
+    clarion_key('Accounts', si.InvoiceTo) AS invoice_to_key,
+    clarion_key('Accounts', si.OrderedBy) AS ordered_by_key,
+    clarion_key('Items', sil.Item) AS item_key,
+    clarion_key('GLAccounts', sil.GLAccount) AS gl_account_key,
+    clarion_key('Journals', si.Journal) AS journal_key,
+    clarion_key('PaymentConditions', si.PaymentCondition) AS payment_condition_key,
     si.Currency                         AS currency,
     sil.Description                     AS line_description,
     sil.Quantity                        AS quantity,
@@ -63,58 +63,58 @@ fields:
     description: Sales invoice or credit note.
     datatype: VARCHAR
     clarion: { role: attribute, lineage: { dataset: SalesInvoices, field: TypeDescription } }
-  - name: invoice_to_id
+  - name: invoice_to_key
     label: Invoiced customer
     description: Customer being billed.
-    datatype: VARCHAR
+    datatype: BIGINT
     clarion:
       role: foreign_key
-      references: { dataset: dim_account, field: account_id }
+      references: { dataset: dim_account, field: account_key }
       technical: true
       lineage: { dataset: SalesInvoices, field: InvoiceTo }
-  - name: ordered_by_id
+  - name: ordered_by_key
     label: Ordering customer
     description: Customer who placed the order.
-    datatype: VARCHAR
+    datatype: BIGINT
     clarion:
       role: foreign_key
-      references: { dataset: dim_account, field: account_id }
+      references: { dataset: dim_account, field: account_key }
       technical: true
       lineage: { dataset: SalesInvoices, field: OrderedBy }
-  - name: item_id
+  - name: item_key
     label: Item
     description: Item on the line (when set).
-    datatype: VARCHAR
+    datatype: BIGINT
     clarion:
       role: foreign_key
-      references: { dataset: dim_item, field: item_id }
+      references: { dataset: dim_item, field: item_key }
       technical: true
       lineage: { dataset: SalesInvoiceLines, field: Item }
-  - name: gl_account_id
+  - name: gl_account_key
     label: GL account
     description: Revenue GL account of the line.
-    datatype: VARCHAR
+    datatype: BIGINT
     clarion:
       role: foreign_key
-      references: { dataset: dim_gl_account, field: gl_account_id }
+      references: { dataset: dim_gl_account, field: gl_account_key }
       technical: true
       lineage: { dataset: SalesInvoiceLines, field: GLAccount }
-  - name: journal_code
+  - name: journal_key
     label: Journal
     description: Sales journal the invoice is booked in.
-    datatype: VARCHAR
+    datatype: BIGINT
     clarion:
       role: foreign_key
-      references: { dataset: dim_journal, field: journal_code }
+      references: { dataset: dim_journal, field: journal_key }
       technical: true
       lineage: { dataset: SalesInvoices, field: Journal }
-  - name: payment_condition_code
+  - name: payment_condition_key
     label: Payment condition
     description: Payment term of the invoice.
-    datatype: VARCHAR
+    datatype: BIGINT
     clarion:
       role: foreign_key
-      references: { dataset: dim_payment_condition, field: payment_condition_code }
+      references: { dataset: dim_payment_condition, field: payment_condition_key }
       technical: true
       lineage: { dataset: SalesInvoices, field: PaymentCondition }
   - name: currency

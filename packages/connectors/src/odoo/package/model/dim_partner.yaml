@@ -5,6 +5,7 @@ label: Partners
 description: Customers, vendors and contacts — one row per Odoo partner.
 source: |-
   SELECT
+    clarion_key('res_partner', id) AS partner_key,
     id         AS partner_id,
     name       AS partner_name,
     email,
@@ -14,10 +15,15 @@ source: |-
     vat        AS vat_number,
     is_company,
     active,
-    parent_id,
-    company_id
+    clarion_key('res_partner', parent_id) AS parent_key,
+    clarion_key('res_company', company_id) AS company_key
   FROM res_partner
 fields:
+  - name: partner_key
+    label: Partner key
+    description: Stable integer key of the partner — clarion_key('res_partner', partner_id); every measures table computes the same value from its own column.
+    datatype: BIGINT
+    clarion: { role: surrogate_key, technical: true, lineage: { dataset: res_partner, field: id } }
   - name: partner_id
     label: Partner ID
     description: Odoo partner id (primary key).
@@ -63,22 +69,22 @@ fields:
     description: False when the partner is archived.
     datatype: BOOLEAN
     clarion: { role: attribute, lineage: { dataset: res_partner, field: active } }
-  - name: parent_id
+  - name: parent_key
     label: Parent partner
     description: Parent contact (e.g. the company a person works at).
     datatype: BIGINT
     clarion:
       role: foreign_key
-      references: { dataset: dim_partner, field: partner_id }
+      references: { dataset: dim_partner, field: partner_key }
       technical: true
       lineage: { dataset: res_partner, field: parent_id }
-  - name: company_id
+  - name: company_key
     label: Company
     description: Internal company this partner record belongs to.
     datatype: BIGINT
     clarion:
       role: foreign_key
-      references: { dataset: dim_company, field: company_id }
+      references: { dataset: dim_company, field: company_key }
       technical: true
       lineage: { dataset: res_partner, field: company_id }
 clarion: { kind: dimension, product: Core dimensions, sourceEntities: [ res_partner ] }

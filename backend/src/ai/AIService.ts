@@ -2449,7 +2449,7 @@ Common failure patterns and how to fix them:
 
 Hard rules:
 - Reference ONLY columns that appear in the AVAILABLE SCHEMAS section. If a column is not listed there, you may not reference it.
-- Preserve the table's intended grain and its keys. Keys are STABLE: a dim's key is its natural key carried unchanged, a fact's FK is the same value computed from the fact's own source column. Never introduce ROW_NUMBER(), UUID() or RANDOM() into a key — a key that renumbers per run is refused.
+- Preserve the table's intended grain and its keys EXACTLY. Keys are made by the platform function clarion_key('<Entity>', <source id>): keep every clarion_key(...) call as it is — same entity literal, same column name — and never replace it with a raw id, ROW_NUMBER(), UUID() or RANDOM(). If clarion_key itself is reported missing, output the SQL unchanged (it is a platform function; the session is at fault, not the SQL). A repair that changes how a key is made is refused.
 - Keep TRY_CAST for type conversions; never use plain CAST.
 - Output a single self-contained SELECT statement. No semicolons at the end. No comments.`;
 
@@ -2466,8 +2466,8 @@ Your job: given a table name, its role (fact / dimension / bridge), and the AVAI
 
 Hard rules:
 - Reference ONLY columns that appear in the AVAILABLE SCHEMAS section.
-- For dimensions: the key is the NATURAL key carried unchanged — <natural_id> AS <table>_key (never ROW_NUMBER()/UUID()/RANDOM(); a key that renumbers per run is refused). Include the natural key column + descriptive attributes.
-- For facts: foreign keys are the same natural-key value computed from the fact's own column — TRY_CAST(f.<col> AS VARCHAR) AS <dim>_key (NULL when missing; date keys use COALESCE(..., -1)). Plus measures.
+- For dimensions: the key is a stable integer from the platform function clarion_key — clarion_key('<SourceEntity>', <the row's own id>) AS <entity>_key, where <SourceEntity> is the source table the rows come from, as a quoted literal (never ROW_NUMBER()/UUID()/RANDOM() or the raw id). Include the raw id as its own column + descriptive attributes.
+- For facts: every foreign key is the SAME call on the fact's own column — clarion_key('<the dim's SourceEntity>', f.<col>) AS <dim>_key (NULL when missing); date keys are TRY_CAST(strftime(TRY_CAST(d AS DATE), '%Y%m%d') AS INTEGER) with COALESCE(..., -1). Never join a dim to obtain a key. Plus measures.
 - Use TRY_CAST for type conversions; never plain CAST.
 - Output a single self-contained SELECT statement starting with the keyword SELECT or WITH. No semicolons. No comments. No prose.
 - If you genuinely cannot infer the table from the schemas, output exactly the keyword SELECT followed by a clear FROM clause referencing the most relevant schema — don't apologise; the platform handles the empty-result case.`;
@@ -2524,6 +2524,7 @@ Rules:
 - Keep the table's grain (what one row is) unless the request changes it — and say so in the summary when it does.
 - Keep it a single read-only SELECT (a leading WITH is fine). Never emit INSERT, UPDATE, DELETE, CREATE, COPY, ATTACH, or any function that reads a file or a URI.
 - If the request cannot be done with the columns available, return the ORIGINAL SQL unchanged and say why in the summary.
+- KEYS: keys are made by the platform function clarion_key('<Entity>', <source id>) — a stable integer. Keep every clarion_key(...) call exactly as it is (same entity literal, same column name) unless the user explicitly asks to change a key; a new lookup key or a new foreign key uses clarion_key too, with the entity the lookup it points at uses. Never make a key with ROW_NUMBER(), UUID(), RANDOM() or a raw id — the save is refused, because every table that joins this one would stop matching.
 - No trailing semicolon. No SQL comments.`;
 
 const ProposeTransformationSchema = z.object({
@@ -2562,6 +2563,68 @@ Return the JSON object.`;
   return {
     sql: parsed.sql.replace(/^```(?:sql)?\s*\n?/i, '').replace(/\n?```\s*$/i, '').trim(),
     summary: parsed.summary.trim(),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Key upgrade — rewrite a table's foreign keys onto clarion_key (2026-09-24).
+// Used ONLY by services/keyUpgrade.ts for tables that obtained a key by
+// joining the lookup (the pre-clarion_key design): the new key must be
+// computed from this table's OWN source column, and that column can only be
+// read off the SQL. Everything the model returns is checked in code before
+// it is stored (guard, compile, same columns in the same order, each key now
+// clarion_key on the right entity, no row lost).
+// ---------------------------------------------------------------------------
+const KEY_UPGRADE_SYSTEM = `You rewrite the SELECT that builds ONE table of a DuckDB data warehouse so that its foreign keys use the platform function clarion_key. Output ONLY a JSON object: {"sql": "<the full rewritten SELECT>", "notes": "<one sentence>"}.
+
+clarion_key('<Entity>', <id>) returns a stable BIGINT for a source row id. A lookup's key is clarion_key('<Entity>', <its source id>); a table pointing at that lookup must compute the SAME call on ITS OWN column holding the same id — no join to the lookup is needed to obtain a key.
+
+Rules:
+- For each listed column: replace its expression with clarion_key('<the given entity>', <expr>), where <expr> is this table's own source-column expression holding the id that the lookup's natural key column holds. Today the SQL usually finds that id in a JOIN condition (e.g. JOIN dim_account da ON da.account_id = l.Account → the id is l.Account).
+- A JOIN to a lookup that existed ONLY to fetch the key must be removed. A LEFT JOIN that also supplies other selected columns stays, but its ON condition must join on the natural id column (da.account_id = l.Account), never on the key.
+- An INNER JOIN to a lookup that dropped rows must not be kept for the key alone — the rewrite must never lose rows.
+- Keep EVERY other output column exactly: same names, same order, same expressions. Keep the grain, filters and GROUP BY.
+- Keep TRY_CAST where the SQL uses it. A single read-only SELECT (a leading WITH is fine). No trailing semicolon, no comments.
+- If a listed column's id cannot be found in the SQL or the available schemas, return the ORIGINAL SQL unchanged and say why in notes.`;
+
+const KeyUpgradeSchema = z.object({
+  sql: z.string().min(1),
+  notes: z.string().default(''),
+});
+
+export async function rewriteForeignKeysToClarionKey(args: {
+  tableName: string;
+  tableRole: string;
+  currentSql: string;
+  keys: Array<{ column: string; entity: string; lookupTable: string; lookupNaturalColumn: string | null; lookupKeyColumn: string }>;
+  availableSchemas: string;
+}): Promise<{ sql: string; notes: string }> {
+  const keyLines = args.keys.map((k) =>
+    `- ${k.column} → points at ${k.lookupTable}.${k.lookupKeyColumn}; use clarion_key('${k.entity}', <this table's own id column>)`
+    + (k.lookupNaturalColumn ? ` — the id ${k.lookupTable}.${k.lookupNaturalColumn} holds` : ''),
+  ).join('\n');
+  const userPrompt = `Table: ${args.tableRole} "${args.tableName}"
+
+━━━ COLUMNS TO MOVE ONTO clarion_key ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+${keyLines}
+
+━━━ CURRENT SQL ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+${args.currentSql.trim()}
+
+━━━ AVAILABLE SCHEMAS (these are the only tables/views/columns you may reference) ━━━
+${args.availableSchemas || '(nothing registered)'}
+
+Return the JSON object.`;
+  const raw = await callClaude(KEY_UPGRADE_SYSTEM, userPrompt, {
+    model: MODEL,
+    maxTokens: 6000,
+    callLabel: 'key_upgrade',
+    temperature: 0,
+  });
+  const parsed = parseJson(raw, KeyUpgradeSchema);
+  return {
+    sql: parsed.sql.replace(/^```(?:sql)?\s*\n?/i, '').replace(/\n?```\s*$/i, '').trim(),
+    notes: parsed.notes.trim(),
   };
 }
 

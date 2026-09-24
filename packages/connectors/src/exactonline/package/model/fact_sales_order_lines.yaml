@@ -10,9 +10,9 @@ source: |-
     so.OrderNumber                    AS order_number,
     TRY_CAST(so.OrderDate AS DATE)    AS order_date,
     so.StatusDescription              AS status,
-    so.OrderedBy                      AS ordered_by_id,
-    so.InvoiceTo                      AS invoice_to_id,
-    sol.Item                          AS item_id,
+    clarion_key('Accounts', so.OrderedBy) AS ordered_by_key,
+    clarion_key('Accounts', so.InvoiceTo) AS invoice_to_key,
+    clarion_key('Items', sol.Item) AS item_key,
     so.Currency                       AS currency,
     sol.Description                   AS line_description,
     sol.Quantity                      AS quantity,
@@ -49,31 +49,31 @@ fields:
     description: Order status (open, partial, complete, cancelled).
     datatype: VARCHAR
     clarion: { role: attribute, lineage: { dataset: SalesOrders, field: StatusDescription } }
-  - name: ordered_by_id
+  - name: ordered_by_key
     label: Ordering customer
     description: Customer who placed the order.
-    datatype: VARCHAR
+    datatype: BIGINT
     clarion:
       role: foreign_key
-      references: { dataset: dim_account, field: account_id }
+      references: { dataset: dim_account, field: account_key }
       technical: true
       lineage: { dataset: SalesOrders, field: OrderedBy }
-  - name: invoice_to_id
+  - name: invoice_to_key
     label: Invoiced customer
     description: Customer who will be billed.
-    datatype: VARCHAR
+    datatype: BIGINT
     clarion:
       role: foreign_key
-      references: { dataset: dim_account, field: account_id }
+      references: { dataset: dim_account, field: account_key }
       technical: true
       lineage: { dataset: SalesOrders, field: InvoiceTo }
-  - name: item_id
+  - name: item_key
     label: Item
     description: Item on the line.
-    datatype: VARCHAR
+    datatype: BIGINT
     clarion:
       role: foreign_key
-      references: { dataset: dim_item, field: item_id }
+      references: { dataset: dim_item, field: item_key }
       technical: true
       lineage: { dataset: SalesOrderLines, field: Item }
   - name: currency

@@ -6,6 +6,7 @@
  * surface that opens its own DuckDB session.
  */
 
+import { registerClarionKey } from '@databridge/connectors/dist/keys';
 import os from 'os';
 import type { Database } from 'duckdb-async';
 import { logger as rootLogger } from '../../utils/logger';
@@ -187,6 +188,16 @@ export async function setupDuckDBForWarehouse(
   // OOM-killing the process. All env-tunable; defaults are conservative and
   // safe for a 1 GB replica.
   await applyResourceGuardrails(db);
+
+  // The key rule's one function (`clarion_key`, packages/connectors/src/keys.ts).
+  // Every product table's surrogate key and every fact foreign key is built
+  // with it, so every session that BUILDS, PREVIEWS or COMPILES product SQL
+  // must have it — a session without it fails with "Scalar Function
+  // clarion_key does not exist", which the AI repair would then happily
+  // "fix" by writing a different key. Registered here because every warehouse
+  // session goes through this function; read sessions carry it too (cheap,
+  // and a notebook or Ask AI query may compute a key to join on).
+  await registerClarionKey(db);
 
   // Delta extension is needed for both modes — source connector
   // ingestion writes Delta, even when the warehouse root is local.

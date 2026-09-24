@@ -250,6 +250,26 @@ def test_refresh_with_a_new_column_widens_the_schema(tmp_path: Path) -> None:
     assert "w" in _read(str(table)).column_names
 
 
+def test_refresh_with_a_changed_column_type_replaces_the_type(tmp_path: Path) -> None:
+    # A key upgrade rewrites `account_key` from a GUID string to the hashed
+    # BIGINT. `schema_mode="merge"` would keep the column VARCHAR and store
+    # the digits as text — silently. The type must follow the new state.
+    table = tmp_path / "dim_x"
+    _run({"delta_path": str(table), "new_state_parquet": _state(tmp_path, "s1.parquet", {"id": [1, 2], "account_key": ["3f2a", "9c1e"]}), "business_columns": ["id", "account_key"], "mode": "scd1"})
+    r = _run({"delta_path": str(table), "new_state_parquet": _state(tmp_path, "s2.parquet", {"id": [1, 2], "account_key": pa.array([111, 222], pa.int64())}), "business_columns": ["id", "account_key"], "mode": "scd1"})
+    assert r["status"] == "ok" and r.get("schema_replaced") is True
+    out = _read(str(table))
+    assert pa.types.is_integer(out.schema.field("account_key").type)
+    assert out.column("account_key").to_pylist() == [111, 222]
+
+
+def test_refresh_with_the_same_types_keeps_merging(tmp_path: Path) -> None:
+    table = tmp_path / "dim_x"
+    _run({"delta_path": str(table), "new_state_parquet": _state(tmp_path, "s1.parquet", {"id": [1], "v": ["a"]}), "business_columns": ["id", "v"], "mode": "scd1"})
+    r = _run({"delta_path": str(table), "new_state_parquet": _state(tmp_path, "s2.parquet", {"id": [1], "v": ["b"]}), "business_columns": ["id", "v"], "mode": "scd1"})
+    assert r["status"] == "ok" and "schema_replaced" not in r
+
+
 def test_zero_row_first_run_creates_an_empty_table_with_the_schema(tmp_path: Path) -> None:
     table = tmp_path / "fact_x"
     p = _write_parquet(tmp_path / "empty.parquet", pa.table({"id": pa.array([], pa.int64()), "v": pa.array([], pa.string())}))

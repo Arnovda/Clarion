@@ -21,7 +21,7 @@ clarion:
     - Subscription
     - System
   template:
-    version: 1
+    version: 2
     products:
       - name: Core dimensions
         description: "Conformed dimensions shared by every ExactOnline data product: accounts, items, GL accounts, journals, payment conditions."

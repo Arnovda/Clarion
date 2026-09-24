@@ -5,17 +5,23 @@ label: Products
 description: Sellable / purchasable product variants with their template attributes.
 source: |-
   SELECT
+    clarion_key('product_product', pp.id) AS product_key,
     pp.id           AS product_id,
     pt.name         AS product_name,
     pp.default_code AS internal_reference,
     pt.type         AS product_type,
-    pt.categ_id     AS category_id,
-    pt.uom_id       AS uom_id,
+    clarion_key('product_category', pt.categ_id) AS category_key,
+    clarion_key('uom_uom', pt.uom_id) AS uom_key,
     pt.list_price   AS list_price,
     pp.active       AS active
   FROM product_product pp
   JOIN product_template pt ON pp.product_tmpl_id = pt.id
 fields:
+  - name: product_key
+    label: Product key
+    description: Stable integer key of the product — clarion_key('product_product', product_id); every measures table computes the same value from its own column.
+    datatype: BIGINT
+    clarion: { role: surrogate_key, technical: true, lineage: { dataset: product_product, field: id } }
   - name: product_id
     label: Product ID
     description: Odoo product variant id (primary key).
@@ -36,22 +42,22 @@ fields:
     description: Goods, service or consumable classification.
     datatype: VARCHAR
     clarion: { role: attribute, lineage: { dataset: product_template, field: type } }
-  - name: category_id
+  - name: category_key
     label: Category
     description: Product category.
     datatype: BIGINT
     clarion:
       role: foreign_key
-      references: { dataset: dim_product_category, field: category_id }
+      references: { dataset: dim_product_category, field: product_category_key }
       technical: true
       lineage: { dataset: product_template, field: categ_id }
-  - name: uom_id
+  - name: uom_key
     label: Unit of measure
     description: Default unit of measure.
     datatype: BIGINT
     clarion:
       role: foreign_key
-      references: { dataset: dim_uom, field: uom_id }
+      references: { dataset: dim_uom, field: uom_key }
       technical: true
       lineage: { dataset: product_template, field: uom_id }
   - name: list_price

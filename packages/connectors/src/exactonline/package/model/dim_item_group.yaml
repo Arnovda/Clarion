@@ -5,11 +5,17 @@ label: Item groups
 description: Item categorisation used for reporting groupings.
 source: |-
   SELECT
+    clarion_key('ItemGroups', ID) AS item_group_key,
     ID          AS item_group_id,
     Code        AS item_group_code,
     Description AS item_group_description
   FROM ItemGroups
 fields:
+  - name: item_group_key
+    label: Item group key
+    description: Stable integer key of the item group — clarion_key('ItemGroups', item_group_id); every measures table computes the same value from its own column.
+    datatype: BIGINT
+    clarion: { role: surrogate_key, technical: true, lineage: { dataset: ItemGroups, field: ID } }
   - name: item_group_id
     label: Item group ID
     description: ExactOnline item group GUID (primary key).

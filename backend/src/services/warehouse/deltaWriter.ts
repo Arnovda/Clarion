@@ -189,8 +189,28 @@ export function rowHashExpression(businessColumns: readonly string[], presentCol
 }
 
 async function describeSelect(db: Database, selectSql: string): Promise<string[]> {
-  const rows = await db.all(`DESCRIBE ${selectSql}`) as Array<{ column_name: string }>;
-  return rows.map((r) => r.column_name);
+  return [...(await describeTypes(db, selectSql)).keys()];
+}
+
+async function describeTypes(db: Database, selectSql: string): Promise<Map<string, string>> {
+  const rows = await db.all(`DESCRIBE ${selectSql}`) as Array<{ column_name: string; column_type: string }>;
+  return new Map(rows.map((r) => [String(r.column_name), String(r.column_type)]));
+}
+
+/**
+ * The key columns a diff can join on: present on both sides WITH THE SAME
+ * TYPE. A key whose type changed between refreshes — a GUID/ROW_NUMBER key
+ * upgraded to the hashed BIGINT `clarion_key` — cannot be compared: DuckDB
+ * casts the VARCHAR side to BIGINT and the whole refresh fails on the first
+ * GUID ("Could not convert string … to INT64"). Such a column is left out;
+ * the natural key beside it (unchanged) still identifies the row. Pure.
+ */
+export function comparableKeyColumns(
+  keys: readonly string[],
+  previous: ReadonlyMap<string, string>,
+  next: ReadonlyMap<string, string>,
+): string[] {
+  return keys.filter((k) => previous.has(k) && next.has(k) && previous.get(k) === next.get(k));
 }
 
 /**
@@ -218,10 +238,12 @@ export async function countChangesAgainstPrevious(
     return null;
   }
   try {
-    const prevCols = new Set(await describeSelect(db, `SELECT * FROM ${q(view)}`));
-    if (!prevCols.has(ROW_HASH_COL) || businessKeyColumns.some((k) => !prevCols.has(k))) return null;
-    const keys = businessKeyColumns.map(q).join(', ');
-    const joinOn = businessKeyColumns.map((k) => `e.${q(k)} IS NOT DISTINCT FROM n.${q(k)}`).join(' AND ');
+    const prevTypes = await describeTypes(db, `SELECT * FROM ${q(view)}`);
+    if (!prevTypes.has(ROW_HASH_COL) || businessKeyColumns.some((k) => !prevTypes.has(k))) return null;
+    const keyColumns = comparableKeyColumns(businessKeyColumns, prevTypes, await describeTypes(db, `(${selectSql})`));
+    if (keyColumns.length === 0) return null;
+    const keys = keyColumns.map(q).join(', ');
+    const joinOn = keyColumns.map((k) => `e.${q(k)} IS NOT DISTINCT FROM n.${q(k)}`).join(' AND ');
     const rows = await db.all(`
       WITH e AS (SELECT ${keys}, ${q(ROW_HASH_COL)} AS h_old FROM ${q(view)}),
            n AS (SELECT ${keys}, ${q(ROW_HASH_COL)} AS h_new FROM (${selectSql}))

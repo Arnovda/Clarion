@@ -215,6 +215,9 @@ Drill-down SQL: use {{drill_value}} as the clicked value placeholder.
 
 The dashboard is consumed by business users. They cannot read codes, SKUs, or surrogate keys.
 Every "label" column (the chart Y-axis / X-axis / category) MUST be a human-readable name.
+On the product layer, xxx_key columns are opaque BIGINT hashes: use them ONLY to join a
+fact to its lookup (f.account_key = a.account_key) — never as a label, a filter value or a
+cross-filter key.
 
 • ALWAYS use the human-readable name column as the label, NEVER the code column.
   - GOOD: SELECT da.naam AS label, ...           (product name)

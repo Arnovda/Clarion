@@ -27,9 +27,16 @@
  *   • reference source tables by their BARE entity name (`FROM account_move_line`)
  *     — the runner registers a DuckDB view per synced entity under exactly
  *     that name. No dbt macros.
- *   • facts carry natural FK id columns; they never JOIN dimension tables,
- *     so a dropped dimension can't break a surviving fact.
+ *   • every dimension has a surrogate key `<x>_key = clarion_key('<Entity>',
+ *     <natural key>)` (a stable BIGINT, keys.ts), and a fact's foreign key is
+ *     the same call on the fact's OWN column — facts never JOIN dimension
+ *     tables, so a dropped dimension can't break a surviving fact and either
+ *     side can be rebuilt alone. `validateStarSchemaTemplate` enforces it.
+ *   • `clarion_key` is a platform macro registered in every build session;
+ *     a test that runs template SQL must `registerClarionKey(db)` first.
  */
+
+import { keyFormOf, keyRuleViolations } from './keys';
 
 // ─── Template types ─────────────────────────────────────────────────────────
 
@@ -254,6 +261,30 @@ export function validateStarSchemaTemplate(
     const to = allTables.find((t) => t.tableName === r.toTable);
     if (to && !to.columns.some((c) => c.name === r.toColumn)) {
       errs.push(`${p}: toColumn not declared on ${r.toTable}`);
+    }
+  }
+
+  // The key rule (keys.ts): every lookup key is clarion_key('<Entity>', id)
+  // and every column pointing at one hashes the same entity — so a template
+  // can never ship keys that renumber, or two ends that never match.
+  errs.push(...keyRuleViolations(
+    [
+      ...template.dimensions.map((d) => ({ d, role: 'dimension' })),
+      ...template.facts.map((d) => ({ d, role: 'fact' })),
+    ].map(({ d, role }) => ({
+      table_name: d.tableName,
+      table_role: role,
+      transformation_sql: d.sql,
+      columns: d.columns.map((c) => ({ column_name: c.name, column_role: c.role })),
+    })),
+    template.relationships.map((r) => ({ from_table: r.fromTable, from_column: r.fromColumn, to_table: r.toTable, to_column: r.toColumn })),
+    { mode: 'strict' },
+  ).map((e) => `key rule: ${e}`));
+  for (const t of allTables) {
+    for (const c of t.columns) {
+      if ((c.role === 'surrogate_key' || c.role === 'foreign_key') && keyFormOf(t.sql, c.name).kind === 'hashed' && c.dataType.toUpperCase() !== 'BIGINT') {
+        errs.push(`table '${t.tableName}': key column '${c.name}' is clarion_key(...) so its dataType must be BIGINT (got ${c.dataType})`);
+      }
     }
   }
 
