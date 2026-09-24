@@ -64,6 +64,8 @@ export interface PTTable {
       these the join surface is empty and edges land on card edges instead
       of named fields. Optional: older payloads simply lack the list. */
   join_columns?: PTColumn[];
+  /** Set on a table another subject holds (a join recorded there): its subject's name. */
+  subject_name?: string;
 }
 
 export interface PTRelationship {
@@ -187,6 +189,7 @@ function SchemaNodeImpl({ data, selected }: NodeProps<SchemaNodeData>) {
             </div>
             <div className="truncate text-[11px] leading-tight text-muted">
               {roleWord(table.table_role, isAnchor)}
+              {table.subject_name ? ` · in ${table.subject_name}` : ''}
               {' · '}
               {linkCount === 0 ? 'not linked yet' : `${linkCount} link${linkCount === 1 ? '' : 's'}`}
             </div>
@@ -313,7 +316,7 @@ const END_SYMBOLS: Record<string, readonly [string, string]> = {
 // ---------------------------------------------------------------------------
 // Main component
 // ---------------------------------------------------------------------------
-function StarSchemaFlowInner({ schema }: { schema: StarSchemaData }) {
+function StarSchemaFlowInner({ schema, anchorTableName }: { schema: StarSchemaData; anchorTableName?: string | null }) {
   const [activeTableId, setActiveTableId] = useState<number | null>(null);
   const [expanded, setExpanded] = useState<ReadonlySet<number>>(new Set());
 
@@ -424,10 +427,13 @@ function StarSchemaFlowInner({ schema }: { schema: StarSchemaData }) {
     // centre must be the table the picture is about, and that is the one
     // everything joins to.
     const byLinks = (a: PTTable, b: PTTable) => (linkCounts.get(b.id) ?? 0) - (linkCounts.get(a.id) ?? 0);
+    // A caller that asks about ONE table (a table's Relations tab) puts that
+    // table in the centre: the picture is about it, whatever its role.
     const facts = schema.tables.filter((t) => t.table_role === 'fact');
-    const anchor = facts.length === 1
+    const named = anchorTableName ? schema.tables.find((t) => t.table_name === anchorTableName) : undefined;
+    const anchor = named ?? (facts.length === 1
       ? facts[0]
-      : [...(facts.length ? facts : schema.tables)].sort(byLinks)[0];
+      : [...(facts.length ? facts : schema.tables)].sort(byLinks)[0]);
     if (!anchor) return { nodes: [] as Node[], edges: [] as Edge[] };
     const ringTables = schema.tables.filter((t) => t.id !== anchor.id);
 
@@ -500,7 +506,7 @@ function StarSchemaFlowInner({ schema }: { schema: StarSchemaData }) {
     }
 
     return { nodes, edges };
-  }, [schema, shownColumns, effectiveColumns, expanded, activeTableId, neighbours, litByTable, linkCounts, byName, toggleAll]);
+  }, [schema, anchorTableName, shownColumns, effectiveColumns, expanded, activeTableId, neighbours, litByTable, linkCounts, byName, toggleAll]);
 
   const onNodeClick = useCallback((_: unknown, node: Node) => {
     const id = Number(node.id);
@@ -539,12 +545,20 @@ function StarSchemaFlowInner({ schema }: { schema: StarSchemaData }) {
 // ---------------------------------------------------------------------------
 // Exported wrapper
 // ---------------------------------------------------------------------------
-export default function StarSchemaFlow({ schema }: { schema: StarSchemaData }) {
+export default function StarSchemaFlow({ schema, anchorTableName, subtitle }: {
+  schema: StarSchemaData;
+  /** Put this table in the centre instead of the most-linked measures table. */
+  anchorTableName?: string | null;
+  /** Replaces the grain line — for a picture that is not one star. */
+  subtitle?: string;
+}) {
   return (
     <div className="overflow-hidden rounded-[12px] border border-line bg-raised">
       <div className="border-b border-line px-6 pb-3 pt-4">
         <h3 className="font-display text-[17px] tracking-[-0.01em] text-ink">{schema.name}</h3>
-        {schema.grain && (
+        {subtitle ? (
+          <p className="mt-0.5 text-[12.5px] text-muted">{subtitle}</p>
+        ) : schema.grain && (
           <p className="mt-0.5 text-[12.5px] text-muted">
             <span title="What one row of the measures table represents (e.g. one order line).">Grain:</span> {schema.grain}
           </p>
@@ -556,7 +570,7 @@ export default function StarSchemaFlow({ schema }: { schema: StarSchemaData }) {
         </p>
       </div>
       <ReactFlowProvider>
-        <StarSchemaFlowInner schema={schema} />
+        <StarSchemaFlowInner schema={schema} anchorTableName={anchorTableName} />
       </ReactFlowProvider>
     </div>
   );

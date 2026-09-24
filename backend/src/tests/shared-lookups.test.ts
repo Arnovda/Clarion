@@ -389,3 +389,54 @@ describe('the builder links what it writes', () => {
     }
   });
 });
+
+describe('a lookup’s joins are read where they are recorded', () => {
+  it('the owning subject carries the joins its lookups take part in elsewhere', async () => {
+    const db = getTestDb();
+    await linkSharedTables(db, tenantId);
+    // Purchasing records its measures table joining ITS copy of the Journal —
+    // exactly where the builder writes such a join.
+    const purSchema = await db('star_schemas').where({ data_product_id: purchasingId }).first('id');
+    await db('product_columns').insert({
+      tenant_id: tenantId, product_table_id: factId, column_name: 'journal_key', data_type: 'INTEGER',
+      column_role: 'foreign_key', is_technical: true, sort_order: 0,
+    });
+    await db('product_relationships').insert({
+      tenant_id: tenantId, star_schema_id: purSchema.id, from_table_id: factId, from_column_name: 'journal_key',
+      to_table_id: copyId, to_column_name: 'journal_key', relationship_type: 'many_to_one',
+    });
+
+    const r = await request();
+    const ref = await r.get(`/api/products/${referenceId}`).set(auth(adminToken));
+    expect(ref.status).toBe(200);
+    const ext = ref.body.data.external_joins;
+    expect(ext.relationships).toHaveLength(1);
+    expect(ext.relationships[0]).toMatchObject({
+      from_table_name: 'fact_purchase_entry_lines', from_column_name: 'journal_key',
+      to_table_name: 'dim_journal', to_column_name: 'journal_key',
+      in_subject_name: 'Purchasing', own_table_id: originalId, other_table_id: factId,
+    });
+    // The far end names its subject and carries the field the join lands on.
+    expect(ext.tables).toHaveLength(1);
+    expect(ext.tables[0]).toMatchObject({ id: factId, subject_name: 'Purchasing', table_role: 'fact' });
+    expect(ext.tables[0].join_columns.map((c: { column_name: string }) => c.column_name)).toEqual(['journal_key']);
+    // …and the lookup's own key, hidden as technical elsewhere, is shipped as
+    // its join field so the line lands on a named field at both ends.
+    const orig = (ref.body.data.star_schemas as Array<{ tables: Array<{ id: number; join_columns: Array<{ column_name: string }> }> }>)
+      .flatMap((s) => s.tables).find((t) => Number(t.id) === originalId)!;
+    expect(orig.join_columns.map((c) => c.column_name)).toContain('journal_key');
+
+    // The subject that records the join lists it as its own — not twice.
+    const pur = await r.get(`/api/products/${purchasingId}`).set(auth(adminToken));
+    expect(pur.body.data.external_joins.relationships).toHaveLength(0);
+    const purRels = (pur.body.data.star_schemas as Array<{ relationships: unknown[] }>).flatMap((s) => s.relationships);
+    expect(purRels).toHaveLength(1);
+  });
+
+  it('another tenant cannot read a subject, joins included', async () => {
+    const other = await registerUser({ email: 'peek@shared.test', companyName: 'Peek BV' });
+    const r = await request();
+    const res = await r.get(`/api/products/${referenceId}`).set(auth(other.token));
+    expect(res.status).toBe(404);
+  });
+});

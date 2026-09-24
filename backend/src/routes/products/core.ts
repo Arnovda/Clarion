@@ -13,6 +13,7 @@ import { createProductSchema, updateProductSchema } from '../../middleware/schem
 import { deleteProductFromNeo4j } from '../../services/productGraphSync';
 import { deleteWarehousePaths, productBasePath, productBasePathV2, warehouseLayoutVersion, productSlug as toProductSlug } from '../../services/warehouse';
 import { listProductTables } from '../../services/tableCatalog';
+import { loadExternalJoins } from '../../services/sharedTables';
 import { recordAudit } from '../../services/auditService';
 import { reqDb } from '../../db/reqDb';
 import { log } from './shared';
@@ -109,7 +110,8 @@ router.get('/by-source-table/:sourceTableId', requireAuth, async (req: Request, 
 router.get('/:id', requireAuth, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const db = reqDb(req);
-    const product = await db('data_products').where({ id: req.params.id }).first();
+    const tenantId = req.user!.tenantId;
+    const product = await db('data_products').where({ id: req.params.id, tenant_id: tenantId }).first();
     if (!product) {
       res.status(404).json({ ok: false, error: 'Data product not found' });
       return;
@@ -223,6 +225,25 @@ router.get('/:id', requireAuth, async (req: Request, res: Response, next: NextFu
       endpointNames.add(r.from_column_name);
       endpointNames.add(r.to_column_name);
     }
+
+    // The joins this subject's tables take part in ELSEWHERE — a shared
+    // lookup's joins are recorded in the subjects that use it, so read from
+    // the owning subject alone it would "join to nothing yet"
+    // (services/sharedTables.ts). A join this subject's own stars already
+    // record is not repeated. Their endpoints join the list above so both
+    // ends land on a named field in the diagram.
+    const ownJoinKeys = new Set(relationships.map((r: { from_table_name: string; from_column_name: string; to_table_name: string; to_column_name: string }) =>
+      `${r.from_table_name}.${r.from_column_name}>${r.to_table_name}.${r.to_column_name}`));
+    const external = await loadExternalJoins(db, tenantId, Number(product.id));
+    const externalJoins = external.joins.filter((j) =>
+      !ownJoinKeys.has(`${j.from_table_name}.${j.from_column_name}>${j.to_table_name}.${j.to_column_name}`));
+    for (const j of externalJoins) {
+      for (const e of j.endpoints) {
+        endpointPairs.add(`${e.tableId}:${e.column}`);
+        endpointTableIds.add(e.tableId);
+        endpointNames.add(e.column);
+      }
+    }
     const shippedPairs = new Set(columns.map((c: { product_table_id: number; column_name: string }) => `${c.product_table_id}:${c.column_name}`));
     const joinColumnRows = endpointTableIds.size
       ? await db('product_columns')
@@ -334,6 +355,21 @@ router.get('/:id', requireAuth, async (req: Request, res: Response, next: NextFu
         tables: tablesBySchema.get(s.id) ?? [],
         relationships: relsBySchema.get(s.id) ?? [],
       })),
+      // Joins recorded in OTHER subjects, and the tables on their far end
+      // (each naming its subject). Same by-name shape as `relationships`.
+      external_joins: {
+        tables: external.tables
+          .filter((t) => externalJoins.some((j) => j.other_table_id === t.id))
+          .map((t) => ({ ...t, columns: [], join_columns: joinColsByTable.get(t.id) ?? [] })),
+        relationships: externalJoins.map((j) => ({
+          id: j.id,
+          from_table_name: j.from_table_name, from_column_name: j.from_column_name,
+          to_table_name: j.to_table_name, to_column_name: j.to_column_name,
+          relationship_type: j.relationship_type,
+          in_subject_id: j.in_subject_id, in_subject_name: j.in_subject_name,
+          own_table_id: j.own_table_id, other_table_id: j.other_table_id,
+        })),
+      },
     };
 
     res.json({ ok: true, data: result });

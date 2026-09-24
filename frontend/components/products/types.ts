@@ -119,6 +119,44 @@ export interface FullDataProduct extends DataProduct {
     tables: (ProductTable & { columns: ProductColumn[] })[];
     relationships: ProductRelationship[];
   })[];
+  /**
+   * Joins this subject's tables take part in ELSEWHERE — a shared lookup's
+   * joins are recorded in the subjects that use it. `tables` are the far
+   * ends, each naming its subject; `relationships` use the same by-name
+   * shape as a star's. Optional: older payloads lack it.
+   */
+  external_joins?: {
+    tables: ExternalJoinTable[];
+    relationships: ExternalJoin[];
+  };
+}
+
+export interface ExternalJoinTable {
+  id: number;
+  table_name: string;
+  display_name: string | null;
+  description: string | null;
+  table_role: string;
+  subject_id: number;
+  subject_name: string;
+  columns: ProductColumn[];
+  join_columns?: ProductColumn[];
+}
+
+export interface ExternalJoin {
+  id: number;
+  from_table_name: string;
+  from_column_name: string;
+  to_table_name: string;
+  to_column_name: string;
+  relationship_type: string;
+  /** The subject whose star records the join. */
+  in_subject_id: number;
+  in_subject_name: string;
+  /** This subject's table it touches. */
+  own_table_id: number;
+  /** The far end, or null when both ends are this subject's. */
+  other_table_id: number | null;
 }
 
 export interface ProductKpi {
