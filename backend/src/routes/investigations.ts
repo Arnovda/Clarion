@@ -20,7 +20,7 @@ import {
   startInvestigation, getInvestigation,
   type InvestigateEvent,
 } from '../services/investigateService';
-import { tenantQuery } from '../services/tenantQuery';
+import { withRequestDb } from '../db/reqDb';
 import { startSSE } from '../services/sse';
 
 const router = Router();
@@ -60,7 +60,7 @@ router.post('/', requireAuth, async (req: Request, res: Response, next: NextFunc
 
     // Resolve the data product. If not given, try to infer from the
     // pulse entry / brief — that's the common chat-from-bullet path.
-    const dataProductId = await resolveProductId(tenantId, body);
+    const dataProductId = await resolveProductId(req, body);
     if (!dataProductId) {
       res.status(400).json({
         ok: false,
@@ -125,7 +125,7 @@ router.get('/', requireAuth, async (req: Request, res: Response, next: NextFunct
     if (!tenantId || !userId) { res.status(401).json({ ok: false, error: 'Auth required' }); return; }
 
     const limit = Math.min(Math.max(Number(req.query.limit) || 20, 1), 50);
-    const rows = await tenantQuery(tenantId, (trx) =>
+    const rows = await withRequestDb(req, (trx) =>
       trx('investigations as i')
         .leftJoin('data_products as dp', 'i.data_product_id', 'dp.id')
         .where('i.user_id', userId)
@@ -146,21 +146,21 @@ router.get('/', requireAuth, async (req: Request, res: Response, next: NextFunct
 // ───────────────────────────────────────────────────────────────────────────
 
 async function resolveProductId(
-  tenantId: number,
+  req: Request,
   body: { data_product_id?: number; pulse_entry_id?: number; brief_id?: number },
 ): Promise<number | null> {
   if (body.data_product_id) return Number(body.data_product_id);
   if (body.pulse_entry_id) {
-    const row = await tenantQuery(tenantId, (trx) =>
+    const row = await withRequestDb(req, (trx) =>
       trx('user_pulse_entries').where({ id: body.pulse_entry_id }).first(),
     );
     if (row?.data_product_id) return Number(row.data_product_id);
   }
   if (body.brief_id) {
     // Brief has no FK to a single product — pick the first product in
-    // the user's tenant as a fallback. Must run inside tenantQuery so
-    // the SET LOCAL app.current_tenant is in effect for the RLS policy.
-    const fallback = await tenantQuery(tenantId, (trx) =>
+    // the user's tenant as a fallback. Runs on the request's own
+    // tenant-scoped handle so RLS sees the tenant (withRequestDb).
+    const fallback = await withRequestDb(req, (trx) =>
       trx('data_products').first('id'),
     );
     return fallback ? Number(fallback.id) : null;

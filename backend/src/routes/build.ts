@@ -28,7 +28,7 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { requireAuth, requireRole } from '../middleware/auth';
 import { semanticDb } from '../db/knex';
-import { tenantQuery } from '../services/tenantQuery';
+import { withRequestDb } from '../db/reqDb';
 
 const router = Router();
 
@@ -93,7 +93,7 @@ router.get('/dashboard', requireAuth, requireRole('admin', 'analyst'), async (re
     const tenantId = req.user!.tenantId;
     const since = new Date(Date.now() - STALE_HOURS * 3600 * 1000);
 
-    const data = await tenantQuery(tenantId, async (trx) => {
+    const data = await withRequestDb(req, async (trx) => {
       // ── Products with derived status ─────────────────────────────────
       // Reuses the same enrichment shape as GET /api/products: kpi count,
       // table count, last_refreshed_at (MAX of product_tables.last_run_at

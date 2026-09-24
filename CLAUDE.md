@@ -31,11 +31,64 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-09-24 (A LOOKUP'S RELATIONS ARE READ WHERE THEY ARE
+**Last updated:** 2026-09-24 (AI USAGE 500 = A CONNECTION-POOL DEADLOCK —
+owner, with a screenshot of /admin/ai-usage: *"Couldn't load AI usage data.
+Request failed with status code 500"*. Branch `claude/kind-cori-98hpxi`.)
+
+**PRODUCTION'S OWN LOG LINE SAID WHAT IT WAS, AND THE NEW READER FEATURE IS WHY
+WE COULD SEE IT.** Locally all seven `/admin/ai-usage/*` endpoints answered 200,
+as the superuser AND as `databridge_app` — so the cause had to be production
+state. `.ops/prod-logs` narrowed to `request ai-usage` (merged via PR #182 — the
+session's token cannot push to main directly, 403) returned:
+`KnexTimeoutError: Timeout acquiring a connection. The pool is probably full`
+at `aiUsage.js:45`, 10.5 s, on every call.
+- **The mechanism**: `requireAuth` holds ONE pool connection per request for its
+  tenant-scoped transaction; the handlers then called `tenantQuery`, which takes
+  a SECOND. The page fires seven requests in parallel against a pool of 6
+  (`.ops/db-pool`), so each waits for a connection another holds until the
+  acquire timeout. Sequential (and in any test) it works, which is why nobody
+  saw it. It is a deadlock, not load.
+- **NEW `withRequestDb(req, fn)` in `db/reqDb.ts`**: runs `fn` on the request's
+  own handle (`req.dbTrx`), falls back to `tenantQuery` only outside a request.
+  The rule is in its comment: inside a request, same-tenant work never uses
+  `tenantQuery`. Converted every same-tenant in-request site with the pattern:
+  `aiUsage.ts` (7, plus an explicit `tenant_id` filter on every query — they
+  rode RLS alone), `products/kpis.ts` (5 — the KPI editor), `investigations.ts`
+  (list + product resolution), `build.ts` (`/dashboard`), `quality.ts` (the two
+  consumer-connection lookups in product profile/evaluate).
+- **Deliberately LEFT on `tenantQuery`**: the fire-and-forget AI-context updates
+  in `quality.ts` and the inline transformation paths in `pipelines.ts` /
+  `schedules.ts` (they run after the response, when the request transaction is
+  gone), and `adminTenants.ts` / `adminOps.ts` (operator consoles that read
+  OTHER tenants on purpose, one at a time).
+- **NEW `tests/request-pool-deadlock.test.ts`**: pool of 2, 3 s acquire timeout,
+  the page's seven calls in parallel → all 200 and the tenant's own counts.
+  **Verified RED** with the fix removed (every call timed out).
+- **`prod-logs.yml`: a narrowed run now LISTS up to 15 error lines in scope.**
+  Before, it only counted signatures and showed one `take_any` example, so the
+  line with the error text could go unshown. `request <text>` matches any
+  substring, so a URL fragment (`ai-usage`) works. `.ops/prod-logs` is back to
+  `14d`, unnarrowed.
+- Validation: backend `npm run check` clean; full suite 97/99 files, 962
+  passed — the 2 that did not load are `data-policies-everywhere` and
+  `preview-policies`, which open SQLite, and the shell's Node 22 cannot load the
+  Node-20 `better-sqlite3` binary (CI runs Node 20); all twelve ratchets green
+  (`shared-trx-catch` included — the converted callbacks now share the request
+  transaction).
+
+**IN MAIN AND PRODUCTION (2026-09-24, 09:32 UTC) — PR #181, the lookup
+relations fix below.** Owner: *"Put in main and prd pls"*. Rebase-merged as
+`6c608e4`; **Build & Deploy run #622**: gate waited 6 min for Tests + Lint,
+backend + frontend built as `main-6c608e4`, `migrate-sql` correctly skipped (no
+migration), jobs-worker on the same image, **Go live health-checked the new
+backend (`/api/health` 200, all six components `ok`) and shifted backend +
+frontend to `--main-6c608e4` at 100%**. Read from the job's log.
+
+**Prior last updated:** 2026-09-24 (A LOOKUP'S RELATIONS ARE READ WHERE THEY ARE
 RECORDED — owner, with a screenshot of Reference › Item's Relations tab: 8
 tables, 0 links, every card *"lookup · not linked yet"*, *"This table joins to
 nothing yet"*. *"The relations for references do not work yet I think."* Right.
-Branch `claude/kind-cori-98hpxi`, riding PR #181 — NOT deployed.)
+Branch `claude/kind-cori-98hpxi`, PR #181 — deployed, see above.)
 
 **WHY: a lookup's joins live in the subjects that USE it.** The builder records
 `fact_sales_invoice_lines.item_key → dim_item.item_key` in SALES' star, against

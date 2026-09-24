@@ -18,7 +18,7 @@ import { Router, Request, Response, NextFunction } from 'express';
 import path from 'path';
 import type { Knex } from 'knex';
 import { requireAuth, requireRole } from '../middleware/auth';
-import { reqDb } from '../db/reqDb';
+import { reqDb, withRequestDb } from '../db/reqDb';
 import { runQualityProfileWithConnector } from '../quality/QualityProfiler';
 import { DuckDBConnector } from '../connectors/DuckDBConnector';
 import * as graph from '../db/semanticGraph';
@@ -730,7 +730,7 @@ router.post('/product/:productTableId/profile', requireAuth, requireRole('admin'
     // stubs that's a different product than what the user clicked on, so we
     // look up the consumer separately. tenantQuery wraps in a transaction
     // with SET LOCAL app.current_tenant so RLS sees our rows reliably.
-    const consumerConnId = await tenantQuery(tenantId, async (trx) => {
+    const consumerConnId = await withRequestDb(req, async (trx) => {
       const row = await trx('product_tables as pt')
         .join('star_schemas as ss', 'pt.star_schema_id', 'ss.id')
         .join('data_products as dp', 'ss.data_product_id', 'dp.id')
@@ -844,7 +844,7 @@ router.post('/product/:productTableId/evaluate', requireAuth, requireRole('admin
     // are written against the consumer's connection_id, so evaluation
     // must score against that same id (otherwise the score-recompute join
     // in evaluateRulesCore reads different rules than were evaluated).
-    const consumerConnId = await tenantQuery(tenantId, async (trx) => {
+    const consumerConnId = await withRequestDb(req, async (trx) => {
       const row = await trx('product_tables as pt')
         .join('star_schemas as ss', 'pt.star_schema_id', 'ss.id')
         .join('data_products as dp', 'ss.data_product_id', 'dp.id')
