@@ -36,8 +36,27 @@ SOURCE, FAILED, AND SKIPPED EVERYTHING — owner screenshot of `/pipelines`:
 custom pipeline "Refresh Data Products", Exact Online greyed out on its own
 canvas, yet the run printed `Exact Online: Worker exited with code 1` and then
 every product `skipped — its source did not sync cleanly`, each line TWICE,
-while the pipeline list still said *queued*. Branch
-`claude/new-session-2p2zqv`, draft PR.)
+while the pipeline list still said *queued*. PR #189 — IN MAIN AND
+PRODUCTION, see the deploy record just below.)
+
+**IN MAIN AND PRODUCTION (2026-09-24, 15:08 UTC) — owner: *"You may push
+everything to main and to prd and live pls when finished"*.** PR #189 was
+taken out of draft (all ten checks green on `0267f51`) and REBASE-merged as
+`f1107b7`. **Build & Deploy run #628**: the gate waited 6 min for Tests +
+Lint; backend, frontend AND worker built as **`main-f1107b7`** (ETL,
+`migrate-sql` and `neo4j-constraints` correctly skipped — no migration); the
+jobs-worker took the same image; **the sync-worker Container Apps Job was
+pinned to `databridge-sync-worker:main-f1107b7`** (read from the job's own
+log), so the heartbeat-flush fix is what the next sync runs; **Go live
+health-checked the new backend (`/api/health` 200, all six components `ok`)
+and shifted backend + frontend to `--main-f1107b7` at 100%**. Read from the
+job logs, not inferred. Rollback: Actions → **Rollback production**.
+**WATCH**: the next Exact Online sync is the first whose failure can carry a
+reason. Worth knowing when reading it: the sync-worker job runs at **0.5 vCPU
+/ 1 GiB** (same log) — so "stopped without reporting a reason … often out of
+memory" is a live suspect for the original `exit code 1`, not a formality.
+Housekeeping: `claude/new-session-2p2zqv` was restarted from main at
+`f1107b7`; this record rides a NEW draft PR.
 
 Four defects, one screen:
 - **A custom pipeline synced sources it did not contain.** `resolveScope`
