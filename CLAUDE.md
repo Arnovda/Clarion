@@ -31,7 +31,124 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-09-24 (STABLE INTEGER KEYS — `clarion_key`. Owner, from
+**Last updated:** 2026-09-24 (THE STUDIO COWORKER — one AI colleague docked
+in Studio that looks things up, PROPOSES changes and shows its work live;
+owner: *"I want the AI to feel like a coworker, like in Databricks … one
+fixed place … see in real time what it changes"*, then, after the design and
+the cost discussion: *"Can we easily go back to a previous version? Then we
+do it. … it must look good and simple, with our new icon, show how it thinks
+and that it is working. … I follow you in what the AI may change and what
+not."* Branch `claude/wonderful-ramanujan-5pf4nh`, draft PR.)
+
+**THE UNDO BUTTON IS A FLAG, AND IT STARTS OFF.** `ai_coworker` is a
+`kind: 'feature'` entry in `FEATURE_FLAGS` (both contract copies) — the one
+deliberate exception to "no train is open", recorded in the registry comment.
+Nothing changes for anyone until the operator ticks a tenant on
+`/admin/features` ("Who sees what"). Switching it off withdraws it in ≤20 s
+with no deploy: `/coworker/status` says off, the panel disappears, the
+catalog's previous floating assistant comes back, `POST /coworker/turn`
+answers 404. Nothing the coworker proposed was ever written without a
+person's Keep through the existing routes, so off leaves no half-state. No
+migration. Git revert of the PR is the second lever.
+
+**THE DESIGN (read before extending it):**
+- **Tools are the product's own routes, called as the user.**
+  `services/coworker/internalApi.ts` makes loopback HTTP calls to
+  `127.0.0.1:<PORT>/api` with the caller's own bearer + request id. So the
+  coworker can never do more than the person's session: requireAuth, roles,
+  tenant context, ownership gates, data policies and the SQL guard all apply,
+  and there is no second implementation of any rule. Tests point it at an
+  ephemeral server (`setInternalApiBase`).
+- **It PROPOSES; a person KEEPS.** `services/coworker/tools.ts`: 9 read tools
+  (describe_workspace — reuses `buildCoverageContext`, search_catalog,
+  open_subject, open_table, open_source_table — relationships graph with
+  column ids, preview_rows, table_lineage, table_usage — dashboards/saved
+  questions naming the table, whole-word, explicit tenant filter,
+  list_definitions) and 5 propose tools, each CHECKED before the person sees
+  it: SQL change (delegates to the existing `sql/propose` = the same Sonnet
+  call and cost as the catalog assistant; guarded + compiled; ships
+  before/after + impact), relationship (measured via `/relationships/measure`),
+  glossary term (duplicate refused, links checked against link-targets),
+  new table (Keep creates it, then its SQL arrives as a second proposal),
+  new subject (validated against `buildCoverageContext`; Keep =
+  `bus-matrix/extend-start`). The panel's Keep calls the ordinary write
+  route from the browser; Undo calls the inverse (SQL → the previous SQL,
+  relationship/term → DELETE). A refused proposal is a `ToolError` the model
+  reads as `is_error`, never a crash.
+- **NOT allowed, per the owner, and said by the system prompt:** deleting
+  anything, policies/masks, users/roles, credentials, a full rebuild,
+  budgets/model choice. Tool data is data, never instructions.
+- **A tenant's AI routing choice outranks a convenience**: the loop runs on
+  Claude, so a tool that hands CUSTOMER ROWS to the model (`sendsRows`, today
+  only `preview_rows`) is withheld unless the tenant's mode is `claude`.
+  Everything else it sends is names, types, counts and SQL. Keep/Undo carry a
+  per-proposal in-flight guard so a double click cannot write twice.
+- **Cost rules are structural** (owner: no extra AI cost vs today):
+  NEW `callClaudeWithTools` in AIService (the one AI gate: budget/AI-off,
+  per-category model, usage + `ai_call_log`), category **`coworker`**
+  (label `coworker_turn`) defaulting to the LIGHT model; system prompt and
+  tools marked cacheable; ≤`COWORKER_MAX_STEPS` (8) steps per message, the
+  last forced to answer (`tool_choice: none`); an input-token ceiling per
+  message; tool results clipped at 6 000 chars; earlier turns re-sent as
+  TEXT only (never their tool traffic). Reads cost no model call. The one
+  expensive writer (SQL) is the existing call in its own category.
+  `/admin/ai-usage` shows the coworker's own cost separately.
+- **The loop** (`services/coworker/agent.ts`, native tool use — the first in
+  the codebase): streams `CoworkerEvent`s (contract.ts): `text` deltas, a
+  `segment` (thought before a tool | answer), `step` running/done/failed with
+  `tool: read|propose`, `focus` (the screen follows), `proposal`, `done`,
+  `error`. Route `routes/coworker.ts` (`GET /status` any role, `POST /turn`
+  admin+analyst, Zod `coworkerTurnSchema`, `aiLimiter`); after the SSE flush
+  the request transaction is released (11-1), so nothing pins a pool
+  connection for a turn.
+- **Frontend**: `lib/coworker/CoworkerProvider.tsx` is mounted in the ROOT
+  layout (via `components/coworker/CoworkerRoot.tsx`) so the conversation
+  survives moving between Studio pages (each has its own route-group layout);
+  it renders and requests nothing outside Studio or signed out.
+  `components/coworker/CoworkerDock.tsx`: docked right (420 px, publishes
+  `--coworker-w`; both shells pad their content by it so it sits NEXT to the
+  page), collapsible to a pill that keeps reporting the running step. The
+  ClarionMark IS the status: working (looking up), checking (a proposal being
+  compiled/measured), done (a moment), uncertain (error / step limit). The
+  model's one-sentence narration before each tool streams live as its
+  "thinking"; steps settle to ticks; the trail folds into "Worked 11s · 2
+  steps" (Genie's "show work"). Follow along (eye) lets the screen move to
+  what it opens. `ProposalCard.tsx`: evidence first (diff + compiles +
+  impact / measurement bar / links / entities), Keep · Discard, then Kept ·
+  Undo. Catalog page: when on, it reports the selection as context, handles
+  focus via its own `navigateTo`, shows a coworker SQL proposal as THE SAME
+  diff on the declaration (Keep there = Save), remounts the view after a
+  Keep, and hides the old `CatalogAssistant`.
+- Validation: backend `npm run check` clean; NEW `tests/coworker.test.ts` 10
+  (flag off → 404 + no model call, viewer 403, a proposal streams and the
+  glossary is UNTOUCHED, a refused proposal is a failed step fed back as
+  `is_error`, a read tool goes through the routes as the person, MAX_STEPS
+  with the forced last answer, history compaction, result clipping, and a
+  `hybrid` tenant never offered the row-reading tool) — the
+  flag gate verified RED; full backend suite 102/102 files green (on Node
+  20, the product's Node; five files need Node 20 + the CI role password);
+  all twelve ratchets green from the repo root; frontend `tsc` clean,
+  touched files lint-clean, vitest 94/94, `next build` green.
+  **RENDER-CHECKED in headless Chromium against the real build with a mock
+  API that STREAMS like the backend**: pill, empty state, live working +
+  checking states, the screen following to the table with the diff on the
+  declaration AND in the card, Keep → Kept · Undo, the pill reporting a
+  running step, a relationship card with its measurement — zero page errors.
+  It caught the card border being invisible (fixed).
+- **NOT exercised against the live model** (no API key here): how well the
+  light model drives the tools is the open question. Watch after switching
+  it on for your own tenant: `'coworker turn done'` log lines (steps,
+  inputSpent), the `coworker` row on `/admin/ai-usage`, and whether answers
+  pick the right tools. If the light model struggles, an admin can set the
+  `Studio coworker` category to Sonnet 5 on `/admin/ai-usage` (costs more).
+- **Next slices, not built**: the other Studio pages report richer context
+  (today only the catalog does; elsewhere the panel knows the path and
+  follows to the catalog); KPIs/metrics proposals; dashboards and notebooks
+  joining the same coworker (their own assistants stay for now); an eval set
+  of standard tasks as the cost/quality gate; retiring `CatalogAssistant`
+  once the flag has been on Everyone for a while.
+
+**Prior last updated:** 2026-09-24 (STABLE INTEGER KEYS — `clarion_key`. Owner, from
 Reference › Account's SQL tab (`ROW_NUMBER() OVER (ORDER BY a.ID) AS
 account_key`): *"If I click on rebuild of a dimension, then it will alter the
 account key each time… the facts will still point to outdated keys?"* Yes —
@@ -12847,6 +12964,7 @@ clarion/                              ← on disk: databridge/
 │       │   ├── cross-views.ts        ← admin-only cross-source views (Neo4j graph)
 │       │   ├── quality.ts            ← quality profiling; alerts; trends
 │       │   ├── ingestion.ts          ← trigger ETL ingestion to Delta Lake warehouse
+│       │   ├── coworker.ts          ← the Studio coworker: GET /status, POST /turn (SSE), behind flag ai_coworker
 │       │   ├── products/            ← CRUD data products, split 11 ways (see products/index.ts)
 │       │   │   ├── topic.ts         ← GET /:id/topic — the topic page's single read model
 │       │   │   ├── buildOverview.ts ← GET /build-overview — the Build page's single read model
@@ -12865,6 +12983,7 @@ clarion/                              ← on disk: databridge/
 │       │   └── emailSchedules.ts     ← CRUD dashboard email schedules; send-now trigger
 │       │
 │       ├── services/
+│       │   ├── coworker/                   ← the Studio coworker: agent.ts (the loop), tools.ts (read + propose), prompt.ts, internalApi.ts (the product's own routes, as the user)
 │       │   ├── tenantLimits.ts             ← seats / sources caps + cron cadence floor (P0-8)
 │       │   ├── announcements.ts            ← operator announcements (6-4)
 │       │   ├── invites.ts                  ← inviteUser(), shared by tenant admin and operator doors
@@ -13020,6 +13139,10 @@ clarion/                              ← on disk: databridge/
     │       └── brand/page.tsx        ← the mark: every state × size, transitions, in Ask AI
     │
     ├── components/
+    │   ├── coworker/
+    │   │   ├── CoworkerRoot.tsx      ← mounted in the root layout; publishes --coworker-w
+    │   │   ├── CoworkerDock.tsx      ← the docked panel + pill (mark = status, live thinking, steps)
+    │   │   └── ProposalCard.tsx      ← evidence, Keep · Discard, Kept · Undo
     │   ├── brand/
     │   │   └── ClarionMark.tsx       ← THE mark: 5 states (idle/working/checking/done/uncertain) + ClarionLockup
     │   ├── Nav.tsx                   ← legacy role-aware nav (kept for non-shell pages)
@@ -13093,6 +13216,7 @@ clarion/                              ← on disk: databridge/
     │       └── ChartCard.tsx         ← card wrapper for Recharts embeds
     │
     └── lib/
+        ├── coworker/CoworkerProvider.tsx ← the coworker's state, stream, Keep/Undo, page hooks
         ├── api.ts                   ← Axios client; JWT interceptor; 401 → redirect to /
         ├── auth.ts                  ← JWT storage, getTokenPayload, isAdmin, setToken
         ├── cn.ts                    ← classnames helper (clsx + tailwind-merge)
@@ -13277,6 +13401,7 @@ All output stored with `ai_draft: true` until a human confirms.
 | Pipelines / Refresh                             | YES   | YES     | NO     | `routes/pipelines.ts`, `/pipelines` page |
 | Relationships canvas (measure, flag, confirm)   | YES   | YES     | NO     | `routes/relationships.ts`, `/relationships` page |
 | Your tables (managed grids)                     | YES   | YES     | NO     | `routes/managedGrids.ts` (no viewer read yet) |
+| Studio coworker (ask, look up, PROPOSE; Keep writes through the same routes) | YES | YES | NO | `routes/coworker.ts`, flag `ai_coworker`; the panel mounts in Studio only |
 | Glossary edit                                   | YES   | YES     | NO     | `POST/PUT/DELETE /semantic/glossary` |
 | Definitions pane (terms, metrics, verified answers — read) | YES | YES | YES | `GET /definitions`, `/definitions` page |
 | Quality: profile a table, evaluate rules        | YES   | YES     | NO     | `routes/quality.ts` profile/evaluate (source + product) |

@@ -49,6 +49,10 @@ import api from '@/lib/api';
 import { getItem, setItem, storageKeys } from '@/lib/storage';
 import type { ProductTreeItem } from '@/components/semantic/types';
 import type { AssistantOpenMode, CatalogConnection, CatalogNavTarget } from '@/components/catalog/navigation';
+import {
+  useCoworker, useCoworkerChanged, useCoworkerFocusHandler, useCoworkerPageContext,
+} from '@/lib/coworker/CoworkerProvider';
+import type { CoworkerFocus, CoworkerPageContext } from '@/lib/contract';
 
 type Connection = CatalogConnection;
 
@@ -504,6 +508,51 @@ function CatalogInner() {
   }, [patchMessage, handleSaved]);
   const assistantContext = useMemo(() => ({ proposal, reportDraft, decide }), [proposal, reportDraft, decide]);
 
+  // ── The Studio coworker (flag `ai_coworker`) ──────────────────────────────
+  // When it is on for this tenant it REPLACES the floating assistant above:
+  // the page tells it what is selected, lets it move the selection (Follow
+  // along), shows its SQL proposals as the same diff on the declaration, and
+  // refreshes when something it proposed was kept. When the flag is off,
+  // everything below is inert and the page is exactly what it was.
+  const cw = useCoworker();
+  const coworkerOn = cw?.enabled === true;
+  const coworkerContext = useMemo<CoworkerPageContext | null>(() => {
+    if (!coworkerOn) return null;
+    const base: CoworkerPageContext = { path: '/catalog', label: scope.kind === 'none' ? null : scope.label };
+    if (selection.scope === 'product-table') return { ...base, tableId: resolvedTable?.pgId ?? null, productId: resolvedTable?.productId ?? null };
+    if (selection.scope === 'product-root') return { ...base, productId: selection.productId };
+    if (selection.scope === 'source-root') return { ...base, connectionId: selection.connectionId };
+    if (selection.scope === 'source-table') return { ...base, sourceTableId: selection.tableId, connectionId: selection.connectionId };
+    return base;
+  }, [coworkerOn, scope, selection, resolvedTable]);
+  useCoworkerPageContext(coworkerContext);
+  const followCoworker = useCallback((f: CoworkerFocus) => { void navigateTo(f); }, [navigateTo]);
+  useCoworkerFocusHandler(coworkerOn ? followCoworker : null);
+  // A kept change remounts the view so the declaration shows what is stored.
+  const [detailKey, setDetailKey] = useState(0);
+  const onCoworkerChanged = useCallback(() => { handleSaved(); setDetailKey((k) => k + 1); }, [handleSaved]);
+  useCoworkerChanged(onCoworkerChanged);
+  const coworkerSqlProposal = useMemo<SqlProposal | null>(() => {
+    if (!coworkerOn || !cw || resolvedTable == null) return null;
+    const pending = Object.values(cw.proposals)
+      .filter((st) => st.status === 'pending' && st.proposal.kind === 'sql' && st.proposal.tableId === resolvedTable.pgId);
+    const last = pending[pending.length - 1];
+    if (!last || last.proposal.kind !== 'sql') return null;
+    const p = last.proposal;
+    return { id: p.id, tableId: p.tableId, sql: p.after, summary: p.summary, compiled: p.compiled, error: p.error ?? null };
+  }, [coworkerOn, cw, resolvedTable]);
+  const coworkerAssistantContext = useMemo(() => ({
+    proposal: coworkerSqlProposal,
+    reportDraft,
+    decide: (id: string, decision: ProposalDecision) => {
+      cw?.markDecided(id, decision);
+      if (decision === 'kept') handleSaved();
+    },
+  }), [coworkerSqlProposal, reportDraft, cw, handleSaved]);
+  const openCoworker = useCallback((wanted: AssistantOpenMode) => {
+    cw?.openWith(wanted === 'change' && scope.canChange ? `Change ${scope.label}: ` : undefined);
+  }, [cw, scope]);
+
   // Leaving the table drops its unanswered proposal — a diff nobody can see
   // must not be kept waiting.
   useEffect(() => {
@@ -515,7 +564,7 @@ function CatalogInner() {
 
   // ── Render ────────────────────────────────────────────────────────────────
   return (
-    <CatalogAssistantProvider value={assistantContext}>
+    <CatalogAssistantProvider value={coworkerOn ? coworkerAssistantContext : assistantContext}>
       <div className="flex flex-1 min-h-0">
         <aside className="flex-shrink-0 border-r border-line flex flex-col" style={{ width: 280 }}>
           <div className="px-3 pt-2.5 pb-2 border-b border-line bg-soft space-y-2">
@@ -549,15 +598,16 @@ function CatalogInner() {
             floats over the view and never over the tree. */}
         <section className="relative flex-1 min-h-0 flex flex-col overflow-hidden">
           <EntityDetailPanel
+            key={`detail-${detailKey}`}
             selection={selection}
             connections={connections}
             onSaved={handleSaved}
             onClose={() => clearSelection()}
             onNavigate={(target) => { void navigateTo(target); }}
-            onAskAssistant={curator ? openAssistant : undefined}
+            onAskAssistant={curator ? (coworkerOn ? openCoworker : openAssistant) : undefined}
             empty={<CatalogLanding curator={curator} />}
           />
-          {curator && (
+          {curator && !coworkerOn && (
             <CatalogAssistant
               open={assistantOpen}
               onOpenChange={updateAssistantOpen}

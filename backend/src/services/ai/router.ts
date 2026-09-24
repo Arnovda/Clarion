@@ -33,7 +33,7 @@ const log = logger.child({ component: 'ai-router' });
 
 export type AiCallKind = 'row' | 'schema';
 
-/** The 8 call categories visible in the admin UI. */
+/** The call categories visible in the admin UI. */
 export type CallCategory =
   | 'schema_profiling'
   | 'nl_to_sql'
@@ -42,7 +42,8 @@ export type CallCategory =
   | 'products'
   | 'investigation'
   | 'formatting'
-  | 'suggestions';
+  | 'suggestions'
+  | 'coworker';
 
 export const ALL_CALL_CATEGORIES: CallCategory[] = [
   'schema_profiling',
@@ -53,6 +54,7 @@ export const ALL_CALL_CATEGORIES: CallCategory[] = [
   'investigation',
   'formatting',
   'suggestions',
+  'coworker',
 ];
 
 export const CALL_CATEGORY_META: Record<CallCategory, {
@@ -121,6 +123,18 @@ export const CALL_CATEGORY_META: Record<CallCategory, {
     description: 'KPI drafting, pulse entries, query starters, product icons',
     defaultModel: lightModel(),
     callLabels: ['kpi_draft', 'pulse_suggest', 'query_starters', 'product_icon'],
+  },
+  // The Studio coworker's OWN loop: understanding the ask, choosing the next
+  // tool, phrasing the answer. The light model by default — the expensive
+  // writing it hands off (a SQL change) runs through the existing call in its
+  // own category ('products' → transformation_propose), at exactly the cost
+  // that call has today. Kept separate so /admin/ai-usage shows what the
+  // coworker itself adds.
+  coworker: {
+    label: 'Studio coworker',
+    description: 'The Studio assistant deciding what to look at and what to propose — the writing it delegates is counted in its own category',
+    defaultModel: lightModel(),
+    callLabels: ['coworker_turn'],
   },
 };
 

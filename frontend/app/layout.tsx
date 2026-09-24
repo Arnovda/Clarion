@@ -3,6 +3,7 @@ import { Manrope, Inter, Source_Serif_4, Cormorant_Garamond } from 'next/font/go
 import localFont from 'next/font/local';
 import './globals.css';
 import { Toaster } from '@/components/ui/Toast';
+import CoworkerRoot from '@/components/coworker/CoworkerRoot';
 
 const manrope = Manrope({
   subsets: ['latin'],
@@ -52,7 +53,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   return (
     <html lang="en" className={`${manrope.variable} ${inter.variable} ${sourceSerif.variable} ${cormorant.variable} ${geistMono.variable}`}>
       <body suppressHydrationWarning className="antialiased font-sans bg-bg text-ink">
-        {children}
+        <CoworkerRoot>{children}</CoworkerRoot>
         <Toaster />
       </body>
     </html>
