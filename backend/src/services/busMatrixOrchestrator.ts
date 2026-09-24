@@ -19,6 +19,7 @@
  */
 
 import { tenantQuery } from './tenantQuery';
+import { logger } from '../utils/logger';
 import { generateBusMatrixStreaming, generateProductIcon } from '../ai/AIService';
 import { buildBusMatrix, validateBusMatrix, recoverIncompleteBusMatrix, prepareExtensionMatrix, BuiltProduct } from './busMatrixBuilder';
 import { tryBuildBusMatrixFromTemplate } from './starSchemaTemplates';
@@ -547,15 +548,70 @@ async function waitForSyncRun(
 export async function runPipelineWorkflow(
   opts: RunPipelineWorkflowOptions,
 ): Promise<RunPipelineWorkflowResult> {
-  const { scope, tenantId, emit, pipelineRunId } = opts;
-
+  const { tenantId, pipelineRunId } = opts;
 
   if (pipelineRunId) {
     await tenantQuery(tenantId, (db) => db('pipeline_runs')
       .where({ id: pipelineRunId, tenant_id: tenantId })
       .update({ status: 'running', started_at: new Date().toISOString() }));
+    await mirrorPipelineStatus(tenantId, pipelineRunId, 'running');
   }
 
+  try {
+    return await runPipelineWorkflowBody(opts);
+  } catch (err) {
+    // A run that throws (cancel, a lost database, a bug) must not stay
+    // 'running' on the history list and 'queued' on the pipeline row: the
+    // Refresh page read both, and both lied until the 4-hour reaper.
+    if (pipelineRunId) {
+      const cancelled = err instanceof CancelledError;
+      const msg = err instanceof Error ? err.message : String(err);
+      try {
+        await tenantQuery(tenantId, (db) => db('pipeline_runs')
+          .where({ id: pipelineRunId, tenant_id: tenantId })
+          .update({
+            status: cancelled ? 'cancelled' : 'failed',
+            completed_at: new Date().toISOString(),
+            error_message: cancelled ? null : msg.slice(0, 2000),
+          }));
+      } catch (settleErr) {
+        // A failed settle must not replace the run's own error; the 4-hour
+        // reaper closes the row if this write never lands.
+        logger.warn({ err: settleErr, pipelineRunId }, 'could not settle a pipeline run that threw');
+      }
+      await mirrorPipelineStatus(tenantId, pipelineRunId, cancelled ? 'cancelled' : 'failed');
+    }
+    throw err;
+  }
+}
+
+/**
+ * `pipelines.last_status` is a denormalised mirror of the latest run, read by
+ * the Refresh page's pipeline list. It was written once — 'queued', at
+ * enqueue — and never again, so every pipeline read "queued" forever after
+ * its first run, including one the dock beside it reported as finished.
+ * Best-effort: a missed mirror must never fail the run it describes.
+ */
+async function mirrorPipelineStatus(tenantId: number, pipelineRunId: number, status: string): Promise<void> {
+  try {
+    await tenantQuery(tenantId, async (db) => {
+      const run = await db('pipeline_runs')
+        .where({ id: pipelineRunId, tenant_id: tenantId })
+        .first<{ pipeline_id: number | null } | undefined>('pipeline_id');
+      if (!run?.pipeline_id) return;
+      await db('pipelines')
+        .where({ id: run.pipeline_id, tenant_id: tenantId })
+        .update({ last_status: status });
+    });
+  } catch (err) {
+    logger.warn({ err, pipelineRunId }, 'could not mirror the pipeline run status onto the pipeline row');
+  }
+}
+
+async function runPipelineWorkflowBody(
+  opts: RunPipelineWorkflowOptions,
+): Promise<RunPipelineWorkflowResult> {
+  const { scope, tenantId, emit, pipelineRunId } = opts;
   const sourceResults: RunPipelineWorkflowResult['sourceResults'] = [];
   const productResults: RunPipelineWorkflowResult['productResults'] = [];
 
@@ -700,7 +756,8 @@ export async function runPipelineWorkflow(
           ? `its source did not sync cleanly (${brokenSources.join(', ')})`
           : `it builds on ${brokenUpstream.join(', ')}, which was skipped`;
         skippedProducts.set(pid, reason);
-        emit({ type: 'log', text: `  "${dispName}": skipped — ${reason}` });
+        // One event, not a 'log' line beside it: the Refresh dock prints every
+        // 'product' event, so the pair wrote each skip twice.
         emit({ type: 'product', productName: dispName, productId: pid, status: 'skipped', text: `skipped — ${reason}` });
         productResults.push({
           productId: pid, productName: dispName, allOk: false,
@@ -769,14 +826,21 @@ export async function runPipelineWorkflow(
   const allOk = sourceResults.every((s) => s.status !== 'failed') && productResults.every((p) => p.allOk);
   emit({ type: 'done', text: allOk ? 'All done!' : 'Pipeline completed with some errors.' });
 
+  // Every product skipped because its source failed is a failed run, not a
+  // partial one: nothing was refreshed.
+  const nothingRan = productResults.every((p) => p.skipped);
+  const runStatus = allOk
+    ? 'succeeded'
+    : (sourceResults.some((s) => s.status === 'failed') && nothingRan ? 'failed' : 'partial');
   if (pipelineRunId) {
     await tenantQuery(tenantId, (db) => db('pipeline_runs')
       .where({ id: pipelineRunId, tenant_id: tenantId })
       .update({
-        status: allOk ? 'succeeded' : (productResults.length === 0 && sourceResults.every((s) => s.status === 'failed') ? 'failed' : 'partial'),
+        status: runStatus,
         completed_at: new Date().toISOString(),
         node_results: JSON.stringify({ sources: sourceResults, products: productResults }),
       }));
+    await mirrorPipelineStatus(tenantId, pipelineRunId, runStatus);
   }
 
   return { allOk, sourceResults, productResults };

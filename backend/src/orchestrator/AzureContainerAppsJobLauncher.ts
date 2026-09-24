@@ -116,8 +116,16 @@ export class AzureContainerAppsJobLauncher implements JobLauncher {
     return this.cachedContainerSpec;
   }
 
-  launch(spec: JobSpec, onEvent: (event: WorkerEvent) => void): JobHandle {
+  launch(spec: JobSpec, onWorkerEvent: (event: WorkerEvent) => void): JobHandle {
     let executionName: string | null = null;
+    // Whether the worker ever told us why it failed. When it did not, the
+    // orchestrator would store the bare "Worker exited with code 1" — true
+    // and useless. We say instead where the reason is.
+    let workerReportedError = false;
+    const onEvent = (event: WorkerEvent): void => {
+      if (event.type === 'error') workerReportedError = true;
+      onWorkerEvent(event);
+    };
     let pollerStopped = false;
     const seenLines = { count: 0 }; // mutable cursor into the heartbeat blob
     let configCleanup: { account: string; container: string; blobName: string } | null = null;
@@ -248,6 +256,17 @@ export class AzureContainerAppsJobLauncher implements JobLauncher {
           }
           if (execStatus === 'Failed' || execStatus === 'Stopped') {
             await drainHeartbeat(heartbeat, seenLines, onEvent);
+            if (execStatus === 'Failed' && !workerReportedError) {
+              // Out of memory, a crash in native code, or a worker image
+              // from before it flushed its heartbeat on exit: the reason
+              // is only in the execution's own container log.
+              onEvent({
+                type: 'error',
+                ts: new Date().toISOString(),
+                message: `The sync worker stopped without reporting a reason (execution ${executionName}). `
+                  + 'The cause is in that execution\'s container log — often the worker ran out of memory.',
+              });
+            }
             return { exitCode: execStatus === 'Stopped' ? EXIT_CANCELLED : EXIT_ERROR };
           }
           // Still running — sleep + retry.

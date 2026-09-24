@@ -48,25 +48,15 @@ import { AnonymousCredential, AppendBlobClient } from '@azure/storage-blob';
 import * as fs from 'fs/promises';
 import { parseEnv } from './env';
 
+let activeHeartbeat: AppendBlobClient | null = null;
+
 async function main(): Promise<void> {
   const env = parseEnv();
 
-  // ─── Resolve connector config ──────────────────────────────────────────
-  // Two delivery paths:
-  //   • Local launcher → WORKER_CONFIG_FILE (path to a 0600 JSON file the
-  //     worker reads once and deletes). A file rather than an env var
-  //     because a config can exceed the 128 KB env-var ceiling — a
-  //     spreadsheet source carries the workbook — and because env vars are
-  //     world-readable via /proc to anything running as the same user.
-  //     `WORKER_CONNECTOR_CONFIG` still works and is the legacy path.
-  //   • Azure launcher → WORKER_CONFIG_BLOB_URL (read SAS to a private
-  //     blob containing the JSON). The credential never appears in the
-  //     Container Apps Job execution env, which Azure retains for ~30 days.
-  //
-  // Exactly one of the two must be present.
-  const connectorConfig = await resolveConnectorConfig(env);
-
   // ─── Heartbeat blob (Azure mode) ───────────────────────────────────────
+  // Created FIRST — before the config is fetched — because it is the only
+  // way back to the orchestrator in Azure mode, and a failure fetching the
+  // config is exactly the kind of error that needs to get back.
   // When WORKER_HEARTBEAT_URL is set, every emitted event is mirrored into
   // an append-blob the orchestrator polls. This is how live progress
   // reaches Clarion's UI when the worker runs in Container Apps Jobs.
@@ -85,6 +75,25 @@ async function main(): Promise<void> {
       heartbeat = null;
     }
   }
+  // Module-level so a throw before the sync's own try/catch (a config
+  // blob that cannot be read, an unknown connector type) still reaches
+  // the orchestrator through the blob instead of vanishing into stdout.
+  activeHeartbeat = heartbeat;
+
+  // ─── Resolve connector config ──────────────────────────────────────────
+  // Two delivery paths:
+  //   • Local launcher → WORKER_CONFIG_FILE (path to a 0600 JSON file the
+  //     worker reads once and deletes). A file rather than an env var
+  //     because a config can exceed the 128 KB env-var ceiling — a
+  //     spreadsheet source carries the workbook — and because env vars are
+  //     world-readable via /proc to anything running as the same user.
+  //     `WORKER_CONNECTOR_CONFIG` still works and is the legacy path.
+  //   • Azure launcher → WORKER_CONFIG_BLOB_URL (read SAS to a private
+  //     blob containing the JSON). The credential never appears in the
+  //     Container Apps Job execution env, which Azure retains for ~30 days.
+  //
+  // Exactly one of the two must be present.
+  const connectorConfig = await resolveConnectorConfig(env);
 
   // Stamped BEFORE any data work: the full re-sync's "seen by this run"
   // boundary (every row the run writes carries a later stamp).
@@ -190,16 +199,16 @@ async function main(): Promise<void> {
       // Non-empty ⇒ the orchestrator queues a continuation run (B3).
       incompleteEntities: result.incompleteEntities,
     }, heartbeat);
-    process.exit(EXIT_OK);
+    await exitAfterFlush(EXIT_OK);
   } catch (e) {
     if (e instanceof CancellationError) {
       emit({ type: 'cancelled', ts: new Date().toISOString() }, heartbeat);
-      process.exit(EXIT_CANCELLED);
+      await exitAfterFlush(EXIT_CANCELLED);
     }
     const message = e instanceof Error ? e.message : String(e);
     const stack = e instanceof Error ? e.stack : undefined;
     emit({ type: 'error', ts: new Date().toISOString(), message, stack }, heartbeat);
-    process.exit(EXIT_ERROR);
+    await exitAfterFlush(EXIT_ERROR);
   }
 }
 
@@ -209,14 +218,44 @@ async function main(): Promise<void> {
  * the same JSON line into it. Heartbeat append failures are swallowed —
  * the sync continues; we just lose live progress on the affected event.
  */
+// Appends are CHAINED, not fired in parallel, for two reasons:
+//   • ORDER. Parallel appendBlock calls land in whatever order the network
+//     returns them; the orchestrator replays the blob line by line, so a
+//     `result` could arrive before the `entity_complete` it summarises.
+//   • EXIT. `process.exit` does not wait for pending HTTP requests. Every
+//     terminal path emitted its event and exited on the next line, so the
+//     final `error` (and often the `result`) never reached the blob. In
+//     Azure mode that is the ONLY channel back, so a failed sync reported
+//     "Worker exited with code 1" with the reason thrown away — the reason
+//     sat in the container's stdout, which nobody on the Refresh page can
+//     read. `exitAfterFlush` waits for the chain before exiting.
+let heartbeatChain: Promise<void> = Promise.resolve();
+const HEARTBEAT_FLUSH_TIMEOUT_MS = 15_000;
+
 function emit(e: WorkerEvent, heartbeat: AppendBlobClient | null): void {
   emitWorkerEvent(e);
   if (heartbeat) {
-    const line = `${JSON.stringify(e)}\n`;
-    // Fire-and-forget. We don't await to avoid serialising the connector
-    // behind blob round trips; events are append-blob-atomic per call.
-    heartbeat.appendBlock(line, line.length).catch(() => {/* swallowed */});
+    // Byte length, not string length: appendBlock's contentLength is bytes,
+    // and an entity or error message with a non-ASCII character would be
+    // truncated (or refused) when measured in UTF-16 code units.
+    const line = Buffer.from(`${JSON.stringify(e)}\n`, 'utf-8');
+    heartbeatChain = heartbeatChain
+      .then(() => heartbeat.appendBlock(line, line.length))
+      .then(() => undefined, () => undefined);
   }
+}
+
+/**
+ * Exit once every heartbeat append has landed, or after a bounded wait —
+ * a storage outage must not keep a finished container alive until the
+ * orchestrator's wall-clock ceiling kills it.
+ */
+async function exitAfterFlush(code: number): Promise<never> {
+  await Promise.race([
+    heartbeatChain,
+    new Promise<void>((r) => setTimeout(r, HEARTBEAT_FLUSH_TIMEOUT_MS).unref()),
+  ]);
+  process.exit(code);
 }
 
 /**
@@ -308,13 +347,23 @@ function makeWarehouseWriter(warehousePath: string): WarehouseWriter {
 }
 
 // ─── Entry ────────────────────────────────────────────────────────────────
-main().catch((e) => {
-  // This catch only runs if main() rejects synchronously before its own
-  // try/catch (e.g. env-validation failure). Emit a structured error so
-  // the orchestrator can render it. Heartbeat is null because env
-  // parsing failed before we could create one.
+// A rejection nobody awaited (a connector's stray background promise)
+// terminates Node with exit 1 and no event at all — the same silent
+// "Worker exited with code 1". Report it the way every other failure is.
+process.on('unhandledRejection', (e) => {
   const message = e instanceof Error ? e.message : String(e);
   const stack = e instanceof Error ? e.stack : undefined;
-  emit({ type: 'error', ts: new Date().toISOString(), message, stack }, null);
-  process.exit(EXIT_ERROR);
+  emit({ type: 'error', ts: new Date().toISOString(), message: `Unhandled error: ${message}`, stack }, activeHeartbeat);
+  void exitAfterFlush(EXIT_ERROR);
+});
+
+main().catch((e) => {
+  // This catch only runs when main() throws outside the sync's own
+  // try/catch (env validation, the config fetch, an unknown connector
+  // type). Emit a structured error so the orchestrator can render it —
+  // through the heartbeat when one was created before the throw.
+  const message = e instanceof Error ? e.message : String(e);
+  const stack = e instanceof Error ? e.stack : undefined;
+  emit({ type: 'error', ts: new Date().toISOString(), message, stack }, activeHeartbeat);
+  void exitAfterFlush(EXIT_ERROR);
 });
