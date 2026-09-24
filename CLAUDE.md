@@ -34,8 +34,25 @@ with false assumptions and produces broken code.
 **Last updated:** 2026-09-24 (THE CLARION MARK — the brand and the AI
 assistant are one symbol now, with five states; the app accent moved from
 ocean teal to violet. Owner designed the mark over several rounds of image-AI
-concepts, then supplied a construction spec; frontend only, branch
-`claude/nifty-sagan-rj0cct`, draft PR.)
+concepts, then supplied a construction spec; frontend only. PR #187 —
+IN MAIN AND PRODUCTION the same afternoon, see the deploy record below.)
+
+**IN MAIN AND PRODUCTION (2026-09-24, 14:24 UTC) — owner: *"Pls put in main
+and live"*.** PR #187 taken out of draft and REBASE-merged as `d5dcebc` (all
+ten checks green on the head `787b071` first). **Build & Deploy run #627**:
+the gate waited 5m42s for Tests + Lint on the merged sha; ONLY the frontend
+built, as **`main-d5dcebc`** (backend, worker, ETL, `migrate-sql` and
+`neo4j-constraints` correctly skipped); the frontend test revision deployed
+at 0%, and **Go live shifted the frontend to `--main-d5dcebc` at 100% at
+14:24:05 UTC** (`BACKEND_CHANGED: false`, so no backend health check — the
+workflow's frontend-only path). Read from the job's own log. The backend
+stays on its previous image — expected, not drift. Rollback if needed:
+Actions → **Rollback production**. **WATCH**: the render checks ran against
+a production build with a MOCKED API; the first real session is the first
+time the mark meets live Ask AI streams — the progress card should show the
+rotating mark and the step dots, and a Take-with-care answer the amber state.
+Housekeeping: `claude/nifty-sagan-rj0cct` restarted from main at `d5dcebc`;
+this record rides a NEW draft PR.
 
 **THE SPEC'S GEOMETRY WAS WRONG AND WAS CORRECTED, NOT COPIED.** Rendered
 first: its 16° gaps minus two round caps (~11.5° each at the 24-unit master)
