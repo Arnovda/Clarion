@@ -58,7 +58,7 @@ function runningStep(m: CwMessage | undefined): CwStep | undefined {
 function focusOf(p: CoworkerProposal): CoworkerFocus | null {
   if (p.kind === 'sql') return { kind: 'table', tableId: p.tableId, tab: 'sql' };
   if (p.kind === 'table') return { kind: 'subject', productId: p.productId };
-  if (p.kind === 'relationship') return null;
+  if (p.kind === 'relationship') return { kind: 'relations', tableId: p.fromTableId };
   return null;
 }
 

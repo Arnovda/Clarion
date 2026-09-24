@@ -11,6 +11,10 @@ import {
   Loader2, AlertTriangle, CheckCircle2, Flag,
 } from 'lucide-react';
 import api from '@/lib/api';
+import {
+  useCoworker, useCoworkerChanged, useCoworkerFocusHandler, useCoworkerPageContext,
+} from '@/lib/coworker/CoworkerProvider';
+import type { CoworkerFocus, CoworkerPageContext } from '@/lib/contract';
 import { TableNode, type TableNodeData } from './TableNode';
 import { RelationEdge, EdgeMarkers, LAID_STROKE, type RelationEdgeData } from './RelationEdge';
 import { MeasurePanel } from './MeasurePanel';
@@ -69,6 +73,14 @@ function CanvasInner() {
   const searchParams = useSearchParams();
   const urlTableId = useMemo(() => {
     const raw = searchParams?.get('table');
+    const n = raw ? Number(raw) : NaN;
+    return Number.isFinite(n) ? n : null;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  // `?rel=<id>` opens that relationship — how the Studio coworker's "show it"
+  // lands on the link it just measured.
+  const urlRelId = useMemo(() => {
+    const raw = searchParams?.get('rel');
     const n = raw ? Number(raw) : NaN;
     return Number.isFinite(n) ? n : null;
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -134,16 +146,17 @@ function CanvasInner() {
   // Columns come with the graph, so revealing a table's fields is instant. At SMB
   // scale that payload is small, and a per-node round trip would make the one
   // interaction that must feel immediate feel laggy instead.
-  const load = useCallback(async () => {
-    setLoading(true);
-    setLoadError(null);
+  // `quiet` refreshes in place (after the coworker's Keep) — the full load
+  // replaces the canvas with a spinner and would throw the view away.
+  const load = useCallback(async (quiet = false) => {
+    if (!quiet) { setLoading(true); setLoadError(null); }
     try {
       const res = await api.get('/relationships/graph?withColumns=1');
       setGraph(res.data.data as GraphResponse);
     } catch {
-      setLoadError('Could not load your data relationships. Try again in a moment.');
+      if (!quiet) setLoadError('Could not load your data relationships. Try again in a moment.');
     } finally {
-      setLoading(false);
+      if (!quiet) setLoading(false);
     }
   }, []);
 
@@ -168,6 +181,13 @@ function CanvasInner() {
     // at instead of at the generic starting point. Safe inside this
     // ssr:false component (never prerendered, so no Suspense boundary
     // needed around useSearchParams).
+    const urlRel = urlRelId != null ? graph.relationships.find((r) => r.id === urlRelId) : undefined;
+    if (urlRel) {
+      setBucket(bucketOf(urlRel));
+      setSelectedTableId(urlTableId != null && (urlRel.fromTableId === urlTableId || urlRel.toTableId === urlTableId) ? urlTableId : urlRel.fromTableId);
+      setSelectedEdgeId(urlRel.id);
+      return;
+    }
     if (urlTableId != null && graph.tables.some((t) => t.id === urlTableId)) {
       setSelectedTableId(urlTableId);
       return;
@@ -182,7 +202,7 @@ function CanvasInner() {
       (pending.get(b.id) ?? 0) - (pending.get(a.id) ?? 0)
       || b.relationshipCount - a.relationshipCount)[0];
     setSelectedTableId(best.id);
-  }, [graph, urlTableId]);
+  }, [graph, urlTableId, urlRelId]);
 
   /** A revealed column list belongs to the table you were just looking at. */
   useEffect(() => { setShowAll(new Set()); }, [selectedTableId, selectedEdgeId]);
@@ -1036,6 +1056,43 @@ function CanvasInner() {
     const t = setTimeout(() => setPayoff(null), 5000);
     return () => clearTimeout(t);
   }, [payoff]);
+
+  // ── The Studio coworker (flag `ai_coworker`) ────────────────────────────
+  // What is in the middle of the canvas and which link is open is what "this"
+  // means to the person — say so. When the coworker opens a source table or
+  // measures a link, the canvas moves there instead of leaving for the
+  // catalog; a Keep refreshes the graph in place. Inert when the flag is off.
+  const cw = useCoworker();
+  const coworkerOn = cw?.enabled === true;
+  const coworkerContext = useMemo<CoworkerPageContext | null>(() => {
+    if (!coworkerOn || !graph) return null;
+    const anchor = anchorId != null ? graph.tables.find((t) => t.id === anchorId) : undefined;
+    const link = selectedRel
+      ? `${tableNameById.get(selectedRel.fromTableId) ?? 'table'}.${selectedRel.fromColumnId != null ? columnNameById.get(selectedRel.fromColumnId) ?? '?' : '?'}`
+        + ` → ${tableNameById.get(selectedRel.toTableId) ?? 'table'}.${selectedRel.toColumnId != null ? columnNameById.get(selectedRel.toColumnId) ?? '?' : '?'}`
+      : null;
+    return {
+      path: '/relationships',
+      label: link ?? (anchor ? `Relations of ${anchor.displayName || anchor.tableName}` : 'Relations'),
+      sourceTableId: anchor?.id ?? null,
+      connectionId: anchor?.connectionId ?? null,
+      relationshipId: selectedRel?.id ?? null,
+    };
+  }, [coworkerOn, graph, anchorId, selectedRel, tableNameById, columnNameById]);
+  useCoworkerPageContext(coworkerContext);
+  const showForCoworker = useCallback((f: CoworkerFocus) => {
+    if (!graph) return false;
+    if (f.kind !== 'relations' && f.kind !== 'source-table') return false;
+    if (!graph.tables.some((t) => t.id === f.tableId)) return false;
+    setSelectedTableId(f.tableId);
+    const rel = f.kind === 'relations' && f.relationshipId != null
+      ? graph.relationships.find((r) => r.id === f.relationshipId) : undefined;
+    if (rel) { setBucket(bucketOf(rel)); setSelectedEdgeId(rel.id); } else setSelectedEdgeId(null);
+    return true;
+  }, [graph]);
+  useCoworkerFocusHandler(coworkerOn ? showForCoworker : null);
+  const reloadQuietly = useCallback(() => { void load(true); }, [load]);
+  useCoworkerChanged(reloadQuietly);
 
   if (loading) {
     return (

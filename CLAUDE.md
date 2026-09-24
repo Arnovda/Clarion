@@ -59,7 +59,7 @@ migration. Git revert of the PR is the second lever.
   tenant context, ownership gates, data policies and the SQL guard all apply,
   and there is no second implementation of any rule. Tests point it at an
   ephemeral server (`setInternalApiBase`).
-- **It PROPOSES; a person KEEPS.** `services/coworker/tools.ts`: 9 read tools
+- **It PROPOSES; a person KEEPS.** `services/coworker/tools.ts`: 9 read tools (11 since the page slice below)
   (describe_workspace — reuses `buildCoverageContext`, search_catalog,
   open_subject, open_table, open_source_table — relationships graph with
   column ids, preview_rows, table_lineage, table_usage — dashboards/saved
@@ -141,11 +141,41 @@ migration. Git revert of the PR is the second lever.
   inputSpent), the `coworker` row on `/admin/ai-usage`, and whether answers
   pick the right tools. If the light model struggles, an admin can set the
   `Studio coworker` category to Sonnet 5 on `/admin/ai-usage` (costs more).
-- **Next slices, not built**: the other Studio pages report richer context
-  (today only the catalog does; elsewhere the panel knows the path and
-  follows to the catalog); KPIs/metrics proposals; dashboards and notebooks
-  joining the same coworker (their own assistants stay for now); an eval set
-  of standard tasks as the cost/quality gate; retiring `CatalogAssistant`
+- **SAME DAY, owner: *"Do b and then put in main and live"* — Relations,
+  Sources and Build are wired in too.** Two new READ tools (11 now):
+  `check_relationship` (the row read under an explicit tenant filter, then
+  the SAME `/relationships/measure` the canvas calls — it does NOT cache
+  the result: measuring is not deciding) and `source_status` (last 5 syncs:
+  status, rows, error, failed/still-loading tables — never the connection's
+  config). `open_source_table` now returns relationship ids;
+  `propose_relationship` focuses the canvas. Contract: `CoworkerPageContext.
+  relationshipId`; new focus `{kind:'relations', tableId, relationshipId?}`
+  — AUTO-followed only while the person is already on `/relationships` (a
+  measurement from the catalog must not yank them out of it); its fallback
+  href is `/relationships?table=&rel=` (GraphCanvas reads `?rel=`). A page's
+  focus handler now RETURNS FALSE for what it cannot show and the provider
+  falls back to `coworkerFocusHref` (the catalog hands `relations` back).
+  **Relations**: context = the anchor table + the open relationship (label
+  `A.col → B.col`); a check/propose moves the canvas; Keep reloads the graph
+  QUIETLY (`load(true)` — the full load swaps the canvas for a spinner).
+  **Sources**: "this source" = the card last touched (or the linked one, or
+  the only one); focus scrolls to the card with a brief ring. **Build**:
+  context = Build (+ the running/only source); a kept new subject's build
+  REATTACHES live on the page; the page's own "Ask about your subjects"
+  (AskPanel) steps aside while the coworker is on — two assistants that can
+  both add a subject is one too many. Other Studio pages (Definitions, Your
+  tables, Refresh, Suggestions, Shared data) still send only their path.
+  Tests: `coworker.test.ts` 12 (+2: source_status leaks no config/ciphertext
+  and the page's connection reaches the prompt; check_relationship focuses
+  the canvas and another tenant's relationship is "Not found" with its name
+  nowhere in the model's messages). Render-checked in headless Chromium with
+  the streaming mock (Relations/Sources/Build, zero page errors). Known: at
+  ~1480px the Relations page is cramped with the panel open (rail + list +
+  canvas + inspector + 420px panel) — collapse the panel to its pill there.
+- **Next slices, not built**: context for the remaining Studio pages;
+  KPIs/metrics proposals; dashboards and notebooks joining the same coworker
+  (their own assistants stay for now); an eval set of standard tasks as the
+  cost/quality gate; retiring `CatalogAssistant` and the Build `AskPanel`
   once the flag has been on Everyone for a while.
 
 **Prior last updated:** 2026-09-24 (STABLE INTEGER KEYS — `clarion_key`. Owner, from

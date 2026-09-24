@@ -526,7 +526,13 @@ function CatalogInner() {
     return base;
   }, [coworkerOn, scope, selection, resolvedTable]);
   useCoworkerPageContext(coworkerContext);
-  const followCoworker = useCallback((f: CoworkerFocus) => { void navigateTo(f); }, [navigateTo]);
+  // The canvas is not the catalog's to show: returning false hands it back
+  // to the provider, which opens /relationships.
+  const followCoworker = useCallback((f: CoworkerFocus) => {
+    if (f.kind === 'relations') return false;
+    void navigateTo(f);
+    return true;
+  }, [navigateTo]);
   useCoworkerFocusHandler(coworkerOn ? followCoworker : null);
   // A kept change remounts the view so the declaration shows what is stored.
   const [detailKey, setDetailKey] = useState(0);

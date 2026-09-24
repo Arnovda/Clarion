@@ -32,7 +32,7 @@
  * viewers while the disclosure exists.
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle, ArrowRight, Blocks, CheckCircle2, ChevronDown, ChevronRight,
   Eye, EyeOff, Library, Loader2, X,
@@ -49,6 +49,10 @@ import { cleanTopicName } from '@/components/products/helpers';
 import { TOPICS_CHANGED_EVENT } from '@/lib/topicsChanged';
 import { useRole, isAdminRole } from '@/lib/role';
 import AskPanel from './AskPanel';
+import {
+  useCoworker, useCoworkerChanged, useCoworkerPageContext,
+} from '@/lib/coworker/CoworkerProvider';
+import type { CoworkerPageContext } from '@/lib/contract';
 
 const BACKEND_URL = process.env.NEXT_PUBLIC_API_URL?.replace('/api', '') ?? 'http://localhost:3001';
 
@@ -266,19 +270,37 @@ function Build() {
 
   // Reattach: a build started earlier (or in another tab) keeps running on
   // the server; landing here mid-run must show it, not offer a second one.
+  const reattach = useCallback(async (isCancelled: () => boolean = () => false) => {
+    try {
+      const res = await api.get('/products/bus-matrix/active');
+      const active = res.data?.data as { jobId?: string; connectionId?: number } | null;
+      if (!isCancelled() && active?.jobId && active.connectionId && (!runRef.current || runRef.current.done)) {
+        void attachToJob(active.jobId, active.connectionId);
+      }
+    } catch { /* no active job — fine */ }
+  }, [attachToJob]);
   useEffect(() => {
     let cancelled = false;
-    (async () => {
-      try {
-        const res = await api.get('/products/bus-matrix/active');
-        const active = res.data?.data as { jobId?: string; connectionId?: number } | null;
-        if (!cancelled && active?.jobId && active.connectionId && !runRef.current) {
-          void attachToJob(active.jobId, active.connectionId);
-        }
-      } catch { /* no active job — fine */ }
-    })();
+    void reattach(() => cancelled);
     return () => { cancelled = true; };
-  }, [attachToJob]);
+  }, [reattach]);
+
+  // ── The Studio coworker (flag `ai_coworker`) ────────────────────────────
+  // It can propose a new subject; when the person keeps one, the build it
+  // starts shows up HERE, live, like one started with the button. While it is
+  // on, the page's own "Ask about your subjects" box steps aside — two
+  // assistants that can both add a subject is one too many. Inert when off.
+  const cw = useCoworker();
+  const coworkerOn = cw?.enabled === true;
+  const coworkerContext = useMemo<CoworkerPageContext | null>(() => {
+    if (!coworkerOn) return null;
+    const only = overview?.sources.length === 1 ? overview.sources[0] : undefined;
+    const connectionId = run && !run.done ? run.connectionId : only?.id ?? null;
+    return { path: '/build', label: 'Build — your subjects and what they are built from', connectionId };
+  }, [coworkerOn, overview, run]);
+  useCoworkerPageContext(coworkerContext);
+  const onCoworkerChanged = useCallback(() => { void load(); void reattach(); }, [load, reattach]);
+  useCoworkerChanged(onCoworkerChanged);
 
   // P1-1 queue position: with two build slots shared fairly across
   // customers, a build can genuinely queue behind another workspace's now.
@@ -396,7 +418,9 @@ function Build() {
           </div>
         </header>
 
-        <AskPanel building={building} onAttach={(jobId, connId) => void attachToJob(jobId, connId)} />
+        {!coworkerOn && (
+          <AskPanel building={building} onAttach={(jobId, connId) => void attachToJob(jobId, connId)} />
+        )}
 
         {error && <p className="text-[13px] text-err">{error}</p>}
 
