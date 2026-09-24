@@ -57,6 +57,8 @@ export interface CoworkerTool {
    * tenant's privacy choice outranks a convenience.
    */
   sendsRows?: boolean;
+  /** Characters of `result` the model reads back (default: the agent's 6 000). */
+  resultLimit?: number;
   /** The step's label, in the product's words — the person reads this live. */
   label: (input: Record<string, unknown>) => string;
   run: (ctx: ToolContext, input: Record<string, unknown>) => Promise<ToolOutcome>;
@@ -85,16 +87,79 @@ function text(input: Record<string, unknown>, key: string, max: number, required
   return v;
 }
 
+/**
+ * What the model reads when an id does not resolve. It says what to do next,
+ * because a bare "not found" is what led the model to give up and tell the
+ * person it was "having trouble opening it" — the id it tried was a guess.
+ */
+const NOT_FOUND = 'Not found in this workspace. Take ids only from describe_workspace, search_catalog or the bracket line — never guess one. You can also pass the name instead of the id.';
+
 async function get(ctx: ToolContext, path: string) {
   const r = await internalCall(ctx.caller, 'GET', path);
-  if (!r.ok) throw new ToolError(r.status === 404 ? 'Not found in this workspace.' : r.error ?? 'The lookup failed.');
+  if (!r.ok) throw new ToolError(r.status === 404 ? NOT_FOUND : r.error ?? 'The lookup failed.');
   return r.data;
 }
 
 async function post(ctx: ToolContext, path: string, body: unknown) {
   const r = await internalCall(ctx.caller, 'POST', path, body);
-  if (!r.ok) throw new ToolError(r.status === 404 ? 'Not found in this workspace.' : r.error ?? 'The check failed.');
+  if (!r.ok) throw new ToolError(r.status === 404 ? NOT_FOUND : r.error ?? 'The check failed.');
   return r.data;
+}
+
+function optPosInt(input: Record<string, unknown>, key: string): number | null {
+  if (input[key] === undefined || input[key] === null || input[key] === '') return null;
+  return posInt(input, key);
+}
+
+const norm = (s: unknown) => String(s ?? '').trim().toLowerCase();
+
+/**
+ * Resolve a subject by NAME (the person says "the Cash Flow subject", not an
+ * id). Exact name first, then a single partial match; more than one partial
+ * match is a refusal listing them, so the model asks instead of picking.
+ * Explicit tenant filter — an authorisation input never rides the session.
+ */
+async function subjectIdByName(ctx: ToolContext, name: string): Promise<number> {
+  const rows = (await ctx.db('data_products').where({ tenant_id: ctx.tenantId }).select('id', 'name')) as Array<{ id: number; name: string }>;
+  const want = norm(name);
+  const exact = rows.filter((r) => norm(r.name) === want);
+  if (exact.length === 1) return Number(exact[0].id);
+  const partial = (exact.length ? exact : rows.filter((r) => norm(r.name).includes(want) || want.includes(norm(r.name))));
+  if (partial.length === 1) return Number(partial[0].id);
+  if (!partial.length) throw new ToolError(`There is no subject called "${name}". Subjects here: ${rows.map((r) => `${r.name} (product_id ${r.id})`).join(', ') || 'none'}.`);
+  throw new ToolError(`More than one subject matches "${name}": ${partial.map((r) => `${r.name} (product_id ${r.id})`).join(', ')}. Pick one.`);
+}
+
+/**
+ * Resolve a subject TABLE by its technical or display name, optionally inside
+ * one subject. A shared lookup's copies resolve to the original (the one that
+ * holds the SQL), so the model never opens a copy it could not change.
+ */
+async function subjectTableIdByName(ctx: ToolContext, name: string, productId: number | null): Promise<number> {
+  const q = ctx.db('product_tables as pt')
+    .join('star_schemas as ss', 'pt.star_schema_id', 'ss.id')
+    .join('data_products as dp', 'ss.data_product_id', 'dp.id')
+    .where('dp.tenant_id', ctx.tenantId)
+    .select('pt.id', 'pt.table_name', 'pt.display_name', 'pt.source_product_table_id', 'pt.is_shared_dimension', 'dp.id as product_id', 'dp.name as product_name');
+  if (productId) q.andWhere('dp.id', productId);
+  const rows = (await q) as Array<{ id: number; table_name: string; display_name: string | null; source_product_table_id: number | null; is_shared_dimension: boolean | null; product_id: number; product_name: string }>;
+  const want = norm(name);
+  const matches = rows.filter((r) => norm(r.table_name) === want || norm(r.display_name) === want);
+  const originals = matches.filter((r) => !r.source_product_table_id && r.is_shared_dimension !== true);
+  const pick = originals.length ? originals : matches;
+  const ids = [...new Set(pick.map((r) => Number(r.source_product_table_id ?? r.id)))];
+  if (ids.length === 1) return ids[0];
+  if (!ids.length) throw new ToolError(`No subject table is called "${name}"${productId ? ' in that subject' : ''}. Use search_catalog to find it.`);
+  throw new ToolError(`More than one table matches "${name}": ${pick.map((r) => `${r.display_name || r.table_name} in ${r.product_name} (table_id ${r.id})`).join(', ')}. Pick one.`);
+}
+
+/** Names for a source table + column, for a proposal card. Tenant-filtered. */
+async function sourceColumnLabel(ctx: ToolContext, tableId: number, columnId: number): Promise<string | null> {
+  const row = await ctx.db('source_columns as sc')
+    .join('source_tables as st', 'sc.table_id', 'st.id')
+    .where({ 'sc.id': columnId, 'st.id': tableId, 'st.tenant_id': ctx.tenantId })
+    .first('st.table_name', 'st.display_name', 'sc.column_name');
+  return row ? `${row.display_name || row.table_name}.${row.column_name}` : null;
 }
 
 const IDENT = /^[A-Za-z_][A-Za-z0-9_]*$/;
@@ -140,13 +205,14 @@ const describeWorkspace: CoworkerTool = {
   kind: 'read',
   definition: {
     name: 'describe_workspace',
-    description: 'Overview of the whole workspace: every source with its synced tables (and which subject uses each), every subject with its tables and metrics. Call this first when you do not know what exists.',
+    description: 'Overview of the whole workspace WITH IDS: every subject (product_id) with its tables (table_id) and metrics, every source (connection_id) with its synced tables (source table_id) and which subject uses each. Call this first when you do not know what exists; use its ids with the open_* tools.',
     input_schema: { type: 'object', properties: {}, additionalProperties: false },
   },
+  resultLimit: 14_000,
   label: () => 'Reading what is in the workspace',
   async run(ctx) {
-    const coverage = await buildCoverageContext(ctx.db as Knex, ctx.tenantId);
-    return { result: clip(coverage.text, 9000), detail: `${coverage.connectionIds.size} source(s), ${coverage.productNamesLower.size} subject(s)` };
+    const coverage = await buildCoverageContext(ctx.db as Knex, ctx.tenantId, { withIds: true });
+    return { result: clip(coverage.text, 14_000), detail: `${coverage.connectionIds.size} source(s), ${coverage.productNamesLower.size} subject(s)` };
   },
 };
 
@@ -154,10 +220,10 @@ const searchCatalog: CoworkerTool = {
   kind: 'read',
   definition: {
     name: 'search_catalog',
-    description: 'Find tables and columns by name or meaning across sources and subjects. Returns ids you can open.',
+    description: 'Find subjects, tables and columns by name across sources and subjects. Returns ids you can open (product_id for a subject, table_id for a table).',
     input_schema: {
       type: 'object',
-      properties: { query: { type: 'string', description: 'Two or more characters, e.g. "invoice" or "customer country".' } },
+      properties: { query: { type: 'string', description: 'Two or more characters, e.g. "cash flow", "invoice" or "customer country".' } },
       required: ['query'],
       additionalProperties: false,
     },
@@ -165,21 +231,33 @@ const searchCatalog: CoworkerTool = {
   label: (i) => `Searching the catalog for “${clip(i.query, 40)}”`,
   async run(ctx, input) {
     const q = text(input, 'query', 120);
+    // Subjects by name — the catalog search matches tables and columns only,
+    // and "the Cash Flow subject" is how a person names what they mean.
+    const pattern = `%${q.replace(/[%_\\]/g, (c) => `\\${c}`)}%`;
+    const subjects = (await ctx.db('data_products')
+      .where({ tenant_id: ctx.tenantId })
+      .andWhere((qb) => qb.where('name', 'ilike', pattern).orWhere('description', 'ilike', pattern))
+      .orderBy('name').limit(10)
+      .select('id', 'name', 'kind')) as Array<{ id: number; name: string; kind: string | null }>;
     const data = await get(ctx, `/catalog/search?q=${encodeURIComponent(q)}`);
     const hits = Array.isArray(data) ? data : [];
-    return {
-      result: hits.slice(0, 25).map((h: Record<string, unknown>) => {
+    const found = [
+      ...subjects.map((p) => ({ layer: 'subject', kind: p.kind === 'reference' ? 'shared data' : 'subject', product_id: Number(p.id), name: p.name })),
+      ...hits.slice(0, 25).map((h: Record<string, unknown>) => {
         // The schema slug ends in the owner's id: `exact_online_17` → source 17,
         // `finance_4` → subject 4. That is how the catalog addresses a hit.
         const ownerId = Number(String(h.schemaSlug ?? '').match(/_(\d+)$/)?.[1] ?? 0) || undefined;
-        const layer = h.catalog === 'sources' ? 'source' : 'subject';
+        const layer = h.catalog === 'sources' ? 'source' : 'subject table';
         return {
           layer, kind: h.kind, table_id: Number(h.tableId), table: h.tableName, label: h.tableLabel,
           column: h.columnName ?? undefined, in: h.schemaLabel,
           ...(layer === 'source' ? { connection_id: ownerId } : { product_id: ownerId }),
         };
       }),
-      detail: `${hits.length} match${hits.length === 1 ? '' : 'es'}`,
+    ];
+    return {
+      result: found.length ? found : 'Nothing matches. Try another word, or describe_workspace for the full list.',
+      detail: `${found.length} match${found.length === 1 ? '' : 'es'}`,
     };
   },
 };
@@ -188,29 +266,41 @@ const openSubject: CoworkerTool = {
   kind: 'read',
   definition: {
     name: 'open_subject',
-    description: 'Open a subject (a data product): its description, its tables (with ids, role, row counts, shared-from) and metrics. The screen follows.',
+    description: 'Open a subject (a data product) by product_id OR by its name: its description, its tables (table_id, role, row counts, shared-from) and its metrics with their formulas. The screen follows.',
     input_schema: {
       type: 'object',
-      properties: { product_id: { type: 'integer' } },
-      required: ['product_id'],
+      properties: {
+        product_id: { type: 'integer' },
+        name: { type: 'string', description: 'The subject\'s name, e.g. "Cash Flow" — when you have no id.' },
+      },
       additionalProperties: false,
     },
   },
-  label: () => 'Opening the subject',
+  label: (i) => (i.name ? `Opening ${clip(i.name, 40)}` : 'Opening the subject'),
   async run(ctx, input) {
-    const productId = posInt(input, 'product_id');
+    const byId = optPosInt(input, 'product_id');
+    const name = text(input, 'name', 120, false);
+    if (!byId && !name) throw new ToolError('Give product_id or name.');
+    const productId = byId ?? await subjectIdByName(ctx, name);
     const p = await get(ctx, `/products/${productId}`);
+    const kpis = ((await get(ctx, `/products/${productId}/kpis`).catch(() => [])) ?? []) as Array<Record<string, unknown>>; // non-db: a loopback HTTP call
     const tables = (p?.star_schemas ?? []).flatMap((s: { tables?: unknown[] }) => s.tables ?? []) as Array<Record<string, unknown>>;
     return {
       focus: { kind: 'subject', productId },
-      detail: `${clip(p?.name, 40)} · ${tables.length} table(s)`,
+      detail: `${clip(p?.name, 40)} · ${tables.length} table(s)${kpis.length ? ` · ${kpis.length} metric(s)` : ''}`,
       result: {
-        id: productId, name: p?.name, description: clip(p?.description, 400), connection_id: p?.connection_id,
+        product_id: productId, name: p?.name, description: clip(p?.description, 400), connection_id: p?.connection_id,
         tables: tables.slice(0, 40).map((t) => ({
-          id: t.id, name: t.table_name, label: t.display_name ?? undefined, role: t.table_role,
+          table_id: t.is_reference === true && t.owner_table_id ? t.owner_table_id : t.id,
+          name: t.table_name, label: t.display_name ?? undefined, role: t.table_role,
           rows: t.row_count ?? undefined, status: t.transformation_status ?? undefined,
           shared_from_another_subject: t.is_reference === true || t.is_shared_dimension === true || undefined,
           description: clip(t.description, 160) || undefined,
+        })),
+        metrics: kpis.slice(0, 20).map((k) => ({
+          name: k.name, question: k.question_text ?? undefined,
+          formula: clip(k.formula_sql ?? k.formula_plain_text, 300) || undefined,
+          description: clip(k.description, 160) || undefined,
         })),
       },
     };
@@ -221,23 +311,29 @@ const openTable: CoworkerTool = {
   kind: 'read',
   definition: {
     name: 'open_table',
-    description: 'Open a SUBJECT table by its id: its SQL declaration, columns, build state and who changed it last. The screen follows to its SQL.',
+    description: 'Open a SUBJECT table by table_id OR by its name (technical like fact_receivables, or its label): its SQL declaration, columns, build state and who changed it last. The screen follows to its SQL.',
     input_schema: {
       type: 'object',
-      properties: { table_id: { type: 'integer', description: 'The product table id.' } },
-      required: ['table_id'],
+      properties: {
+        table_id: { type: 'integer', description: 'The subject table id.' },
+        table_name: { type: 'string', description: 'When you have no id: the table\'s technical name or label.' },
+        product_id: { type: 'integer', description: 'Optional, with table_name: only look in this subject.' },
+      },
       additionalProperties: false,
     },
   },
-  label: () => 'Opening the table',
+  label: (i) => (i.table_name ? `Opening ${clip(i.table_name, 40)}` : 'Opening the table'),
   async run(ctx, input) {
-    const tableId = posInt(input, 'table_id');
+    const byId = optPosInt(input, 'table_id');
+    const name = text(input, 'table_name', 128, false);
+    if (!byId && !name) throw new ToolError('Give table_id or table_name.');
+    const tableId = byId ?? await subjectTableIdByName(ctx, name, optPosInt(input, 'product_id'));
     const d = await get(ctx, `/products/tables/${tableId}/declaration`);
     return {
       focus: { kind: 'table', tableId, tab: 'sql' },
       detail: `${clip(d?.display_name || d?.table_name, 48)} · ${d?.row_count ?? '?'} rows`,
       result: {
-        id: tableId, name: d?.table_name, label: d?.display_name ?? undefined, role: d?.table_role,
+        table_id: tableId, name: d?.table_name, label: d?.display_name ?? undefined, role: d?.table_role,
         subject: d?.product?.name, product_id: d?.product?.id,
         status: d?.transformation_status, rows: d?.row_count, last_error: clip(d?.last_run_error, 300) || undefined,
         changed_since_last_build: d?.pending_rebuild, shared_from: d?.shared_from?.productName ?? undefined,
@@ -249,6 +345,7 @@ const openTable: CoworkerTool = {
       },
     };
   },
+  resultLimit: 12_000,
 };
 
 const openSourceTable: CoworkerTool = {
@@ -393,15 +490,19 @@ const proposeSqlChange: CoworkerTool = {
       type: 'object',
       properties: {
         table_id: { type: 'integer' },
+        table_name: { type: 'string', description: 'When you have no id: the table\'s technical name or label.' },
         instruction: { type: 'string', description: 'The change in plain words, precise: which columns, which filter, which join.' },
       },
-      required: ['table_id', 'instruction'],
+      required: ['instruction'],
       additionalProperties: false,
     },
   },
   label: () => 'Drafting and compiling a SQL change',
   async run(ctx, input) {
-    const tableId = posInt(input, 'table_id');
+    const byId = optPosInt(input, 'table_id');
+    const name = text(input, 'table_name', 128, false);
+    if (!byId && !name) throw new ToolError('Give table_id or table_name.');
+    const tableId = byId ?? await subjectTableIdByName(ctx, name, null);
     const instruction = text(input, 'instruction', 1500);
     const before = await get(ctx, `/products/tables/${tableId}/declaration`);
     if (before?.is_copy) throw new ToolError(`This table is a copy of a shared table${before?.shared_from?.productName ? ` from ${before.shared_from.productName}` : ''} — change the original instead.`);
@@ -449,16 +550,20 @@ const proposeRelationship: CoworkerTool = {
       toTableId: posInt(input, 'to_table_id'), toColumnId: posInt(input, 'to_column_id'),
     };
     const reason = text(input, 'reason', 400);
+    // Names for the card — and a check that each column belongs to the table
+    // it was named with, BEFORE spending a measurement on it. Read directly
+    // (tenant-filtered) rather than from the canvas graph: the target of a
+    // NEW relationship is by definition not yet a neighbour on it, and the
+    // card said "table 412.column 9031".
+    const fromLabel = await sourceColumnLabel(ctx, ids.fromTableId, ids.fromColumnId);
+    const toLabel = await sourceColumnLabel(ctx, ids.toTableId, ids.toColumnId);
+    if (!fromLabel) throw new ToolError('from_column_id is not a column of from_table_id in this workspace. Open the source table to get its column ids.');
+    if (!toLabel) throw new ToolError('to_column_id is not a column of to_table_id in this workspace. Open the source table to get its column ids.');
     const m = await post(ctx, '/relationships/measure', ids);
-    // Names for the card, from the same graph the canvas reads.
-    const g = await get(ctx, `/relationships/graph?anchorTableId=${ids.fromTableId}&depth=1&withColumns=1`).catch(() => null); // non-db: a loopback HTTP call
-    const tname = (id: number) => { const t = (g?.tables ?? []).find((x: Record<string, unknown>) => Number(x.id) === id); return t ? String(t.displayName || t.tableName) : `table ${id}`; };
-    const cname = (id: number) => { const c = (g?.columns ?? []).find((x: Record<string, unknown>) => Number(x.id) === id); return c ? String(c.column_name) : `column ${id}`; };
     const ratio = m?.containment?.ratio;
     const proposal: CoworkerProposal = {
       id: randomUUID(), kind: 'relationship', ...ids,
-      fromLabel: `${tname(ids.fromTableId)}.${cname(ids.fromColumnId)}`,
-      toLabel: `${tname(ids.toTableId)}.${cname(ids.toColumnId)}`,
+      fromLabel, toLabel,
       reason,
       measurement: {
         verdict: m?.verdict ?? 'unmeasurable', reason: String(m?.reason ?? ''),
@@ -586,9 +691,9 @@ const proposeNewSubject: CoworkerTool = {
       properties: {
         connection_id: { type: 'integer' },
         name: { type: 'string', description: 'A business name, e.g. "Quotations".' },
-        description: { type: 'string' },
-        entities: { type: 'array', items: { type: 'string' }, minItems: 1, maxItems: 25, description: 'Exact synced source table names.' },
-        focus: { type: 'string', description: 'Optional: what the person most wants to answer with it.' },
+        description: { type: 'string', description: 'At most 500 characters.' },
+        entities: { type: 'array', items: { type: 'string' }, minItems: 1, maxItems: 12, description: 'Exact synced source table names (at most 12).' },
+        focus: { type: 'string', description: 'Optional, at most 300 characters: what the person most wants to answer with it.' },
       },
       required: ['connection_id', 'name', 'description', 'entities'],
       additionalProperties: false,
@@ -596,10 +701,14 @@ const proposeNewSubject: CoworkerTool = {
   },
   label: (i) => `Preparing a new subject “${clip(i.name, 40)}”`,
   async run(ctx, input) {
+    // The limits are the build route's own (busMatrixExtendStartSchema): a
+    // proposal the route would refuse is a Keep button that can only fail.
     const connectionId = posInt(input, 'connection_id');
     const name = text(input, 'name', 80);
-    const entities = (Array.isArray(input.entities) ? input.entities : []).map((e) => String(e).trim()).filter(Boolean).slice(0, 25);
+    if (name.length < 2) throw new ToolError('The name needs at least two characters.');
+    const entities = [...new Set((Array.isArray(input.entities) ? input.entities : []).map((e) => String(e).trim()).filter(Boolean))];
     if (!entities.length) throw new ToolError('Name at least one synced source table.');
+    if (entities.length > 12) throw new ToolError('A new subject is built from at most 12 source tables — pick the ones it needs.');
     const coverage = await buildCoverageContext(ctx.db as Knex, ctx.tenantId);
     if (!coverage.connectionIds.has(connectionId)) throw new ToolError('That source is not in this workspace.');
     if (coverage.productNamesLower.has(name.toLowerCase())) throw new ToolError(`A subject called "${name}" already exists.`);
@@ -608,10 +717,10 @@ const proposeNewSubject: CoworkerTool = {
     if (missing.length) throw new ToolError(`Not synced on that source: ${missing.join(', ')}.`);
     const conn = await get(ctx, '/connections').catch(() => []); // non-db: a loopback HTTP call
     const connectionName = String((Array.isArray(conn) ? conn : []).find((c: { id: number }) => Number(c.id) === connectionId)?.name ?? `source ${connectionId}`);
-    const focusText = text(input, 'focus', 400, false);
+    const focusText = text(input, 'focus', 300, false);
     const proposal: CoworkerProposal = {
       id: randomUUID(), kind: 'subject', connectionId, connectionName, name,
-      description: text(input, 'description', 600), entities, ...(focusText ? { focus: focusText } : {}),
+      description: text(input, 'description', 500), entities, ...(focusText ? { focus: focusText } : {}),
     };
     return { proposal, detail: `${entities.length} source table(s) from ${connectionName}`, result: { proposed: true } };
   },
