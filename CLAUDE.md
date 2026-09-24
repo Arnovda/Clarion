@@ -31,7 +31,45 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-09-24 (THE STUDIO COWORKER — one AI colleague docked
+**Last updated:** 2026-09-24 (ONE LOOK FOR THE ASSISTANT — owner: *"include
+the same symbol in Ask and in dashboards for the AI chat, also with the
+thinking animation and working animation … push to prd and live directly"*.
+Frontend only.)
+
+**NEW `frontend/components/brand/AssistantKit.tsx` — the ONE set of pieces
+every AI surface composes**: `assistantMarkState` (the mark IS the status:
+working · checking while it verifies · a `useDoneMoment` beat of done ·
+uncertain when it stopped short), `useNow`/`fmtElapsed` (the ticking
+"Working 6s"), `AssistantIdentity` (mark + Clarion wordmark + one mono status
+line), `WorkStep` (spinner → tick / warning, hollow when pending, sky-blue
+spinner for a verification step, `indent` for appended sub-steps) and
+`LiveThought` (streamed reasoning with the blinking cursor). **Extend this
+file; a surface drawing its own spinner is how the three drift apart again.**
+- **Studio coworker** moved onto it — no visual change, it is the reference.
+- **Dashboard assistant** (`AssistantPanel.tsx`): header = identity (24) with
+  status Working / Checking against your data (phases and running steps
+  starting "Check…") / Stopped short / Dashboard assistant; the pill carries
+  the 24px mark in the same state; plan steps are `WorkStep`s; the phase line
+  streams as a `LiveThought`; the Ask-mode wait is the working mark +
+  "Thinking" instead of three bouncing dots; an empty panel shows the mark at
+  rest and one line of what it can do.
+- **Ask**: the progress card opens with the identity (Working + its own
+  clock, started on mount), the four steps are `WorkStep`s and the live
+  reasoning keeps its bounded auto-scrolling pane with the cursor; the
+  double-checking panel is identity in `checking` → `done`, its thoughts are
+  `LiveThought`s (the newest one live) and "Checking the data" / "Correcting
+  the query" are steps — the four emoji (💭🔍✏️❓) are gone; the empty page
+  shows the 48px mark at rest; the error card carries the mark in
+  `uncertain` instead of ✕.
+- NOT done: a "done" beat on an Ask answer (the progress card unmounts when
+  the answer lands; the answer card's trust line stays the receipt).
+- Validation: frontend `tsc` clean, touched files lint-clean, vitest 94/94,
+  `next build` green; render-checked in headless Chromium on a throwaway
+  fixture page (deleted) — every state above, zero page errors; the check
+  caught the elapsed time drawn three times in one dashboard panel (header
+  copy removed, as in the coworker).
+
+**Prior last updated:** 2026-09-24 (THE STUDIO COWORKER — one AI colleague docked
 in Studio that looks things up, PROPOSES changes and shows its work live;
 owner: *"I want the AI to feel like a coworker, like in Databricks … one
 fixed place … see in real time what it changes"*, then, after the design and
