@@ -31,7 +31,128 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-09-23 (THIRD SLICE OF THE DAY — A CARD CAN BE REMOVED IN
+**Last updated:** 2026-09-24 (A SHARED LOOKUP IS ONE TABLE, IN ONE PLACE —
+owner, with three screenshots: Reference › Journal showed data and its SQL,
+Purchasing › Journal showed *"No data yet — run the transformation for this
+table first"* and an empty SQL editor. *"I think we should just not display
+reference tables in different subjects like Purchasing? … Give me your honest
+opinion."* Research first, then *"Do everything you propose, but keep the
+Reference subject for now instead of Shared Data"*. Branch
+`claude/kind-cori-98hpxi`, draft PR — NOT merged or deployed.)
+
+**THE ROOT CAUSE WAS NOT THE DISPLAY. A POINTER NOTHING EVER WROTE.** When a
+subject uses a lookup another subject builds, the builder writes a COPY row
+into the using subject (`is_shared_dimension = true`, no SQL, the columns
+copied). `product_tables.source_product_table_id` — the copy → original
+pointer — has existed since migration 31 (April), and FOUR readers were built
+on it: the SQL tab's *"built once in Reference"*, the refusal to save SQL on a
+copy, the subject payload's owner enrichment, the quality resolver. **No code
+in the backend ever set it**, so all four silently fell back to the empty
+copy. Its data depended on the runner mirroring the original's `delta_path`
+at refresh time — a snapshot that never happened for Purchasing (*"not built
+yet"* = `last_run_at` NULL on the copy). Worse than empty: **saving SQL on a
+copy was ACCEPTED** (the refusal was dead), compiled, stored — and never
+built, because the runner skips copies; "Rebuild now" reported success. And a
+copy's columns were copied once at build time, so an edit on either side
+forked one definition into two, and Ask AI read whichever it picked up. The
+declaration suite's "a stub refuses naming the owner" test set the pointer BY
+HAND — it pinned a state the product never produced.
+
+- **NEW `services/sharedTables.ts` — the one writer.** `linkSharedTables(db,
+  tenantId, connectionId?)`: one UPDATE that points every unlinked copy at the
+  original with the same name in the same tenant, on the same source OR in a
+  subject it declares a dependency on (dependency wins, then a row with SQL,
+  then the oldest). Idempotent. `buildBusMatrix` calls it at the end of its
+  transaction for the connection — which also relinks copies OUTSIDE a
+  rebuild whose original the rebuild retired (the FK is `ON DELETE SET NULL`).
+  **Migration 102** backfills every tenant with a FROZEN copy of the rule
+  (a migration records what was done; `down` is a deliberate no-op).
+  `sharedOriginalOf` + `sharedEditRefusal` + `originalTableSql(alias)` +
+  `sharedTableInfo` complete it.
+- **EVERY READER GOES THROUGH THE POINTER.** `tableCatalog`'s four product
+  queries left-join the original as `own` and read location, row count,
+  freshness and status THROUGH it (`readThroughColumns` / `READY_SQL`), so a
+  copy answers with its original's data the moment it is linked — no refresh
+  needed; copy and original agree by URI, so the registration rule keeps the
+  bare name. `publishStubFromUpstream` prefers the pointer. `productContext`
+  describes a copy with the ORIGINAL's id → columns, descriptions, name and
+  grain (a copy's star schema grain was the using subject's FACT grain), and
+  lists each table once per source, originals first — with several subjects in
+  scope the model had read `Table dim_journal` once per copy.
+- **A copy takes no edits.** `PUT …/sql` and `/sql/propose` refuse on ANY
+  copy, linked or not (was: only when the dead pointer was set);
+  `PATCH /semantic/product-tables|product-columns/:id` and
+  `PATCH /products/tables/:id` refuse with *"This table is shared from
+  Reference — change it there."* The declaration read model gained `is_copy`;
+  `SqlDeclaration` says a copy with no built original is shared data.
+- **THE CATALOG SHOWS EACH TABLE ONCE (Reference kept as a subject, per the
+  owner).** `/api/catalog/products` counts the tables a subject BUILDS
+  (Postgres, not the graph) and ships `meta.sharedTableCount`;
+  `/api/catalog/products/:schema` marks each table `isCopy` + `sharedFrom`
+  (the original's graph id, pg id, subject, slug) + `pgTableId`; search
+  excludes copies (`originalTableSql`). **`CatalogBrowser`** lists a subject's
+  own tables and ONE quiet collapsed line *"Uses 6 from Reference"* whose rows
+  (↗) select the ORIGINAL, so the highlight moves to where it lives; a lookup
+  nobody built reads *not built yet*. **Every other door** — an old
+  `?tableId=<copy>` link, the Relations diagram, lineage, *Also used in* —
+  goes through `canonicalTreeTable` on the catalog page and opens the
+  original, rewriting the address bar (`/semantic/product-tree` ships
+  `is_copy` / `owner_pg_table_id` / `owner_graph_id` per table). **Subject
+  page** (`ProductFullView`): Tables tab = *Built here (N)* + *Uses from
+  Reference (N)* as links; tab count, Overview tables/rows, Lineage chips,
+  History and viewer Quality are about the built tables only.
+  `GET /products/:id` marks unlinked copies `is_reference` too and ships
+  `owner_table_id`.
+- **TIDY-UPS.** Sample data (`/semantic/product-preview`) drops the table's
+  `is_technical` columns (join keys, GUIDs) and underscore machinery
+  (`_row_hash`) from the SELECT itself, and ships `labels` — `PreviewTable`
+  shows the business name with the raw one as tooltip; the source-layer
+  preview is unchanged (`hideUnderscored` is product-only). Its error no
+  longer carries the storage URI to every role (`sanitizeSqlError`). Tree
+  DIM/FACT chips and the header's DIMENSION badge are business words now —
+  the header says *Lookup* / *Measures*; the tree uses a TYPE ICON with
+  *"Measures table"* etc. as tooltip, because **the render check caught the
+  word chip cutting "Purchase Entry Lines" to "Purchase Entry…"** at the
+  tree's 280px.
+- **DRIVE-BY, found by the new suite: `/api/catalog` (subject list, source
+  list, search, a subject's tables) had NO explicit tenant filter** — RLS alone.
+  Explicit `tenant_id` filters added throughout (the house rule; no leak under
+  the production role, but a listing must not ride the session variable).
+- **NOT DONE, deliberately — step 5 of the proposal (replace copy rows with a
+  "subject uses table X" record).** After the above a copy is a pure pointer:
+  shown nowhere, no data, no SQL, no edits. The row is still load-bearing for
+  `product_relationships`, the star diagram, the runner's dependency loading,
+  the graph mirror and the topics canvas; replacing it is a multi-module data
+  migration with nothing left to gain on screen. Revisit only if copies cause a
+  NEW problem. Also left: descriptions already edited on a copy before today
+  are not merged into the original (no reader uses them now); raw codes such
+  as Journal `Type` 90/10/20 are still untranslated.
+- Validation: backend `npm run check` clean; NEW
+  `tests/shared-lookups.test.ts` **11** (link written/idempotent/tenant-bound,
+  the migration across tenants, catalog read-through, declaration + refusal
+  incl. the unlinked copy, definition edits refused, subject payload, counts,
+  search, Ask AI context once with the original's text, sample rows without
+  technical columns, the BUILDER linking its own copies across a rebuild —
+  **verified RED** with the builder's link call removed); full backend suite
+  **98/98 files** (958 passed + the new file; two files first failed only
+  because they ran on the shell's Node 22 against a Node-20 `better-sqlite3` —
+  green on Node 20, the product's Node); all TWELVE ratchets green from the
+  repo root (no-console caught a log line in migration 102, removed); frontend
+  `tsc` clean, touched files lint-clean, vitest 85/85, `next build` green 46/46
+  (`/catalog` 60 kB / 351 kB). **RENDER-CHECKED IN HEADLESS CHROMIUM against
+  the real build with a mocked API** (scratchpad only): 15 checks, zero page
+  errors — the tree, the borrowed line, clicking to the original, the Lookup
+  badge, sample-data labels, an old copy link redirected, the subject page's
+  two groups and its link. It found the truncation above; the one other
+  failure was the harness's own fixture.
+- **WATCH AFTER DEPLOY**: migration 102 is the first thing to change existing
+  data — afterwards the Purchasing tree shows *Purchase Entry Lines* and
+  *"Uses N from Reference"*, and Purchasing › Journal (an old link) opens
+  Reference › Journal. A copy that stays *not built yet* means its original is
+  genuinely missing on that source — Rebuild the subject that should own it.
+  Ask AI answers on the product layer now see each lookup once.
+
+**Prior last updated:** 2026-09-23 (THIRD SLICE OF THE DAY — A CARD CAN BE REMOVED IN
 ARRANGE MODE, AND WHY DASHBOARDS GOT SLOW AND RED; owner, with three
 screenshots of the live Product Performance dashboard: *"Are the individual
 widgets loading 1 by one? I thought previously it loaded in parallel and fast
@@ -12201,6 +12322,7 @@ clarion/                              ← on disk: databridge/
 │       │   ├── invites.ts                  ← inviteUser(), shared by tenant admin and operator doors
 │       │   ├── legal.ts                    ← in-force flag, acceptance status + record (P0-7)
 │       │   ├── tenantExport.ts             ← the streamed ZIP export (P0-7)
+│       │   ├── sharedTables.ts             ← a copy of a shared lookup → its original: linkSharedTables (the one writer of source_product_table_id), sharedOriginalOf, originalTableSql
 │       │   ├── tableDeclaration.ts         ← prepareDeclaredSql · openDeclarationSession · compileDeclaredSql (DESCRIBE in a real session) · previewDeclaredSql · describeSessionSchemas · sanitizeSqlError
 │       │   ├── notificationService.ts      ← notify(), notifyTenant()
 │       │   ├── glossaryLinks.ts            ← glossary term → product column / table / KPI, by NAME; resolve + link-targets + prompt line
@@ -12246,6 +12368,7 @@ clarion/                              ← on disk: databridge/
 │           ├── auth.test.ts
 │           ├── connections.test.ts
 │           ├── dashboards.test.ts
+│           ├── shared-lookups.test.ts            ← a copy is a pointer to its original: written, backfilled, read through, never edited
 │           ├── widget-readability.test.ts        ← the gate's rules, both directions
 │           ├── readability-gate-wiring.test.ts   ← source-level: the gate is called, repair re-checked, stream path annotates
 │           ├── health.test.ts
@@ -12377,7 +12500,7 @@ clarion/                              ← on disk: databridge/
     │   │   ├── AboutRail.tsx         ← the right rail (sections of label/value rows, chips); RailChip
     │   │   ├── ColumnsTable.tsx      ← the ONE columns table: filter, key/fk glyphs, role, term, status, per-row details, inline description saved on blur
     │   │   ├── navigation.ts         ← CatalogNavTarget (panels ask the page to navigate), CatalogConnection, AssistantOpenMode
-    │   │   ├── CatalogBrowser.tsx    ← the ONE tree: subjects first, sources under their connector mark, your tables; search filters it in place
+    │   │   ├── CatalogBrowser.tsx    ← the ONE tree: subjects (the tables each BUILDS + a "Uses N from Reference" line of links to originals), sources under their mark, your tables; search filters it in place
     │   │   ├── EntityDetailPanel.tsx ← selection → panel (source-root / source-table / product-root / product-table)
     │   │   ├── CatalogLanding.tsx    ← nothing selected: what needs you + the health overview
     │   │   ├── SqlDeclaration.tsx    ← the SQL tab: CodeMirror editor · Format · Preview · Rebuild now · Save; a proposal as a diff with Keep / Discard
@@ -12429,7 +12552,7 @@ clarion/                              ← on disk: databridge/
             └── useDebounce.ts       ← custom debounce hook
 ```
 
-### Database Migrations (102 files on disk)
+### Database Migrations (103 files on disk)
 
 ```
 20260328000001  create_connections
@@ -12476,6 +12599,7 @@ clarion/                              ← on disk: databridge/
 20260910000099  ingestion_phase2                  (entity_sync_cursors: nullable cursor, rows_total, 'incomplete'; source_sync_runs.resumed_from_run_id + incomplete_entities)
 20260920000100  glossary_links                    (business_glossary.links jsonb — a term's address in the topic layer)
 20260922000101  product_table_declaration         (product_tables.declared_by / declared_at — who last declared the SQL and when; "changed since the last build" = declared_at > last_run_at)
+20260924000102  link_shared_tables                (data only: backfills product_tables.source_product_table_id — every copy of a shared lookup points at its original)
 ```
 
 ---

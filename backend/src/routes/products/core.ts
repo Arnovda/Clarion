@@ -150,9 +150,12 @@ router.get('/:id', requireAuth, async (req: Request, res: Response, next: NextFu
 
     const tables: any[] = rawTables.map((t: any) => {
       const ownerId = t.source_product_table_id as number | null | undefined;
-      if (!ownerId) return t;
+      // A copy with no linked original (never built anywhere) is still a
+      // copy: the subject page lists it under "Uses from …", never as a
+      // table this subject builds.
+      if (!ownerId) return t.is_shared_dimension === true ? { ...t, is_reference: true, owner_table_id: null } : t;
       const owner = ownerById.get(ownerId) as any;
-      if (!owner) return t;
+      if (!owner) return { ...t, is_reference: true, owner_table_id: null };
       return {
         ...t,
         transformation_status: owner.transformation_status ?? t.transformation_status,
@@ -162,6 +165,7 @@ router.get('/:id', requireAuth, async (req: Request, res: Response, next: NextFu
         delta_path: owner.delta_path ?? t.delta_path,
         owner_product_id: owner.owner_product_id ?? null,
         owner_product_name: owner.owner_product_name ?? null,
+        owner_table_id: Number(owner.id),
         is_reference: true,
       };
     });

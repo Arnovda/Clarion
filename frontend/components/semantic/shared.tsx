@@ -67,6 +67,9 @@ export function PreviewTable({ url, autoLoad = false }: PreviewTableProps) {
   const [state, setState] = useState<'idle' | 'loading' | 'done' | 'error'>('idle');
   const [rows, setRows]   = useState<Record<string, unknown>[]>([]);
   const [cols, setCols]   = useState<string[]>([]);
+  // Business name per column when the table defines one (product tables);
+  // the raw name stays available as the header's tooltip.
+  const [labels, setLabels] = useState<Record<string, string>>({});
   const [errMsg, setErr]  = useState('');
   // A tab that shows the data straight away: fetch once per url. The
   // "Hide" affordance is withheld there (hiding would only refetch).
@@ -79,6 +82,7 @@ export function PreviewTable({ url, autoLoad = false }: PreviewTableProps) {
         if (cancelled) return;
         setRows(res.data.data.rows);
         setCols(res.data.data.columns);
+        setLabels(res.data.data.labels ?? {});
         setState('done');
       })
       .catch((err) => {
@@ -96,6 +100,7 @@ export function PreviewTable({ url, autoLoad = false }: PreviewTableProps) {
       const res = await api.get(url);
       setRows(res.data.data.rows);
       setCols(res.data.data.columns);
+      setLabels(res.data.data.labels ?? {});
       setState('done');
     } catch (err) {
       const msg = (err as { response?: { data?: { error?: string } } })?.response?.data?.error ?? 'Could not load preview';
@@ -148,7 +153,7 @@ export function PreviewTable({ url, autoLoad = false }: PreviewTableProps) {
             <thead>
               <tr>
                 {cols.map((c) => (
-                  <th key={c} className="px-3 py-2.5 text-left whitespace-nowrap">{c}</th>
+                  <th key={c} className="px-3 py-2.5 text-left whitespace-nowrap" title={labels[c] ? c : undefined}>{labels[c] ?? c}</th>
                 ))}
               </tr>
             </thead>

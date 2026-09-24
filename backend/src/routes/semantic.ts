@@ -1,3 +1,5 @@
+import { sharedOriginalOf, sharedEditRefusal } from '../services/sharedTables';
+import { sanitizeSqlError } from '../services/tableDeclaration';
 import { provenanceOf, type ProvenanceRung } from '../shared/provenance';
 import { Router, Request, Response, NextFunction } from 'express';
 import type { Knex } from 'knex';
@@ -1881,11 +1883,25 @@ router.get('/product-tree', requireAuth, async (req: Request, res: Response, nex
     // space they hold. Works for existing data — no graph rewrite needed.
     const schemaIds = schemaRows.map((s: { id: number }) => s.id);
     const pgRows = schemaIds.length
-      ? await db('product_tables').whereIn('star_schema_id', schemaIds).select('id', 'neo4j_pg_id')
+      ? await db('product_tables as pt')
+          .leftJoin('product_tables as own', 'own.id', 'pt.source_product_table_id')
+          .whereIn('pt.star_schema_id', schemaIds)
+          .select('pt.id', 'pt.neo4j_pg_id', 'pt.is_shared_dimension', 'pt.source_product_table_id', 'own.neo4j_pg_id as own_graph_id')
       : [];
     const pgByGraphId = new Map<number, number>();
-    for (const r of pgRows as Array<{ id: number; neo4j_pg_id: number | null }>) {
+    // A COPY of a shared lookup carries where its original is, in both id
+    // spaces, so the catalog can open the original whichever door a click
+    // came through (services/sharedTables.ts).
+    const copyByGraphId = new Map<number, { ownerPgTableId: number | null; ownerGraphId: number | null }>();
+    for (const r of pgRows as Array<{ id: number; neo4j_pg_id: number | null; is_shared_dimension: boolean | null; source_product_table_id: number | null; own_graph_id: number | null }>) {
       if (r.neo4j_pg_id != null) pgByGraphId.set(Number(r.neo4j_pg_id), Number(r.id));
+      if (r.is_shared_dimension === true || r.source_product_table_id != null) {
+        const owner = {
+          ownerPgTableId: r.source_product_table_id != null ? Number(r.source_product_table_id) : null,
+          ownerGraphId: r.own_graph_id != null ? Number(r.own_graph_id) : null,
+        };
+        copyByGraphId.set(Number(r.neo4j_pg_id ?? r.id), owner);
+      }
     }
 
     const tree = products.map((p) => {
@@ -1903,7 +1919,14 @@ router.get('/product-tree', requireAuth, async (req: Request, res: Response, nex
           });
         }
         const pgTableId = pgByGraphId.get(Number(table.id)) ?? null;
-        schemaGroups.get(ssid)!.tables.push({ ...table, pg_table_id: pgTableId });
+        const copy = copyByGraphId.get(Number(table.id)) ?? null;
+        schemaGroups.get(ssid)!.tables.push({
+          ...table,
+          pg_table_id: pgTableId,
+          is_copy: copy != null,
+          owner_pg_table_id: copy?.ownerPgTableId ?? null,
+          owner_graph_id: copy?.ownerGraphId ?? null,
+        });
       }
 
       return {
@@ -1957,6 +1980,10 @@ router.patch('/product-tables/:id', requireAuth, requireRole('admin', 'analyst')
     const body = req.body as Record<string, unknown>;
 
     if (!await denyUnlessOwned(req, res, 'product_tables', pgId)) return;
+    // A copy of a shared lookup takes no edits — the original is the one
+    // definition (services/sharedTables.ts).
+    const sharedOriginal = await sharedOriginalOf(db, req.user!.tenantId, 'product_tables', pgId);
+    if (sharedOriginal) { res.status(400).json({ ok: false, error: sharedEditRefusal(sharedOriginal), sharedFrom: sharedOriginal }); return; }
 
     await graph.updateProductTable(pgId, {
       display_name: body.display_name,
@@ -1989,6 +2016,10 @@ router.patch('/product-columns/:id', requireAuth, requireRole('admin', 'analyst'
     const body = req.body as Record<string, unknown>;
 
     if (!await denyUnlessOwned(req, res, 'product_columns', pgId)) return;
+    // A copy of a shared lookup takes no edits — the original is the one
+    // definition (services/sharedTables.ts).
+    const sharedOriginal = await sharedOriginalOf(db, req.user!.tenantId, 'product_columns', pgId);
+    if (sharedOriginal) { res.status(400).json({ ok: false, error: sharedEditRefusal(sharedOriginal), sharedFrom: sharedOriginal }); return; }
 
     await graph.updateProductColumn(pgId, {
       display_name: body.display_name,
@@ -2161,11 +2192,29 @@ router.get('/product-preview', requireAuth, async (req: Request, res: Response, 
       await connector.connect();
       // Policy-aware read (defect 2, 2026-09-06): the actor's row filters and
       // column masks apply to sample rows exactly as they do in Ask AI.
+      // The table's own column definitions — the ORIGINAL's for a copy of a
+      // shared lookup, since the copy's were copied once and never follow an
+      // edit. They decide which columns are technical (join keys, GUIDs:
+      // hidden from sample rows) and the business name each column is shown
+      // under.
+      const defRows: Array<{ column_name: string; display_name: string | null; is_technical: boolean | null }> =
+        await db('product_columns')
+          .whereIn('product_table_id', db('product_tables')
+            .where('id', internalId)
+            .select(db.raw('COALESCE(source_product_table_id, id)')))
+          .select('column_name', 'display_name', 'is_technical');
+      const hideColumns = new Set(defRows.filter((c) => c.is_technical === true).map((c) => c.column_name.toLowerCase()));
+      const labels: Record<string, string> = {};
+      for (const c of defRows) {
+        if (c.display_name && c.display_name.trim()) labels[c.column_name] = c.display_name.trim();
+      }
+
       const preview = await readPreviewRows(
         (sql) => connector.executeQuery(sql),
         tableName,
         safeLimit,
         actorOf(req),
+        { hideColumns, hideUnderscored: true },
       );
 
       res.json({
@@ -2173,14 +2222,17 @@ router.get('/product-preview', requireAuth, async (req: Request, res: Response, 
         data: {
           rows: preview.rows,
           columns: preview.columns,
+          labels,
           policiesApplied: preview.policiesApplied,
         },
       });
     } catch (queryErr) {
-      const msg = queryErr instanceof Error ? queryErr.message : 'Preview query failed';
+      // All roles call this route: the storage location never reaches the
+      // wire (the same rule as the declaration's compile errors).
+      const msg = queryErr instanceof Error ? sanitizeSqlError(queryErr.message) : 'Preview query failed';
       res.status(400).json({
         ok: false,
-        error: `Could not read "${tableName}" from ${deltaPath}: ${msg}`,
+        error: `Could not read the sample rows of this table: ${msg}`,
       });
     } finally {
       try { connector.disconnect(); } catch { /* ignore */ }

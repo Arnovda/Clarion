@@ -29,6 +29,8 @@ interface ProductTableRow {
   /** Owning source. Drives naming and the per-source grouping below. */
   connection_id: number | null;
   connection_name: string | null;
+  /** Set on a COPY of a shared lookup: the original it stands for. */
+  source_product_table_id?: number | null;
 }
 
 interface ProductColumnRow {
@@ -171,6 +173,7 @@ export async function buildProductSemanticContext(
       'star_schemas.grain',
       'data_products.connection_id as connection_id',
       'connections.name as connection_name',
+      'product_tables.source_product_table_id',
     );
 
   // Include shared dimensions from OTHER products for the same connection.
@@ -208,6 +211,7 @@ export async function buildProductSemanticContext(
         'star_schemas.grain',
         'data_products.connection_id as connection_id',
         'connections.name as connection_name',
+        'product_tables.source_product_table_id',
       );
 
     // Deduplicate by table_name (pick the first match)
@@ -217,6 +221,45 @@ export async function buildProductSemanticContext(
         existingTableNames.add(dim.table_name);
       }
     }
+  }
+
+  // A COPY of a shared lookup (Purchasing's Journal, the Date under every
+  // subject) describes itself with its ORIGINAL's definition: its columns,
+  // descriptions, name and grain. The copy's own columns were copied once at
+  // build time and never follow an edit made on the original, and its star
+  // schema's grain is the USING subject's fact grain — "one row per purchase
+  // line" on a journal lookup. Swapping in the original's id makes every
+  // column lookup below read the original. See services/sharedTables.ts.
+  const originalIds = [...new Set(
+    tables.map((t) => t.source_product_table_id).filter((id): id is number => id != null),
+  )];
+  if (originalIds.length > 0) {
+    const originals: Array<{ id: number; display_name: string | null; description: string | null; grain: string | null }> =
+      await db('product_tables')
+        .join('star_schemas', 'product_tables.star_schema_id', 'star_schemas.id')
+        .whereIn('product_tables.id', originalIds)
+        .select('product_tables.id', 'product_tables.display_name', 'product_tables.description', 'star_schemas.grain');
+    const byId = new Map(originals.map((o) => [Number(o.id), o]));
+    tables = tables.map((t) => {
+      const o = t.source_product_table_id != null ? byId.get(Number(t.source_product_table_id)) : undefined;
+      return o
+        ? { ...t, id: Number(o.id), display_name: o.display_name ?? t.display_name, description: o.description ?? t.description, grain: o.grain }
+        : t;
+    });
+  }
+  // One entry per table per source. With several subjects in scope, the same
+  // lookup arrived once from its original and once per copy — the model read
+  // `Table dim_journal` four times, paying for it four times, and could see
+  // four different descriptions of one thing. Originals are kept first.
+  tables.sort((a, b) => Number(a.source_product_table_id != null) - Number(b.source_product_table_id != null));
+  {
+    const seen = new Set<string>();
+    tables = tables.filter((t) => {
+      const key = `${t.connection_id ?? 0}:${t.table_name}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
   }
 
   if (tables.length === 0) return null;
