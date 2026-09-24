@@ -8,6 +8,7 @@
  */
 
 import { useState, useEffect } from 'react';
+import { ClarionMark } from '@/components/brand/ClarionMark';
 import Link from 'next/link';
 import api from '@/lib/api';
 import {
@@ -1037,8 +1038,8 @@ export default function MessageBubble({
           msg.checking ? 'border-l-2 border-l-warn' : msg.wasRepaired ? 'border-l-2 border-l-ocean' : ''
         }`}>
           {msg.checking && (
-            <div className="flex items-center gap-1.5 text-[10px] font-mono tracking-[0.08em] uppercase text-warn">
-              <span>△</span> Being double-checked — this number may still be adjusted
+            <div className="flex items-center gap-1.5 text-[10px] font-mono tracking-[0.08em] uppercase text-muted">
+              <ClarionMark size={16} state="checking" className="shrink-0" /> Being double-checked — this number may still be adjusted
             </div>
           )}
           <div className="text-ink leading-relaxed"><RichText text={msg.text} /></div>
@@ -1220,12 +1221,13 @@ function TrustLine({ msg, onRerun, newerDataAvailable }: {
   const mark = msg.checking
     ? null // the checking strip at the top of the card already says it
     : msg.warning
-      ? { cls: 'text-warn', text: msg.wasRepaired ? '△ Corrected — take with care' : '△ Take with care' }
+      ? { cls: 'text-warn', text: msg.wasRepaired ? 'Corrected — take with care' : 'Take with care', state: 'uncertain' as const }
       : msg.verified
         // The strongest tier — a HUMAN approved this exact question's SQL.
-        ? { cls: 'text-ok', text: '★ Verified by your team' }
+        // A star, not the mark: this one is your team's word, not Clarion's.
+        ? { cls: 'text-ok', text: '★ Verified by your team', state: null }
         : msg.wasRepaired
-          ? { cls: 'text-ok', text: '✓ Checked & corrected' }
+          ? { cls: 'text-ok', text: 'Checked & corrected', state: 'done' as const }
           : null; // default success: no mark — an always-on mark says nothing
 
   if (!mark && sources.length === 0 && !oldest && !msg.warning) return null;
@@ -1233,7 +1235,12 @@ function TrustLine({ msg, onRerun, newerDataAvailable }: {
   return (
     <div className="border-t border-line pt-2 space-y-1">
       <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1 text-[11px] text-muted-2">
-        {mark && <span className={`font-medium text-[11.5px] ${mark.cls}`}>{mark.text}</span>}
+        {mark && (
+          <span className={`inline-flex items-center gap-1.5 self-center font-medium text-[11.5px] ${mark.cls}`}>
+            {mark.state && <ClarionMark size={16} state={mark.state} className="shrink-0" />}
+            {mark.text}
+          </span>
+        )}
         {sources.length > 0 && (
           <span>
             From{' '}

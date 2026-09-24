@@ -1,14 +1,15 @@
 'use client';
 
 import { ReactNode } from 'react';
+import { ClarionLockup } from '@/components/brand/ClarionMark';
 
 function ObservatoryArt() {
   return (
     <svg viewBox="0 0 600 800" preserveAspectRatio="xMidYMid slice" className="absolute inset-0 w-full h-full" aria-hidden="true">
       <defs>
         <radialGradient id="auth-glow" cx="50%" cy="42%" r="55%">
-          <stop offset="0%"   stopColor="#164e63" stopOpacity="0.6" />
-          <stop offset="45%"  stopColor="#164e63" stopOpacity="0.2" />
+          <stop offset="0%"   stopColor="#7c3aed" stopOpacity="0.38" />
+          <stop offset="45%"  stopColor="#3b82f6" stopOpacity="0.12" />
           <stop offset="100%" stopColor="#0f1a22" stopOpacity="0" />
         </radialGradient>
         <radialGradient id="auth-amb" cx="50%" cy="50%" r="50%">
@@ -22,13 +23,13 @@ function ObservatoryArt() {
       <circle cx="300" cy="340" r="240" fill="url(#auth-amb)" />
 
       {/* Concentric observatory rings */}
-      <g transform="translate(300 340)" fill="none" stroke="#d0e1e6" strokeOpacity="0.28" strokeWidth="0.6">
+      <g transform="translate(300 340)" fill="none" stroke="#ddd6fe" strokeOpacity="0.28" strokeWidth="0.6">
         <circle r="40" /><circle r="80" /><circle r="130" />
         <circle r="190" /><circle r="260" /><circle r="340" />
       </g>
 
       {/* Axis lines */}
-      <g transform="translate(300 340)" stroke="#d0e1e6" strokeOpacity="0.14" strokeWidth="0.5">
+      <g transform="translate(300 340)" stroke="#ddd6fe" strokeOpacity="0.14" strokeWidth="0.5">
         <line x1="-340" y1="0" x2="340" y2="0" />
         <line x1="0" y1="-340" x2="0" y2="340" />
         <line x1="-280" y1="-160" x2="280" y2="160" />
@@ -36,7 +37,7 @@ function ObservatoryArt() {
       </g>
 
       {/* Tick marks on main axes */}
-      <g transform="translate(300 340)" stroke="#d0e1e6" strokeOpacity="0.35" strokeWidth="0.8">
+      <g transform="translate(300 340)" stroke="#ddd6fe" strokeOpacity="0.35" strokeWidth="0.8">
         <g>
           <line x1="40"  y1="-3" x2="40"  y2="3" /><line x1="80"  y1="-3" x2="80"  y2="3" />
           <line x1="130" y1="-3" x2="130" y2="3" /><line x1="190" y1="-3" x2="190" y2="3" />
@@ -62,8 +63,8 @@ function ObservatoryArt() {
 
       {/* Central mark */}
       <g transform="translate(300 340)">
-        <circle r="18" fill="none" stroke="#d0e1e6" strokeWidth="1.2" />
-        <circle r="6" fill="#d0e1e6" />
+        <circle r="18" fill="none" stroke="#ddd6fe" strokeWidth="1.2" />
+        <circle r="6" fill="#ddd6fe" />
       </g>
 
       {/* Faint curves */}
@@ -71,16 +72,6 @@ function ObservatoryArt() {
         <path d="M-340,60 Q-100,-40 100,-10 T340,-80" />
         <path d="M-340,140 Q-50,60 140,90 T340,40" />
       </g>
-    </svg>
-  );
-}
-
-function ObservatoryMark({ size = 26, className }: { size?: number; className?: string }) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 32 32" fill="none" className={className} aria-hidden="true">
-      <circle cx="16" cy="16" r="14" stroke="currentColor" strokeWidth="1.5" />
-      <circle cx="16" cy="16" r="8"  stroke="currentColor" strokeWidth="1.2" />
-      <circle cx="16" cy="16" r="3"  fill="currentColor" />
     </svg>
   );
 }
@@ -106,10 +97,7 @@ export default function AuthLayout({ eyebrow, title, lede, children, footer }: A
         <div className="relative bg-[#0f1a22] min-h-[40vh] md:min-h-[600px]">
           <ObservatoryArt />
           <div className="relative h-full p-8 md:p-11 flex flex-col justify-between text-[#e3e6ea]">
-            <div className="flex items-center gap-2.5 font-display font-medium text-[22px] tracking-[-0.02em] text-white">
-              <ObservatoryMark size={26} className="text-ocean-soft" />
-              Clarion
-            </div>
+            <ClarionLockup size={28} onDark />
 
             <blockquote className="font-display italic text-[22px] md:text-[26px] leading-[1.35] tracking-[-0.01em] text-[#e3e6ea] max-w-[440px] m-0">
               <span className="block font-mono not-italic font-medium text-[11px] tracking-[0.14em] uppercase text-white mb-3.5">

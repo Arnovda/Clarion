@@ -25,7 +25,8 @@
  */
 
 import { useCallback, useRef, useState } from 'react';
-import { ArrowRight, Loader2, MessageSquare, Plus, Sparkles } from 'lucide-react';
+import { ArrowRight, Loader2, MessageSquare, Plus } from 'lucide-react';
+import { ClarionMark } from '@/components/brand/ClarionMark';
 import { cn } from '@/lib/cn';
 import {
   askSubjectAssistant,
@@ -139,7 +140,7 @@ export default function AskPanel({ building, onAttach }: {
                 {m.proposal && (
                   <div className="mt-2 rounded-[10px] border border-ocean/40 bg-ocean-softer/40 p-3.5 text-left">
                     <div className="flex items-center gap-2">
-                      <Sparkles className="h-4 w-4 shrink-0 text-ocean" strokeWidth={1.8} aria-hidden />
+                      <ClarionMark size={16} className="shrink-0" />
                       <span className="text-[13.5px] font-medium text-ink">New subject: {m.proposal.name}</span>
                     </div>
                     {m.proposal.description && (

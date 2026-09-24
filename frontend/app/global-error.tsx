@@ -18,7 +18,7 @@ export default function GlobalError({ error, reset }: { error: Error & { digest?
               Trying again usually works; if it keeps happening, tell us and quote the reference below.
             </p>
             <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginBottom: 24 }}>
-              <button type="button" onClick={() => reset()} style={{ padding: '8px 16px', borderRadius: 6, background: '#164e63', color: '#fff', border: 0, fontSize: 13, fontWeight: 500, cursor: 'pointer' }}>Try again</button>
+              <button type="button" onClick={() => reset()} style={{ padding: '8px 16px', borderRadius: 6, background: '#7c3aed', color: '#fff', border: 0, fontSize: 13, fontWeight: 500, cursor: 'pointer' }}>Try again</button>
               <a href="/home" style={{ padding: '8px 16px', borderRadius: 6, border: '1px solid #e2e4e8', color: '#1a1f24', fontSize: 13, fontWeight: 500, textDecoration: 'none' }}>Go to home</a>
             </div>
             {error.digest && <p style={{ fontFamily: 'ui-monospace, monospace', fontSize: 10.5, color: '#9aa3ad', margin: 0 }}>reference {error.digest}</p>}

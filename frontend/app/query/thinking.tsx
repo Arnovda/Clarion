@@ -35,6 +35,7 @@
  */
 
 import { useState, useEffect, useRef } from 'react';
+import { ClarionMark } from '@/components/brand/ClarionMark';
 import { formatSql } from './utils';
 import { humanizeTableName } from '@/lib/humanize';
 import type { RepairState } from './types';
@@ -117,18 +118,15 @@ export function ThinkingBubble({
   ];
 
   return (
-    <div className={bare ? '' : 'flex justify-start gap-2'}>
-      {!bare && (
-        <div className="flex-shrink-0 w-7 h-7 mt-1 rounded-full bg-ai-soft border border-line flex items-center justify-center animate-pulse">
-          <span className="text-sm">🧠</span>
-        </div>
-      )}
-
+    <div className={bare ? '' : 'flex justify-start'}>
       <div className={`${bare ? 'w-full' : 'max-w-[85%] w-full'} bg-raised border border-line rounded-lg overflow-hidden`}>
-        <div className="px-4 py-3 space-y-2">
+        <div className="px-4 py-3 flex items-start gap-3">
+          {/* The assistant itself, working — the brand mark in its Working state. */}
+          <ClarionMark size={24} state="working" className="shrink-0 mt-[1px]" title="Clarion is working" />
+          <div className="min-w-0 flex-1 space-y-2">
           {steps.map((s) => (
             <div key={s.key} className="flex items-start gap-2.5">
-              <span className="mt-[5px]"><StepDot state={s.state} /></span>
+              <span className="mt-[5px] flex"><StepDot state={s.state} /></span>
               <div className="min-w-0 flex-1">
                 <span className={`text-[12.5px] leading-snug ${s.state === 'pending' ? 'text-muted-2' : s.state === 'active' ? 'text-ink' : 'text-ink-3'}`}>
                   {s.label}{s.state === 'active' ? '…' : ''}
@@ -144,6 +142,7 @@ export function ThinkingBubble({
               </div>
             </div>
           ))}
+          </div>
         </div>
 
         {/* SQL preview once generated — privileged roles only. The backend
@@ -195,16 +194,7 @@ export function ThinkingPanel({
 
           {/* Header — diligence vocabulary, never "investigation failed" drama */}
           <div className="flex items-center gap-2 px-4 py-2.5 border-b border-line bg-softer">
-            {repair.isActive ? (
-              <span className="flex gap-0.5">
-                {[0,1,2].map((i) => (
-                  <span key={i} className="w-1.5 h-1.5 bg-ocean rounded-full animate-bounce"
-                    style={{ animationDelay: `${i * 0.15}s` }} />
-                ))}
-              </span>
-            ) : (
-              <span className="text-ok">✓</span>
-            )}
+            <ClarionMark size={16} state={repair.isActive ? 'checking' : 'done'} className="shrink-0" />
             <span className="text-[11px] font-mono tracking-[0.08em] uppercase text-muted">
               {repair.isActive ? 'Double-checking the result…' : 'Double-checked'}
             </span>

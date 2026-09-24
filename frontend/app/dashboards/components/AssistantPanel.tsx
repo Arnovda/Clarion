@@ -2,7 +2,8 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { motion } from 'framer-motion';
-import { ChevronDown, Sparkles, Square, X } from 'lucide-react';
+import { ChevronDown, Square, X } from 'lucide-react';
+import { ClarionMark } from '@/components/brand/ClarionMark';
 import { MarkdownAnswer } from './MarkdownAnswer';
 import type { ChatMessage, RefineStep } from '../types';
 
@@ -209,11 +210,7 @@ export default function AssistantPanel({
         className="absolute bottom-5 right-5 z-30 flex items-center gap-2 pl-3 pr-4 py-2.5 rounded-full border border-line bg-raised shadow-[0_6px_24px_-8px_rgba(15,32,45,0.30)] hover:border-line-strong transition-colors max-w-[min(420px,calc(100%-2.5rem))]"
         aria-label={working ? 'Assistant is working — open to watch' : 'Open the dashboard assistant'}
       >
-        {working ? (
-          <span className="w-2 h-2 rounded-full bg-ocean animate-pulse shrink-0" />
-        ) : (
-          <Sparkles className="w-3.5 h-3.5 text-ocean shrink-0" strokeWidth={2} />
-        )}
+        <ClarionMark size={16} state={working ? 'working' : 'idle'} className="shrink-0" />
         <span className="text-[13px] text-ink-2 truncate">
           {working ? working.phase || 'Working…' : 'Ask or change this dashboard'}
         </span>
@@ -235,7 +232,7 @@ export default function AssistantPanel({
     >
       {/* Header */}
       <div className="px-4 py-2.5 flex items-center gap-2 border-b border-line bg-soft shrink-0">
-        <Sparkles className="w-3.5 h-3.5 text-ocean shrink-0" strokeWidth={2} />
+        <ClarionMark size={16} state={working ? 'working' : 'idle'} className="shrink-0" />
         <span className="text-[10px] font-mono tracking-[0.12em] uppercase text-muted-2 flex-1">
           Assistant
         </span>
@@ -335,7 +332,7 @@ export default function AssistantPanel({
 
                 {msg.working && msg.phase && (
                   <p className="text-[12px] text-muted italic mt-1.5 flex items-center gap-2">
-                    <span className="inline-block w-2 h-2 rounded-full bg-ocean animate-pulse shrink-0" />
+                    <ClarionMark size={16} state="working" className="shrink-0" />
                     {msg.phase}
                   </p>
                 )}

@@ -31,7 +31,69 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-09-24 (CLAUDE SONNET 4.6 → SONNET 5 — owner asked
+**Last updated:** 2026-09-24 (THE CLARION MARK — the brand and the AI
+assistant are one symbol now, with five states; the app accent moved from
+ocean teal to violet. Owner designed the mark over several rounds of image-AI
+concepts, then supplied a construction spec; frontend only, branch
+`claude/nifty-sagan-rj0cct`, draft PR.)
+
+**THE SPEC'S GEOMETRY WAS WRONG AND WAS CORRECTED, NOT COPIED.** Rendered
+first: its 16° gaps minus two round caps (~11.5° each at the 24-unit master)
+closed completely — the three segments drew as one fused U — and the
+satellite overlapped ring-a. `frontend/lib/clarionMark.ts` now DERIVES the path
+angles from what must be visible (an 18° clear gap at the master, 20° at the
+dedicated 16px construction, caps included); `visibleGaps()` + NEW
+`tests/clarionMark.test.ts` (9) hold that property. Satellite r 1.6 / 1.3 so it
+is never thinner than the stroke. Below 20px the separate small construction
+is drawn, never a scaled master.
+- **NEW `components/brand/ClarionMark.tsx`**: `ClarionMark {size, state, tone:
+  brand|mono, onDark, title}` + `ClarionLockup` (mark + "Clarion" in
+  **Cormorant Garamond 600**, self-hosted via next/font as `--font-cormorant`
+  / tailwind `font-brand` — wordmark ONLY). States per the owner's spec:
+  idle (static) · working (outer ring rotates, cyan→blue→violet) · checking
+  (ring pulses, light blue) · done (violet centre settles once) · uncertain
+  (amber satellite + amber arc growing along ring-a). Colour AND motion per
+  state (owner kept the colour changes; motion added so 16px / colour-blind
+  still read). Glow ≥32px only. Rotation runs through the Web Animations API
+  so leaving Working DECELERATES from the current angle to upright (measured:
+  267°→360° in ~300ms, no jump); the rest is CSS in `globals.css`
+  (`cmCheck`, `cmSettle`, `cmAmber`); prefers-reduced-motion stops all motion.
+- **Rule: the mark appears only where the ASSISTANT is the actor, at ≥16px.**
+  Wired: Ask AI progress card (working, replaces the 🧠 avatar), the
+  double-checking panel header (checking → done), the answer card's
+  "being double-checked" strip, the trust line (Take with care → uncertain,
+  Checked & corrected → done; "★ Verified by your team" keeps its star — a
+  human's word, not Clarion's), the dashboard / catalog / notebook assistant
+  pills, headers and in-message progress, the Build chat's proposal, the
+  morning brief, AI prompt dialog, "Suggested by Clarion" banners, SQL
+  proposal header, two empty states (mono). Sub-16px "AI draft" chips and
+  button glyphs KEEP lucide Sparkles on purpose (the mark is not permitted
+  below 16px).
+- **Top bar + sign-in** carry the lockup; `app/icon.svg` (small construction),
+  `app/favicon.ico` (16 + 32 PNG payloads), `app/apple-icon.png` (180, #F8FAFC
+  tile) and `public/logo.svg` (was still the old DataBridge raster) are all
+  generated from the same geometry.
+- **ACCENT → VIOLET**: `--ocean` #7c3aed / hover #6d28d9 / soft #ede9fe /
+  softer #f5f3ff (+ `lib/observatory.ts` mirror, `global-error.tsx`). The
+  token keeps its NAME `ocean` deliberately (renaming ~every component is
+  churn) — read it as "the accent". Chart series c1 and the diagrams'
+  lookup-table colour STAY teal #164e63: data colours, not the accent. New
+  `--brand-navy` #0f2a44. NOT adopted from the spec: its full text/surface
+  palette and dark mode (the app has no dark theme) — surfaces, ink and the
+  ok/warn/err tokens are unchanged.
+- **Drive-by, found by the render check: Ask AI's progress-step dots had
+  NEVER rendered** — inline `<span>`s with w-2/h-2 inside an inline wrapper
+  (width/height ignore inline boxes). Wrapper is `flex` now.
+- NEW `/dev/brand` gallery (gated like /dev): every state × 16/20/24/32/48/96,
+  dark + mono, a live transition picker, and the real ThinkingBubble /
+  ThinkingPanel.
+- Validation: frontend `tsc` clean, touched files lint-clean, vitest **11
+  files / 94 passed** (+9), `next build` green (`/dev/brand` 3.4 kB).
+  **Render-checked in headless Chromium** against the production build:
+  gallery at 1× and 2×, sign-in, the shell top bar with a forged session,
+  zero page errors. Backend untouched.
+
+**Prior last updated:** 2026-09-24 (CLAUDE SONNET 4.6 → SONNET 5 — owner asked
 whether cheaper or better Claude models exist and whether we were pinned to
 old ones; then *"Yes do it"*. Branch `claude/kind-cori-98hpxi`, new PR.)
 
@@ -12735,12 +12797,16 @@ clarion/                              ← on disk: databridge/
     │   ├── notebooks/                ← interactive Python notebooks (Pyodide)
     │   │   ├── page.tsx              ← list + create notebook
     │   │   └── [id]/page.tsx         ← editor with cells, schema explorer
+    │   ├── icon.svg / favicon.ico / apple-icon.png  ← generated from lib/clarionMark.ts
     │   └── dev/                      ← internal-only playground (UI, tokens, icons)
     │       ├── layout.tsx            ← notFound() in production unless CLARION_DEV_PAGES=1 (9-5)
     │       ├── ui/page.tsx
-    │       └── widgets/page.tsx      ← the widget gallery the render gate drives
+    │       ├── widgets/page.tsx      ← the widget gallery the render gate drives
+    │       └── brand/page.tsx        ← the mark: every state × size, transitions, in Ask AI
     │
     ├── components/
+    │   ├── brand/
+    │   │   └── ClarionMark.tsx       ← THE mark: 5 states (idle/working/checking/done/uncertain) + ClarionLockup
     │   ├── Nav.tsx                   ← legacy role-aware nav (kept for non-shell pages)
     │   ├── RequireRole.tsx           ← admin gate wrapper (shows "Restricted" card instead of redirecting)
     │   ├── IngestionWizard.tsx       ← step-by-step data ingestion setup
@@ -12818,6 +12884,7 @@ clarion/                              ← on disk: databridge/
         ├── dates.ts                 ← formatDate/formatDateTime/formatRelative/formatRelativeLong/Short (en-GB)
         ├── sqlProvenance.ts         ← FROM/JOIN extraction for the "How it's built" provenance trail
         ├── askLink.ts               ← askAboutSubject() — the one /query deep-link builder
+        ├── clarionMark.ts           ← the mark's geometry, derived from visible gaps (pinned by tests/clarionMark.test.ts)
         ├── catalogUrl.ts            ← parseCatalogUrl / catalogHref — every /catalog deep link, read in one place
         ├── catalogSearchTree.ts     ← groupSearchHits / matchRange — search hits regrouped as the tree, the match bolded (pinned by tests/catalogSearchTree.test.ts)
         ├── subjectAssistant.ts      ← the ONE subject chat: askSubjectAssistant + startSubjectAddition

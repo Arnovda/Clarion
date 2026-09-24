@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
+import { ClarionLockup } from '@/components/brand/ClarionMark';
 import { useRouter } from 'next/navigation';
 import { Search } from 'lucide-react';
 import { clearToken, getRefreshToken, getTokenPayload, TokenPayload } from '@/lib/auth';
@@ -114,13 +115,8 @@ export default function TopBar({ showSearch = true }: TopBarProps) {
       )}
       <header className="h-12 bg-raised border-b border-line flex items-center gap-3 px-4 shrink-0">
         {/* Wordmark */}
-        <Link href="/query" className="flex items-center gap-[9px] font-display font-medium text-[17px] tracking-[-0.02em] text-ink leading-none">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="text-ocean">
-            <circle cx="12" cy="12" r="9" />
-            <circle cx="12" cy="12" r="4" />
-            <circle cx="12" cy="12" r="0.6" fill="currentColor" />
-          </svg>
-          <span>Clarion</span>
+        <Link href="/query" aria-label="Clarion" className="flex items-center leading-none">
+          <ClarionLockup size={24} />
         </Link>
 
 

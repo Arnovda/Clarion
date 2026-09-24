@@ -19,6 +19,7 @@
 
 import { useState, useCallback } from 'react';
 import { Sparkles, Gauge, Plus, Pencil, Trash2, Loader2, X, Wand2, AlertCircle } from 'lucide-react';
+import { ClarionMark } from '@/components/brand/ClarionMark';
 import api from '@/lib/api';
 import { useToast } from '@/components/ui/Toast';
 import AiPromptDialog from '@/components/semantic/AiPromptDialog';
@@ -195,7 +196,7 @@ export default function KpiManager({ productId, kpis, onChanged }: KpiManagerPro
           since users now have a direct manual path. */}
       {showEmpty && (
         <div className="text-center py-12 bg-raised border border-line border-dashed rounded-md">
-          <Sparkles className="w-6 h-6 mx-auto text-muted-2 mb-2" strokeWidth={1.5} />
+          <ClarionMark size={24} tone="mono" className="mx-auto text-muted-2 mb-2 block" />
           <p className="text-[13px] text-ink-2">Define your first KPI.</p>
           <p className="text-[12px] text-muted mt-1">
             Type a name and short description; the AI will draft the SQL formula for you to review.

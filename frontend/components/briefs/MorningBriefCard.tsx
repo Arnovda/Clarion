@@ -17,9 +17,10 @@
 import { useState, useEffect, useCallback } from 'react';
 import dynamic from 'next/dynamic';
 import {
-  Sparkles, ChevronDown, ChevronUp, ArrowRight, AlertCircle, TrendingUp, TrendingDown, Minus,
+  ChevronDown, ChevronUp, ArrowRight, AlertCircle, TrendingUp, TrendingDown, Minus,
   Search,
 } from 'lucide-react';
+import { ClarionMark } from '@/components/brand/ClarionMark';
 import api from '@/lib/api';
 import { formatRelative } from '@/lib/dates';
 
@@ -141,7 +142,7 @@ export default function MorningBriefCard() {
       >
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2 mb-1.5">
-            <Sparkles className="w-4 h-4 text-ocean" strokeWidth={1.75} />
+            <ClarionMark size={16} className="shrink-0" />
             <span className="text-[10.5px] font-mono uppercase tracking-[0.14em] text-ocean">
               Today&rsquo;s brief
             </span>
@@ -304,7 +305,7 @@ function BriefPlaceholder({ status }: { status: PulseStatusSummary }) {
   return (
     <section className="bg-softer/60 border border-line rounded-md overflow-hidden">
       <div className="px-5 py-3.5 flex items-start gap-3">
-        <Sparkles className="w-4 h-4 text-muted-2 shrink-0 mt-0.5" strokeWidth={1.75} />
+        <ClarionMark size={16} tone="mono" className="text-muted-2 shrink-0 mt-0.5" />
         <div className="min-w-0 flex-1">
           <p className="text-[10.5px] font-mono uppercase tracking-[0.14em] text-muted">
             Morning brief

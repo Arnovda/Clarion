@@ -27,7 +27,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import dynamic from 'next/dynamic';
 import Link from 'next/link';
-import { AlertTriangle, Check, Loader2, Play, RefreshCw, Sparkles, WandSparkles, X } from 'lucide-react';
+import { AlertTriangle, Check, Loader2, Play, RefreshCw, WandSparkles, X } from 'lucide-react';
+import { ClarionMark } from '@/components/brand/ClarionMark';
 import api from '@/lib/api';
 import { cn } from '@/lib/cn';
 import { formatSql } from '@/lib/formatSql';
@@ -436,7 +437,7 @@ function ProposalDiff({
   return (
     <section className="rounded-md border border-ocean/40 bg-raised overflow-hidden" aria-label="Suggested change">
       <div className="flex items-center gap-2 px-3 py-2 bg-ocean-softer border-b border-line">
-        <Sparkles className="w-3.5 h-3.5 text-ocean shrink-0" strokeWidth={2} aria-hidden />
+        <ClarionMark size={16} className="shrink-0" />
         <span className="text-[11px] font-mono uppercase tracking-[0.08em] text-ocean">Suggested change</span>
         <span className="text-[11px] font-mono text-muted-2 tabular-nums">
           {stats.unchanged ? 'identical to your SQL' : `+${stats.added} −${stats.removed}`}

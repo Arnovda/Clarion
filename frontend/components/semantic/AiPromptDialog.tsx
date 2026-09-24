@@ -13,6 +13,7 @@
 
 import { useState } from 'react';
 import { X, Sparkles, Loader2, Check } from 'lucide-react';
+import { ClarionMark } from '@/components/brand/ClarionMark';
 import api from '@/lib/api';
 
 interface Props {
@@ -80,7 +81,7 @@ export default function AiPromptDialog({
       >
         {/* Header */}
         <div className="flex items-center gap-2 px-5 py-3.5 border-b border-line">
-          <Sparkles className="w-4 h-4 text-ocean" strokeWidth={1.75} />
+          <ClarionMark size={16} className="shrink-0" />
           <h3 className="font-display text-[16px] text-ink tracking-[-0.01em] flex-1">
             Ask AI to change this {entityLabel ?? entityType}{entityName ? ` — ${entityName}` : ''}
           </h3>

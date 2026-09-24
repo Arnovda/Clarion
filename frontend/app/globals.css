@@ -18,11 +18,19 @@
   --muted: #6b7680;
   --muted-2: #8891a0;
 
-  /* Accent */
-  --ocean: #164e63;
-  --ocean-hover: #103d4f;
-  --ocean-soft: #d0e1e6;
-  --ocean-softer: #e8f0f3;
+  /* Accent — violet since the 2026-09-24 brand mark (was ocean teal
+     #164e63). The token keeps its old NAME on purpose: ~every component
+     reads `ocean`, and a rename is churn with no behaviour. Read "ocean" as
+     "the accent". Contrast: white on #7C3AED 5.7:1, #7C3AED on #F5F3FF
+     5.2:1 — AA for normal text. */
+  --ocean: #7c3aed;
+  --ocean-hover: #6d28d9;
+  --ocean-soft: #ede9fe;
+  --ocean-softer: #f5f3ff;
+
+  /* Brand — the mark's navy (the wordmark; ClarionMark carries its own
+     palette for the states). */
+  --brand-navy: #0f2a44;
 
   /* AI */
   --ai: #c08a5e;
@@ -57,6 +65,7 @@
 
   /* Fonts */
   --font-display: var(--font-source-serif), "Source Serif 4", Georgia, serif;
+  --font-brand: var(--font-cormorant), "Cormorant Garamond", Georgia, serif;
   --font-sans: var(--font-inter), Inter, system-ui, sans-serif;
   --font-mono: var(--font-geist-mono), "Geist Mono", ui-monospace, monospace;
 }
@@ -421,3 +430,62 @@ html, body {
 
 /* Number counting animation */
 .tabular-nums { font-variant-numeric: tabular-nums; }
+
+/* ── Clarion mark states (components/brand/ClarionMark.tsx) ───────────────
+   Rotation for `working` runs through the Web Animations API in the
+   component (it must decelerate from its current angle). Everything else is
+   here. Both halves go quiet under prefers-reduced-motion. */
+
+.clarion-mark .cm-rotate,
+.clarion-mark .cm-outer,
+.clarion-mark .centre {
+  transform-box: view-box;
+  transform-origin: 50% 50%;
+}
+.clarion-mark .cm-part {
+  transition: stroke 240ms cubic-bezier(0.4, 0, 0.2, 1), fill 240ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* Double-checking: the ring breathes outward, the centre stays put. */
+.clarion-mark.cm-checking .cm-outer {
+  animation: cmCheck 1600ms cubic-bezier(0.4, 0, 0.2, 1) infinite;
+}
+@keyframes cmCheck {
+  0%, 100% { transform: scale(1);     opacity: 0.78; }
+  50%      { transform: scale(1.045); opacity: 1; }
+}
+
+/* Done: the violet centre settles once, then the mark is static. */
+.clarion-mark.cm-done .centre {
+  animation: cmSettle 600ms cubic-bezier(0.22, 1, 0.36, 1) 1;
+}
+@keyframes cmSettle {
+  0%   { transform: scale(0.82); }
+  60%  { transform: scale(1.04); }
+  100% { transform: scale(1); }
+}
+.clarion-mark.cm-done.cm-large .centre {
+  animation: cmSettle 600ms cubic-bezier(0.22, 1, 0.36, 1) 1, cmSettleGlow 600ms linear 1;
+}
+@keyframes cmSettleGlow {
+  0%, 100% { filter: none; }
+  45%      { filter: drop-shadow(0 0 6px rgba(124, 58, 237, 0.16)); }
+}
+
+/* Uncertain: amber grows from the satellite end of ring-a and retreats.
+   Units are degrees of arc (the path's pathLength is its span). */
+.clarion-mark.cm-uncertain .cm-amber {
+  stroke-dasharray: 18 999;
+  animation: cmAmber 1800ms cubic-bezier(0.4, 0, 0.2, 1) infinite alternate;
+}
+@keyframes cmAmber {
+  from { stroke-dasharray: 18 999; }
+  to   { stroke-dasharray: 42 999; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .clarion-mark .cm-outer,
+  .clarion-mark .centre { animation: none !important; }
+  .clarion-mark.cm-uncertain .cm-amber { animation: none; stroke-dasharray: 28 999; }
+  .clarion-mark .cm-part { transition-duration: 160ms; }
+}
