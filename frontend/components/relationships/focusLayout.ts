@@ -53,9 +53,13 @@ export function radialLayout(
   const ry = Math.max(clearanceY, spacingR * 0.78);
 
   // Start at the top and go clockwise: the first neighbour lands where the eye
-  // already is, rather than off to one side.
+  // already is, rather than off to one side. EXCEPT with one or two
+  // neighbours: from the top they land straight above / below the anchor,
+  // where no side faces the other — lines leave by the left edge and loop
+  // back round. Left and right instead, so every line runs across.
+  const start = n <= 2 ? Math.PI : -Math.PI / 2;
   for (let i = 0; i < n; i += 1) {
-    const angle = -Math.PI / 2 + (i * 2 * Math.PI) / n;
+    const angle = start + (i * 2 * Math.PI) / n;
     const cx = Math.cos(angle) * rx;
     const cy = Math.sin(angle) * ry;
     positions.set(neighbourIds[i], {

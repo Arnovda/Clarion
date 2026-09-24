@@ -31,7 +31,65 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-09-24 (A SHARED LOOKUP IS ONE TABLE, IN ONE PLACE —
+**Last updated:** 2026-09-24 (A LOOKUP'S RELATIONS ARE READ WHERE THEY ARE
+RECORDED — owner, with a screenshot of Reference › Item's Relations tab: 8
+tables, 0 links, every card *"lookup · not linked yet"*, *"This table joins to
+nothing yet"*. *"The relations for references do not work yet I think."* Right.
+Branch `claude/kind-cori-98hpxi`, riding PR #181 — NOT deployed.)
+
+**WHY: a lookup's joins live in the subjects that USE it.** The builder records
+`fact_sales_invoice_lines.item_key → dim_item.item_key` in SALES' star, against
+Sales' COPY of Item. Reference's own star holds only lookups and no joins, so
+the Relations tab — which read one subject's `product_relationships` — showed
+the most-joined tables in the workspace as joining nothing. Now that every copy
+points at its original (the entry below), the joins can be read through the
+pointer.
+- **NEW `loadExternalJoins(db, tenantId, productId)`** in
+  `services/sharedTables.ts`: every relationship in ANY OTHER subject of the
+  tenant with an end on a copy of one of this subject's originals; the far end
+  resolves to where that table really lives (a copy of a third subject's lookup
+  → its original); a join recorded in several subjects is listed once. Explicit
+  tenant filter on every query.
+- **`GET /products/:id` ships `external_joins { tables, relationships }`** —
+  same by-name shape as a star's relationships (a copy and its original share
+  the table name), each far-end table naming its subject, each join naming the
+  subject that records it; joins this subject's own stars already hold are not
+  repeated. The join fields of BOTH ends go into `join_columns` (the lookup's
+  own key is `is_technical` and would otherwise be missing, so lines would land
+  on card edges). Drive-by: the product fetch now filters `tenant_id`
+  explicitly instead of riding RLS alone.
+- **`SubjectRelations`**: a TABLE's Relations tab draws that table IN THE
+  CENTRE with every table that joins it, from any subject (*"measures table · in
+  Sales"*), and lists the joins with an *in Sales* chip; a table that genuinely
+  joins nothing shows the sentence and no longer draws the whole star as
+  unconnected cards (the screenshot). A SUBJECT's Relations tab draws its own
+  stars as before, plus *"Used by other subjects · N"*; a subject of only shared
+  lookups (Reference) skips the diagram of unconnected cards and says the
+  tables join where they are used. `StarSchemaFlow` gained `anchorTableName`,
+  `subtitle` and a per-table `subject_name`.
+- **`radialLayout` puts one or two neighbours LEFT and RIGHT** instead of
+  straight above/below the anchor — from the top, no side faced the other and
+  both lines looped round the card edge. Applies to every canvas using it
+  (/relationships, the topics canvas, the star diagram).
+- Validation: backend `npm run check` clean; `shared-lookups.test.ts` **13**
+  (+2: Reference's payload carries Purchasing's join to its copy of the
+  Journal, the far end named, both join fields shipped, Purchasing not
+  repeating it; another tenant 404) — **verified RED** with the loader stubbed
+  out; `products-topic` + `products-build-overview` + `table-declaration` +
+  `managed-grids` + `tenant-isolation` 67/67; all twelve ratchets green from the
+  repo root; frontend `tsc` clean, touched files lint-clean, vitest 85/85,
+  `next build` green (`/catalog` 60.7 kB). **Render-checked in headless
+  Chromium** on a throwaway dev page with a fixture (deleted): Item in the
+  centre joined by two measures tables from two subjects, the viewer's list,
+  Reference's subject view, a table with no joins — zero page errors. The first
+  shot found the looping lines and the title reading "Reference", both fixed.
+- **WATCH AFTER DEPLOY**: Reference › Item (or Journal, Account…) → Relations
+  should show the measures tables of Sales / Purchasing / … around it. A lookup
+  that still shows nothing there is used by no built subject — or the subject
+  using it was built before 2026-09-24 and its copy is unlinked (migration 102
+  should have linked it; a Rebuild of that subject relinks).
+
+**Prior last updated:** 2026-09-24 (A SHARED LOOKUP IS ONE TABLE, IN ONE PLACE —
 owner, with three screenshots: Reference › Journal showed data and its SQL,
 Purchasing › Journal showed *"No data yet — run the transformation for this
 table first"* and an empty SQL editor. *"I think we should just not display

@@ -177,3 +177,169 @@ export function sharedEditRefusal(original: { productName: string | null }): str
 export function originalTableSql(alias: string): string {
   return `(COALESCE(${alias}.is_shared_dimension, false) = false AND ${alias}.source_product_table_id IS NULL)`;
 }
+
+/**
+ * The joins a subject's tables take part in ELSEWHERE.
+ *
+ * A lookup's joins are recorded where they are used: Sales' star schema holds
+ * `fact_sales_invoice_lines.item_key → dim_item.item_key`, with `dim_item`
+ * being Sales' COPY of the Item that Reference builds. Reference's own star
+ * holds none of them — so read from Reference alone, every lookup "joins to
+ * nothing yet", which is exactly wrong: they are the most-joined tables there
+ * are. This finds every relationship, in any other subject of the tenant,
+ * with an end on a copy of one of `productId`'s originals, and resolves the
+ * other end to where that table really lives (a copy of a third subject's
+ * lookup resolves to its original).
+ *
+ * Table names are shared by a copy and its original, so the relationships
+ * come back in the same shape the subject payload already uses — by name —
+ * and the other-subject tables come back beside them, each naming its
+ * subject. Explicit tenant filter throughout.
+ */
+export interface ExternalJoinTable {
+  id: number;
+  table_name: string;
+  display_name: string | null;
+  description: string | null;
+  table_role: string;
+  subject_id: number;
+  subject_name: string;
+}
+export interface ExternalJoin {
+  id: number;
+  from_table_name: string;
+  from_column_name: string;
+  to_table_name: string;
+  to_column_name: string;
+  relationship_type: string;
+  /** The subject whose star records this join. */
+  in_subject_id: number;
+  in_subject_name: string;
+  /** Which of this subject's tables it touches — to group it under its star. */
+  own_table_id: number;
+  /** The table on the other end, or null when both ends are this subject's own. */
+  other_table_id: number | null;
+  /** The endpoint pairs, as (real table id, column), for the diagram's join fields. */
+  endpoints: Array<{ tableId: number; column: string }>;
+}
+
+export async function loadExternalJoins(
+  db: Knex | Knex.Transaction,
+  tenantId: number,
+  productId: number,
+): Promise<{ tables: ExternalJoinTable[]; joins: ExternalJoin[] }> {
+  const empty = { tables: [] as ExternalJoinTable[], joins: [] as ExternalJoin[] };
+
+  // This subject's originals.
+  const originals: Array<{ id: number; table_name: string }> = await db('product_tables as pt')
+    .join('star_schemas as ss', 'ss.id', 'pt.star_schema_id')
+    .join('data_products as dp', 'dp.id', 'ss.data_product_id')
+    .where('dp.id', productId)
+    .andWhere('dp.tenant_id', tenantId)
+    .whereRaw(originalTableSql('pt'))
+    .select('pt.id', 'pt.table_name');
+  if (originals.length === 0) return empty;
+  const ownIds = new Set(originals.map((o) => Number(o.id)));
+
+  // Their copies in other subjects.
+  const copies: Array<{ id: number; owner_id: number }> = await db('product_tables as pt')
+    .join('star_schemas as ss', 'ss.id', 'pt.star_schema_id')
+    .join('data_products as dp', 'dp.id', 'ss.data_product_id')
+    .whereIn('pt.source_product_table_id', [...ownIds])
+    .andWhere('dp.tenant_id', tenantId)
+    .andWhereNot('dp.id', productId)
+    .select('pt.id', 'pt.source_product_table_id as owner_id');
+  if (copies.length === 0) return empty;
+  const ownerOfCopy = new Map(copies.map((c) => [Number(c.id), Number(c.owner_id)]));
+  const copyIds = [...ownerOfCopy.keys()];
+
+  const rels: Array<{
+    id: number; from_table_id: number; to_table_id: number;
+    from_column_name: string; to_column_name: string; relationship_type: string;
+    in_subject_id: number; in_subject_name: string;
+  }> = await db('product_relationships as pr')
+    .join('star_schemas as ss', 'ss.id', 'pr.star_schema_id')
+    .join('data_products as dp', 'dp.id', 'ss.data_product_id')
+    .where('dp.tenant_id', tenantId)
+    .andWhereNot('dp.id', productId)
+    .andWhere((qb) => { qb.whereIn('pr.from_table_id', copyIds).orWhereIn('pr.to_table_id', copyIds); })
+    .select(
+      'pr.id', 'pr.from_table_id', 'pr.to_table_id', 'pr.from_column_name', 'pr.to_column_name',
+      'pr.relationship_type', 'dp.id as in_subject_id', 'dp.name as in_subject_name',
+    )
+    .orderBy('pr.id');
+  if (rels.length === 0) return empty;
+
+  // Every endpoint, with where it really lives: a copy resolves to its
+  // original (ours or a third subject's), anything else is itself.
+  const endIds = new Set<number>();
+  for (const r of rels) { endIds.add(Number(r.from_table_id)); endIds.add(Number(r.to_table_id)); }
+  const endRows: Array<{ id: number; source_product_table_id: number | null }> = await db('product_tables as pt')
+    .join('star_schemas as ss', 'ss.id', 'pt.star_schema_id')
+    .join('data_products as dp', 'dp.id', 'ss.data_product_id')
+    .whereIn('pt.id', [...endIds])
+    .andWhere('dp.tenant_id', tenantId)
+    .select('pt.id', 'pt.source_product_table_id');
+  const realOf = new Map<number, number>();
+  for (const e of endRows) realOf.set(Number(e.id), Number(e.source_product_table_id ?? e.id));
+
+  const realIds = new Set<number>([...realOf.values()]);
+  const realRows: Array<{
+    id: number; table_name: string; display_name: string | null; description: string | null;
+    table_role: string; subject_id: number; subject_name: string;
+  }> = await db('product_tables as pt')
+    .join('star_schemas as ss', 'ss.id', 'pt.star_schema_id')
+    .join('data_products as dp', 'dp.id', 'ss.data_product_id')
+    .whereIn('pt.id', [...realIds])
+    .andWhere('dp.tenant_id', tenantId)
+    .select(
+      'pt.id', 'pt.table_name', 'pt.display_name', 'pt.description', 'pt.table_role',
+      'dp.id as subject_id', 'dp.name as subject_name',
+    );
+  const real = new Map(realRows.map((r) => [Number(r.id), r]));
+
+  const tables = new Map<number, ExternalJoinTable>();
+  const joins: ExternalJoin[] = [];
+  const seen = new Set<string>();
+  for (const r of rels) {
+    const fromReal = realOf.get(Number(r.from_table_id));
+    const toReal = realOf.get(Number(r.to_table_id));
+    if (fromReal == null || toReal == null) continue;
+    const from = real.get(fromReal);
+    const to = real.get(toReal);
+    if (!from || !to) continue;
+    const fromOwn = ownIds.has(fromReal);
+    const toOwn = ownIds.has(toReal);
+    if (!fromOwn && !toOwn) continue;
+    // The same join is often recorded in several subjects (every subject that
+    // uses both tables): list it once.
+    const key = `${fromReal}.${r.from_column_name}>${toReal}.${r.to_column_name}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const other = fromOwn && toOwn ? null : (fromOwn ? to : from);
+    if (other) {
+      tables.set(Number(other.id), {
+        id: Number(other.id), table_name: other.table_name, display_name: other.display_name,
+        description: other.description, table_role: other.table_role,
+        subject_id: Number(other.subject_id), subject_name: other.subject_name,
+      });
+    }
+    joins.push({
+      id: Number(r.id),
+      from_table_name: from.table_name,
+      from_column_name: r.from_column_name,
+      to_table_name: to.table_name,
+      to_column_name: r.to_column_name,
+      relationship_type: r.relationship_type,
+      in_subject_id: Number(r.in_subject_id),
+      in_subject_name: r.in_subject_name,
+      own_table_id: fromOwn ? fromReal : toReal,
+      other_table_id: other ? Number(other.id) : null,
+      endpoints: [
+        { tableId: fromReal, column: r.from_column_name },
+        { tableId: toReal, column: r.to_column_name },
+      ],
+    });
+  }
+  return { tables: [...tables.values()], joins };
+}
