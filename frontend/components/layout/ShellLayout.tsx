@@ -24,7 +24,7 @@ export default function ShellLayout({ children }: { children: React.ReactNode })
         <TopBar />
         <div className="flex flex-1 min-h-0 overflow-hidden">
           <IconRail />
-          <div className="flex-1 min-w-0 flex flex-col overflow-hidden">{children}</div>
+          <div className="flex-1 min-w-0 flex flex-col overflow-hidden transition-[padding] duration-200" style={{ paddingRight: 'var(--coworker-w, 0px)' }}>{children}</div>
         </div>
       </div>
     </FeaturesProvider>

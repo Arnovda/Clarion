@@ -305,6 +305,95 @@ export interface DataProductDto {
 }
 
 // ---------------------------------------------------------------------------
+// The Studio coworker — the wire between routes/coworker.ts and the panel
+// ---------------------------------------------------------------------------
+//
+// The coworker LOOKS THINGS UP and PROPOSES. It never writes: every proposal
+// below carries what a person needs to decide (the diff, the measurement, the
+// impact), and the panel's Keep calls the SAME write route the screens call.
+
+/** Where the coworker wants the screen to go — the catalog follows. */
+export type CoworkerFocus =
+  | { kind: 'subject'; productId: number }
+  | { kind: 'table'; tableId: number; tab?: 'sql' }
+  | { kind: 'source'; connectionId: number }
+  | { kind: 'source-table'; tableId: number; connectionId: number };
+
+/** What the person is looking at, sent with every message. */
+export interface CoworkerPageContext {
+  path: string;
+  /** A human label for the chip, e.g. "Finance › Sales lines". */
+  label?: string | null;
+  productId?: number | null;
+  /** Postgres product_tables id. */
+  tableId?: number | null;
+  sourceTableId?: number | null;
+  connectionId?: number | null;
+}
+
+/** Who would notice a change to a table — shown BEFORE Keep. */
+export interface CoworkerImpact {
+  dashboards: Array<{ id: number; name: string }>;
+  savedQuestions: Array<{ id: number; question: string }>;
+}
+
+export interface CoworkerGlossaryLink {
+  kind: 'column' | 'table' | 'kpi';
+  table?: string;
+  column?: string;
+  kpi?: string;
+}
+
+export type CoworkerProposal =
+  | {
+      id: string; kind: 'sql';
+      tableId: number; tableName: string; label: string;
+      before: string; after: string; summary: string;
+      compiled: boolean; error?: string | null;
+      impact: CoworkerImpact;
+    }
+  | {
+      id: string; kind: 'relationship';
+      fromTableId: number; fromColumnId: number; toTableId: number; toColumnId: number;
+      fromLabel: string; toLabel: string; reason: string;
+      /** The measurement /relationships/measure returned, verbatim. */
+      measurement: {
+        verdict: 'strong' | 'weak' | 'broken' | 'unmeasurable';
+        reason: string;
+        containment: { matchedDistinct: number; sampledDistinct: number; ratio: number } | null;
+        cardinality: { type: string } | null;
+        orphans: { rows: number } | null;
+      };
+    }
+  | {
+      id: string; kind: 'glossary';
+      term: string; meaning: string; links: CoworkerGlossaryLink[];
+    }
+  | {
+      id: string; kind: 'table';
+      productId: number; productName: string;
+      tableName: string; tableRole: 'fact' | 'dimension' | 'bridge';
+      description: string; sqlInstruction: string;
+    }
+  | {
+      id: string; kind: 'subject';
+      connectionId: number; connectionName: string;
+      name: string; description: string; entities: string[]; focus?: string;
+    };
+
+export type CoworkerEvent =
+  /** Narration or answer text as it streams. */
+  | { type: 'text'; delta: string }
+  /** The text of one model step, settled: narration before a tool, or the answer. */
+  | { type: 'segment'; kind: 'thought' | 'answer'; text: string }
+  /** `tool`: a look-up, or a proposal being prepared and checked (compile, measure). */
+  | { type: 'step'; id: string; status: 'running' | 'done' | 'failed'; label: string; tool?: 'read' | 'propose'; detail?: string }
+  | { type: 'focus'; target: CoworkerFocus }
+  | { type: 'proposal'; proposal: CoworkerProposal }
+  | { type: 'done'; steps: number; durationMs: number; stoppedAtLimit?: boolean }
+  | { type: 'error'; message: string };
+
+// ---------------------------------------------------------------------------
 // Feature flags — the deploy/release split
 // ---------------------------------------------------------------------------
 //
@@ -378,14 +467,20 @@ export type FeatureRollout = 'off' | 'tenants' | 'all';
  * back to a switch per feature.
  */
 export const FEATURE_FLAGS = {
-  // Empty, and that is the current state of the product rather than an
-  // oversight: nothing is gated, so there is nothing for anyone to switch.
-  // The console renders "nothing waiting to be released", which is true.
-  //
-  // The preview marker lived here until the last train was retired. A badge
-  // whose whole job is to say "this account sees things customers cannot" is
-  // noise once every account sees everything, so it went with the gates it
-  // described. Bring it back with the first ring.
+  // No release train is open (see above). The one entry is a `kind: 'feature'`
+  // on purpose: the owner asked, before it was built, that the Studio coworker
+  // be EASY TO TAKE BACK. Switching this off on /admin/features withdraws it
+  // within seconds, with no deploy — the Catalog's previous assistant comes
+  // back and every server route of the coworker answers 404. Nothing the
+  // coworker ever proposed was written without a person's Keep through the
+  // existing routes, so switching it off leaves no half-finished state behind.
+  // Delete it (and its two gates: routes/coworker.ts and the catalog page)
+  // once it has been on Everyone long enough to trust.
+  ai_coworker: {
+    kind: 'feature',
+    name: 'AI coworker in Studio',
+    description: 'One assistant docked in Studio that looks things up, proposes changes (SQL, relationships, definitions, new tables and subjects) and shows its work live. Nothing is saved until a person keeps it.',
+  },
 } as const;
 
 export type FeatureKey = keyof typeof FEATURE_FLAGS;

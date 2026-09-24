@@ -1230,3 +1230,27 @@ export const setCategoryModelSchema = z.object({
 });
 
 export const clearCategoryModelSchema = z.object({ params: aiCategoryParams });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// POST /api/coworker/turn — one message to the Studio coworker. The history is
+// TEXT only (the client never re-sends tool traffic) and capped, which is one
+// of the cost rules: an old turn costs a few hundred tokens, not its tools.
+// ─────────────────────────────────────────────────────────────────────────────
+const optionalPositiveId = z.number().int().positive().nullable().optional();
+export const coworkerTurnSchema = z.object({
+  body: z.object({
+    message: z.string().trim().min(1).max(4000),
+    history: z.array(z.object({
+      role: z.enum(['user', 'assistant']),
+      content: z.string().max(6000),
+    })).max(20).optional(),
+    context: z.object({
+      path: z.string().max(300),
+      label: z.string().max(200).nullable().optional(),
+      productId: optionalPositiveId,
+      tableId: optionalPositiveId,
+      sourceTableId: optionalPositiveId,
+      connectionId: optionalPositiveId,
+    }).optional(),
+  }),
+});

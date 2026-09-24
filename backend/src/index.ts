@@ -67,6 +67,7 @@ import investigationsRouter  from './routes/investigations';
 import managedGridsRouter    from './routes/managedGrids';
 import savedQuestionsRouter  from './routes/savedQuestions';
 import definitionsRouter     from './routes/definitions';
+import coworkerRouter        from './routes/coworker';
 import apiTokensRouter from './routes/apiTokens';
 import addinRouter from './routes/addin';
 import aiUsageRouter         from './routes/aiUsage';
@@ -309,6 +310,8 @@ app.use('/api/investigations',  investigationsRouter);
 app.use('/api/grids',           computeLimiter, managedGridsRouter);
 app.use('/api/saved-questions', savedQuestionsRouter);
 app.use('/api/definitions',     definitionsRouter);
+// The Studio coworker. aiLimiter: every turn is one or more model calls.
+app.use('/api/coworker',        aiLimiter, coworkerRouter);
 app.use('/api/admin/ai-usage',  aiUsageRouter);
 app.use('/api/admin/ai-routing', aiRoutingRouter);
 // Personal API tokens, and the one surface that accepts them. The add-in

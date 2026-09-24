@@ -827,6 +827,124 @@ export async function callClaudeMultiTurn(
   return text;
 }
 
+// ---------------------------------------------------------------------------
+// Tool use — the Studio coworker's loop.
+//
+// ONE model turn with native tools: the model streams its visible narration
+// (the "what I'm doing and why" the panel shows live), then either answers or
+// asks for one or more tools. The caller runs the tools and calls again with
+// the results. Everything a model call must do here goes through the same
+// gates as every other call: the budget / AI-off check, the per-category
+// model choice (category 'coworker', light model by default), usage recorded
+// against the tenant and logged per call for /admin/ai-usage.
+//
+// Cost levers that live HERE, on purpose, so no caller can forget them:
+//   - the system prompt and the tool definitions are marked cacheable — they
+//     are identical on every step of a turn and every turn of a chat, so a
+//     re-read costs a tenth of a fresh one once the prefix is long enough to
+//     be cached (the API caches only prefixes above a model-specific minimum);
+//   - the default is the LIGHT model, and output is capped per step;
+//   - a step may be forced to answer without tools (`forceAnswer`) — the loop
+//     uses it on its last allowed step, so a turn ends in a sentence instead
+//     of an unanswered tool request.
+// ---------------------------------------------------------------------------
+
+export interface CoworkerToolDefinition {
+  name: string;
+  description: string;
+  input_schema: Record<string, unknown>;
+}
+
+/** A Messages-API message; content blocks are passed back verbatim. */
+export interface ToolLoopMessage {
+  role: 'user' | 'assistant';
+  content: string | unknown[];
+}
+
+export interface ToolTurnResult {
+  /** The assistant's content blocks, verbatim — send them back on the next step. */
+  content: unknown[];
+  stopReason: string | null;
+  model: string;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+}
+
+export async function callClaudeWithTools(opts: {
+  callLabel: string;
+  system: string;
+  tools: CoworkerToolDefinition[];
+  messages: ToolLoopMessage[];
+  maxTokens?: number;
+  signal?: AbortSignal;
+  /** Text as it streams — the narration the panel shows while the step runs. */
+  onText?: (delta: string) => void;
+  forceAnswer?: boolean;
+}): Promise<ToolTurnResult> {
+  const callLabel = opts.callLabel;
+  const tenantId = await enforceAiBudget(callLabel);
+  const model = await claudeModelFor(callLabel, tenantId, MODEL_HAIKU);
+  const start = Date.now();
+
+  const tools = opts.tools.map((t, i) => (i === opts.tools.length - 1
+    ? { ...t, cache_control: { type: 'ephemeral' } }
+    : t));
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const params: any = {
+    model,
+    system: [{ type: 'text', text: opts.system, cache_control: { type: 'ephemeral' } }],
+    tools,
+    messages: opts.messages,
+    ...(opts.forceAnswer ? { tool_choice: { type: 'none' } } : {}),
+    ...shapeRequest({ model, maxTokens: opts.maxTokens ?? 1500, temperature: 0, effort: 'low', streaming: true }),
+  };
+
+  const opened = await openStreamWithRetry(
+    () => {
+      const s = getClient().messages.stream(params);
+      attachAbort(s, opts.signal);
+      return s;
+    },
+    { callLabel, abortSignal: opts.signal },
+  );
+  const stream = opened.stream as ReturnType<ReturnType<typeof getClient>['messages']['stream']>;
+  for await (const event of opened.events) {
+    if (event.type === 'content_block_delta') {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const delta = (event as any).delta as Record<string, unknown>;
+      if (delta?.type === 'text_delta' && typeof delta.text === 'string') {
+        try { opts.onText?.(delta.text); } catch { /* a display hook must never break the call */ }
+      }
+    }
+  }
+
+  const final = await stream.finalMessage();
+  const durationMs = Date.now() - start;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const usage: any = final.usage ?? {};
+  const inputTokens = usage.input_tokens ?? 0;
+  const outputTokens = usage.output_tokens ?? 0;
+  const cacheReadTokens = usage.cache_read_input_tokens ?? 0;
+  const cacheCreationTokens = usage.cache_creation_input_tokens ?? 0;
+  const props = { callLabel, model, streaming: 'true', ...(tenantId ? { tenantId: String(tenantId) } : {}) };
+  trackMetric('ai_call_duration_ms', durationMs, props);
+  trackMetric('ai_input_tokens', inputTokens, props);
+  trackMetric('ai_output_tokens', outputTokens, props);
+  if (tenantId) recordTenantAiUsage(tenantId, inputTokens, outputTokens).catch(() => { /* logged inside */ });
+  logAiCall({ callLabel, model, inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens, durationMs });
+  logger.info({ callLabel, model, durationMs, inputTokens, outputTokens, cacheReadTokens, stopReason: final.stop_reason }, 'AI tool step completed');
+
+  return {
+    content: final.content as unknown[],
+    stopReason: final.stop_reason ?? null,
+    model,
+    inputTokens,
+    outputTokens,
+    cacheReadTokens,
+  };
+}
+
 /**
  * Parse a JSON object out of a raw Claude response.
  *
