@@ -60,6 +60,10 @@ interface ResolvedTable {
   productId: number;
   productName: string;
   label: string;
+  /** Set when this is a COPY of a shared lookup: the original's graph id. */
+  ownerGraphId: number | null;
+  /** A copy whether or not its original could be found. */
+  isCopy: boolean;
 }
 
 const MAX_MESSAGES = 40;
@@ -78,11 +82,24 @@ function isAbort(err: unknown): boolean {
   return e?.name === 'CanceledError' || e?.name === 'AbortError' || e?.code === 'ERR_CANCELED';
 }
 
+/**
+ * The table a selection should OPEN: a copy of a shared lookup (Purchasing's
+ * Journal) is not a table in its own right — it has no SQL and no data of its
+ * own — so every door that lands on one (an old link, the Relations diagram,
+ * lineage, "Also used in") opens its original instead. A copy whose original
+ * cannot be found stays itself; its panel says it is shared data.
+ */
+function canonicalTreeTable(tree: ProductTreeItem[], tableId: number): ResolvedTable | null {
+  const found = findTreeTable(tree, tableId);
+  if (!found?.isCopy || found.ownerGraphId == null) return found;
+  return findTreeTable(tree, found.ownerGraphId) ?? found;
+}
+
 function findTreeTable(tree: ProductTreeItem[], tableId: number): ResolvedTable | null {
   for (const p of tree) {
     for (const s of p.starSchemas ?? []) {
       for (const t of s.tables ?? []) {
-        const pgId = (t as { pg_table_id?: number | null }).pg_table_id ?? null;
+        const pgId = t.pg_table_id ?? null;
         if (t.id === tableId || pgId === tableId) {
           return {
             graphId: t.id,
@@ -90,6 +107,8 @@ function findTreeTable(tree: ProductTreeItem[], tableId: number): ResolvedTable 
             productId: p.productId,
             productName: p.productName,
             label: t.display_name || t.table_name,
+            ownerGraphId: t.owner_graph_id ?? t.owner_pg_table_id ?? null,
+            isCopy: t.is_copy === true,
           };
         }
       }
@@ -174,6 +193,8 @@ function CatalogInner() {
     return treeRef.current;
   }, []);
 
+  // `schemaFor` is declared below; the copy → original redirect needs it.
+  const schemaForRef = useRef<((catalog: CatalogId, id: number) => Promise<SchemaEntry | null>) | null>(null);
   const [resolvedTable, setResolvedTable] = useState<ResolvedTable | null>(null);
   useEffect(() => {
     if (!tableSel || tableSel.catalog !== 'products') { setResolvedTable(null); return; }
@@ -181,10 +202,23 @@ function CatalogInner() {
     let cancelled = false;
     getProductTree().then((tree) => {
       if (cancelled) return;
-      setResolvedTable(findTreeTable(tree, wanted));
+      const found = findTreeTable(tree, wanted);
+      const canonical = canonicalTreeTable(tree, wanted);
+      if (found && canonical && canonical.graphId !== found.graphId) {
+        // Landed on a copy — open the original (see canonicalTreeTable).
+        void schemaForRef.current?.('products', canonical.productId).then((schema) => {
+          if (cancelled) return;
+          handleSelectTable({
+            catalog: 'products', schemaSlug: schema?.id ?? '', schemaLabel: schema?.label ?? canonical.productName,
+            tableId: String(canonical.graphId), tableLabel: canonical.label, tableName: null,
+          });
+        });
+        return;
+      }
+      setResolvedTable(found);
     });
     return () => { cancelled = true; };
-  }, [tableSel, getProductTree]);
+  }, [tableSel, getProductTree, handleSelectTable]);
 
   // The tree highlights by schema SLUG; a panel or a link knows an id. This
   // finds the slug the way the tree does, so both agree on what is selected.
@@ -196,6 +230,7 @@ function CatalogInner() {
         : (s.meta?.connectionId ?? parseIdFromSlug(s.id)) === id)) ?? null;
     } catch { return null; }
   }, []);
+  schemaForRef.current = schemaFor;
 
   // ── Deep links, read once on mount ────────────────────────────────────────
   // A pasted link must land on the thing it names AND light it in the tree,
@@ -235,8 +270,13 @@ function CatalogInner() {
         return;
       }
       if (intent.kind === 'table') {
-        const found = findTreeTable(await getProductTree(), intent.tableId);
+        const found = canonicalTreeTable(await getProductTree(), intent.tableId);
         if (!found) { setTreeSearch(String(intent.tableId)); return; }
+        // A link to a COPY opened its original: the address bar says so too,
+        // so a link copied from here points at where the table lives.
+        if (found.graphId !== intent.tableId && found.pgId !== intent.tableId) {
+          router.replace(catalogHref({ kind: 'table', tableId: found.graphId }));
+        }
         const schema = await schemaFor('products', found.productId);
         const slug = schema?.id ?? '';
         setSchemaSel({ catalog: 'products', schemaSlug: slug, schemaLabel: schema?.label ?? found.productName });
@@ -289,7 +329,7 @@ function CatalogInner() {
       return;
     }
     if (target.kind === 'table') {
-      const found = findTreeTable(await getProductTree(), target.tableId);
+      const found = canonicalTreeTable(await getProductTree(), target.tableId);
       if (!found) return;
       const schema = await schemaFor('products', found.productId);
       handleSelectTable({ catalog: 'products', schemaSlug: schema?.id ?? '', schemaLabel: schema?.label ?? found.productName, tableId: String(found.graphId), tableLabel: found.label, tableName: null });

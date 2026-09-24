@@ -6,6 +6,7 @@
  * worker (new /bus-matrix/start job-based flow).
  */
 
+import { linkSharedTables } from './sharedTables';
 import type { Knex } from 'knex';
 import { semanticDb } from '../db/knex';
 import { deleteProductGraph } from '../db/semanticGraph';
@@ -993,6 +994,14 @@ export async function buildBusMatrix(opts: BuildBusMatrixOptions): Promise<Build
       });
 
       _results.push({ name: dp.name, id: pid, status: 'created', build_order: dp.build_order });
+    }
+
+    // Point every copy on this source at its original — the copies this build
+    // just wrote, and any copy in a subject OUTSIDE this build whose original
+    // this rebuild retired (the FK is ON DELETE SET NULL). See sharedTables.ts.
+    if (tenantId) {
+      const linked = await linkSharedTables(trx, Number(tenantId), connectionId);
+      if (linked > 0) log.info({ linked }, 'bus-matrix: linked shared lookups to their originals');
     }
 
     return _results;

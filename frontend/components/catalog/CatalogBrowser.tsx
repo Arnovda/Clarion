@@ -21,7 +21,7 @@ import { useEffect, useMemo, useState, useCallback } from 'react';
 import Link from 'next/link';
 import {
   ChevronRight, Star, Layers, Table2,
-  Table as TableIcon, Loader2,
+  Table as TableIcon, Loader2, Link2, ArrowUpRight, BarChart3, Flag,
 } from 'lucide-react';
 import { cn } from '@/lib/cn';
 import api from '@/lib/api';
@@ -91,26 +91,31 @@ const Chevron = ({ open }: { open: boolean }) => (
   />
 );
 
-const roleClass = (role: string | null | undefined) => {
-  switch (role) {
-    case 'fact':      return 'bg-ocean-softer text-ocean';
-    case 'dimension': return 'bg-ai-soft text-ai';
-    case 'bridge':    return 'bg-warn-soft text-warn';
-    case 'junk':      return 'bg-softer text-muted';
-    case 'source':    return 'bg-softer text-muted';
-    default:          return 'bg-softer text-muted';
-  }
+// A table's kind, in the business words the table page's About rail uses
+// ("Measures table", "Lookup table"), shown as an ICON with the words as its
+// tooltip. The tree used to carry DIM / FACT chips — warehouse vocabulary —
+// and a business-word chip is twice as wide and cut the table's own name
+// short in a 280px tree (render check, 2026-09-24).
+const ROLE_WORD: Record<string, string> = {
+  fact: 'Measures table',
+  dimension: 'Lookup table',
+  bridge: 'Bridge table',
+  junk: 'Flags table',
 };
 
-const roleAbbrev = (role: string | null | undefined) => {
-  switch (role) {
-    case 'fact':      return 'FACT';
-    case 'dimension': return 'DIM';
-    case 'bridge':    return 'BRG';
-    case 'junk':      return 'JNK';
-    default:          return null;
-  }
-};
+function RoleIcon({ role, selected }: { role: string | null | undefined; selected: boolean }) {
+  const Icon = role === 'fact' ? BarChart3 : role === 'bridge' ? Link2 : role === 'junk' ? Flag : TableIcon;
+  const word = role ? ROLE_WORD[role] : undefined;
+  return (
+    <span title={word} aria-label={word} className="shrink-0 inline-flex">
+      <Icon
+        className={cn('w-3.5 h-3.5', selected ? 'text-ocean' : role === 'fact' ? 'text-ocean/70' : 'text-muted-2')}
+        strokeWidth={1.5}
+        aria-hidden
+      />
+    </span>
+  );
+}
 
 const fmtRows = (n: number | null | undefined) => {
   if (n == null) return null;
@@ -128,6 +133,8 @@ export default function CatalogBrowser({ selected, selectedSchema, onSelectTable
   const [openCatalogs, setOpenCatalogs] = useState<Set<CatalogId>>(new Set<CatalogId>(['products', 'sources']));
   const [openSchemas, setOpenSchemas] = useState<Set<string>>(new Set());
   const [openTables, setOpenTables] = useState<Set<string>>(new Set());
+  // "Uses N from Reference" lines the user opened, keyed catalog/schema.
+  const [openBorrowed, setOpenBorrowed] = useState<Set<string>>(new Set());
 
   const [schemasByCatalog, setSchemasByCatalog] = useState<Record<string, SchemaEntry[]>>({});
   const [tablesBySchema,   setTablesBySchema]   = useState<Record<string, TableEntry[]>>({});
@@ -448,7 +455,13 @@ export default function CatalogBrowser({ selected, selectedSchema, onSelectTable
                               <div className="pl-12 py-1.5 text-[11px] text-muted-2 italic">empty</div>
                             )}
 
-                            {tables.map((tbl) => {
+                            {/* A subject lists the tables it BUILDS. A copy of
+                                a shared lookup another subject builds (Journal,
+                                Date…) is not a table of this subject — it has
+                                no SQL and no data of its own — so it appears
+                                only in the "Uses … from" line below, as a link
+                                to the original. */}
+                            {tables.filter((tbl) => !tbl.isCopy).map((tbl) => {
                               const tableKey = `${cat.id}/${schema.id}/${tbl.id}`;
                               const tableOpen = openTables.has(tableKey);
                               const cols = columnsByTable[tableKey] ?? [];
@@ -456,7 +469,6 @@ export default function CatalogBrowser({ selected, selectedSchema, onSelectTable
                               const isSelected = selected?.tableId === tbl.id
                                 && selected?.schemaSlug === schema.id
                                 && selected?.catalog === cat.id;
-                              const abbrev = roleAbbrev(tbl.role);
 
                               return (
                                 <div key={tbl.id}>
@@ -491,25 +503,13 @@ export default function CatalogBrowser({ selected, selectedSchema, onSelectTable
                                       })}
                                       className="flex items-center gap-1.5 flex-1 text-left min-w-0"
                                     >
-                                      <TableIcon
-                                        className={cn('w-3.5 h-3.5 shrink-0',
-                                          isSelected ? 'text-ocean' : 'text-muted-2')}
-                                        strokeWidth={1.5}
-                                      />
+                                      <RoleIcon role={cat.id === 'sources' ? null : tbl.role} selected={isSelected} />
                                       <span className={cn(
                                         'text-[12px] truncate',
                                         isSelected ? 'text-ink font-medium' : 'text-ink-2',
                                       )}>
                                         {tbl.label}
                                       </span>
-                                      {abbrev && (
-                                        <span className={cn(
-                                          'shrink-0 text-[9px] font-mono px-1 py-0.5 rounded tracking-wider',
-                                          roleClass(tbl.role),
-                                        )}>
-                                          {abbrev}
-                                        </span>
-                                      )}
                                     </button>
 
                                     {showRowCounts && tbl.rowCount != null && (
@@ -551,6 +551,28 @@ export default function CatalogBrowser({ selected, selectedSchema, onSelectTable
                                 </div>
                               );
                             })}
+
+                            <BorrowedTables
+                              tables={tables.filter((tbl) => tbl.isCopy)}
+                              open={openBorrowed.has(schemaKey)}
+                              onToggle={() => setOpenBorrowed((prev) => {
+                                const n = new Set(prev);
+                                if (n.has(schemaKey)) n.delete(schemaKey); else n.add(schemaKey);
+                                return n;
+                              })}
+                              onOpenOriginal={(tbl) => {
+                                if (!tbl.sharedFrom) return;
+                                onSelectTable?.({
+                                  catalog: 'products',
+                                  schemaSlug: tbl.sharedFrom.schemaSlug,
+                                  schemaLabel: tbl.sharedFrom.productName,
+                                  tableId: tbl.sharedFrom.tableId,
+                                  tableLabel: tbl.label,
+                                  tableName: tbl.tableName,
+                                  role: tbl.role ?? null,
+                                });
+                              }}
+                            />
                           </div>
                         )}
                       </div>
@@ -562,6 +584,61 @@ export default function CatalogBrowser({ selected, selectedSchema, onSelectTable
           );
         })}
       </div>
+    </div>
+  );
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// Borrowed tables — the shared lookups a subject USES but another subject
+// builds. One quiet, collapsed line under the subject's own tables: "Uses 6
+// from Reference". Open, each row is a link (↗) that selects the ORIGINAL, so
+// the highlight moves to where the table really lives. Never a second copy of
+// the table in the tree — that duplication is what this replaced (2026-09-24).
+// ───────────────────────────────────────────────────────────────────────────
+
+function BorrowedTables({
+  tables, open, onToggle, onOpenOriginal,
+}: {
+  tables: TableEntry[];
+  open: boolean;
+  onToggle: () => void;
+  onOpenOriginal: (tbl: TableEntry) => void;
+}) {
+  if (tables.length === 0) return null;
+  const owners = Array.from(new Set(tables.map((t) => t.sharedFrom?.productName).filter((n): n is string => !!n)));
+  const from = owners.length === 1 ? `from ${owners[0]}` : 'shared lookups';
+  return (
+    <div>
+      <button
+        type="button"
+        onClick={onToggle}
+        aria-expanded={open}
+        className="w-full flex items-center gap-1.5 pl-10 pr-3 py-1 text-left hover:bg-softer transition-colors -ml-[2px] border-l-2 border-transparent"
+        title="Lookups this subject uses but another subject builds"
+      >
+        <span className="p-0.5"><Chevron open={open} /></span>
+        <Link2 className="w-3 h-3 shrink-0 text-muted-2" strokeWidth={1.75} aria-hidden />
+        <span className="text-[11.5px] text-muted truncate">
+          Uses {tables.length} {from}
+        </span>
+      </button>
+      {open && tables.map((tbl) => (
+        <button
+          key={tbl.id}
+          type="button"
+          disabled={!tbl.sharedFrom}
+          onClick={() => onOpenOriginal(tbl)}
+          className="w-full flex items-center gap-1.5 pl-[3.75rem] pr-3 py-0.5 text-left hover:bg-softer transition-colors disabled:cursor-default disabled:hover:bg-transparent group"
+          title={tbl.sharedFrom ? `Open ${tbl.label} in ${tbl.sharedFrom.productName}` : `${tbl.label} is not built yet in the subject that owns it`}
+        >
+          <span className="text-[11.5px] text-ink-2 truncate">{tbl.label}</span>
+          {tbl.sharedFrom ? (
+            <ArrowUpRight className="w-3 h-3 shrink-0 text-muted-2 group-hover:text-ocean" strokeWidth={1.75} aria-hidden />
+          ) : (
+            <span className="text-[10px] text-muted-2 italic">not built yet</span>
+          )}
+        </button>
+      ))}
     </div>
   );
 }
@@ -642,7 +719,6 @@ function SearchResults({
                   const isSelected = selected?.catalog === schema.catalog
                     && selected?.schemaSlug === schema.schemaSlug
                     && selected?.tableId === g.tableId;
-                  const abbrev = roleAbbrev(g.role);
                   const select = () => onSelectTable?.({
                     catalog: schema.catalog,
                     schemaSlug: schema.schemaSlug,
@@ -661,15 +737,10 @@ function SearchResults({
                           isSelected ? 'bg-ocean-softer border-ocean' : 'hover:bg-softer border-transparent',
                         )}
                       >
-                        <TableIcon className={cn('w-3.5 h-3.5 shrink-0', isSelected ? 'text-ocean' : 'text-muted-2')} strokeWidth={1.5} />
+                        <RoleIcon role={schema.catalog === 'sources' ? null : g.role} selected={isSelected} />
                         <span className={cn('text-[12px] truncate flex-1', isSelected ? 'text-ink font-medium' : 'text-ink-2')}>
                           <HighlightMatch text={g.tableLabel} query={query} />
                         </span>
-                        {abbrev && (
-                          <span className={cn('text-[9px] font-mono uppercase tracking-[0.06em] px-1 py-0.5 rounded shrink-0', roleClass(g.role))}>
-                            {abbrev}
-                          </span>
-                        )}
                       </button>
                       {g.columns.length > 0 && (
                         <div className="pl-16 pr-3 pb-1">

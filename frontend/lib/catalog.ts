@@ -42,6 +42,8 @@ export interface SchemaEntry {
     sourceConnectorType?: string | null;
     multiSource?: boolean;
     sourceDeleted?: boolean;
+    /** Shared lookups this subject uses but another subject builds (products only). */
+    sharedTableCount?: number;
   };
 }
 
@@ -62,6 +64,21 @@ export interface TableEntry {
   description?: string | null;
   aiDraft?: boolean;
   approvalStatus?: string | null;
+  /** Products only: the Postgres product_tables.id (`id` is the graph id). */
+  pgTableId?: number | null;
+  /**
+   * Products only: this row is a COPY of a shared lookup another subject
+   * builds. The tree never lists it as this subject's table — it is a link to
+   * `sharedFrom`, the original (null when the original was never built).
+   */
+  isCopy?: boolean;
+  sharedFrom?: {
+    tableId: string;
+    pgTableId: number;
+    productId: number;
+    productName: string;
+    schemaSlug: string;
+  } | null;
 }
 
 export interface ColumnEntry {

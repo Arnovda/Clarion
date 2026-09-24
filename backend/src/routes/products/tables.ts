@@ -6,6 +6,7 @@
  * Split verbatim from routes/products.ts — see ./index.ts for the
  * order-is-load-bearing mounting contract.
  */
+import { sharedOriginalOf, sharedEditRefusal, sharedTableInfo } from '../../services/sharedTables';
 import { Router, Request, Response, NextFunction } from 'express';
 import type { Database } from 'duckdb-async';
 import { requireAuth, requireRole } from '../../middleware/auth';
@@ -77,6 +78,8 @@ router.post('/tables/:tableId/run', requireAuth, requireRole('admin', 'analyst')
 router.patch('/tables/:tableId', requireAuth, requireRole('admin', 'analyst'), validate(updateProductTableSchema), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const db = reqDb(req);
+    const sharedOriginal = await sharedOriginalOf(db, req.user!.tenantId, 'product_tables', Number(req.params.tableId));
+    if (sharedOriginal) { res.status(400).json({ ok: false, error: sharedEditRefusal(sharedOriginal), sharedFrom: sharedOriginal }); return; }
     const allowed = ['description', 'display_name', 'plain_summary'];
     const updates: Record<string, unknown> = { updated_at: new Date().toISOString() };
     for (const key of allowed) {
@@ -276,6 +279,9 @@ router.get('/tables/:tableId/declaration', requireAuth, requireRole('admin', 'an
         pending_rebuild: !!row.declared_at && (!row.last_run_at || new Date(row.declared_at) > new Date(row.last_run_at)),
         product: { id: row.product_id, name: row.product_name, connection_id: row.connection_id },
         shared_from: sharedFrom,
+        // A copy nothing could link yet (its original was never built) still
+        // is a copy: the SQL tab must say so instead of offering an editor.
+        is_copy: sharedTableInfo(row).isCopy,
         columns,
       },
     });
@@ -300,8 +306,11 @@ router.put('/tables/:tableId/sql', requireAuth, requireRole('admin', 'analyst'),
 
     const row = await loadDeclarationRow(req, tableId);
     if (!row) { res.status(404).json({ ok: false, error: 'Table not found' }); return; }
-    if (row.source_product_table_id) {
-      const owner = await loadSharedFrom(req, Number(row.source_product_table_id));
+    // A copy of a shared lookup has no SQL of its own — refuse even when
+    // nothing has linked it to an original yet: the runner skips copies, so a
+    // SQL saved here would be stored, compiled, "rebuilt" and never built.
+    if (sharedTableInfo(row).isCopy) {
+      const owner = row.source_product_table_id ? await loadSharedFrom(req, Number(row.source_product_table_id)) : null;
       res.status(400).json({
         ok: false,
         error: owner
@@ -393,8 +402,11 @@ router.post('/tables/:tableId/sql/propose', requireAuth, requireRole('admin', 'a
     const { instruction, sql: draft } = req.body as { instruction: string; sql?: string };
     const row = await loadDeclarationRow(req, tableId);
     if (!row) { res.status(404).json({ ok: false, error: 'Table not found' }); return; }
-    if (row.source_product_table_id) {
-      const owner = await loadSharedFrom(req, Number(row.source_product_table_id));
+    // A copy of a shared lookup has no SQL of its own — refuse even when
+    // nothing has linked it to an original yet: the runner skips copies, so a
+    // SQL saved here would be stored, compiled, "rebuilt" and never built.
+    if (sharedTableInfo(row).isCopy) {
+      const owner = row.source_product_table_id ? await loadSharedFrom(req, Number(row.source_product_table_id)) : null;
       res.status(400).json({
         ok: false,
         error: owner

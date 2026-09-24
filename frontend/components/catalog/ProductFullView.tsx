@@ -27,8 +27,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import dynamic from 'next/dynamic';
 import { useRouter } from 'next/navigation';
 import {
-  ArrowRight, BarChart3, Boxes, Check, Database, GitBranch, Loader2,
-  Plus, RefreshCw, ShieldCheck, Sparkles, Trash2, X,
+  ArrowRight, ArrowUpRight, BarChart3, Boxes, Check, Database, GitBranch, Loader2,
+  Link2, Plus, RefreshCw, ShieldCheck, Sparkles, Trash2, X,
 } from 'lucide-react';
 import api from '@/lib/api';
 import { cn } from '@/lib/cn';
@@ -123,6 +123,12 @@ export default function ProductFullView({ productId, onNavigate, onChanged, onDe
     () => (data?.star_schemas ?? []).flatMap((s) => s.tables ?? []),
     [data],
   );
+  // What this subject BUILDS, and the shared lookups it only USES (copies of
+  // tables another subject builds — services/sharedTables.ts). Counts, rows,
+  // lineage and history are about what is built here; the borrowed lookups
+  // are listed as links to their originals, never as tables of this subject.
+  const ownTables = useMemo(() => allTables.filter((t) => !t.is_reference), [allTables]);
+  const sharedTables = useMemo(() => allTables.filter((t) => t.is_reference), [allTables]);
 
   // ── Rebuild — the whole subject, streamed into a strip under the header ──
   // The bus-matrix refresh job, exactly as Manage mode ran it: one call to
@@ -232,14 +238,14 @@ export default function ProductFullView({ productId, onNavigate, onChanged, onDe
   const SubjectIcon = iconForAnalytics(data.name);
   const askHref = askAboutSubject({ productId: data.id, productName: data.name, connectionId: data.source?.id ?? data.connection_id });
   const lineageAnchorId = lineageTableId
-    ?? allTables.find((t) => t.table_role === 'fact')?.id
-    ?? allTables[0]?.id
+    ?? ownTables.find((t) => t.table_role === 'fact')?.id
+    ?? ownTables[0]?.id
     ?? null;
 
   const tabs: Array<{ id: Tab; label: string; count?: number }> = [
     { id: 'overview', label: 'Overview' },
     { id: 'metrics', label: 'Metrics', count: kpis.length },
-    { id: 'tables', label: 'Tables', count: allTables.length },
+    { id: 'tables', label: 'Tables', count: ownTables.length },
     { id: 'relations', label: 'Relations' },
     { id: 'lineage', label: 'Lineage' },
     { id: 'quality', label: 'Quality' },
@@ -316,7 +322,7 @@ export default function ProductFullView({ productId, onNavigate, onChanged, onDe
       <div className="flex-1 min-h-0 overflow-y-auto px-7 py-6 pb-24">
         <div className="max-w-5xl mx-auto">
           {tab === 'overview' && (
-            <OverviewTab data={data} kpis={kpis} aiStarters={aiStarters} allTables={allTables} askHref={askHref} />
+            <OverviewTab data={data} kpis={kpis} aiStarters={aiStarters} allTables={allTables} ownTables={ownTables} askHref={askHref} />
           )}
           {tab === 'metrics' && (
             curator
@@ -325,7 +331,8 @@ export default function ProductFullView({ productId, onNavigate, onChanged, onDe
           )}
           {tab === 'tables' && (
             <TablesTab
-              tables={allTables}
+              tables={ownTables}
+              sharedTables={sharedTables}
               productId={productId}
               curator={curator}
               adding={adding}
@@ -339,7 +346,7 @@ export default function ProductFullView({ productId, onNavigate, onChanged, onDe
           )}
           {tab === 'lineage' && (
             curator ? (
-              allTables.length === 0 || lineageAnchorId === null
+              ownTables.length === 0 || lineageAnchorId === null
                 ? <EmptyTabState message="Nothing to trace yet." />
                 : (
                   <>
@@ -347,7 +354,7 @@ export default function ProductFullView({ productId, onNavigate, onChanged, onDe
                         (no lineage hairball), so the picker IS the
                         navigation. Default: the measures table. */}
                     <div className="mb-3 flex flex-wrap gap-1.5">
-                      {allTables.map((t) => (
+                      {ownTables.map((t) => (
                         <button
                           key={t.id}
                           type="button"
@@ -371,14 +378,14 @@ export default function ProductFullView({ productId, onNavigate, onChanged, onDe
             )
           )}
           {tab === 'quality' && (
-            curator ? <QualityTab productNameFilter={data.name} /> : <ViewerQuality tables={allTables} />
+            curator ? <QualityTab productNameFilter={data.name} /> : <ViewerQuality tables={ownTables} />
           )}
           {tab === 'history' && (
-            allTables.length === 0
+            ownTables.length === 0
               ? <EmptyTabState message="No refreshes have run yet." />
               : (
                 <div className="space-y-5">
-                  {allTables.map((t) => (
+                  {ownTables.map((t) => (
                     <div key={t.id} className="rounded-lg border border-line bg-raised px-5 py-4">
                       <div className="mb-2 text-[13px] font-medium text-ink">{t.display_name || humanizeTable(t)}</div>
                       <RefreshHistoryChart productTableId={t.id} variant="full" />
@@ -398,12 +405,13 @@ export default function ProductFullView({ productId, onNavigate, onChanged, onDe
 // ───────────────────────────────────────────────────────────────────────────
 
 function OverviewTab({
-  data, kpis, aiStarters, allTables, askHref,
+  data, kpis, aiStarters, allTables, ownTables, askHref,
 }: {
   data: SubjectDetail;
   kpis: ProductKpi[];
   aiStarters: string[] | null;
   allTables: SubjectTable[];
+  ownTables: SubjectTable[];
   askHref: string;
 }) {
   const router = useRouter();
@@ -446,9 +454,9 @@ function OverviewTab({
 
       <Section title="At a glance" icon={<Database className="w-3.5 h-3.5" strokeWidth={1.75} />}>
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-          <Stat label="Tables" value={allTables.length} />
+          <Stat label="Tables" value={ownTables.length} />
           <Stat label="Metrics" value={kpis.length} />
-          <Stat label="Rows" value={allTables.reduce((s, t) => s + (Number(t.row_count) || 0), 0)} format="compact" />
+          <Stat label="Rows" value={ownTables.reduce((s, t) => s + (Number(t.row_count) || 0), 0)} format="compact" />
           <Stat label="Last refreshed" value={data.last_refreshed_at ? formatRelative(data.last_refreshed_at) : '—'} text />
         </div>
       </Section>
@@ -490,9 +498,11 @@ function KpiCard({ kpi }: { kpi: ProductKpi }) {
 // ───────────────────────────────────────────────────────────────────────────
 
 function TablesTab({
-  tables, productId, curator, adding, onAdding, onAdded, onNavigate,
+  tables, sharedTables, productId, curator, adding, onAdding, onAdded, onNavigate,
 }: {
   tables: SubjectTable[];
+  /** Lookups this subject uses but another subject builds — listed as links. */
+  sharedTables: SubjectTable[];
   productId: number;
   curator: boolean;
   adding: boolean;
@@ -501,9 +511,11 @@ function TablesTab({
   onNavigate?: (target: CatalogNavTarget) => void;
 }) {
   const [expandedId, setExpandedId] = useState<number | null>(null);
+  const owners = Array.from(new Set(sharedTables.map((t) => t.owner_product_name).filter((n): n is string => !!n)));
   return (
+    <div className="space-y-6">
     <Section
-      title={`All tables (${tables.length})`}
+      title={`Built here (${tables.length})`}
       icon={<Boxes className="w-3.5 h-3.5" strokeWidth={1.75} />}
       aside={curator && !adding ? (
         <button type="button" onClick={() => onAdding(true)} className="inline-flex items-center gap-1 text-[12px] font-medium text-ocean hover:text-ocean-hover transition-colors">
@@ -530,6 +542,44 @@ function TablesTab({
         </div>
       )}
     </Section>
+
+    {sharedTables.length > 0 && (
+      <Section
+        title={`Uses ${owners.length === 1 ? `from ${owners[0]}` : 'shared lookups'} (${sharedTables.length})`}
+        icon={<Link2 className="w-3.5 h-3.5" strokeWidth={1.75} />}
+      >
+        <p className="text-[12px] text-muted mb-2.5 leading-relaxed">
+          Lookups this subject slices by, built once in another subject and shared. Change them where they are built.
+        </p>
+        <div className="bg-raised border border-line rounded-md divide-y divide-line">
+          {sharedTables.map((t) => {
+            const name = t.display_name || humanizeTable(t);
+            const ownerId = t.owner_table_id ?? null;
+            return (
+              <div key={t.id} className="px-4 py-2.5 flex items-center gap-3">
+                {ownerId != null && onNavigate ? (
+                  <button
+                    type="button"
+                    onClick={() => onNavigate({ kind: 'table', tableId: ownerId })}
+                    className="inline-flex items-center gap-1 text-[13px] text-ink hover:text-ocean transition-colors text-left min-w-0"
+                    title={`Open ${name} in ${t.owner_product_name ?? 'the subject that builds it'}`}
+                  >
+                    <span className="truncate">{name}</span>
+                    <ArrowUpRight className="w-3.5 h-3.5 shrink-0 text-muted-2" strokeWidth={1.75} aria-hidden />
+                  </button>
+                ) : (
+                  <span className="text-[13px] text-ink truncate">{name}</span>
+                )}
+                <span className="ml-auto text-[11.5px] text-muted-2 shrink-0">
+                  {ownerId != null ? `in ${t.owner_product_name ?? 'another subject'}` : 'not built yet'}
+                </span>
+              </div>
+            );
+          })}
+        </div>
+      </Section>
+    )}
+    </div>
   );
 }
 

@@ -85,6 +85,8 @@ export interface ProductTable {
   is_reference?: boolean;
   owner_product_id?: number | null;
   owner_product_name?: string | null;
+  /** A copy's original (Postgres product_tables.id); null when never built. */
+  owner_table_id?: number | null;
 }
 
 export interface ProductColumn {

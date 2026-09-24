@@ -11,6 +11,7 @@
  * stable across renames.
  */
 
+import { originalTableSql } from '../services/sharedTables';
 import { Router, Request, Response, NextFunction } from 'express';
 import { requireAuth } from '../middleware/auth';
 import { reqDb } from '../db/reqDb';
@@ -73,8 +74,10 @@ router.get('/search', requireAuth, async (req: Request, res: Response, next: Nex
 
     // 1. Source tables — match table_name OR display_name (limit per type so
     //    a flood of column hits can't crowd table hits out of the result).
+    const tenantId = req.user!.tenantId;
     const sourceTables = await db('source_tables as st')
       .join('connections as c', 'st.connection_id', 'c.id')
+      .where('c.tenant_id', tenantId)
       .where((qb) => qb.where('st.table_name', 'ilike', pattern).orWhere('st.display_name', 'ilike', pattern))
       .select(
         'st.id', 'st.table_name', 'st.display_name', 'st.connection_id',
@@ -87,6 +90,7 @@ router.get('/search', requireAuth, async (req: Request, res: Response, next: Nex
     const sourceColumns = await db('source_columns as sc')
       .join('source_tables as st', 'sc.table_id', 'st.id')
       .join('connections as c', 'st.connection_id', 'c.id')
+      .where('c.tenant_id', tenantId)
       .where((qb) => qb.where('sc.column_name', 'ilike', pattern).orWhere('sc.display_name', 'ilike', pattern))
       .select(
         'sc.column_name', 'sc.display_name as column_display',
@@ -99,7 +103,10 @@ router.get('/search', requireAuth, async (req: Request, res: Response, next: Nex
     const productTables = await db('product_tables as pt')
       .join('star_schemas as ss', 'pt.star_schema_id', 'ss.id')
       .join('data_products as dp', 'ss.data_product_id', 'dp.id')
+      .where('dp.tenant_id', tenantId)
       .where((qb) => qb.where('pt.table_name', 'ilike', pattern).orWhere('pt.display_name', 'ilike', pattern))
+      // Each table once: a copy of a shared lookup is found as its original.
+      .whereRaw(originalTableSql('pt'))
       .select(
         'pt.id', 'pt.table_name', 'pt.display_name', 'pt.table_role',
         'dp.id as product_id', 'dp.name as product_name',
@@ -111,8 +118,10 @@ router.get('/search', requireAuth, async (req: Request, res: Response, next: Nex
       .join('product_tables as pt', 'pc.product_table_id', 'pt.id')
       .join('star_schemas as ss', 'pt.star_schema_id', 'ss.id')
       .join('data_products as dp', 'ss.data_product_id', 'dp.id')
+      .where('dp.tenant_id', tenantId)
       .where((qb) => qb.where('pc.column_name', 'ilike', pattern).orWhere('pc.display_name', 'ilike', pattern))
       .andWhere((qb) => qb.where('pc.is_technical', false).orWhereNull('pc.is_technical'))
+      .whereRaw(originalTableSql('pt'))
       .select(
         'pc.column_name', 'pc.display_name as column_display',
         'pt.id as table_id', 'pt.table_name', 'pt.display_name as table_display', 'pt.table_role',
@@ -214,7 +223,10 @@ router.get('/:catalog', requireAuth, async (req: Request, res: Response, next: N
     }
 
     if (catalog === 'sources') {
+      // Explicit tenant filter beside RLS — a listing never rides the session
+      // variable alone (the reqDb pool-race rule).
       const conns = await db('connections')
+        .where('tenant_id', req.user!.tenantId)
         .select('id', 'name', 'type', 'connector_type', 'created_at')
         .orderBy('name');
 
@@ -240,13 +252,31 @@ router.get('/:catalog', requireAuth, async (req: Request, res: Response, next: N
 
     // products
     const products = await db('data_products')
+      .where('tenant_id', req.user!.tenantId)
       .select('id', 'name', 'description', 'status', 'created_by', 'created_at', 'updated_at', 'connection_id')
       .orderBy('name');
 
-    const productTree = await graph.getProductTree(req.user!.tenantId);
+    // A subject's count is the tables it BUILDS. Copies of shared lookups
+    // (Purchasing's Journal, the Date under every subject) are counted where
+    // they are built — "Purchasing · 7" when Purchasing builds one table was
+    // the duplication the tree no longer shows (services/sharedTables.ts).
+    const countRows = (products as Array<{ id: number }>).length
+      ? await db('product_tables as pt')
+          .join('star_schemas as ss', 'pt.star_schema_id', 'ss.id')
+          .whereIn('ss.data_product_id', (products as Array<{ id: number }>).map((p) => p.id))
+          .andWhere('pt.tenant_id', req.user!.tenantId)
+          .groupBy('ss.data_product_id')
+          .select(
+            'ss.data_product_id as product_id',
+            db.raw(`COUNT(*) FILTER (WHERE ${originalTableSql('pt')}) AS own_count`),
+            db.raw(`COUNT(*) FILTER (WHERE NOT ${originalTableSql('pt')}) AS shared_count`),
+          )
+      : [];
     const tableCountByDpid = new Map<number, number>();
-    for (const p of productTree.products) {
-      tableCountByDpid.set(p.dataProductId, p.tables.length);
+    const sharedCountByDpid = new Map<number, number>();
+    for (const r of countRows as Array<{ product_id: number; own_count: string | number; shared_count: string | number }>) {
+      tableCountByDpid.set(Number(r.product_id), Number(r.own_count));
+      sharedCountByDpid.set(Number(r.product_id), Number(r.shared_count));
     }
 
     // Compute primary source per product (same rule as GET /api/products):
@@ -300,6 +330,8 @@ router.get('/:catalog', requireAuth, async (req: Request, res: Response, next: N
         lastRefreshed: p.updated_at ? String(p.updated_at) : null,
         meta: {
           dataProductId: p.id,
+          // Shared lookups this subject uses but does not build.
+          sharedTableCount: sharedCountByDpid.get(p.id) ?? 0,
           // Primary-source info — drives the tree's "products grouped by
           // source" rendering. Null when the product has no resolvable
           // source (e.g. all source connections were deleted).
@@ -332,7 +364,7 @@ router.get('/:catalog/:schema', requireAuth, async (req: Request, res: Response,
     }
 
     if (catalog === 'sources') {
-      const conn = await db('connections').where({ id: schemaId }).first();
+      const conn = await db('connections').where({ id: schemaId, tenant_id: req.user!.tenantId }).first();
       if (!conn) return res.status(404).json({ ok: false, error: 'Connection not found' });
 
       const tables = await graph.getTablesByConnection(schemaId, req.user!.tenantId);
@@ -359,13 +391,56 @@ router.get('/:catalog/:schema', requireAuth, async (req: Request, res: Response,
     }
 
     // products
-    const product = await db('data_products').where({ id: schemaId }).first();
+    const product = await db('data_products').where({ id: schemaId, tenant_id: req.user!.tenantId }).first();
     if (!product) return res.status(404).json({ ok: false, error: 'Data product not found' });
 
     const tables = await graph.getProductTablesByProduct(schemaId, req.user!.tenantId);
+
+    // Which of these are COPIES of a shared lookup, and where each original
+    // lives. The graph node carries neither, so Postgres answers by either id
+    // space (the graph id is `neo4j_pg_id`). The tree lists a copy as a link
+    // to its original, never as a table of this subject.
+    const graphIds = tables.map((t) => Number(t.id)).filter(Number.isFinite);
+    const pgRows = graphIds.length
+      ? await db('product_tables as pt')
+          .leftJoin('product_tables as own', 'own.id', 'pt.source_product_table_id')
+          .leftJoin('star_schemas as oss', 'own.star_schema_id', 'oss.id')
+          .leftJoin('data_products as odp', 'oss.data_product_id', 'odp.id')
+          .where((qb) => { qb.whereIn('pt.neo4j_pg_id', graphIds).orWhereIn('pt.id', graphIds); })
+          .andWhere('pt.tenant_id', req.user!.tenantId)
+          .select(
+            'pt.id', 'pt.neo4j_pg_id', 'pt.is_shared_dimension', 'pt.source_product_table_id',
+            'own.id as own_id', 'own.neo4j_pg_id as own_graph_id', 'own.row_count as own_row_count',
+            'odp.id as own_product_id', 'odp.name as own_product_name',
+          )
+      : [];
+    type PgRow = {
+      id: number; neo4j_pg_id: number | null; is_shared_dimension: boolean | null; source_product_table_id: number | null;
+      own_id: number | null; own_graph_id: number | null; own_row_count: number | null;
+      own_product_id: number | null; own_product_name: string | null;
+    };
+    const pgByGraphId = new Map<number, PgRow>();
+    for (const r of pgRows as PgRow[]) {
+      pgByGraphId.set(Number(r.neo4j_pg_id ?? r.id), r);
+    }
+
     const withColumns = await Promise.all(tables.map(async (t) => {
       const cols = await graph.getProductColumnsByTablePgId(Number(t.id), req.user!.tenantId);
+      const pg = pgByGraphId.get(Number(t.id));
+      const isCopy = !!pg && (pg.is_shared_dimension === true || pg.source_product_table_id != null);
+      const sharedFrom = isCopy && pg?.own_id != null && pg.own_product_id != null
+        ? {
+            tableId: String(pg.own_graph_id ?? pg.own_id),
+            pgTableId: Number(pg.own_id),
+            productId: Number(pg.own_product_id),
+            productName: String(pg.own_product_name),
+            schemaSlug: toSlugWithId(String(pg.own_product_name), Number(pg.own_product_id)),
+          }
+        : null;
       return {
+        pgTableId: pg ? Number(pg.id) : null,
+        isCopy,
+        sharedFrom,
         catalog: 'products' as const,
         schema: schemaSlug,
         id: String(t.id),
@@ -373,7 +448,7 @@ router.get('/:catalog/:schema', requireAuth, async (req: Request, res: Response,
         tableName: t.table_name,
         role: t.table_role,
         dagOrder: t.dag_order,
-        rowCount: t.row_count,
+        rowCount: isCopy && pg?.own_row_count != null ? Number(pg.own_row_count) : t.row_count,
         columnCount: cols.length,
         transformationStatus: t.transformation_status,
         lastRunAt: t.last_run_at,

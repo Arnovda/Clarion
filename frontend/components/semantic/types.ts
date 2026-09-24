@@ -71,6 +71,13 @@ export interface ProductTable {
   rejection_reason?: string;
   column_count?: number;
   last_run_at?: string;
+  /** Postgres product_tables.id (the tree's own `id` is the graph id). */
+  pg_table_id?: number | null;
+  /** A COPY of a shared lookup another subject builds — never shown as a
+   *  table of its own; the catalog opens the original instead. */
+  is_copy?: boolean;
+  owner_pg_table_id?: number | null;
+  owner_graph_id?: number | null;
 }
 
 export interface ProductColumn {

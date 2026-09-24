@@ -50,9 +50,20 @@ export async function readPreviewRows(
   tableName: string,
   limit: number,
   actor: ReadActor,
+  opts: { hideColumns?: ReadonlySet<string>; hideUnderscored?: boolean } = {},
 ): Promise<PreviewResult> {
   const probe = await executeQuery(`SELECT * FROM ${quoteIdent(tableName)} LIMIT 1`);
-  const columns = probe.rows.length ? Object.keys(probe.rows[0] as object) : [];
+  // Product-table sample rows show the table's BUSINESS columns. Two kinds
+  // never appear there: storage machinery (`_row_hash`, future SCD2 columns —
+  // underscore-prefixed by convention, the `is_technical` firewall every other
+  // user-facing read applies; `hideUnderscored`) and whatever the caller names
+  // in `hideColumns` (the join keys and GUIDs a product table marks
+  // `is_technical`). They are dropped from the SELECT itself, never fetched
+  // and then hidden. A SOURCE table's columns are the customer's own and an
+  // underscore there means nothing, so the source preview passes neither.
+  const hide = opts.hideColumns ?? new Set<string>();
+  const columns = (probe.rows.length ? Object.keys(probe.rows[0] as object) : [])
+    .filter((c) => !(opts.hideUnderscored && c.startsWith('_')) && !hide.has(c.toLowerCase()));
   if (columns.length === 0) return { rows: [], columns: [], policiesApplied: 0 };
 
   const prepared = await prepareUserRead(previewSql(tableName, columns, limit), actor);

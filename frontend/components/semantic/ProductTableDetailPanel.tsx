@@ -472,7 +472,7 @@ export default function ProductTableDetailPanel({
         badges={curator ? (
           <>
             <span className="text-[10px] font-mono tracking-[0.08em] uppercase px-1.5 py-0.5 rounded border border-line bg-softer text-muted">
-              {tbl.table_role}
+              {(TYPE_LABEL[tbl.table_role] ?? tbl.table_role).replace(/ table$/, '')}
             </span>
             <ApprovalBadge
               entityType="product_table"

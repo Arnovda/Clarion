@@ -54,6 +54,8 @@ interface Declaration {
   pending_rebuild: boolean;
   product: { id: number; name: string; connection_id: number | null };
   shared_from: { tableId: number; productId: number; productName: string } | null;
+  /** True for a copy of a shared lookup, linked to its original or not. */
+  is_copy?: boolean;
   columns: Array<{ id: number; column_name: string; display_name: string | null; data_type: string | null; column_role: string | null; description: string | null }>;
 }
 
@@ -205,6 +207,19 @@ export default function SqlDeclaration({
   }
   if (decl === null) {
     return <p className="px-6 py-6 text-[13px] text-err">Could not load this table&apos;s SQL.</p>;
+  }
+
+  if (decl.is_copy && !decl.shared_from) {
+    // A copy whose original was never built — nothing to open, and nothing
+    // to edit here either (the server refuses SQL on a copy).
+    return (
+      <div className="px-6 py-6">
+        <div className="bg-raised border border-line rounded-lg p-5 text-[13px] text-ink-2 leading-relaxed">
+          <span className="font-medium text-ink">{decl.display_name || decl.table_name}</span> is shared data from
+          another subject, and that subject has not built it yet. Build it there and it appears here too.
+        </div>
+      </div>
+    );
   }
 
   if (decl.shared_from) {

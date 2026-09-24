@@ -100,6 +100,36 @@ export interface ResolvedProductTable extends ResolvedTable {
 }
 
 // ---------------------------------------------------------------------------
+// Copies of shared lookups read through to their original
+// ---------------------------------------------------------------------------
+
+/**
+ * A copy row (`is_shared_dimension`, see services/sharedTables.ts) has no data
+ * of its own: its location, row count and freshness are the ORIGINAL's. The
+ * runner used to mirror them onto the copy at refresh time, which is a
+ * snapshot that goes stale and never happens at all for a copy whose subject
+ * was not refreshed since — the empty "Purchasing › Journal" of 2026-09-24.
+ * Every product-table read in this module left-joins the original as `own`
+ * and reads these fields through it, so a copy answers with its original's
+ * data the moment the pointer exists. An original has no pointer, `own` is
+ * NULL, and COALESCE leaves its own values untouched.
+ */
+function readThroughColumns(db: Knex | Knex.Transaction) {
+  return [
+    'pt.id', 'pt.table_name', 'pt.is_shared_dimension',
+    db.raw('COALESCE(own.delta_path, pt.delta_path) AS delta_path'),
+    db.raw('COALESCE(own.row_count, pt.row_count) AS row_count'),
+    db.raw('COALESCE(own.last_run_at, pt.last_run_at) AS last_run_at'),
+    db.raw('CASE WHEN own.id IS NOT NULL THEN own.transformation_status ELSE pt.transformation_status END AS transformation_status'),
+  ];
+}
+
+/** "Ready to read": built, with a location — through the original for a copy. */
+const READY_SQL =
+  "(CASE WHEN own.id IS NOT NULL THEN own.transformation_status ELSE pt.transformation_status END) = 'success'" +
+  ' AND COALESCE(own.delta_path, pt.delta_path) IS NOT NULL';
+
+// ---------------------------------------------------------------------------
 // Resolution — single tables
 // ---------------------------------------------------------------------------
 
@@ -162,16 +192,18 @@ export async function resolveProductTableById(
     trx('product_tables as pt')
       .join('star_schemas as ss', 'pt.star_schema_id', 'ss.id')
       .join('data_products as dp', 'ss.data_product_id', 'dp.id')
+      .leftJoin('product_tables as own', 'own.id', 'pt.source_product_table_id')
       .where('pt.id', productTableId)
       .select(
-        'pt.id', 'pt.table_name', 'pt.delta_path', 'pt.row_count',
-        'pt.last_run_at', 'pt.transformation_status', 'pt.is_shared_dimension',
+        ...readThroughColumns(trx),
         'pt.table_role',
         'pt.rollup_path',
         'dp.id as product_id', 'dp.name as product_name', 'dp.connection_id as connection_id',
       )
       .first(),
   );
+  // `delta_path` and the status are read THROUGH a copy to its original
+  // (readThroughColumns) — a copy of a shared lookup has the original's data.
   if (!row) return null;
   if (!row.delta_path) return null;
   if (row.transformation_status !== 'success') return null;
@@ -189,12 +221,11 @@ export async function resolveProductTable(
     trx('product_tables as pt')
       .join('star_schemas as ss', 'pt.star_schema_id', 'ss.id')
       .join('data_products as dp', 'ss.data_product_id', 'dp.id')
+      .leftJoin('product_tables as own', 'own.id', 'pt.source_product_table_id')
       .where({ 'dp.id': productId, 'pt.table_name': tableName })
-      .where('pt.transformation_status', 'success')
-      .whereNotNull('pt.delta_path')
+      .whereRaw(READY_SQL)
       .select(
-        'pt.id', 'pt.table_name', 'pt.delta_path', 'pt.row_count',
-        'pt.last_run_at', 'pt.transformation_status', 'pt.is_shared_dimension',
+        ...readThroughColumns(trx),
         'pt.table_role',
         'pt.rollup_path',
         'dp.id as product_id', 'dp.name as product_name', 'dp.connection_id as connection_id',
@@ -275,12 +306,11 @@ export async function listProductTables(
     trx('product_tables as pt')
       .join('star_schemas as ss', 'pt.star_schema_id', 'ss.id')
       .join('data_products as dp', 'ss.data_product_id', 'dp.id')
+      .leftJoin('product_tables as own', 'own.id', 'pt.source_product_table_id')
       .where('dp.id', productId)
-      .where('pt.transformation_status', 'success')
-      .whereNotNull('pt.delta_path')
+      .whereRaw(READY_SQL)
       .select(
-        'pt.id', 'pt.table_name', 'pt.delta_path', 'pt.row_count',
-        'pt.last_run_at', 'pt.transformation_status', 'pt.is_shared_dimension',
+        ...readThroughColumns(trx),
         'pt.table_role',
         'pt.rollup_path',
         'dp.id as product_id', 'dp.name as product_name', 'dp.connection_id as connection_id',
@@ -327,10 +357,10 @@ export async function listProductTablesForScope(
     trx('product_tables as pt')
       .join('star_schemas as ss', 'pt.star_schema_id', 'ss.id')
       .join('data_products as dp', 'ss.data_product_id', 'dp.id')
+      .leftJoin('product_tables as own', 'own.id', 'pt.source_product_table_id')
       .leftJoin('connections as c', 'dp.connection_id', 'c.id')
       .whereIn('dp.connection_id', scope.connectionIds)
-      .where('pt.transformation_status', 'success')
-      .whereNotNull('pt.delta_path')
+      .whereRaw(READY_SQL)
       .modify((q) => {
         // Narrowing to specific products is a filter ON TOP of the connection
         // scope, never a replacement for it: a product id from another tenant
@@ -343,8 +373,7 @@ export async function listProductTablesForScope(
         if (scope.tenantId != null) q.where('dp.tenant_id', scope.tenantId);
       })
       .select(
-        'pt.id', 'pt.table_name', 'pt.delta_path', 'pt.row_count',
-        'pt.last_run_at', 'pt.transformation_status', 'pt.is_shared_dimension',
+        ...readThroughColumns(trx),
         'pt.table_role',
         'pt.rollup_path',
         'dp.id as product_id', 'dp.name as product_name', 'dp.connection_id as connection_id',
@@ -476,7 +505,17 @@ export async function publishStubFromUpstream(
   productId: number,
   tableName: string,
 ): Promise<{ uri: string; rowCount: number } | null> {
-  const upstream = await tenantQuery(tenantId, (trx) =>
+  // The pointer first (services/sharedTables.ts): it names the exact
+  // original. The dependency lookup by name stays as the fallback for a copy
+  // nothing has linked yet.
+  const linked = await tenantQuery(tenantId, (trx) =>
+    trx('product_tables as pt')
+      .join('product_tables as own', 'own.id', 'pt.source_product_table_id')
+      .where('pt.id', productTableId)
+      .select('own.delta_path', 'own.row_count')
+      .first(),
+  );
+  const upstream = linked?.delta_path ? linked : await tenantQuery(tenantId, (trx) =>
     trx('data_product_dependencies as dpd')
       .join('star_schemas as ss', 'ss.data_product_id', 'dpd.source_product_id')
       .join('product_tables as pt', 'pt.star_schema_id', 'ss.id')
