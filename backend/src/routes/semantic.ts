@@ -1967,6 +1967,54 @@ router.get('/product-columns', requireAuth, async (req: Request, res: Response, 
     }
     if (!await denyUnlessOwned(req, res, 'product_tables', tablePgId)) return;
     const rows = await graph.getProductColumnsByTablePgId(tablePgId, req.user!.tenantId);
+
+    // The graph mirror never holds a table's KEYS (`is_technical` columns are
+    // not synced — productGraphSync), so the catalog's column list had no
+    // keys at all. Curators get them from Postgres, marked `is_technical`
+    // and read-only (owner, 2026-09-25: a table's keys belong on its page).
+    // Ids are NEGATIVE Postgres ids so they can never collide with a graph
+    // id, and no edit route will accept them. Storage machinery stays out.
+    if (req.user!.role === 'admin' || req.user!.role === 'analyst') {
+      const tenantId = req.user!.tenantId;
+      const tableRow = await db('product_tables')
+        .where('tenant_id', tenantId)
+        .where((qb) => qb.where('neo4j_pg_id', tablePgId).orWhere('id', tablePgId))
+        .orderByRaw('CASE WHEN neo4j_pg_id = ? THEN 0 ELSE 1 END', [tablePgId])
+        .first('id', 'table_name', 'source_product_table_id');
+      if (tableRow) {
+        const keys = (await db('product_columns')
+          .where('tenant_id', tenantId)
+          .where('product_table_id', tableRow.source_product_table_id ?? tableRow.id)
+          .where('is_technical', true)
+          .whereRaw(`column_name NOT LIKE '\\_%'`)
+          .select(
+            'id', 'column_name', 'data_type', 'display_name', 'description', 'column_role',
+            'fk_target_table', 'fk_target_column', 'transformation_expression', 'sort_order',
+          )) as Array<Record<string, unknown> & { id: number; column_name: string; sort_order: number | null }>;
+        const have = new Set(rows.map((r) => String(r.column_name).toLowerCase()));
+        for (const k of keys) {
+          if (have.has(k.column_name.toLowerCase())) continue;
+          rows.push({
+            id: -k.id,
+            table_id: tablePgId,
+            table_name: tableRow.table_name,
+            column_name: k.column_name,
+            data_type: k.data_type ?? null,
+            display_name: k.display_name ?? null,
+            description: k.description ?? null,
+            column_role: k.column_role ?? null,
+            fk_target_table: k.fk_target_table ?? null,
+            fk_target_column: k.fk_target_column ?? null,
+            transformation_expression: k.transformation_expression ?? null,
+            sort_order: k.sort_order ?? 0,
+            ai_draft: false,
+            approval_status: 'approved',
+            is_technical: true,
+          });
+        }
+        rows.sort((a, b) => Number(a.sort_order ?? 0) - Number(b.sort_order ?? 0));
+      }
+    }
     res.json({ ok: true, data: rows });
   } catch (err) { next(err); }
 });
@@ -2202,7 +2250,14 @@ router.get('/product-preview', requireAuth, async (req: Request, res: Response, 
             .where('id', internalId)
             .select(db.raw('COALESCE(source_product_table_id, id)')))
           .select('column_name', 'display_name', 'is_technical');
-      const hideColumns = new Set(defRows.filter((c) => c.is_technical === true).map((c) => c.column_name.toLowerCase()));
+      // Keys (`is_technical`) are shown to curators — they check joins on
+      // them (owner, 2026-09-25). A viewer keeps the business columns only:
+      // a hashed key is a 19-digit number that means nothing to read.
+      // Storage machinery (`_row_hash`, `_clarion_*`) is hidden for everyone.
+      const curatorView = req.user!.role === 'admin' || req.user!.role === 'analyst';
+      const hideColumns = curatorView
+        ? new Set<string>()
+        : new Set(defRows.filter((c) => c.is_technical === true).map((c) => c.column_name.toLowerCase()));
       const labels: Record<string, string> = {};
       for (const c of defRows) {
         if (c.display_name && c.display_name.trim()) labels[c.column_name] = c.display_name.trim();

@@ -44,6 +44,8 @@ export interface ColumnRow {
   extra?: React.ReactNode;
   /** The row's details, opened with the chevron — curators only. */
   details?: React.ReactNode;
+  /** Shown, never edited in the cell (a join key). */
+  readOnly?: boolean;
 }
 
 interface Props {
@@ -182,7 +184,7 @@ export default function ColumnsTable({ rows, onSaveDescription, extraHeader, sta
                       )}
                     </td>
                     <td className="px-3 py-2 min-w-[200px]">
-                      {editable
+                      {editable && !r.readOnly
                         ? <InlineDescription id={r.id} value={r.description ?? ''} onSave={onSaveDescription!} />
                         : (r.description
                           ? <span className="text-ink-2 leading-snug">{r.description}</span>

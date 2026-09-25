@@ -417,6 +417,32 @@ export default function ProductTableDetailPanel({
 
   // ── The columns ──────────────────────────────────────────────────────────
   const rows: ColumnRow[] = cols.map((col) => {
+    // A join key: shown to curators (they check joins on it), read-only —
+    // it is made by the SQL (clarion_key), not described by hand.
+    if (col.is_technical) {
+      const fk = col.column_role === 'foreign_key';
+      return {
+        id: col.id,
+        name: col.column_name,
+        displayName: col.display_name,
+        type: col.data_type,
+        description: col.description,
+        keyKind: fk ? 'fk' : 'key',
+        keyTitle: fk
+          ? `Join key${col.fk_target_table ? ` → ${col.fk_target_table}${col.fk_target_column ? `.${col.fk_target_column}` : ''}` : ''}`
+          : 'Identifies a row (join key)',
+        roleLabel: 'Key',
+        roleTone: 'neutral',
+        readOnly: true,
+        focused: col.id === focusColumnId,
+        details: col.transformation_expression ? (
+          <div className="text-[12px] text-muted">
+            <p className="mb-1">Made by the SQL — see the SQL and Lineage tabs.</p>
+            <code className="block whitespace-pre-wrap font-mono text-[11.5px] text-ink-2">{col.transformation_expression}</code>
+          </div>
+        ) : undefined,
+      };
+    }
     const chip = colRoleChip(col.column_role);
     const isKey = col.column_role === 'surrogate_key' || col.column_role === 'natural_key';
     const isFk = col.column_role === 'foreign_key';
@@ -599,7 +625,7 @@ export default function ProductTableDetailPanel({
                   </h3>
                   {curator && (
                     <span className="text-[11.5px] text-muted">
-                      {cols.filter((c) => !c.ai_draft).length} of {cols.length} confirmed
+                      {cols.filter((c) => !c.is_technical && !c.ai_draft).length} of {cols.filter((c) => !c.is_technical).length} confirmed
                     </span>
                   )}
                 </div>
@@ -607,7 +633,7 @@ export default function ProductTableDetailPanel({
                   rows={rows}
                   onSaveDescription={curator ? async (id, text) => {
                     const col = cols.find((c) => c.id === id);
-                    if (col) await saveColumn(col, { description: text });
+                    if (col && !col.is_technical) await saveColumn(col, { description: text });
                   } : undefined}
                   statusHeader={curator ? 'Status' : undefined}
                 />
