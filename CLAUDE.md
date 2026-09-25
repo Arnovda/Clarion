@@ -347,6 +347,81 @@ tab: a reload, "New conversation" or another device and it was gone. Branch
   proposal (zero saves from viewing), send → saved with the question as
   title, reload → the same thread back; zero page errors.
 
+**Prior last updated:** 2026-09-25 (KEYS ARE SHOWN, AND LINEAGE IS READ OFF THE SQL —
+owner, with a screenshot of Sales › Sales Invoice Lines' SQL tab: *"De technische
+keys worden niet weergegeven in de lineage of de SQL of overview of sample data.
+Dit moet wel gebeuren… En wat als er bewerkingen gebeuren op bepaalde kolommen,
+wordt dit nog steeds goed als lineage weergegeven? Of als we 2 velden combineren
+tot 1 ander veld?"* Branch `claude/eloquent-goldberg-1fetyd`.)
+
+**FOUR SEPARATE FILTERS HID THE KEYS, one per surface.** The `is_technical`
+firewall was built for `_row_hash` and then applied to every surface, which
+hid the join keys with it: `productGraphSync` never syncs technical columns
+(so `/semantic/product-columns`, which the Overview reads, had none),
+`/semantic/product-preview` dropped them from the SELECT, the declaration
+endpoint filtered them out of the SQL tab's column list, and
+`/lineage/table` excluded them. Now, **for curators (admin + analyst)**:
+- Overview: `/semantic/product-columns` appends the table's key columns from
+  POSTGRES (the original's, for a copy), marked `is_technical`, with NEGATIVE
+  ids so they never collide with a graph id and no edit route accepts them.
+  The graph still never holds keys (deliberate — it is AI context). The
+  columns table shows them with a key/link glyph and a *Key* chip,
+  read-only (`ColumnRow.readOnly`); the details row shows the expression.
+  The "N of M confirmed" count excludes keys.
+- Sample data: keys included. **A viewer still gets the business columns
+  only** — a hashed `clarion_key` is a 19-digit number that means nothing to
+  read; the curators are the ones who check joins on it. Pinned both ways in
+  `shared-lookups.test.ts`.
+- SQL tab: the declaration ships every column (`is_technical` flagged);
+  keys carry a key glyph, also for a key made by `clarion_key(…)` in the SQL
+  on screen before the next build records it.
+- Lineage: keys are rows on the cards, with a key glyph.
+- **Storage machinery stays hidden everywhere**: `column_name NOT LIKE '\_%'`
+  (`_row_hash`, `_clarion_*`).
+
+**LINEAGE WAS STALE BY CONSTRUCTION — IT IS READ OFF THE CURRENT SQL NOW.**
+`column_lineage` rows are written ONCE, at build time, from the design's
+per-column expression. Nothing rewrote them when the SQL changed — a save on
+the SQL tab, the key upgrade (which rewrote every key), a repair — so the
+lineage view could describe SQL the table no longer runs (a
+ROW_NUMBER-era key still "coming from" `Accounts.ID` after the upgrade made
+it `clarion_key('accounts', h.InvoiceTo)`). NEW pure
+`services/sqlColumnLineage.ts` (`deriveSqlLineage(sql, catalog)`) parses
+the table's stored `transformation_sql` and follows: the final select list
+(`expr AS x`, `x.col`, implicit alias, bare col), **CTEs and subqueries**
+(recursively — a transformation inside a CTE is found), `SELECT *` / `x.*`
+over a CTE/subquery/known table, UNION branches by position, and **several
+columns combined into one** (`concat_ws(' - ', a.Code, a.Name)`,
+`l.Quantity * l.UnitPrice` → one edge per source column into that one
+column, the expression as the transformation; a plain copy reads "Copied
+as-is"). Refuses on purpose: a table outside the SOURCE catalog (a fact
+reading a lookup's key is not source lineage), an ambiguous bare name, an
+identifier inside a string literal or comment (`'accounts'` in clarion_key).
+`/lineage/table` uses it in both directions (source anchor: every product
+table in scope whose SQL mentions the table, copies skipped); edges carry
+provenance `derived`. **Stored rows are now only the fallback** — for a
+table whose SQL cannot be read, or a column the SQL does not name; a stored
+row for a column the SQL answers is dropped (pinned: the stale `Accounts.ID`
+row must not survive).
+- Validation: NEW `sqlColumnLineage.test.ts` 9 (incl. the screenshot's SQL
+  as the SQL tab formats it) — **verified RED** with CTE-following removed
+  (2 fail); `lineage.test.ts` +2 route tests on a fixture with real SQL
+  (keys, CTE, combined column, stale row, both anchors) — **verified RED**
+  with the SQL read switched off; `shared-lookups` +1 (viewer); lineage +
+  shared-lookups + table-declaration 42/42; backend `npm run check` clean;
+  all eleven CI ratchets green from the repo root; frontend `tsc` clean,
+  touched files lint-clean, vitest 94/94, `next build` green (`/catalog`
+  59.8 kB). NOT render-checked in a browser; `/semantic/product-columns`'
+  key append has no route test (it needs Neo4j, which the suite runs
+  without).
+- **Honest limits of the SQL reading**: a reference through a table
+  function (`read_parquet(…)`), a lateral join, or a column name that two
+  joined sources both carry and the SQL leaves unqualified is not
+  attributed (no line rather than a guessed one); a WINDOW / QUALIFY-only
+  dependency (a column used to filter or order, not to compute) is not
+  lineage and is not drawn. `column_lineage` is not rewritten — nothing
+  reads it for the view any more except as fallback.
+
 **Prior last updated:** 2026-09-24 (THE COWORKER COULD NOT OPEN WHAT IT HAD JUST
 DESCRIBED — owner screenshot: asked "is receivables covered?" it answered
 correctly from describe_workspace, then on "Yes, open it" replied *"I'm having
@@ -13484,6 +13559,7 @@ clarion/                              ← on disk: databridge/
 │       │   ├── keyUpgrade.ts               ← "Upgrade keys": plan → check → store → rebuild together (mode 'keys')
 │       │   ├── keyHealth.ts                ← how each table makes its keys (hashed/raw/unstable), the lone-rebuild refusal, the SQL-tab check
 │       │   ├── keyUpgrade.ts               ← "Upgrade keys": plan → check → store → rebuild together (mode 'keys')
+│       │   ├── sqlColumnLineage.ts         ← lineage read off a table's CURRENT SQL: CTEs, subqueries, stars, unions, combined columns (pure)
 │       │   ├── sharedTables.ts             ← a copy of a shared lookup → its original: linkSharedTables (the one writer of source_product_table_id), sharedOriginalOf, originalTableSql
 │       │   ├── tableDeclaration.ts         ← prepareDeclaredSql · openDeclarationSession · compileDeclaredSql (DESCRIBE in a real session) · previewDeclaredSql · describeSessionSchemas · sanitizeSqlError
 │       │   ├── notificationService.ts      ← notify(), notifyTenant()

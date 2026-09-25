@@ -27,7 +27,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import dynamic from 'next/dynamic';
 import Link from 'next/link';
-import { AlertTriangle, Check, Loader2, Play, RefreshCw, WandSparkles, X } from 'lucide-react';
+import { AlertTriangle, Check, KeyRound, Loader2, Play, RefreshCw, WandSparkles, X } from 'lucide-react';
 import { ClarionMark } from '@/components/brand/ClarionMark';
 import api from '@/lib/api';
 import { cn } from '@/lib/cn';
@@ -57,7 +57,7 @@ interface Declaration {
   shared_from: { tableId: number; productId: number; productName: string } | null;
   /** True for a copy of a shared lookup, linked to its original or not. */
   is_copy?: boolean;
-  columns: Array<{ id: number; column_name: string; display_name: string | null; data_type: string | null; column_role: string | null; description: string | null }>;
+  columns: Array<{ id: number; column_name: string; display_name: string | null; data_type: string | null; column_role: string | null; description: string | null; is_technical?: boolean | null }>;
 }
 
 interface Preview { columns: string[]; rows: Record<string, unknown>[] }
@@ -123,6 +123,16 @@ export default function SqlDeclaration({
   useEffect(() => { reportDraft(tableId, sql); }, [tableId, sql, reportDraft]);
 
   const dirty = sql.trim() !== saved.trim();
+
+  // Which derived columns are keys: what the catalog marks as a key, plus
+  // anything the SQL on screen makes with clarion_key(…) — so a key added in
+  // this edit is marked before the next build records it.
+  const keyNames = useMemo(() => {
+    const names = new Set<string>();
+    for (const c of decl?.columns ?? []) if (c.is_technical) names.add(c.column_name.toLowerCase());
+    for (const m of sql.matchAll(/clarion_key\s*\((?:[^()]|\([^()]*\))*\)\s+AS\s+"?([A-Za-z_]\w*)"?/gi)) names.add(m[1].toLowerCase());
+    return names;
+  }, [decl, sql]);
 
   async function save(text: string): Promise<boolean> {
     setSaving(true);
@@ -375,6 +385,9 @@ export default function SqlDeclaration({
           <div className="flex flex-wrap gap-1.5">
             {columns.map((c) => (
               <span key={c.name} className="inline-flex items-baseline gap-1.5 rounded-md border border-line bg-raised px-2 py-1 text-[12px]">
+                {keyNames.has(c.name.toLowerCase()) && (
+                  <KeyRound className="w-3 h-3 self-center text-warn" strokeWidth={2} aria-label="Key" />
+                )}
                 <span className="font-mono text-ink-2">{c.name}</span>
                 {c.type && <span className="font-mono text-[10px] uppercase tracking-[0.06em] text-muted-2">{c.type}</span>}
               </span>

@@ -165,3 +165,115 @@ describe('GET /api/lineage/table', () => {
     expect(res.status).toBe(400);
   });
 });
+
+// ─── Lineage read off the table's CURRENT SQL (2026-09-25) ───────────────────
+//
+// The owner: keys belong in the lineage, and a column made by combining two
+// fields must show both. The stored column_lineage rows are written once, at
+// build time, and go stale when the SQL changes (the key upgrade rewrites
+// every key) — so the SQL is read, and a stored row the SQL contradicts
+// must not survive.
+describe('lineage from the SQL', () => {
+  let factId: number;
+  let accountsId: number;
+  let linesId: number;
+  const cols: Record<string, number> = {};
+
+  beforeAll(async () => {
+    const db = getTestDb();
+    const insertId = async (table: string, row: Record<string, unknown>): Promise<number> => {
+      const [r] = await db(table).insert(row).returning('id');
+      return Number((r as { id?: number }).id ?? r);
+    };
+    const connId = await insertId('connections', {
+      tenant_id: tenantId, name: 'EO sql', type: 'duckdb', connector_type: 'exactonline', config: JSON.stringify({}),
+    });
+    linesId = await insertId('source_tables', { tenant_id: tenantId, connection_id: connId, table_name: 'SalesInvoiceLines' });
+    const headers = await insertId('source_tables', { tenant_id: tenantId, connection_id: connId, table_name: 'SalesInvoiceHeaders' });
+    accountsId = await insertId('source_tables', { tenant_id: tenantId, connection_id: connId, table_name: 'Accounts' });
+    for (const c of ['ID', 'InvoiceID', 'Item', 'Quantity', 'UnitPrice']) {
+      await insertId('source_columns', { tenant_id: tenantId, table_id: linesId, column_name: c });
+    }
+    for (const c of ['InvoiceID', 'InvoiceTo', 'InvoiceDate']) {
+      await insertId('source_columns', { tenant_id: tenantId, table_id: headers, column_name: c });
+    }
+    for (const c of ['ID', 'Code', 'Name']) {
+      await insertId('source_columns', { tenant_id: tenantId, table_id: accountsId, column_name: c });
+    }
+    const productId = await insertId('data_products', {
+      tenant_id: tenantId, connection_id: connId, name: 'Sales (sql)', status: 'approved', kind: 'analytics',
+    });
+    const schemaId = await insertId('star_schemas', {
+      tenant_id: tenantId, data_product_id: productId, name: 'sales_sql', fact_table_type: 'transaction',
+    });
+    factId = await insertId('product_tables', {
+      tenant_id: tenantId, star_schema_id: schemaId, table_name: 'fact_sales_invoice_lines', table_role: 'fact',
+      dag_order: 1, transformation_status: 'success',
+      transformation_sql: `
+        WITH lines AS (
+          SELECT l.ID, l.InvoiceID, l.Item, l.Quantity * l.UnitPrice AS gross FROM SalesInvoiceLines l
+        )
+        SELECT
+          clarion_key('accounts', h.InvoiceTo) AS invoice_to_account_key,
+          clarion_key('items', x.Item) AS item_key,
+          x.ID AS sales_invoice_line_id,
+          x.gross,
+          concat_ws(' - ', a.Code, a.Name) AS customer_label
+        FROM lines x
+        JOIN SalesInvoiceHeaders h ON h.InvoiceID = x.InvoiceID
+        LEFT JOIN Accounts a ON a.ID = h.InvoiceTo`,
+    });
+    const col = async (name: string, extra: Record<string, unknown> = {}) => {
+      cols[name] = await insertId('product_columns', { tenant_id: tenantId, product_table_id: factId, column_name: name, ...extra });
+    };
+    await col('invoice_to_account_key', { is_technical: true, column_role: 'foreign_key' });
+    await col('item_key', { is_technical: true, column_role: 'foreign_key' });
+    await col('sales_invoice_line_id');
+    await col('gross', { column_role: 'measure' });
+    await col('customer_label');
+    await col('_row_hash', { is_technical: true });
+    // Stale: written by the ROW_NUMBER era, before the key upgrade rewrote
+    // the key. The SQL now says InvoiceTo — this row must not survive.
+    await db('column_lineage').insert({
+      tenant_id: tenantId, product_column_id: cols.invoice_to_account_key,
+      source_table_name: 'Accounts', source_column_name: 'ID', transformation_description: 'ROW_NUMBER() over accounts',
+    });
+  });
+
+  it('product anchor: keys, a combined column and a CTE, all from the SQL', async () => {
+    const res = await fetchLineage(adminToken, 'product', factId);
+    expect(res.status).toBe(200);
+    const d = res.body.data;
+    const names = d.products[0].columns.map((c: { name: string }) => c.name);
+    expect(names).toContain('invoice_to_account_key');
+    expect(names).not.toContain('_row_hash');
+    expect(d.products[0].columns.find((c: { name: string }) => c.name === 'item_key').technical).toBe(true);
+
+    const into = (colName: string) => d.edges
+      .filter((e: { productColumnId: number }) => e.productColumnId === cols[colName])
+      .map((e: { sourceTable: string; sourceColumn: string }) => `${e.sourceTable}.${e.sourceColumn}`)
+      .sort();
+    expect(into('invoice_to_account_key')).toEqual(['SalesInvoiceHeaders.InvoiceTo']); // the stale Accounts.ID is gone
+    expect(into('item_key')).toEqual(['SalesInvoiceLines.Item']);                          // through the CTE
+    expect(into('gross')).toEqual(['SalesInvoiceLines.Quantity', 'SalesInvoiceLines.UnitPrice']);
+    expect(into('customer_label')).toEqual(['Accounts.Code', 'Accounts.Name']);
+    const key = d.edges.find((e: { productColumnId: number }) => e.productColumnId === cols.invoice_to_account_key);
+    expect(key.transformation).toContain('clarion_key');
+    expect(key.provenance).toBe('derived');
+    const id = d.edges.find((e: { productColumnId: number }) => e.productColumnId === cols.sales_invoice_line_id);
+    expect(id.transformation).toBe('Copied as-is');
+  });
+
+  it('source anchor: the same edges, seen from the source table', async () => {
+    const res = await fetchLineage(adminToken, 'source', accountsId);
+    expect(res.status).toBe(200);
+    const d = res.body.data;
+    const fed = d.edges.map((e: { sourceColumn: string; productColumnId: number }) => `${e.sourceColumn}->${e.productColumnId}`).sort();
+    // Code and Name into the label; NOT the stale ID into the key.
+    expect(fed).toEqual([`Code->${cols.customer_label}`, `Name->${cols.customer_label}`].sort());
+
+    const lines = await fetchLineage(adminToken, 'source', linesId);
+    const intoKey = lines.body.data.edges.filter((e: { productColumnId: number }) => e.productColumnId === cols.item_key);
+    expect(intoKey.map((e: { sourceColumn: string }) => e.sourceColumn)).toEqual(['Item']);
+  });
+});

@@ -101,6 +101,12 @@ export interface ProductColumn {
   approved_by?: string;
   approved_at?: string;
   rejection_reason?: string;
+  /**
+   * A join key (surrogate / foreign key). Served to curators only, from
+   * Postgres, with a NEGATIVE id — read-only: the graph mirror never holds
+   * keys, so no edit route accepts them.
+   */
+  is_technical?: boolean;
 }
 
 export interface ProductTreeItem {

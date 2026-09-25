@@ -27,7 +27,7 @@ import { Database } from 'duckdb-async';
 
 process.env.STORAGE_FORMAT = 'parquet';
 
-import { request, registerUser } from './helpers';
+import { request, registerUser, createUserWithToken } from './helpers';
 import { getTestDb, cleanTestDb, closeTestDb } from './db-helpers';
 import { linkSharedTables } from '../services/sharedTables';
 import { resolveProductTableById, listProductTablesForScope } from '../services/tableCatalog';
@@ -315,13 +315,24 @@ describe('each table appears once', () => {
 });
 
 describe('sample rows', () => {
-  it('come from the original, without technical columns, under business names', async () => {
+  it('come from the original, keys included for a curator, under business names', async () => {
     const r = await request();
     const res = await r.get(`/api/semantic/product-preview?productTableId=${copyId}&limit=5`).set(auth(adminToken));
     expect(res.status).toBe(200);
     expect(res.body.data.rows.length).toBe(3);
-    expect(res.body.data.columns).toEqual(['code', 'description']);
+    // The owner, 2026-09-25: a table's keys are shown to the people who check
+    // joins on them. Storage machinery (`_row_hash`) never is.
+    expect(res.body.data.columns).toEqual(['journal_key', 'code', 'description']);
+    expect(res.body.data.columns).not.toContain('_row_hash');
     expect(res.body.data.labels).toMatchObject({ code: 'Journal code', description: 'Journal name' });
+  });
+
+  it('keep a viewer on the business columns (a hashed key means nothing to read)', async () => {
+    const viewer = await createUserWithToken({ tenantId, role: 'viewer' });
+    const r = await request();
+    const res = await r.get(`/api/semantic/product-preview?productTableId=${copyId}&limit=5`).set(auth(viewer.token));
+    expect(res.status).toBe(200);
+    expect(res.body.data.columns).toEqual(['code', 'description']);
   });
 });
 

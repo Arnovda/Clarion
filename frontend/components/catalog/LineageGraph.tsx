@@ -22,7 +22,7 @@
 
 import { PROVENANCE_LABEL, type ProvenanceRung } from '@/lib/provenance';
 import { useEffect, useMemo, useState } from 'react';
-import { ArrowRight, GitBranch, Loader2 } from 'lucide-react';
+import { ArrowRight, GitBranch, KeyRound, Loader2 } from 'lucide-react';
 import api from '@/lib/api';
 import { cn } from '@/lib/cn';
 
@@ -42,7 +42,7 @@ interface ProductNode {
   tableName: string;
   displayName: string | null;
   tableRole: string | null;
-  columns: Array<{ id: number; name: string; displayName: string | null; transformation: string | null }>;
+  columns: Array<{ id: number; name: string; displayName: string | null; transformation: string | null; technical?: boolean }>;
 }
 
 interface LineageEdge {
@@ -90,7 +90,7 @@ interface Card {
   height: number;
   node: SourceNode | ProductNode;
   /** Column render order — row index is the thread anchor. */
-  rows: Array<{ key: ColKey; label: string; mono: string | null }>;
+  rows: Array<{ key: ColKey; label: string; mono: string | null; isKey?: boolean }>;
   /** Rows hidden behind the cap (0 when expanded or under the cap). */
   moreCount: number;
   expanded: boolean;
@@ -175,6 +175,7 @@ export default function LineageGraph({ layer, tableId }: { layer: 'source' | 'pr
         key: pKey(c.id),
         label: c.displayName || c.name,
         mono: c.displayName ? c.name : null,
+        isKey: !!c.technical,
       }));
       const cardKey = `p:${p.productTableId}`;
       const expanded = expandedCards.has(cardKey);
@@ -305,6 +306,7 @@ export default function LineageGraph({ layer, tableId }: { layer: 'source' | 'pr
                       )}
                       style={{ height: ROW_H }}
                     >
+                      {r.isKey && <KeyRound className="w-3 h-3 shrink-0 self-center text-warn" strokeWidth={2} aria-label="Key" />}
                       <span className="min-w-0 flex-1 truncate text-[12px] text-ink-2">{r.label}</span>
                       {r.mono && <span className="shrink-0 font-mono text-[10px] text-muted-2 truncate max-w-[45%]">{r.mono}</span>}
                     </button>

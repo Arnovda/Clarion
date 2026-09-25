@@ -270,11 +270,14 @@ router.get('/tables/:tableId/declaration', requireAuth, requireRole('admin', 'an
 
     const sharedFrom = row.source_product_table_id ? await loadSharedFrom(req, Number(row.source_product_table_id)) : null;
     const db = reqDb(req);
+    // Every column the SQL makes, keys included (they are what the key rule
+    // is about, and the SQL tab is a curator surface) — only the storage
+    // machinery (`_row_hash`, `_clarion_*`) stays out.
     const columns = await db('product_columns')
       .where({ product_table_id: tableId })
-      .andWhere((qb) => qb.where('is_technical', false).orWhereNull('is_technical'))
+      .whereRaw(`column_name NOT LIKE '\\_%'`)
       .orderBy(['sort_order', 'id'])
-      .select('id', 'column_name', 'display_name', 'data_type', 'column_role', 'description');
+      .select('id', 'column_name', 'display_name', 'data_type', 'column_role', 'description', 'is_technical');
 
     res.json({
       ok: true,
