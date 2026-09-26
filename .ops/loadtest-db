@@ -16,4 +16,6 @@ create
 # A daily scheduled run deletes any load-test server older than 72 hours, so a
 # forgotten one stops billing on its own.
 #
-# 2026-09-26: first create.
+# 2026-09-26: first create. Re-applied the same day: run #1 failed before
+# creating anything — the runner's az no longer accepts --high-availability
+# (HA is off by default, so the flag was dropped).

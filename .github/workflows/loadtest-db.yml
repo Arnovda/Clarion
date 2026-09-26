@@ -243,7 +243,7 @@ jobs:
               --tier "$LOADTEST_TIER" --sku-name "$LOADTEST_SKU" \
               --storage-size "$LOADTEST_STORAGE_GB" --version 16 \
               --database-name "$LOADTEST_DB" \
-              --high-availability Disabled --backup-retention 7 \
+              --backup-retention 7 \
               --public-access 0.0.0.0 \
               --tags purpose="$LOADTEST_TAG" created="$(date +%s)" \
               --yes -o none
