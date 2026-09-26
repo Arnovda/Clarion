@@ -45,6 +45,14 @@ vi.mock('../db/semanticGraph', async (orig) => {
     getColumnByPgId: vi.fn(async () => null),
     createRelationship: vi.fn(async () => undefined),
     deleteRelationship: vi.fn(async () => undefined),
+    // The definition edits write the graph first, then mirror to Postgres —
+    // the Postgres side is what these tests read.
+    updateTable: vi.fn(async () => undefined),
+    updateColumn: vi.fn(async () => undefined),
+    updateProductTable: vi.fn(async () => undefined),
+    updateProductColumn: vi.fn(async () => undefined),
+    updateRelationship: vi.fn(async () => undefined),
+    setRelationshipFlagged: vi.fn(async () => undefined),
   };
 });
 
@@ -384,11 +392,233 @@ describe('every proposal is checked, then kept and undone through the ordinary r
   });
 });
 
+describe('the new abilities: every proposal checked, nothing written until Keep, Keep and Undo through the routes', () => {
+  const api = async () => (await request());
+  const auth = () => ({ Authorization: `Bearer ${token}` });
+  const db = () => getTestDb();
+
+  it('descriptions: one card for several tables and columns, before → after, Undo restores', async () => {
+    // The fact's GRAPH id deliberately equals the dim's POSTGRES id: the two
+    // id sequences overlap in real life, and the mirror used to update BOTH
+    // rows (`id = x OR neo4j_pg_id = x`). Only the fact may change.
+    await db()('product_tables').where({ id: factId }).update({ neo4j_pg_id: dimId });
+    const [openCol] = await db()('product_columns').where({ product_table_id: factId, column_name: 'open_amount' }).update({ neo4j_pg_id: 7_700_001 }).returning('id');
+    const dimBefore = await db()('product_tables').where({ id: dimId }).first();
+
+    const r = await runTool('propose_descriptions', { items: [
+      { target: 'source-column', id: col['Invoices.Amount'], field: 'description', text: 'The invoice amount, VAT excluded.' },
+      { target: 'subject-table', id: factId, field: 'description', text: 'One row per open invoice.' },
+      { target: 'subject-column', id: idOf(openCol), field: 'display_name', text: 'Open amount' },
+    ] });
+    const p = r.proposal as { kind: string; items: Array<{ target: string; id: number; field: string; before: string | null; after: string; label: string }> };
+    expect(p.kind).toBe('descriptions');
+    expect(p.items).toHaveLength(3);
+    expect(p.items[0]).toMatchObject({ label: 'Invoices › Amount', before: null, after: 'The invoice amount, VAT excluded.' });
+    expect(p.items[1].id).toBe(dimId); // the graph id is what the route takes
+    expect((await db()('source_columns').where({ id: col['Invoices.Amount'] }).first()).description ?? null).toBeNull();
+
+    const path = (it: { target: string; id: number }) => ({
+      'source-column': `/api/semantic/columns/${it.id}`, 'subject-table': `/api/semantic/product-tables/${it.id}`,
+      'subject-column': `/api/semantic/product-columns/${it.id}`, 'source-table': `/api/semantic/tables/${it.id}`,
+    } as Record<string, string>)[it.target];
+    for (const it of p.items) {
+      const k = await (await api()).patch(path(it)).set(auth()).send({ [it.field]: it.after });
+      expect(k.status, JSON.stringify(k.body)).toBe(200);
+    }
+    expect((await db()('source_columns').where({ id: col['Invoices.Amount'] }).first()).description).toBe('The invoice amount, VAT excluded.');
+    expect((await db()('product_tables').where({ id: factId }).first()).description).toBe('One row per open invoice.');
+    expect((await db()('product_columns').where({ id: idOf(openCol) }).first()).display_name).toBe('Open amount');
+    expect((await db()('product_tables').where({ id: dimId }).first()).description ?? null).toBe(dimBefore.description ?? null);
+
+    for (const it of [...p.items].reverse()) {
+      const u = await (await api()).patch(path(it)).set(auth()).send({ [it.field]: it.before ?? '' });
+      expect(u.status).toBe(200);
+    }
+    expect((await db()('product_tables').where({ id: factId }).first()).description || null).toBeNull();
+    expect((await db()('source_columns').where({ id: col['Invoices.Amount'] }).first()).description || null).toBeNull();
+  });
+
+  it('descriptions: text that is already stored is not proposed', async () => {
+    await db()('source_tables').where({ id: invoicesId }).update({ description: 'Sales invoices.' });
+    const seen = script('propose_descriptions', { items: [{ target: 'source-table', id: invoicesId, field: 'description', text: 'Sales invoices.' }] });
+    await turn('describe');
+    expect(seen.toolResult?.is_error).toBe(true);
+    expect(seen.toolResult?.content).toMatch(/already what is stored/);
+  });
+
+  it('metric: a new one is RUN on the data first, then kept and undone', async () => {
+    const r = await runTool('propose_metric', {
+      product_id: productId, name: 'Invoice count', formula_sql: 'SELECT COUNT(*) AS n FROM Invoices',
+      question_text: 'How many invoices do we have?',
+    });
+    const p = r.proposal as Record<string, any>;
+    expect(p).toMatchObject({ kind: 'metric', kpiId: null, name: 'Invoice count' });
+    expect(p.check).toMatchObject({ ran: true, ok: true, value: '10' });
+    expect(p.changes.map((c: { field: string }) => c.field)).toEqual(['Name', 'Formula', 'Question it answers']);
+    expect(await db()('product_kpis').where({ data_product_id: productId, name: 'Invoice count' }).first()).toBeUndefined();
+
+    const v = p.values;
+    const keep = await (await api()).post(`/api/products/${productId}/kpis`).set(auth()).send({
+      name: v.name, description: v.description, formulaSql: v.formula_sql, formulaPlainText: v.formula_plain_text, questionText: v.question_text,
+    });
+    expect(keep.status).toBe(200);
+    expect(await db()('product_kpis').where({ id: keep.body.data.id }).first()).toMatchObject({ name: 'Invoice count', tenant_id: tenantId });
+    const undo = await (await api()).delete(`/api/products/kpis/${keep.body.data.id}`).set(auth());
+    expect(undo.status).toBe(200);
+    expect(await db()('product_kpis').where({ id: keep.body.data.id }).first()).toBeUndefined();
+  });
+
+  it('metric: a change to an existing one shows only what changes; a broken formula says why', async () => {
+    const kpi = await db()('product_kpis').where({ data_product_id: productId, name: 'Open AR Balance' }).first();
+    const r = await runTool('propose_metric', { product_id: productId, kpi_id: kpi.id, question_text: 'Who still owes me money?' });
+    const p = r.proposal as Record<string, any>;
+    expect(p.changes).toEqual([{ field: 'Question it answers', before: 'How much do customers still owe me?', after: 'Who still owes me money?' }]);
+
+    const bad = await runTool('propose_metric', { product_id: productId, name: 'Broken', formula_sql: 'SELECT SUM(no_such_column) FROM Invoices' });
+    expect((bad.proposal as Record<string, any>).check).toMatchObject({ ran: true, ok: false });
+    expect(String((bad.proposal as Record<string, any>).check.error)).toMatch(/no_such_column/);
+  });
+
+  it('glossary: a change to an existing term, before → after, kept and undone', async () => {
+    const created = await (await api()).post('/api/semantic/glossary').set(auth()).send({ term: 'DSO', meaning: 'Days sales outstanding.' });
+    expect(created.status).toBe(201);
+    const r = await runTool('propose_glossary_change', { term: 'dso', meaning: 'How many days, on average, customers take to pay.' });
+    const p = r.proposal as Record<string, any>;
+    expect(p).toMatchObject({ kind: 'glossary-edit', termId: created.body.data.id });
+    expect(p.changes).toEqual([{ field: 'Meaning', before: 'Days sales outstanding.', after: 'How many days, on average, customers take to pay.' }]);
+    expect(r.focus).toEqual({ kind: 'definitions' });
+
+    const keep = await (await api()).patch(`/api/semantic/glossary/${p.termId}`).set(auth()).send(p.after);
+    expect(keep.status).toBe(200);
+    expect((await db()('business_glossary').where({ id: p.termId }).first()).meaning).toMatch(/on average/);
+    const undo = await (await api()).patch(`/api/semantic/glossary/${p.termId}`).set(auth()).send(p.before);
+    expect(undo.status).toBe(200);
+    expect((await db()('business_glossary').where({ id: p.termId }).first()).meaning).toBe('Days sales outstanding.');
+  });
+
+  it('relationship review: flag (measured first), kept, unflagged by Undo; then confirm', async () => {
+    const r = await runTool('propose_relationship_review', { relationship_id: relationshipId, action: 'flag', reason: 'Testing the flag.' });
+    const p = r.proposal as Record<string, any>;
+    expect(p).toMatchObject({ kind: 'relationship-review', action: 'flag', label: 'Invoices.AccountID → Accounts.ID' });
+    expect(p.measurement.verdict).toBe('strong');
+    expect(p.changes[0]).toMatchObject({ field: 'Status', after: 'Flagged — Ask AI does not join on it' });
+    expect((await db()('table_relationships').where({ id: relationshipId }).first()).flagged_at).toBeNull();
+
+    expect((await (await api()).post(`/api/relationships/${relationshipId}/flag`).set(auth()).send({ flagged: true, reason: p.reason })).status).toBe(200);
+    expect((await db()('table_relationships').where({ id: relationshipId }).first()).flagged_at).not.toBeNull();
+    expect((await (await api()).post(`/api/relationships/${relationshipId}/flag`).set(auth()).send({ flagged: false, reason: null })).status).toBe(200);
+    expect((await db()('table_relationships').where({ id: relationshipId }).first()).flagged_at).toBeNull();
+
+    const c = await runTool('propose_relationship_review', { relationship_id: relationshipId, action: 'confirm', reason: 'Holds on every invoice.' });
+    const cp = c.proposal as Record<string, any>;
+    const keep = await (await api()).patch(`/api/semantic/relationships/${relationshipId}`).set(auth()).send({ measured: cp.measurement });
+    expect(keep.status).toBe(200);
+    expect(await db()('table_relationships').where({ id: relationshipId }).first()).toMatchObject({ confirmed_by_user: true, ai_draft: false });
+    const again = script('propose_relationship_review', { relationship_id: relationshipId, action: 'confirm', reason: 'x' });
+    await turn('confirm');
+    expect(again.toolResult?.content).toMatch(/already confirmed/);
+  });
+
+  it('run_query answers a number question on the data', async () => {
+    const r = await runTool('run_query', { connection_id: connectionId, sql: 'SELECT COUNT(*) AS invoices FROM Invoices;' });
+    expect(r.result).toContain('"invoices":10');
+    const seen = script('run_query', { connection_id: connectionId, sql: 'SELECT nope FROM Invoices' });
+    await turn('count');
+    expect(seen.toolResult?.is_error).toBe(true);
+    expect(seen.toolResult?.content).toMatch(/nope/);
+  });
+
+  it('first build: only for a source with no subjects yet; an addition there is redirected', async () => {
+    const refused = script('propose_first_build', { connection_id: connectionId });
+    await turn('build');
+    expect(refused.toolResult?.content).toMatch(/already has subjects/);
+
+    const [c2] = await db()('connections').insert({
+      tenant_id: tenantId, name: 'Odoo', type: 'duckdb', connector_type: 'odoo', selected_entities: ['sale_order'],
+      warehouse_path: warehouse, query_engine: 'duckdb', last_sync_status: 'succeeded', profiling_status: 'done', config: JSON.stringify({}),
+    }).returning('id');
+    await db()('source_tables').insert({ tenant_id: tenantId, connection_id: idOf(c2), table_name: 'sale_order', is_active: true });
+    const r = await runTool('propose_first_build', { connection_id: idOf(c2) });
+    expect(r.proposal).toMatchObject({ kind: 'first-build', connectionId: idOf(c2), connectionName: 'Odoo' });
+    const keep = await (await api()).post('/api/products/bus-matrix/start').set(auth()).send({ connectionId: idOf(c2) });
+    expect(keep.status).not.toBe(400); // 503 without Redis: every check before the queue passed
+
+    const redirected = script('propose_new_subject', { connection_id: idOf(c2), name: 'Orders', description: 'x', entities: ['sale_order'] });
+    await turn('add');
+    expect(redirected.toolResult?.content).toMatch(/propose_first_build/);
+  });
+
+  it('rebuild: proposed for one table, kept through the table\'s own Rebuild now', async () => {
+    const r = await runTool('propose_rebuild_table', { table_id: dimId, why: 'Bring in the new accounts.' });
+    expect(r.proposal).toMatchObject({ kind: 'rebuild', tableId: dimId, tableName: 'dim_account' });
+    const keep = await (await api()).post(`/api/products/tables/${dimId}/run`).set(auth());
+    expect(keep.status, JSON.stringify(keep.body)).toBe(200);
+    expect((await db()('product_tables').where({ id: dimId }).first()).delta_path).toBeTruthy();
+  });
+
+  let gridId: number;
+
+  it('your tables: a new mapping, pre-filled from the subject column it maps; listed and opened', async () => {
+    await db()('product_columns').where({ product_table_id: dimId, column_name: 'account_name' }).update({ column_role: 'dimension' });
+    const r = await runTool('propose_new_grid', {
+      name: 'Account segments', kind: 'mapping', description: 'Which segment each account is in.',
+      columns: [{ name: 'Account', type: 'text', link_table: 'dim_account', link_column: 'account_name' }, { name: 'Segment', type: 'text' }],
+      seed_from_link: true,
+    });
+    const p = r.proposal as Record<string, any>;
+    expect(p).toMatchObject({ kind: 'grid-new', seedFromLink: true });
+    expect(await db()('managed_grids').where({ tenant_id: tenantId, name: 'Account segments' }).first()).toBeUndefined();
+
+    const created = await (await api()).post('/api/grids').set(auth()).send({ name: p.name, kind: p.gridKind, description: p.description, columns: p.columns });
+    expect(created.status, JSON.stringify(created.body)).toBe(200);
+    gridId = created.body.data.id;
+    const link = created.body.data.columns.find((c: { link?: unknown }) => c.link);
+    const values = await (await api()).get('/api/grids/link-values').query({ table: link.link.table, column: link.link.column }).set(auth());
+    expect(values.body.data.values).toContain('Van Damme BVBA');
+    await (await api()).put(`/api/grids/${gridId}/rows`).set(auth()).send({ rows: values.body.data.values.map((x: string) => ({ data: { [link.key]: x } })) });
+
+    const list = await runTool('list_your_tables', {});
+    expect(list.result).toContain('Account segments');
+    const open = await runTool('open_your_table', { grid_id: gridId });
+    expect(open.focus).toEqual({ kind: 'grid', gridId });
+    expect(open.result).toContain('Van Damme BVBA');
+  });
+
+  it('your tables: rows changed, added and removed are shown as such, kept and undone', async () => {
+    const r = await runTool('propose_grid_rows', {
+      grid_id: gridId,
+      change: [{ row: 1, values: { Segment: 'Key account' } }],
+      remove: [2],
+      add: [{ Account: 'New customer', Segment: 'SMB' }],
+    });
+    const p = r.proposal as Record<string, any>;
+    expect(p.diff.map((d: { status: string }) => d.status)).toEqual(['changed', 'removed', 'added']);
+    expect(p.rowsAfter).toHaveLength(p.rowsBefore.length);
+    const before = await db()('managed_grid_rows').where({ grid_id: gridId }).count<{ count: string }[]>('id as count');
+
+    expect((await (await api()).put(`/api/grids/${gridId}/rows`).set(auth()).send({ rows: p.rowsAfter.map((data: object) => ({ data })) })).status).toBe(200);
+    const kept = await db()('managed_grid_rows').where({ grid_id: gridId }).orderBy('position').select('data');
+    expect(kept.some((row: { data: Record<string, unknown> }) => Object.values(row.data).includes('New customer'))).toBe(true);
+    expect((await (await api()).put(`/api/grids/${gridId}/rows`).set(auth()).send({ rows: p.rowsBefore.map((data: object) => ({ data })) })).status).toBe(200);
+    const after = await db()('managed_grid_rows').where({ grid_id: gridId }).count<{ count: string }[]>('id as count');
+    expect(after[0].count).toBe(before[0].count);
+
+    const unknown = script('propose_grid_rows', { grid_id: gridId, add: [{ Colour: 'red' }] });
+    await turn('add');
+    expect(unknown.toolResult?.content).toMatch(/has no column "Colour"/);
+
+    expect((await (await api()).delete(`/api/grids/${gridId}`).set(auth())).status).toBeLessThan(300);
+  });
+});
+
 it('every tool the coworker offers is exercised above', () => {
   const covered = new Set([
     'describe_workspace', 'search_catalog', 'open_subject', 'open_table', 'open_source_table', 'table_lineage',
     'table_usage', 'list_definitions', 'check_relationship', 'source_status', 'propose_sql_change',
     'propose_relationship', 'propose_glossary_term', 'propose_new_table', 'propose_new_subject',
+    'propose_descriptions', 'propose_metric', 'propose_glossary_change', 'propose_relationship_review',
+    'propose_rebuild_table', 'propose_first_build', 'list_your_tables', 'open_your_table',
+    'propose_new_grid', 'propose_grid_rows', 'run_query',
     // preview_rows goes to the product-preview route, which reads a MATERIALISED
     // table; it is pinned in coworker.test.ts (withheld from hybrid tenants).
     'preview_rows',

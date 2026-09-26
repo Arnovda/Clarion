@@ -45,6 +45,8 @@ export interface InternalResponse {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   data: any;
   error: string | null;
+  /** A route's optional `detail` next to its error (e.g. the database's own words, for curators). */
+  detail: string | null;
 }
 
 /** One route, per call; a slow route is abandoned rather than stalling a turn. */
@@ -77,5 +79,6 @@ export async function internalCall(
     ok,
     data: json?.data ?? null,
     error: ok ? null : String(json?.error ?? `The request failed (${res.status})`),
+    detail: ok || typeof json?.detail !== 'string' ? null : json.detail,
   };
 }

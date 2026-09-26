@@ -31,7 +31,104 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-09-26 (THE LOAD-TEST DATABASE HAS A LIFECYCLE — owner:
+**Last updated:** 2026-09-26 (THE COWORKER CAN NOW PROPOSE EVERY EVERYDAY
+CURATOR EDIT, AND EVERY PROPOSAL READS THE SAME WAY — owner, after a gap
+review: *"Let's do all of them, I'd also really want that the co-worker
+PROPOSES but I have to confirm or cancel the proposal and that it's visually
+clear what he proposed as change … clean, clear and intuitive."* Branch
+`claude/sweet-johnson-n214b2`. Flag `ai_coworker` unchanged — still off per
+tenant until ticked.)
+
+**THE GAP REVIEW THAT PRECEDED IT (same day, read-only):** the coworker could
+look at almost everything but PROPOSE only five things (SQL, new relationship,
+new glossary term, new table, new subject). Descriptions, metrics, existing
+terms and relationships, "Your tables" and ad-hoc queries had no tool although
+every screen route already existed; a kept SQL change was never built; a
+source with no subjects could not be started; `list_definitions` promised the
+verified answers and dropped them.
+
+**NEW TOOLS (16 → 27), each CHECKED before the person sees it, none writes:**
+- `propose_descriptions` (definitionTools.ts) — up to 40 description /
+  display-name edits on source or subject tables and columns in ONE card (the
+  step limit is met by batching, not by raising MAX_STEPS). Subject items carry
+  the GRAPH id (`neo4j_pg_id`) the route takes; copies of shared tables are
+  refused; unchanged text is dropped. Undo writes back `''` (the save routes
+  read null as "leave it").
+- `propose_metric` — new KPI or a change to one (`kpi_id` now in
+  `open_subject`); the formula is RUN first through `/dashboards/execute`
+  (guard + data policies) and the first value shown; Keep is disabled while it
+  does not run. The value reaches the MODEL only when rows are allowed.
+- `propose_glossary_change` — edit an existing term (name, meaning, links;
+  links checked). `propose_glossary_term` now shares `checkGlossaryLinks`.
+- `propose_relationship_review` — confirm (optionally with the right shape),
+  flag (reason) or unflag an EXISTING relationship, measured first. Confirm has
+  no inverse route, so no Undo — the card says to flag it instead.
+- `propose_rebuild_table` (buildTools.ts) — build ONE table from its saved SQL
+  (`POST /products/tables/:id/run`; the lone-rebuild key refusal still
+  applies). A whole-subject rebuild stays forbidden.
+- `propose_first_build` — "Create my topics" for a source with NO subjects
+  (plan from `build-overview`); `propose_new_subject` now refuses on such a
+  source and points here.
+- `list_your_tables`, `open_your_table`, `propose_new_grid` (optionally seeded
+  from a linked subject column), `propose_grid_rows` (add / change / remove by
+  row number; values by column name) — gridTools.ts. Grid ROWS and coverage
+  samples reach the model only when the tenant's AI routing allows rows
+  (`ToolContext.rowsAllowed`, new); otherwise only adding rows is possible.
+- `run_query` (queryTools.ts, `sendsRows`) — one read-only SELECT, ≤50 rows,
+  through `/dashboards/execute`; the model gets the DuckDB error to fix its SQL.
+- Helpers moved to `services/coworker/toolKit.ts`; `open_table` returns column
+  ids; `list_definitions` returns the verified answers; the system prompt lists
+  every proposal and says a kept SQL change is not live until rebuilt.
+
+**ONE CARD LANGUAGE (`ProposalCard.tsx`).** Every edit to something that exists
+is a `Change`: old text on a red struck-through line, new on a green line — the
+SQL diff's marks (formulas in mono). Header chip "Waiting for you"; footer
+"Nothing is saved until you keep it"; grid rows as a small table (+ added,
+~ changed with old/new per cell, − removed). A KEPT SQL card now carries a
+strip: *Saved. Your data shows the old result until the table is rebuilt.*
+**[Rebuild now]** → *Rebuilt — the change is live.*
+Render-checked in headless Chromium with every kind on a throwaway
+`/dev/proposals` page (deleted), zero page errors.
+
+**Keep / Undo moved to `frontend/lib/coworker/applyProposal.ts`**: Keep calls
+the screens' own routes and RECORDS the inverse calls (`UndoCall[]`) at that
+moment; Undo replays them. Grid-rows Keep re-reads the grid and refuses if it
+changed since the proposal. `ProposalState.undo` is now `UndoCall[]`; new
+`rebuild` state + `CoworkerValue.rebuild(id)`. New focus kinds `grid` /
+`definitions` (catalog hands them back); `CoworkerPageContext.gridId`. Page
+context + refresh-after-Keep wired on /definitions, /grids, /grids/[id]
+(never reloads over the person's unsaved edits), /review, /pipelines.
+
+**TWO REAL BUGS FIXED ON THE WAY:**
+1. **`mirrorProductPatch` could overwrite a SECOND table's description.** It
+   updated `WHERE id = x OR neo4j_pg_id = x` with no tenant filter, and the two
+   id sequences overlap — the catalog sends graph ids, so saving one subject
+   table's description could also change an unrelated table whose Postgres id
+   equals that graph id. Now: exactly one row, graph id first, tenant-filtered.
+   **Verified RED** (restoring the old query fails the new e2e test).
+2. **The KPI routes rode RLS alone**: `POST /products/:id/kpis` never checked
+   the subject was the caller's, PUT/DELETE had no tenant filter. Explicit
+   tenant filters + a 404 on a foreign subject now.
+- Also: `/dashboards/execute` returns a sanitised `detail` (the database's own
+  words, storage paths stripped) to admins/analysts on a failed query; viewers
+  keep the friendly sentence. `internalCall` exposes it as `detail`.
+
+- Validation: backend `npm run check` clean; `coworker-e2e.test.ts` **29** (+13:
+  every new tool driven as the model would call it, then Keep and Undo exactly
+  as the panel sends them, against real Postgres + DuckDB) and the
+  every-tool-is-covered guard; full suite **107 files / 1054 passed / 23
+  skipped** (serially; `data-policies-everywhere` + `preview-policies` need
+  Node 20 for better-sqlite3 — green there); all TWELVE ratchets green;
+  frontend `tsc` clean, touched files lint-clean (the two findings in
+  `pipelines/page.tsx` are the documented pre-existing ones), vitest 94/94,
+  `next build` green.
+- **NOT done, deliberately:** Undo for a new subject table or a new subject
+  (no delete route for a table; a subject is a build) — the owner's
+  no-deleting rule stands; dashboards and notebooks still have their own
+  assistants. **NOT exercised against the live model** — watch the first
+  `'coworker turn done'` lines after switching the flag on.
+
+**Prior last updated:** 2026-09-26 (THE LOAD-TEST DATABASE HAS A LIFECYCLE — owner:
 *"I would like for you to set up everything. After we load it in, I want to
 delete the server so I don't have extra costs."* The 10M-row fixture in
 `docs/testing/sql-load-test/` had existed since 13 September and had never been
@@ -13261,7 +13358,7 @@ clarion/                              ← on disk: databridge/
 │       │   └── emailSchedules.ts     ← CRUD dashboard email schedules; send-now trigger
 │       │
 │       ├── services/
-│       │   ├── coworker/                   ← the Studio coworker: agent.ts (the loop), tools.ts (read + propose), prompt.ts, internalApi.ts (the product's own routes, as the user)
+│       │   ├── coworker/                   ← the Studio coworker: agent.ts (the loop), tools.ts (the registry + look-ups), toolKit.ts (shared types/helpers), definitionTools.ts (descriptions, metrics, glossary edits, relationship reviews), buildTools.ts (one-table rebuild, first build), gridTools.ts ("Your tables"), queryTools.ts (run_query), prompt.ts, internalApi.ts (the product's own routes, as the user)
 │       │   ├── tenantLimits.ts             ← seats / sources caps + cron cadence floor (P0-8)
 │       │   ├── announcements.ts            ← operator announcements (6-4)
 │       │   ├── invites.ts                  ← inviteUser(), shared by tenant admin and operator doors
@@ -13495,6 +13592,7 @@ clarion/                              ← on disk: databridge/
     │
     └── lib/
         ├── coworker/CoworkerProvider.tsx ← the coworker's state, stream, Keep/Undo, page hooks
+        ├── coworker/applyProposal.ts ← Keep for every proposal kind; records the inverse calls Undo replays
         ├── api.ts                   ← Axios client; JWT interceptor; 401 → redirect to /
         ├── auth.ts                  ← JWT storage, getTokenPayload, isAdmin, setToken
         ├── cn.ts                    ← classnames helper (clsx + tailwind-merge)

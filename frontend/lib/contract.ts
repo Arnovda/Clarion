@@ -323,7 +323,11 @@ export type CoworkerFocus =
    * relationship selected). Only auto-followed while the person is already on
    * the canvas — it must not pull them out of the catalog mid-thought.
    */
-  | { kind: 'relations'; tableId: number; relationshipId?: number };
+  | { kind: 'relations'; tableId: number; relationshipId?: number }
+  /** One of "Your tables" (a managed grid). */
+  | { kind: 'grid'; gridId: number }
+  /** The Definitions pane (terms · metrics · verified answers). */
+  | { kind: 'definitions' };
 
 /** What the person is looking at, sent with every message. */
 export interface CoworkerPageContext {
@@ -337,6 +341,8 @@ export interface CoworkerPageContext {
   connectionId?: number | null;
   /** A relationship the person has selected on the Relations canvas. */
   relationshipId?: number | null;
+  /** One of "Your tables" the person has open. */
+  gridId?: number | null;
 }
 
 /** Who would notice a change to a table — shown BEFORE Keep. */
@@ -351,6 +357,33 @@ export interface CoworkerGlossaryLink {
   column?: string;
   kpi?: string;
 }
+
+/**
+ * One thing that changes, as the person reads it: what it says NOW and what
+ * it would say after Keep. Every proposal that edits something that already
+ * exists shows its change this way — old struck through, new beside it.
+ */
+export interface CoworkerFieldChange {
+  /** The field in the product's words ("Description", "Formula"). */
+  field: string;
+  before: string | null;
+  after: string | null;
+}
+
+/** A description or display name on a table or column, before → after. */
+export interface CoworkerDescriptionItem {
+  target: 'source-table' | 'source-column' | 'subject-table' | 'subject-column';
+  /** The id the write route takes (a subject table/column: its graph id). */
+  id: number;
+  /** "Invoices › Amount" — what the person reads. */
+  label: string;
+  field: 'description' | 'display_name';
+  before: string | null;
+  after: string;
+}
+
+/** A row of one of "Your tables", in its column keys. */
+export type CoworkerGridRow = Record<string, string | number | boolean | null>;
 
 export type CoworkerProposal =
   | {
@@ -387,6 +420,76 @@ export type CoworkerProposal =
       id: string; kind: 'subject';
       connectionId: number; connectionName: string;
       name: string; description: string; entities: string[]; focus?: string;
+    }
+  /** Descriptions / display names on tables and columns — one card, many rows. */
+  | { id: string; kind: 'descriptions'; items: CoworkerDescriptionItem[] }
+  /** A new metric (kpiId null) or a change to one; the formula was run first. */
+  | {
+      id: string; kind: 'metric';
+      productId: number; productName: string;
+      kpiId: number | null;
+      name: string;
+      /** The fields as they would be stored (snake_case, the PUT route's words). */
+      values: { name: string; description: string | null; formula_sql: string | null; formula_plain_text: string | null; question_text: string | null };
+      changes: CoworkerFieldChange[];
+      /** Running the formula on the data: its first value, or why it failed. */
+      check: { ran: boolean; ok: boolean; value?: string | null; error?: string | null };
+    }
+  /** A change to an existing glossary term. */
+  | {
+      id: string; kind: 'glossary-edit';
+      termId: number; term: string;
+      changes: CoworkerFieldChange[];
+      /** The full new values the PATCH sends, and the old ones Undo restores. */
+      after: { term: string; meaning: string; links: CoworkerGlossaryLink[] };
+      before: { term: string; meaning: string; links: CoworkerGlossaryLink[] };
+    }
+  /** Confirm, flag or unflag a relationship that already exists. */
+  | {
+      id: string; kind: 'relationship-review';
+      relationshipId: number; fromTableId: number; label: string;
+      action: 'confirm' | 'flag' | 'unflag';
+      reason: string;
+      changes: CoworkerFieldChange[];
+      /** Only set when confirming changes the stored shape. */
+      relationshipType?: string | null;
+      measurement: {
+        verdict: 'strong' | 'weak' | 'broken' | 'unmeasurable';
+        reason: string;
+        containment: { matchedDistinct: number; sampledDistinct: number; ratio: number } | null;
+        cardinality: { type: string } | null;
+        orphans: { rows: number } | null;
+      } | null;
+    }
+  /** Build one subject table now, from its saved SQL. */
+  | { id: string; kind: 'rebuild'; tableId: number; tableName: string; label: string; why: string }
+  /** "Create my topics" for a source that has none yet. */
+  | {
+      id: string; kind: 'first-build';
+      connectionId: number; connectionName: string;
+      topics: Array<{ name: string; description: string; shared: boolean }>;
+      /** False when no template covers this source: the AI designs the topics. */
+      fromTemplate: boolean;
+    }
+  /** A new one of "Your tables". */
+  | {
+      id: string; kind: 'grid-new';
+      name: string; gridKind: 'budget' | 'mapping' | 'list'; description: string;
+      columns: Array<{ name: string; type: 'text' | 'number' | 'date' | 'boolean'; link?: { table: string; column: string } | null }>;
+      /** Start with one row per value of the first linked column. */
+      seedFromLink: boolean;
+    }
+  /** Rows added, changed or removed in one of "Your tables". */
+  | {
+      id: string; kind: 'grid-rows';
+      gridId: number; gridName: string;
+      columns: Array<{ key: string; name: string }>;
+      /** The grid's updated_at when proposed — Keep refuses if it moved since. */
+      baseUpdatedAt: string | null;
+      rowsBefore: CoworkerGridRow[];
+      rowsAfter: CoworkerGridRow[];
+      /** What the card shows: only the rows that change. */
+      diff: Array<{ status: 'added' | 'changed' | 'removed'; before: CoworkerGridRow | null; after: CoworkerGridRow | null }>;
     };
 
 export type CoworkerEvent =

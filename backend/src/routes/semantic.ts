@@ -223,8 +223,9 @@ async function recordVersion(
  */
 async function mirrorProductPatch(
   db: Knex | Knex.Transaction,
+  tenantId: number,
   table: 'product_tables' | 'product_columns',
-  pgId: number,
+  graphOrPgId: number,
   body: Record<string, unknown>,
   fields: string[],
 ): Promise<void> {
@@ -235,9 +236,15 @@ async function mirrorProductPatch(
   // A human touched it — the same statement `updateProductTable`/`Column`
   // makes in the graph.
   patch.ai_draft = false;
-  await db(table)
-    .where((qb) => { qb.where('id', pgId).orWhere('neo4j_pg_id', pgId); })
-    .update(patch);
+  // ONE row. The id may be in either space (the catalog sends the graph id,
+  // other callers the Postgres id), and the two sequences overlap: matching
+  // `id = x OR neo4j_pg_id = x` could update a second, unrelated row whose
+  // Postgres id happens to equal this one's graph id. The graph id wins,
+  // because that is what the graph write above just used.
+  const byGraph = await db(table).where({ tenant_id: tenantId, neo4j_pg_id: graphOrPgId }).first('id');
+  const rowId = byGraph?.id ?? (await db(table).where({ tenant_id: tenantId, id: graphOrPgId }).first('id'))?.id;
+  if (rowId == null) return;
+  await db(table).where({ tenant_id: tenantId, id: rowId }).update(patch);
 }
 
 async function auditLog(
@@ -1999,7 +2006,7 @@ router.patch('/product-tables/:id', requireAuth, requireRole('admin', 'analyst')
     // consumer the editing exists for. Only the columns that exist on
     // `product_tables` are mirrored: owner_name and domains live in the graph
     // alone (no Postgres column), which is why they are absent here.
-    await mirrorProductPatch(db, 'product_tables', pgId, body, ['display_name', 'description']);
+    await mirrorProductPatch(db, req.user!.tenantId, 'product_tables', pgId, body, ['display_name', 'description']);
 
     await invalidateSemanticCache(await connectionIdForEntity(db, 'product_tables', pgId) ?? undefined);
     await auditLog(db, req.user!.tenantId, req.user!.sub, req.user!.name as string, 'update', 'product_table', pgId, body.display_name as string ?? null, body);
@@ -2028,7 +2035,7 @@ router.patch('/product-columns/:id', requireAuth, requireRole('admin', 'analyst'
       column_role:  body.column_role,
     }, req.user!.tenantId);
     // Mirror to Postgres — see PATCH /product-tables/:id above for why.
-    await mirrorProductPatch(db, 'product_columns', pgId, body, ['display_name', 'description', 'column_role']);
+    await mirrorProductPatch(db, req.user!.tenantId, 'product_columns', pgId, body, ['display_name', 'description', 'column_role']);
 
     await invalidateSemanticCache(await connectionIdForEntity(db, 'product_columns', pgId) ?? undefined);
     await auditLog(db, req.user!.tenantId, req.user!.sub, req.user!.name as string, 'update', 'product_column', pgId, body.display_name as string ?? null, body);

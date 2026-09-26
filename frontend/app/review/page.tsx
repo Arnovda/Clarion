@@ -1,10 +1,12 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { Loader2, Check, Flag, Inbox, RefreshCw, X } from 'lucide-react';
 import AppShell from '@/components/layout/AppShell';
 import RequireRole from '@/components/RequireRole';
 import api from '@/lib/api';
+import { useCoworker, useCoworkerChanged, useCoworkerPageContext } from '@/lib/coworker/CoworkerProvider';
+import type { CoworkerPageContext } from '@/lib/contract';
 import { useToast } from '@/components/ui/Toast';
 import { formatRelative } from '@/lib/dates';
 
@@ -37,6 +39,15 @@ function ReviewQueueInner() {
   }, [toast]);
 
   useEffect(() => { load(); }, [load]);
+
+  // The Studio coworker knows this queue is open (and how long it is); what
+  // it helped confirm leaves the list without a reload.
+  const cw = useCoworker();
+  const coworkerContext = useMemo<CoworkerPageContext | null>(
+    () => (cw?.enabled ? { path: '/review', label: `Suggestions to review (${items.length} waiting)` } : null),
+    [cw?.enabled, items.length]);
+  useCoworkerPageContext(coworkerContext);
+  useCoworkerChanged(load);
 
   const confirm = async (item: PendingItem) => {
     const key = `${item.type}-${item.id}`;

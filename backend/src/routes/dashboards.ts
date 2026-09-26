@@ -22,6 +22,7 @@ import { applyEditOps, pendingSqlEdits, realRefusals, isDeterministicOp, type Da
 import { startSSE } from '../services/sse';
 import { assertSafeReadQuery, isSafeReadQuery, assertNoExternalAccess } from '../utils/sqlGuard';
 import { actorOf, prepareUserRead, type ReadActor } from '../services/readPolicy';
+import { sanitizeSqlError } from '../services/tableDeclaration';
 
 /**
  * Data policies (row filters + column masks) applied to a resolved SQL for
@@ -1192,7 +1193,11 @@ router.post('/execute', requireAuth, async (req: Request, res: Response, next: N
         : raw.includes('Serialization')
           ? 'This chart encountered a data format issue. Try regenerating the dashboard.'
           : 'This chart could not load data. Try regenerating the dashboard.';
-      res.json({ ok: false, error: friendly });
+      // Curators (who may see SQL) also get the database's own words, with
+      // storage paths stripped — what the Studio coworker needs to fix a query
+      // it wrote. A viewer keeps the friendly sentence only.
+      const curator = req.user?.role === 'admin' || req.user?.role === 'analyst';
+      res.json({ ok: false, error: friendly, ...(curator ? { detail: sanitizeSqlError(raw) } : {}) });
     } finally {
       connector.disconnect();
     }

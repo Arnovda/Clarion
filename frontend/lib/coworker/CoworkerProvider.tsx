@@ -43,6 +43,7 @@ import api from '@/lib/api';
 import { getToken } from '@/lib/auth';
 import { streamSSE, SSEHttpError } from '@/lib/sse';
 import { catalogHref } from '@/lib/catalogUrl';
+import { applyProposal, replay, type UndoCall } from '@/lib/coworker/applyProposal';
 import type {
   CoworkerEvent, CoworkerFocus, CoworkerPageContext, CoworkerProposal,
 } from '@/lib/contract';
@@ -110,8 +111,13 @@ export interface ProposalState {
   proposal: CoworkerProposal;
   status: ProposalStatus;
   error?: string;
-  /** What Keep produced that Undo needs (a new row's id, the SQL it replaced). */
-  undo?: { kind: 'sql'; tableId: number; sql: string } | { kind: 'relationship'; id: number } | { kind: 'glossary'; id: number };
+  /** The calls that put things back, recorded by Keep (a new row's id, the text it replaced). */
+  undo?: UndoCall[];
+  /**
+   * A kept SQL change is saved but not built: the table keeps serving its old
+   * result until it is rebuilt. The card offers the rebuild right there.
+   */
+  rebuild?: { status: 'running' | 'done' | 'failed'; error?: string };
   /** After Keep: a place to follow the result (a started build). */
   followHref?: string;
   followLabel?: string;
@@ -133,6 +139,8 @@ interface CoworkerValue {
   keep: (id: string) => Promise<void>;
   discard: (id: string) => void;
   undo: (id: string) => Promise<void>;
+  /** Build the table a kept SQL change touched, so the change is live. */
+  rebuild: (id: string) => Promise<void>;
   /** Go to something now (a card's "show it"), whatever Follow along says. */
   goTo: (f: CoworkerFocus) => void;
   /** A decision taken OUTSIDE the panel — the declaration's own Keep/Discard. */
@@ -171,6 +179,8 @@ export function coworkerFocusHref(target: CoworkerFocus): string {
     case 'source': return catalogHref({ kind: 'source', connectionId: target.connectionId });
     case 'source-table': return catalogHref({ kind: 'source-table', tableId: target.tableId, connectionId: target.connectionId });
     case 'relations': return `/relationships?table=${target.tableId}${target.relationshipId ? `&rel=${target.relationshipId}` : ''}`;
+    case 'grid': return `/grids/${target.gridId}`;
+    case 'definitions': return '/definitions';
   }
 }
 
@@ -241,7 +251,12 @@ export function restoreThread(raw: { messages?: unknown; proposals?: unknown }):
       p.status === 'pending' || p.status === 'failed' || p.status === 'keeping' ? 'expired'
         : p.status === 'undoing' ? 'kept'
           : p.status;
-    proposals[id] = { proposal: p.proposal, status, followHref: p.followHref, followLabel: p.followLabel };
+    proposals[id] = {
+      proposal: p.proposal, status, followHref: p.followHref, followLabel: p.followLabel,
+      // A finished rebuild stays said; one still running when the page went
+      // away is unknown, so the card offers it again (rebuilding is safe).
+      rebuild: p.rebuild?.status === 'done' ? p.rebuild : undefined,
+    };
   }
   return { messages, proposals };
 }
@@ -561,20 +576,13 @@ export function CoworkerProvider({ children }: { children: ReactNode }) {
     const p = state.proposal;
     setProposal(id, { status: 'keeping', error: undefined });
     try {
-      if (p.kind === 'sql') {
-        await api.put(`/products/tables/${p.tableId}/sql`, { sql: p.after });
-        setProposal(id, { status: 'kept', undo: p.before.trim() ? { kind: 'sql', tableId: p.tableId, sql: p.before } : undefined });
-      } else if (p.kind === 'relationship') {
-        const r = await api.post('/semantic/relationships', {
-          from_table_id: p.fromTableId, from_column_id: p.fromColumnId,
-          to_table_id: p.toTableId, to_column_id: p.toColumnId,
-          relationship_type: p.measurement.cardinality?.type ?? 'many_to_one',
-          description: p.reason, kind: 'join', measured: p.measurement,
-        });
-        setProposal(id, { status: 'kept', undo: { kind: 'relationship', id: Number(r.data?.data?.id) } });
-      } else if (p.kind === 'glossary') {
-        const r = await api.post('/semantic/glossary', { term: p.term, meaning: p.meaning, links: p.links });
-        setProposal(id, { status: 'kept', undo: { kind: 'glossary', id: Number(r.data?.data?.id) } });
+      if (p.kind !== 'table' && p.kind !== 'subject') {
+        const outcome = await applyProposal(p);
+        setProposal(id, { status: 'kept', undo: outcome.undo, followHref: outcome.followHref, followLabel: outcome.followLabel });
+        if (p.kind === 'grid-new' || p.kind === 'grid-rows') {
+          const gridId = p.kind === 'grid-rows' ? p.gridId : Number(outcome.followHref?.split('/').pop());
+          if (gridId) follow({ kind: 'grid', gridId });
+        }
       } else if (p.kind === 'table') {
         const r = await api.post(`/products/${p.productId}/tables`, { tableName: p.tableName, tableRole: p.tableRole, description: p.description });
         const tableId = Number(r.data?.data?.id);
@@ -620,13 +628,11 @@ export function CoworkerProvider({ children }: { children: ReactNode }) {
     if (!state?.undo || state.status !== 'kept') return;
     if (inFlightRef.current.has(id)) return;
     inFlightRef.current.add(id);
-    const u = state.undo;
+    const calls = state.undo;
     setProposal(id, { status: 'undoing' });
     try {
-      if (u.kind === 'sql') await api.put(`/products/tables/${u.tableId}/sql`, { sql: u.sql });
-      else if (u.kind === 'relationship') await api.delete(`/semantic/relationships/${u.id}`);
-      else if (u.kind === 'glossary') await api.delete(`/semantic/glossary/${u.id}`);
-      setProposal(id, { status: 'undone' });
+      await replay(calls);
+      setProposal(id, { status: 'undone', rebuild: undefined });
       notifyChanged();
     } catch (err) {
       setProposal(id, { status: 'kept', error: errorText(err, 'Undo failed.') });
@@ -635,13 +641,31 @@ export function CoworkerProvider({ children }: { children: ReactNode }) {
     }
   }, [proposals, setProposal, notifyChanged]);
 
+  const rebuild = useCallback(async (id: string) => {
+    const state = proposals[id];
+    if (!state || state.status !== 'kept' || state.proposal.kind !== 'sql') return;
+    const key = `rebuild:${id}`;
+    if (inFlightRef.current.has(key)) return;
+    inFlightRef.current.add(key);
+    setProposal(id, { rebuild: { status: 'running' } });
+    try {
+      await api.post(`/products/tables/${state.proposal.tableId}/run`);
+      setProposal(id, { rebuild: { status: 'done' } });
+      notifyChanged();
+    } catch (err) {
+      setProposal(id, { rebuild: { status: 'failed', error: errorText(err, 'The rebuild failed.') } });
+    } finally {
+      inFlightRef.current.delete(key);
+    }
+  }, [proposals, setProposal, notifyChanged]);
+
   const markDecided = useCallback((id: string, decision: 'kept' | 'discarded', undoSql?: string) => {
     setProposals((prev) => {
       const cur = prev[id];
       if (!cur) return prev;
       const p = cur.proposal;
-      const undoState = decision === 'kept' && p.kind === 'sql' && (undoSql ?? p.before).trim()
-        ? { kind: 'sql' as const, tableId: p.tableId, sql: undoSql ?? p.before } : undefined;
+      const undoState: UndoCall[] | undefined = decision === 'kept' && p.kind === 'sql' && (undoSql ?? p.before).trim()
+        ? [{ method: 'put', path: `/products/tables/${p.tableId}/sql`, body: { sql: undoSql ?? p.before } }] : undefined;
       return { ...prev, [id]: { ...cur, status: decision, undo: undoState } };
     });
     if (decision === 'kept') notifyChanged();
@@ -656,12 +680,12 @@ export function CoworkerProvider({ children }: { children: ReactNode }) {
   const value = useMemo<CoworkerValue>(() => ({
     enabled: inStudio ? enabled : false,
     open, setOpen, followAlong, setFollowAlong, messages, proposals, busy,
-    send, stop, newChat, keep, discard, undo, markDecided, goTo,
+    send, stop, newChat, keep, discard, undo, rebuild, markDecided, goTo,
     pageContext, setPageContext, registerFocusHandler, subscribeChanged,
     prefill, openWith, consumePrefill,
     threadId, threads, threadsError, loadThreads, openThread, deleteThread, saveError, canSwitch,
   }), [inStudio, enabled, open, setOpen, followAlong, setFollowAlong, messages, proposals, busy,
-    send, stop, newChat, keep, discard, undo, markDecided, goTo, pageContext, setPageContext,
+    send, stop, newChat, keep, discard, undo, rebuild, markDecided, goTo, pageContext, setPageContext,
     registerFocusHandler, subscribeChanged, prefill, openWith, consumePrefill,
     threadId, threads, threadsError, loadThreads, openThread, deleteThread, saveError, canSwitch]);
 
