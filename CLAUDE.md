@@ -144,6 +144,25 @@ clear what he proposed as change … clean, clear and intuitive."* Branch
 `claude/sweet-johnson-n214b2`. Flag `ai_coworker` unchanged — still off per
 tenant until ticked.)
 
+**IN MAIN AND PRODUCTION (2026-09-26, 08:25 UTC) — owner: *"Let's put it in
+main and prod and live"*.** PR #201 REBASE-merged as `f722fc2` after all ten
+checks went green on its head. One more CI round was needed first: the
+descriptions e2e fixture set a fact's `neo4j_pg_id` to the dim's Postgres id,
+and on CI's fresh database another row already held that graph id (unique
+constraint); the test now plants and releases that collision every run
+(verified red without the release). **Build & Deploy run #639**: the gate
+waited for Tests + Lint, backend + frontend built as **`main-f722fc2`**
+(worker/ETL/`migrate-sql`/neo4j-constraints skipped — no migration), Go live
+health-checked the new backend (`/api/health` 200, all six components `ok`)
+and shifted backend + frontend to `--main-f722fc2` at 100%. Read from the job
+log. **The coworker is still invisible** until `ai_coworker` is ticked on
+`/admin/features`. **This deploy also fixes relationship saving under
+`databridge_app`** (the `setval` it removed would have refused), so the
+canvas's Keep works in production again. **WATCH**: the first
+`'coworker turn done'` lines after the flag goes on; a relationship Keep that
+still 500s would mean a grant is missing on `table_relationships_id_seq`
+(`.ops/prod-logs` `grant-missing`). Rollback: Actions → **Rollback production**.
+
 **THE GAP REVIEW THAT PRECEDED IT (same day, read-only):** the coworker could
 look at almost everything but PROPOSE only five things (SQL, new relationship,
 new glossary term, new table, new subject). Descriptions, metrics, existing
