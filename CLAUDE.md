@@ -31,7 +31,31 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-09-26 (THE BUILD PAGE IS FOLDED INTO THE CATALOG — owner,
+**Last updated:** 2026-09-26 (THE CATALOG LANDING'S HEALTH IS ONE SENTENCE —
+owner, with a screenshot of `/catalog` with nothing selected: *"This is what I
+get when I just select 'catalog'"*. The landing had become a quality dashboard:
+a "100" score ring, a primary purple "Check all 73 tables" button, and a
+73-row list of green 100% rows, measured 21 Aug (five weeks old, said
+nowhere). The one line that needed a decision (28 suggestions) sat above it in
+small type. Frontend only.)
+
+- **`QualityOverview compact` now renders `CompactHealth`** (only caller is
+  `CatalogLanding`): one sentence ("All N checked tables pass their checks" /
+  "N of M checked tables need a look"), WHEN they were checked ("Checked on 21
+  Aug 2026 — the numbers may have moved since" in warn colour past
+  `STALE_DAYS` = 14; "Checked between X and Y" when the dates differ), how many
+  were never checked, a quiet secondary *Check again* button (same sequential
+  sweep as before), the tables needing a look (<90%) and never-checked ones
+  listed by name, and the full list behind *Show all N tables*. The score ring
+  is gone from the landing — an average of 100 says nothing, least of all when
+  the checks are weeks old. The non-compact overview is unchanged (no caller
+  uses it today). Row cells shared via `TableRowCells`.
+- Validation: frontend `tsc` clean, both touched files lint-clean, `next build`
+  green (`/catalog` 67.8 kB); render-checked in headless Chromium with a mocked
+  API, healthy and with-problems workspaces, disclosure expanding, zero page
+  errors.
+
+**Prior last updated:** 2026-09-26 (THE BUILD PAGE IS FOLDED INTO THE CATALOG — owner,
 with a screenshot of /build: *"Is there any use to still having the 'build'
 pane? I think everything is done now through catalog, relations and
 definitions."* Checked in code first: four jobs still lived ONLY there, so

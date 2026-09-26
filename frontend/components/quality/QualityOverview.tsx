@@ -3,8 +3,8 @@
 /**
  * <QualityOverview> — embeddable "is my data trustworthy?" surface.
  *
- * A shell-free version of the /health overview, designed to mount inside the
- * Catalog "Trust" facet (and anywhere else that wants quality at a glance).
+ * A shell-free version of the old /health overview. `compact` (the catalog
+ * landing) renders <CompactHealth> instead: one sentence + what needs a look.
  * Self-contained: loads /quality/tables, shows an average-score hero + a
  * worst-first table grid, and drills into the existing <QualityPanel> inline.
  *
@@ -13,9 +13,10 @@
  */
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Loader2, ChevronLeft, Play } from 'lucide-react';
+import { Loader2, ChevronLeft, ChevronDown, ChevronRight, Play, RotateCw } from 'lucide-react';
 import api from '@/lib/api';
 import QualityPanel from '@/components/QualityPanel';
+import { formatDate, formatRelativeLong } from '@/lib/dates';
 
 interface TableHealth {
   id: number;
@@ -113,7 +114,7 @@ export default function QualityOverview({ compact = false }: { compact?: boolean
           className="inline-flex items-center gap-1.5 mb-4 px-2.5 py-1 text-[12px] font-medium text-muted hover:text-ink rounded hover:bg-soft transition-colors"
         >
           <ChevronLeft className="w-3.5 h-3.5" strokeWidth={2} />
-          Back to all tables
+          Back
         </button>
         <QualityPanel
           connId={selected.connId}
@@ -122,6 +123,25 @@ export default function QualityOverview({ compact = false }: { compact?: boolean
           productTableId={selected.productTableId ?? undefined}
         />
       </div>
+    );
+  }
+
+  const openTable = (t: TableHealth) => setSelected({
+    connId: t.connection_id,
+    tableName: t.table_name,
+    displayName: t.display_name || undefined,
+    productTableId: t.product_table_id ?? undefined,
+  });
+
+  if (compact) {
+    return (
+      <CompactHealth
+        tables={tables}
+        sorted={sorted}
+        profiling={profiling}
+        onProfileAll={profileAll}
+        onOpen={openTable}
+      />
     );
   }
 
@@ -185,30 +205,10 @@ export default function QualityOverview({ compact = false }: { compact?: boolean
             {sorted.map((t) => (
               <tr
                 key={t.id}
-                onClick={() => setSelected({
-                  connId: t.connection_id,
-                  tableName: t.table_name,
-                  displayName: t.display_name || undefined,
-                  productTableId: t.product_table_id ?? undefined,
-                })}
+                onClick={() => openTable(t)}
                 className="cursor-pointer border-b border-line last:border-b-0 transition-colors hover:bg-softer"
               >
-                <td className="px-5 py-3">
-                  <div className="flex items-center gap-2">
-                    <ScoreDot score={t.overall_score} />
-                    <span className="text-[13px] font-medium text-ink">{t.display_name || t.table_name}</span>
-                    {t.display_name && t.display_name !== t.table_name && (
-                      <span className="text-[11px] font-mono text-muted-2">{t.table_name}</span>
-                    )}
-                  </div>
-                </td>
-                <td className="px-5 py-3 text-center"><ScoreCell score={t.overall_score} /></td>
-                <td className="px-5 py-3 text-right text-[12px] text-ink-3 tabular-nums">
-                  {t.row_count != null ? t.row_count.toLocaleString() : '—'}
-                </td>
-                <td className="px-5 py-3 text-right text-[10px] font-mono tracking-[0.06em] uppercase text-muted-2">
-                  {t.profiled_at ? new Date(t.profiled_at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' }) : '—'}
-                </td>
+                <TableRowCells t={t} />
               </tr>
             ))}
           </tbody>
@@ -217,6 +217,176 @@ export default function QualityOverview({ compact = false }: { compact?: boolean
           <div className="text-center py-12 text-[13px] text-ink-3">
             No tables profiled yet. Connect a source and run profiling to see quality here.
           </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function TableRowCells({ t }: { t: TableHealth }) {
+  return (
+    <>
+      <td className="px-5 py-3">
+        <div className="flex items-center gap-2">
+          <ScoreDot score={t.overall_score} />
+          <span className="text-[13px] font-medium text-ink">{t.display_name || t.table_name}</span>
+          {t.display_name && t.display_name !== t.table_name && (
+            <span className="text-[11px] font-mono text-muted-2">{t.table_name}</span>
+          )}
+        </div>
+      </td>
+      <td className="px-5 py-3 text-center"><ScoreCell score={t.overall_score} /></td>
+      <td className="px-5 py-3 text-right text-[12px] text-ink-3 tabular-nums">
+        {t.row_count != null ? t.row_count.toLocaleString() : '—'}
+      </td>
+      <td className="px-5 py-3 text-right text-[10px] font-mono tracking-[0.06em] uppercase text-muted-2">
+        {t.profiled_at ? new Date(t.profiled_at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' }) : '—'}
+      </td>
+    </>
+  );
+}
+
+/** Older than this and the summary says the reading may have moved since. */
+const STALE_DAYS = 14;
+
+/**
+ * The catalog landing's health: ONE sentence, not a dashboard.
+ *
+ * The full overview (a score ring over a worst-first list of every table)
+ * read fine on its own page, but on the landing it became the page: on a
+ * healthy workspace it is seventy rows of green 100%, the one line that
+ * needed a decision sat above it in small type, and the loudest control on
+ * screen was "check all tables" — a sweep nobody needed that minute. And an
+ * average that is 100 says nothing when the checks are weeks old, which is
+ * exactly when it reads most reassuring.
+ *
+ * So: a sentence that says how many tables pass and WHEN they were checked,
+ * the tables that need a look listed by name (below 90%, or never checked),
+ * and the full list behind a disclosure for whoever wants to browse it.
+ */
+function CompactHealth({
+  tables, sorted, profiling, onProfileAll, onOpen,
+}: {
+  tables: TableHealth[];
+  sorted: TableHealth[];
+  profiling: { done: number; total: number } | null;
+  onProfileAll: () => void;
+  onOpen: (t: TableHealth) => void;
+}) {
+  const [showAll, setShowAll] = useState(false);
+
+  if (tables.length === 0) {
+    return (
+      <div className="bg-raised border border-line rounded-lg px-4 py-3 text-[13px] text-ink-3">
+        No tables have been checked yet. Once a source is synced and analysed, its tables show up here.
+      </div>
+    );
+  }
+
+  const checked = tables.filter((t) => t.overall_score !== null);
+  const neverChecked = tables.filter((t) => t.overall_score === null);
+  const needLook = sorted.filter((t) => t.overall_score !== null && t.overall_score < 0.9);
+  const dates = checked
+    .map((t) => (t.profiled_at ? new Date(t.profiled_at).getTime() : NaN))
+    .filter((n) => !isNaN(n));
+  const oldest = dates.length ? Math.min(...dates) : null;
+  const newest = dates.length ? Math.max(...dates) : null;
+  const oldestDays = oldest != null ? Math.floor((Date.now() - oldest) / 86_400_000) : null;
+  const stale = oldestDays != null && oldestDays > STALE_DAYS;
+  const sameDay = oldest != null && newest != null && formatDate(new Date(oldest)) === formatDate(new Date(newest));
+
+  const headline = checked.length === 0
+    ? 'None of your tables have been checked yet.'
+    : needLook.length === 0
+      ? `All ${checked.length} checked ${checked.length === 1 ? 'table passes' : 'tables pass'} their checks.`
+      : `${needLook.length} of ${checked.length} checked ${checked.length === 1 ? 'table needs' : 'tables need'} a look.`;
+
+  const when = oldest == null
+    ? null
+    : sameDay
+      ? `Checked ${formatRelativeLong(new Date(oldest))}`
+      : `Checked between ${formatDate(new Date(oldest))} and ${formatDate(new Date(newest!))}`;
+
+  const dot = checked.length === 0 ? 'bg-line' : needLook.some((t) => (t.overall_score ?? 1) < 0.7) ? 'bg-err' : needLook.length > 0 ? 'bg-warn' : 'bg-ok';
+
+  return (
+    <div className="bg-raised border border-line rounded-lg">
+      <div className="flex items-start gap-3 px-4 py-3">
+        <span className={`w-2 h-2 rounded-full mt-[7px] shrink-0 ${dot}`} aria-hidden />
+        <div className="flex-1 min-w-0 text-[13px] leading-relaxed">
+          <p className="text-ink">{headline}</p>
+          {(when || neverChecked.length > 0) && (
+            <p className={`text-[12.5px] ${stale ? 'text-warn' : 'text-muted'}`}>
+              {when}
+              {when && stale && ' — the numbers may have moved since'}
+              {when && '.'}
+              {neverChecked.length > 0 && (
+                <span className="text-muted">
+                  {when ? ' ' : ''}{neverChecked.length} {neverChecked.length === 1 ? 'table has' : 'tables have'} never been checked.
+                </span>
+              )}
+            </p>
+          )}
+        </div>
+        {profiling ? (
+          <span className="shrink-0 inline-flex items-center gap-1.5 text-[12px] font-medium text-ocean">
+            <Loader2 className="w-3.5 h-3.5 animate-spin" strokeWidth={2} aria-hidden />
+            Checking {profiling.done}/{profiling.total}…
+          </span>
+        ) : (
+          <button
+            type="button"
+            onClick={onProfileAll}
+            className="shrink-0 inline-flex items-center gap-1.5 rounded-md border border-line px-2.5 py-1 text-[12px] font-medium text-ink-2 hover:bg-soft transition-colors"
+          >
+            <RotateCw className="w-3.5 h-3.5" strokeWidth={2} aria-hidden />
+            {checked.length === 0 ? 'Check them' : 'Check again'}
+          </button>
+        )}
+      </div>
+
+      {(needLook.length > 0 || neverChecked.length > 0) && (
+        <table className="w-full border-t border-line">
+          <tbody>
+            {[...needLook, ...neverChecked].map((t) => (
+              <tr
+                key={t.id}
+                onClick={() => onOpen(t)}
+                className="cursor-pointer border-b border-line last:border-b-0 transition-colors hover:bg-softer"
+              >
+                <TableRowCells t={t} />
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+
+      <div className="border-t border-line">
+        <button
+          type="button"
+          onClick={() => setShowAll((v) => !v)}
+          aria-expanded={showAll}
+          className="w-full flex items-center gap-1.5 px-4 py-2 text-left text-[12px] font-medium text-muted hover:text-ink transition-colors"
+        >
+          {showAll
+            ? <ChevronDown className="w-3.5 h-3.5" strokeWidth={2} aria-hidden />
+            : <ChevronRight className="w-3.5 h-3.5" strokeWidth={2} aria-hidden />}
+          {showAll ? 'Hide the list' : `Show all ${tables.length} tables`}
+        </button>
+        {showAll && (
+          <table className="w-full border-t border-line">
+            <tbody>
+              {sorted.map((t) => (
+                <tr
+                  key={t.id}
+                  onClick={() => onOpen(t)}
+                  className="cursor-pointer border-b border-line last:border-b-0 transition-colors hover:bg-softer"
+                >
+                  <TableRowCells t={t} />
+                </tr>
+              ))}
+            </tbody>
+          </table>
         )}
       </div>
     </div>
