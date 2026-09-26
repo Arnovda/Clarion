@@ -8,8 +8,8 @@
  * icon beside its name, the technical name with a copy button for the
  * people who write SQL, the actions on the right, and a horizontal tab
  * strip underneath. What differs is the content: the icon is the source's
- * own mark or the subject's glyph, the actions are Clarion's verbs (Ask AI,
- * Change with AI), and the technical name is a curator-only affordance —
+ * own mark or the subject's glyph, the actions are Clarion's verbs (Rebuild,
+ * Sync, Relations), and the technical name is a curator-only affordance —
  * a viewer reads the display name and nothing else.
  *
  * Purely presentational: the panels decide the crumbs, tabs and actions;

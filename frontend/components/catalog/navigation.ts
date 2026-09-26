@@ -26,6 +26,3 @@ export interface CatalogConnection {
   last_sync_status?: string | null;
   profiling_status?: string | null;
 }
-
-/** The floating assistant, opened from a header action. */
-export type AssistantOpenMode = 'ask' | 'change';

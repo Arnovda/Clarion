@@ -31,7 +31,28 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-09-26 (THE COWORKER CAN NOW PROPOSE EVERY EVERYDAY
+**Last updated:** 2026-09-26 (THE CATALOG'S HEADER CHAT BUTTONS ARE GONE —
+owner, with a screenshot of a table header: *"I think these 2 are not needed
+any more. Can you delete them? We have the regular chat now."* Frontend only.)
+- **Removed from the catalog's explorer headers**: *Change with AI* and *Ask AI*
+  on a subject table (`ProductTableDetailPanel`), and *Ask about it* on a source
+  table (`TableDetailPanel`) — the same door. The docked coworker (or, with the
+  flag off, the catalog's floating assistant pill) is the one chat; a second
+  button per panel opening it was redundant.
+- **The plumbing went with them**: `onAskAssistant` (EntityDetailPanel, all four
+  panels), `AssistantOpenMode` (navigation.ts), the catalog page's
+  `openAssistant` / `openCoworker`, and the coworker's `prefill` / `openWith` /
+  `consumePrefill` (existed only for "Change with AI").
+- **Deliberately kept**: the subject page's *Ask AI* header link and its
+  "Try asking" starters (`ProductFullView`) — those go to `/query`, the
+  business-question surface, and are what a VIEWER uses (the coworker is
+  curator-only). NOTE: a viewer on a subject TABLE no longer has a one-click
+  way to Ask AI from that panel; Ask is in the rail.
+- Validation: frontend `tsc` clean, vitest 94/94, `next build` green
+  (`/catalog` 61 kB), touched files lint-clean apart from the two documented
+  pre-existing findings in `SourceRootPanel.tsx`.
+
+**Prior last updated:** 2026-09-26 (THE COWORKER CAN NOW PROPOSE EVERY EVERYDAY
 CURATOR EDIT, AND EVERY PROPOSAL READS THE SAME WAY — owner, after a gap
 review: *"Let's do all of them, I'd also really want that the co-worker
 PROPOSES but I have to confirm or cancel the proposal and that it's visually

@@ -41,7 +41,7 @@ import type {
   ProductColumn as SemanticProductColumn,
   ProductTreeItem,
 } from '@/components/semantic/types';
-import type { AssistantOpenMode, CatalogConnection, CatalogNavTarget } from '@/components/catalog/navigation';
+import type { CatalogConnection, CatalogNavTarget } from '@/components/catalog/navigation';
 
 export type EntitySelection =
   | { scope: 'source-table'; tableId: number; connectionId: number; columnId?: number | null }
@@ -63,8 +63,6 @@ interface Props {
   onClose?: () => void;
   /** A breadcrumb or a chip asks the page to select something else. */
   onNavigate?: (target: CatalogNavTarget) => void;
-  /** A header action opens the floating assistant. */
-  onAskAssistant?: (mode: AssistantOpenMode) => void;
   /** Landing when nothing is selected; defaults to a quiet hint. */
   empty?: React.ReactNode;
 }
@@ -75,7 +73,6 @@ export default function EntityDetailPanel({
   connections = [],
   onClose,
   onNavigate,
-  onAskAssistant,
   empty,
 }: Props) {
   if (selection.scope === 'empty') return <>{empty ?? <EmptyHint />}</>;
@@ -85,7 +82,6 @@ export default function EntityDetailPanel({
         key={`sr-${selection.connectionId}`}
         connectionId={selection.connectionId}
         onNavigate={onNavigate}
-        onAskAssistant={onAskAssistant}
       />
     );
   }
@@ -95,7 +91,6 @@ export default function EntityDetailPanel({
         key={`pf-${selection.productId}`}
         productId={selection.productId}
         onNavigate={onNavigate}
-        onAskAssistant={onAskAssistant}
         onChanged={onSaved}
         onDeleted={() => { onClose?.(); onSaved?.(); }}
       />
@@ -112,7 +107,6 @@ export default function EntityDetailPanel({
         onSaved={onSaved}
         onClose={onClose}
         onNavigate={onNavigate}
-        onAskAssistant={onAskAssistant}
       />
     );
   }
@@ -127,7 +121,6 @@ export default function EntityDetailPanel({
         onSaved={onSaved}
         onClose={onClose}
         onNavigate={onNavigate}
-        onAskAssistant={onAskAssistant}
       />
     );
   }
@@ -137,7 +130,7 @@ export default function EntityDetailPanel({
 // ── Loaders ────────────────────────────────────────────────────────────────
 
 function SourceTableLoader({
-  tableId, connectionId, focusColumnId, connections, onSaved, onClose, onNavigate, onAskAssistant,
+  tableId, connectionId, focusColumnId, connections, onSaved, onClose, onNavigate,
 }: {
   tableId: number;
   connectionId: number;
@@ -146,7 +139,6 @@ function SourceTableLoader({
   onSaved?: () => void;
   onClose?: () => void;
   onNavigate?: (target: CatalogNavTarget) => void;
-  onAskAssistant?: (mode: AssistantOpenMode) => void;
 }) {
   const [table, setTable] = useState<SourceTable | null>(null);
   const [cols, setCols] = useState<SourceColumn[]>([]);
@@ -189,13 +181,12 @@ function SourceTableLoader({
       onSaved={() => { load(); onSaved?.(); }}
       onClose={onClose}
       onNavigate={onNavigate}
-      onAskAssistant={onAskAssistant}
     />
   );
 }
 
 function ProductTableLoader({
-  tableId, focusColumnId, initialTab, connections, onSaved, onClose, onNavigate, onAskAssistant,
+  tableId, focusColumnId, initialTab, connections, onSaved, onClose, onNavigate,
 }: {
   /** Graph id (the tree) OR Postgres product_tables id (deep links) —
    *  resolved against the tree below. */
@@ -206,7 +197,6 @@ function ProductTableLoader({
   onSaved?: () => void;
   onClose?: () => void;
   onNavigate?: (target: CatalogNavTarget) => void;
-  onAskAssistant?: (mode: AssistantOpenMode) => void;
 }) {
   const [tree, setTree] = useState<ProductTreeItem[]>([]);
   const [cols, setCols] = useState<SemanticProductColumn[]>([]);
@@ -253,7 +243,6 @@ function ProductTableLoader({
       onSaved={() => { load(); onSaved?.(); }}
       onClose={onClose}
       onNavigate={onNavigate}
-      onAskAssistant={onAskAssistant}
     />
   );
 }
