@@ -39,6 +39,8 @@ import {
   ChevronDown, ChevronUp, MinusSquare, SquareDashed,
 } from 'lucide-react';
 import api from '@/lib/api';
+import { useCoworker, useCoworkerPageContext } from '@/lib/coworker/CoworkerProvider';
+import type { CoworkerPageContext } from '@/lib/contract';
 import { useToast } from '@/components/ui/Toast';
 import { OBSERVATORY } from '@/lib/observatory';
 import RequireRole from '@/components/RequireRole';
@@ -320,6 +322,13 @@ function PipelinesInner() {
     () => pipelines.find((p) => (p.kind === 'builtin' ? p.id : p.stableId) === selectedId) ?? null,
     [pipelines, selectedId],
   );
+
+  // The Studio coworker knows which refresh pipeline is open.
+  const cw = useCoworker();
+  const coworkerContext = useMemo<CoworkerPageContext | null>(
+    () => (cw?.enabled ? { path: '/pipelines', label: selected ? `Refresh pipeline "${selected.name}"` : 'Refresh' } : null),
+    [cw?.enabled, selected]);
+  useCoworkerPageContext(coworkerContext);
 
   // Resolve selected pipeline's scope to highlight nodes on the canvas.
   // For builtins we don't have the resolved set client-side, so we approximate

@@ -53,6 +53,12 @@ function focusOf(p: CoworkerProposal): CoworkerFocus | null {
   if (p.kind === 'sql') return { kind: 'table', tableId: p.tableId, tab: 'sql' };
   if (p.kind === 'table') return { kind: 'subject', productId: p.productId };
   if (p.kind === 'relationship') return { kind: 'relations', tableId: p.fromTableId };
+  if (p.kind === 'relationship-review') return { kind: 'relations', tableId: p.fromTableId, relationshipId: p.relationshipId };
+  if (p.kind === 'rebuild') return { kind: 'table', tableId: p.tableId, tab: 'sql' };
+  if (p.kind === 'metric') return { kind: 'subject', productId: p.productId };
+  if (p.kind === 'glossary' || p.kind === 'glossary-edit') return { kind: 'definitions' };
+  if (p.kind === 'grid-rows') return { kind: 'grid', gridId: p.gridId };
+  if (p.kind === 'first-build') return { kind: 'source', connectionId: p.connectionId };
   return null;
 }
 
@@ -353,6 +359,7 @@ function AssistantTurn({ m, now }: { m: CwMessage; now: number }) {
             onKeep={() => { void cw.keep(id); }}
             onDiscard={() => cw.discard(id)}
             onUndo={() => { void cw.undo(id); }}
+            onRebuild={() => { void cw.rebuild(id); }}
             onOpen={f ? () => cw.goTo(f) : undefined}
           />
         );

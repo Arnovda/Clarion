@@ -119,7 +119,7 @@ router.get('/:id/kpis', requireAuth, async (req: Request, res: Response, next: N
     const db = reqDb(req);
     const tenantId = req.user?.tenantId;
     const kpis = await withRequestDb(req, (trx) =>
-      trx('product_kpis').where({ data_product_id: req.params.id }).orderBy('name'),
+      trx('product_kpis').where({ data_product_id: req.params.id, tenant_id: tenantId }).orderBy('name'),
     );
     res.json({ ok: true, data: kpis });
   } catch (err) { next(err); }
@@ -164,6 +164,12 @@ router.post('/:id/kpis', requireAuth, requireRole('admin', 'analyst'), validate(
     };
 
     const tenantId = req.user?.tenantId;
+    // The subject must be this tenant's: an explicit filter, never the
+    // session variable alone (the Studio coworker's Keep lands here too).
+    const owned = await withRequestDb(req, (trx) =>
+      trx('data_products').where({ id: Number(req.params.id), tenant_id: tenantId }).first('id'),
+    );
+    if (!owned) { res.status(404).json({ ok: false, error: 'Subject not found' }); return; }
     const id = await withRequestDb(req, async (trx) => {
       const [row] = await trx('product_kpis')
         .insert({
@@ -198,7 +204,7 @@ router.put('/kpis/:kpiId', requireAuth, requireRole('admin', 'analyst'), validat
 
     const tenantId = req.user?.tenantId;
     await withRequestDb(req, (trx) =>
-      trx('product_kpis').where({ id: req.params.kpiId }).update(updates),
+      trx('product_kpis').where({ id: req.params.kpiId, tenant_id: tenantId }).update(updates),
     );
     res.json({ ok: true });
   } catch (err) { next(err); }
@@ -213,7 +219,7 @@ router.delete('/kpis/:kpiId', requireAuth, requireRole('admin', 'analyst'), asyn
     const db = reqDb(req);
     const tenantId = req.user?.tenantId;
     await withRequestDb(req, (trx) =>
-      trx('product_kpis').where({ id: req.params.kpiId }).delete(),
+      trx('product_kpis').where({ id: req.params.kpiId, tenant_id: tenantId }).delete(),
     );
     res.json({ ok: true });
   } catch (err) { next(err); }

@@ -13,12 +13,14 @@
  * "columns" and "rows"; the words parquet/warehouse/view never render.
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import {
   ArrowLeftRight, ArrowRight, FileUp, ListChecks, Loader2, Plus, Table2, Target, X,
 } from 'lucide-react';
 import api from '@/lib/api';
+import { useCoworker, useCoworkerChanged, useCoworkerPageContext } from '@/lib/coworker/CoworkerProvider';
+import type { CoworkerPageContext } from '@/lib/contract';
 import { useToast } from '@/components/ui/Toast';
 import RequireRole from '@/components/RequireRole';
 import { formatRelative } from '@/lib/dates';
@@ -100,6 +102,14 @@ function Grids() {
   }, []);
 
   useEffect(() => { void load(); }, [load]);
+
+  // The Studio coworker knows this page is open; a table it proposed and the
+  // person kept appears in the list without a reload.
+  const cw = useCoworker();
+  const coworkerContext = useMemo<CoworkerPageContext | null>(
+    () => (cw?.enabled ? { path: '/grids', label: 'Your tables' } : null), [cw?.enabled]);
+  useCoworkerPageContext(coworkerContext);
+  useCoworkerChanged(load);
 
   function openCreate(tpl: GridTemplate) {
     setCreating(tpl);

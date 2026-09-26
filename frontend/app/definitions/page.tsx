@@ -14,7 +14,7 @@
  * revision; the glossary used to be a facet of the catalog).
  */
 
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { ArrowUpRight, Loader2, Sparkles } from 'lucide-react';
 import RequireRole from '@/components/RequireRole';
@@ -23,6 +23,8 @@ import { canCurate, useRole } from '@/lib/role';
 import { formatRelative } from '@/lib/dates';
 import api from '@/lib/api';
 import { cn } from '@/lib/cn';
+import { useCoworker, useCoworkerChanged, useCoworkerPageContext } from '@/lib/coworker/CoworkerProvider';
+import type { CoworkerPageContext } from '@/lib/contract';
 
 interface Metric {
   id: number;
@@ -62,6 +64,15 @@ function DefinitionsInner() {
   const curator = canCurate(role);
   const [data, setData] = useState<Definitions | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // The Studio coworker: it knows this page is open, and a term or metric it
+  // proposed and the person kept shows here without a reload.
+  const cw = useCoworker();
+  const coworkerContext = useMemo<CoworkerPageContext | null>(
+    () => (cw?.enabled ? { path: '/definitions', label: 'Definitions' } : null), [cw?.enabled]);
+  useCoworkerPageContext(coworkerContext);
+  const [reloadKey, setReloadKey] = useState(0);
+  const onCoworkerChanged = useCallback(() => setReloadKey((k) => k + 1), []);
+  useCoworkerChanged(onCoworkerChanged);
 
   useEffect(() => {
     let cancelled = false;
@@ -69,7 +80,7 @@ function DefinitionsInner() {
       .then((r) => { if (!cancelled) setData({ metrics: r.data?.data?.metrics ?? [], verifiedAnswers: r.data?.data?.verifiedAnswers ?? [] }); })
       .catch(() => { if (!cancelled) setError('The metrics and verified answers could not be loaded.'); });
     return () => { cancelled = true; };
-  }, []);
+  }, [reloadKey]);
 
   const groups = groupMetrics(data?.metrics ?? []);
 
@@ -100,7 +111,7 @@ function DefinitionsInner() {
 
         <section id="terms" className="mb-10 scroll-mt-6">
           <SectionHeading label="Terms" hint="Your team's words, and where each one lives in the data." />
-          <GlossaryPanel canEdit={curator} hideHeading />
+          <GlossaryPanel key={reloadKey} canEdit={curator} hideHeading />
         </section>
 
         <section id="metrics" className="mb-10 scroll-mt-6">

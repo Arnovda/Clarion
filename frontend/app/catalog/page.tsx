@@ -526,10 +526,10 @@ function CatalogInner() {
     return base;
   }, [coworkerOn, scope, selection, resolvedTable]);
   useCoworkerPageContext(coworkerContext);
-  // The canvas is not the catalog's to show: returning false hands it back
-  // to the provider, which opens /relationships.
+  // The canvas, "Your tables" and Definitions are not the catalog's to show:
+  // returning false hands them back to the provider, which opens their page.
   const followCoworker = useCallback((f: CoworkerFocus) => {
-    if (f.kind === 'relations') return false;
+    if (f.kind === 'relations' || f.kind === 'grid' || f.kind === 'definitions') return false;
     void navigateTo(f);
     return true;
   }, [navigateTo]);

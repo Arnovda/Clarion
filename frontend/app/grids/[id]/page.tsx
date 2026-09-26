@@ -31,6 +31,8 @@ import {
   ArrowLeft, Check, ChevronDown, FileUp, Link2, Loader2, Plus, Trash2, TriangleAlert, X,
 } from 'lucide-react';
 import api from '@/lib/api';
+import { useCoworker, useCoworkerChanged, useCoworkerPageContext } from '@/lib/coworker/CoworkerProvider';
+import type { CoworkerPageContext } from '@/lib/contract';
 import { useToast } from '@/components/ui/Toast';
 import RequireRole from '@/components/RequireRole';
 import { formatRelative } from '@/lib/dates';
@@ -154,6 +156,20 @@ function GridEditor() {
     } catch { setCoverage(null); }
   }, []);
 
+  // The Studio coworker: it knows which table is open, and rows it proposed
+  // and the person kept appear here — unless the person has unsaved edits of
+  // their own, which a reload must never throw away.
+  const cw = useCoworker();
+  const coworkerContext = useMemo<CoworkerPageContext | null>(
+    () => (cw?.enabled && grid ? { path: `/grids/${gridId}`, label: grid.name, gridId } : null),
+    [cw?.enabled, grid, gridId]);
+  useCoworkerPageContext(coworkerContext);
+  const [reloadKey, setReloadKey] = useState(0);
+  const dirtyRef = useRef(false);
+  dirtyRef.current = dirty;
+  const onCoworkerChanged = useCallback(() => { if (!dirtyRef.current) setReloadKey((k) => k + 1); }, []);
+  useCoworkerChanged(onCoworkerChanged);
+
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -169,7 +185,7 @@ function GridEditor() {
       }
     })();
     return () => { cancelled = true; };
-  }, [gridId, applyServer, refreshLinkData]);
+  }, [gridId, applyServer, refreshLinkData, reloadKey]);
 
   // Warn before navigating away with unsaved edits.
   useEffect(() => {

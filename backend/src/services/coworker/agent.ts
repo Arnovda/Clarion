@@ -84,13 +84,13 @@ export async function runCoworkerTurn(opts: {
   emit: (event: CoworkerEvent) => void;
 }): Promise<void> {
   const started = Date.now();
-  const ctx: ToolContext = { caller: opts.caller, tenantId: opts.tenantId, db: opts.db };
   const messages: ToolLoopMessage[] = [
     ...compactHistory(opts.history),
     { role: 'user', content: `${describeWhereTheUserIs(opts.context)}\n\n${opts.message}` },
   ];
   // Row data only reaches Claude for a tenant that routes everything there.
   const rowsAllowed = (await getTenantAiMode(opts.tenantId)) === 'claude';
+  const ctx: ToolContext = { caller: opts.caller, tenantId: opts.tenantId, db: opts.db, rowsAllowed };
   const available = COWORKER_TOOLS.filter((t) => rowsAllowed || !t.sendsRows);
   const tools = available.map((t) => t.definition);
 
