@@ -37,6 +37,19 @@ clarion, right now I don't see it"*. A conversation lived only in the browser
 tab: a reload, "New conversation" or another device and it was gone. Branch
 `claude/happy-goldberg-iqszxs`.)
 
+**IN MAIN AND PRODUCTION (2026-09-26, 07:13 UTC) — owner: *"Pls put in main,
+production and live"*.** The GitHub connector answered "invalid session" to
+every call, so no PR was opened: the branch was a fast-forward of main and
+was pushed straight to main as `35d6d51`. **Build & Deploy run
+36225385046**: the gate waited for Tests + Lint (both green on the commit),
+backend + frontend built (worker/ETL/neo4j-constraints skipped), **`migrate-sql`
+succeeded — migration 103 is applied**, deploy succeeded, and **Go live
+succeeded at 07:13 UTC** (it health-checks the new backend before shifting
+traffic). Read from the job list via the public Actions API; the job logs
+themselves need auth and were not read. The panel is visible only where the
+`ai_coworker` flag is on. Rollback: Actions → **Rollback production** (the
+migration's down drops the table — history would be lost).
+
 - **Migration 103 `coworker_threads`** (canonical RLS dance): one row per
   thread — client-generated UUID id, `user_id`, `title` (first question),
   `context_label`, `message_count`, `messages` + `proposals` as the panel's own
