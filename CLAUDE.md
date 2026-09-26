@@ -31,7 +31,29 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-09-26 (THE CATALOG LANDING'S HEALTH IS ONE SENTENCE —
+**Last updated:** 2026-09-26 (CAPABILITY EXPANSION RESEARCH — doc only, no code.
+Owner: *"check the capabilities of clarion thoroughly … what other requirements
+or capabilities do we need … maybe add documents as context or emails?"* NEW
+DOC `docs/backlog/capability-expansion.md`, successor to
+`functionality-gap-analysis.md`. Code-verified inventory + two market scans.
+Verdict: **company knowledge as curated text — yes** (a `company_notes` layer
++ dated "known events" the brief and Investigate read; every leader has this,
+Clarion lacks it — the glossary is the only free-text store); **documents as
+data — later, narrowly** (contracts → a confirmed grid); **chat over PDFs —
+no** (mixed doc+SQL benchmarks ~30–40%); **mailbox ingestion / invoice OCR —
+no** (GDPR/CAO 81, prompt injection, Peppol mandatory since 2026-01-01);
+**email as a CHANNEL — yes, first** (`morning_briefs.emailed_at` is STILL
+written nowhere). Also ranked: thresholds with seasonality, targets on KPIs
+from grids, 13-week cash + AR exceptions, read-only MCP server over the
+semantic layer (the answer to "documents + email": the customer's own
+Copilot/Claude brings those, Clarion stays the numbers), accountant portfolio
+tier (Silverfin + Pennylane named as competition), NBB CBSO benchmarks +
+counterparty health, Entra SSO, NL/FR, AI Act Art. 50 line on emailed content.
+Honest note recorded: the 2026-08-21 "Clarion comes to you" release is still
+unbuilt five weeks later. One owner decision queued: is the accountant channel
+the go-to-market (changes release order).)
+
+**Prior last updated:** 2026-09-26 (THE CATALOG LANDING'S HEALTH IS ONE SENTENCE —
 owner, with a screenshot of `/catalog` with nothing selected: *"This is what I
 get when I just select 'catalog'"*. The landing had become a quality dashboard:
 a "100" score ring, a primary purple "Check all 73 tables" button, and a
