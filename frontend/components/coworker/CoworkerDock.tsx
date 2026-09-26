@@ -16,19 +16,24 @@
  *
  * Collapsed, it is a pill that keeps reporting what it is doing, so closing
  * the panel never means losing sight of the work.
+ *
+ * History: every conversation is kept (per person, server-side). The clock
+ * button lists them; the empty panel shows the most recent few.
  */
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
-  AlertTriangle, ArrowUp, ChevronDown, ChevronRight, Eye, EyeOff, PanelRightClose, RotateCcw, Square,
+  AlertTriangle, ArrowLeft, ArrowUp, ChevronDown, ChevronRight, Eye, EyeOff, History, Loader2, MessageSquare,
+  PanelRightClose, Square, SquarePen, Trash2,
 } from 'lucide-react';
+import { formatRelative } from '@/lib/dates';
 import { ClarionMark } from '@/components/brand/ClarionMark';
 import {
   AssistantIdentity, LiveThought, WorkStep, assistantMarkState, fmtElapsed, useDoneMoment, useNow,
 } from '@/components/brand/AssistantKit';
 import { MarkdownAnswer } from '@/app/dashboards/components/MarkdownAnswer';
 import ProposalCard from './ProposalCard';
-import { useCoworker, type CwMessage, type CwStep } from '@/lib/coworker/CoworkerProvider';
+import { useCoworker, type CwMessage, type CwStep, type CwThreadSummary } from '@/lib/coworker/CoworkerProvider';
 import type { CoworkerFocus, CoworkerProposal } from '@/lib/contract';
 
 export const COWORKER_WIDTH = 420;
@@ -54,6 +59,7 @@ function focusOf(p: CoworkerProposal): CoworkerFocus | null {
 export default function CoworkerDock() {
   const cw = useCoworker();
   const [input, setInput] = useState('');
+  const [showHistory, setShowHistory] = useState(false);
   const endRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
@@ -87,6 +93,14 @@ export default function CoworkerDock() {
 
   useEffect(() => { if (cw?.open) setTimeout(() => inputRef.current?.focus(), 60); }, [cw?.open]);
 
+  // The history list is fetched when the panel first opens, and again every
+  // time the full list is shown (another tab or device may have added one).
+  const threadsLoaded = cw?.threads != null;
+  const loadThreads = cw?.loadThreads;
+  const panelOpen = cw?.open && cw?.enabled === true;
+  useEffect(() => { if (panelOpen && !threadsLoaded) loadThreads?.(); }, [panelOpen, threadsLoaded, loadThreads]);
+  useEffect(() => { if (showHistory) loadThreads?.(); }, [showHistory, loadThreads]);
+
   const suggestions = useMemo(() => {
     const ctx = cw?.pageContext;
     if (ctx?.tableId) return ['What does this table hold, and where does it come from?', 'Which dashboards use this table?', 'Add the customer’s country to this table'];
@@ -102,7 +116,9 @@ export default function CoworkerDock() {
     if (!t || busy) return;
     cw.send(t);
     setInput('');
+    setShowHistory(false);
   };
+  const newConversation = () => { cw.newChat(); setShowHistory(false); setTimeout(() => inputRef.current?.focus(), 30); };
 
   if (!cw.open) {
     return (
@@ -153,13 +169,23 @@ export default function CoworkerDock() {
         </button>
         <button
           type="button"
-          onClick={cw.newChat}
-          disabled={messages.length === 0}
+          onClick={() => setShowHistory((v) => !v)}
+          className={`p-1.5 rounded-md transition-colors ${showHistory ? 'text-ocean bg-ocean-softer' : 'text-muted-2 hover:text-ink-2 hover:bg-soft'}`}
+          title="Your conversations"
+          aria-pressed={showHistory}
+          aria-label="Your conversations"
+        >
+          <History className="w-4 h-4" strokeWidth={1.75} />
+        </button>
+        <button
+          type="button"
+          onClick={newConversation}
+          disabled={(messages.length === 0 && !showHistory) || !cw.canSwitch}
           className="p-1.5 rounded-md text-muted-2 hover:text-ink-2 hover:bg-soft disabled:opacity-30 transition-colors"
-          title="New conversation"
+          title={cw.canSwitch ? 'New conversation (this one stays in your history)' : 'Wait for the current work to finish'}
           aria-label="New conversation"
         >
-          <RotateCcw className="w-4 h-4" strokeWidth={1.75} />
+          <SquarePen className="w-4 h-4" strokeWidth={1.75} />
         </button>
         <button
           type="button"
@@ -181,7 +207,9 @@ export default function CoworkerDock() {
       )}
 
       <div className="flex-1 min-h-0 overflow-y-auto px-4 py-4 space-y-4">
-        {messages.length === 0 ? (
+        {showHistory ? (
+          <ThreadList onClose={() => setShowHistory(false)} onNew={newConversation} />
+        ) : messages.length === 0 ? (
           <div className="pt-8 flex flex-col items-center text-center">
             <ClarionMark size={56} state="idle" />
             <h2 className="mt-4 font-display text-[22px] text-ink">What shall we work on?</h2>
@@ -200,6 +228,7 @@ export default function CoworkerDock() {
                 </button>
               ))}
             </div>
+            <RecentThreads onShowAll={() => setShowHistory(true)} />
           </div>
         ) : (
           messages.map((m) => (m.role === 'user'
@@ -241,7 +270,9 @@ export default function CoworkerDock() {
             </button>
           )}
         </div>
-        <p className="mt-1.5 px-1 text-[10.5px] text-muted-2">Proposes only — you keep or discard every change.</p>
+        {cw.saveError
+          ? <p className="mt-1.5 px-1 text-[10.5px] text-warn truncate" title={cw.saveError}>Not saved to your history: {cw.saveError}</p>
+          : <p className="mt-1.5 px-1 text-[10.5px] text-muted-2">Proposes only — you keep or discard every change.</p>}
       </div>
     </motion.aside>
   );
@@ -350,5 +381,122 @@ function StepRow({ step }: { step: CwStep }) {
       checking={step.tool === 'propose'}
       detail={step.detail ? <span className="truncate block" title={step.detail}>{step.detail}</span> : undefined}
     />
+  );
+}
+
+/** The few most recent conversations, under the empty panel's suggestions. */
+function RecentThreads({ onShowAll }: { onShowAll: () => void }) {
+  const cw = useCoworker()!;
+  const recent = (cw.threads ?? []).slice(0, 4);
+  if (recent.length === 0) return null;
+  return (
+    <div className="mt-8 w-full text-left">
+      <div className="flex items-center justify-between px-1 mb-1.5">
+        <span className="text-[10.5px] font-mono tracking-[0.12em] uppercase text-muted-2">Recent</span>
+        {(cw.threads?.length ?? 0) > recent.length && (
+          <button type="button" onClick={onShowAll} className="text-[11.5px] text-ocean hover:underline">All conversations</button>
+        )}
+      </div>
+      <div className="space-y-1">
+        {recent.map((t) => <ThreadRow key={t.id} t={t} compact />)}
+      </div>
+    </div>
+  );
+}
+
+/** Every conversation this person had with the coworker, newest first. */
+function ThreadList({ onClose, onNew }: { onClose: () => void; onNew: () => void }) {
+  const cw = useCoworker()!;
+  const threads = cw.threads;
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center gap-2">
+        <button type="button" onClick={onClose} className="p-1 -ml-1 rounded text-muted-2 hover:text-ink-2" aria-label="Back to the conversation">
+          <ArrowLeft className="w-4 h-4" strokeWidth={1.75} />
+        </button>
+        <h2 className="font-display text-[18px] text-ink flex-1">Your conversations</h2>
+        <button
+          type="button"
+          onClick={onNew}
+          disabled={!cw.canSwitch}
+          className="px-2.5 py-1 rounded-md border border-line text-[12px] text-ink-2 hover:border-ocean-soft hover:bg-ocean-softer disabled:opacity-40 inline-flex items-center gap-1.5 transition-colors"
+        >
+          <SquarePen className="w-3.5 h-3.5" strokeWidth={1.75} /> New
+        </button>
+      </div>
+      <p className="text-[11.5px] text-muted-2 leading-relaxed">
+        Kept for you only. A proposal can be kept or undone only in the conversation where it was made, while it is open — reopened later, it shows what you decided.
+      </p>
+      {cw.threadsError && <p className="text-[12px] text-warn">{cw.threadsError}</p>}
+      {threads == null && !cw.threadsError && (
+        <p className="text-[12px] text-muted inline-flex items-center gap-1.5"><Loader2 className="w-3.5 h-3.5 animate-spin" /> Loading…</p>
+      )}
+      {threads != null && threads.length === 0 && (
+        <p className="text-[12.5px] text-muted">Nothing yet — what you ask Clarion will appear here.</p>
+      )}
+      {threads != null && threads.length > 0 && (
+        <div className="space-y-1">
+          {threads.map((t) => <ThreadRow key={t.id} t={t} onOpened={onClose} />)}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ThreadRow({ t, compact, onOpened }: { t: CwThreadSummary; compact?: boolean; onOpened?: () => void }) {
+  const cw = useCoworker()!;
+  const [opening, setOpening] = useState(false);
+  const [failed, setFailed] = useState(false);
+  const current = cw.threadId === t.id;
+  const questions = Math.ceil(t.messageCount / 2);
+
+  const open = async () => {
+    if (current) { onOpened?.(); return; }
+    if (!cw.canSwitch) return;
+    setOpening(true); setFailed(false);
+    try { await cw.openThread(t.id); onOpened?.(); } catch { setFailed(true); } finally { setOpening(false); }
+  };
+  const remove = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!window.confirm(`Delete “${t.title}” from your history?`)) return;
+    try { await cw.deleteThread(t.id); } catch { setFailed(true); }
+  };
+
+  return (
+    <div
+      role="button"
+      tabIndex={0}
+      onClick={() => { void open(); }}
+      onKeyDown={(e) => { if (e.key === 'Enter') void open(); }}
+      title={cw.canSwitch || current ? t.title : 'Wait for the current work to finish'}
+      className={`group flex items-start gap-2.5 px-3 py-2 rounded-lg border transition-colors cursor-pointer ${
+        current ? 'border-ocean-soft bg-ocean-softer' : 'border-line bg-raised hover:border-ocean-soft hover:bg-ocean-softer'
+      } ${!cw.canSwitch && !current ? 'opacity-60 cursor-not-allowed' : ''}`}
+    >
+      {opening
+        ? <Loader2 className="w-3.5 h-3.5 mt-0.5 shrink-0 animate-spin text-muted-2" />
+        : <MessageSquare className="w-3.5 h-3.5 mt-0.5 shrink-0 text-muted-2" strokeWidth={1.75} />}
+      <div className="flex-1 min-w-0">
+        <div className={`text-[12.5px] text-ink-2 ${compact ? 'truncate' : 'line-clamp-2'}`}>{t.title}</div>
+        <div className="mt-0.5 text-[10.5px] text-muted-2 truncate">
+          {formatRelative(t.updatedAt)}
+          {!compact && questions > 0 ? ` · ${questions} question${questions === 1 ? '' : 's'}` : ''}
+          {!compact && t.contextLabel ? ` · about ${t.contextLabel}` : ''}
+          {current ? ' · open now' : ''}
+          {failed ? ' · could not open' : ''}
+        </div>
+      </div>
+      {!compact && (
+        <button
+          type="button"
+          onClick={(e) => { void remove(e); }}
+          className="p-1 rounded text-muted-2 opacity-0 group-hover:opacity-100 focus:opacity-100 hover:text-err transition-opacity"
+          aria-label={`Delete “${t.title}”`}
+          title="Delete from your history"
+        >
+          <Trash2 className="w-3.5 h-3.5" strokeWidth={1.75} />
+        </button>
+      )}
+    </div>
   );
 }

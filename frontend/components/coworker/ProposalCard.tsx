@@ -42,7 +42,7 @@ interface Props {
 
 export default function ProposalCard({ state, onKeep, onDiscard, onUndo, onOpen }: Props) {
   const p = state.proposal;
-  const decided = state.status === 'kept' || state.status === 'discarded' || state.status === 'undone';
+  const decided = state.status === 'kept' || state.status === 'discarded' || state.status === 'undone' || state.status === 'expired';
   const keepBlocked = p.kind === 'sql' && !p.compiled;
   const weak = p.kind === 'relationship' && p.measurement.verdict !== 'strong';
 
@@ -111,7 +111,11 @@ export default function ProposalCard({ state, onKeep, onDiscard, onUndo, onOpen 
             )}
           </>
         ) : (
-          <span className="text-[12px] text-muted">{state.status === 'undone' ? 'Undone — back as it was' : 'Discarded — nothing changed'}</span>
+          <span className="text-[12px] text-muted">
+            {state.status === 'undone' ? 'Undone — back as it was'
+              : state.status === 'expired' ? 'Not decided — no longer open. Ask again for a fresh proposal.'
+                : 'Discarded — nothing changed'}
+          </span>
         )}
       </div>
     </div>

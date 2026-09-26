@@ -68,6 +68,7 @@ import managedGridsRouter    from './routes/managedGrids';
 import savedQuestionsRouter  from './routes/savedQuestions';
 import definitionsRouter     from './routes/definitions';
 import coworkerRouter        from './routes/coworker';
+import coworkerThreadsRouter from './routes/coworkerThreads';
 import apiTokensRouter from './routes/apiTokens';
 import addinRouter from './routes/addin';
 import aiUsageRouter         from './routes/aiUsage';
@@ -311,6 +312,8 @@ app.use('/api/grids',           computeLimiter, managedGridsRouter);
 app.use('/api/saved-questions', savedQuestionsRouter);
 app.use('/api/definitions',     definitionsRouter);
 // The Studio coworker. aiLimiter: every turn is one or more model calls.
+// Its history (no model calls) is mounted FIRST so it never spends aiLimiter.
+app.use('/api/coworker/threads', coworkerThreadsRouter);
 app.use('/api/coworker',        aiLimiter, coworkerRouter);
 app.use('/api/admin/ai-usage',  aiUsageRouter);
 app.use('/api/admin/ai-routing', aiRoutingRouter);

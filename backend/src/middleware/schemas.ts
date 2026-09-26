@@ -1255,3 +1255,20 @@ export const coworkerTurnSchema = z.object({
     }).optional(),
   }),
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// /api/coworker/threads — the coworker's saved conversations (per user).
+// The id is a client-generated UUID; the body is the panel's own snapshot,
+// bounded here in COUNT and in the route in total SIZE.
+// ─────────────────────────────────────────────────────────────────────────────
+const coworkerThreadParams = z.object({ id: z.string().uuid() });
+export const saveCoworkerThreadSchema = z.object({
+  params: coworkerThreadParams,
+  body: z.object({
+    title: z.string().trim().min(1).max(200),
+    contextLabel: z.string().max(200).nullable().optional(),
+    messages: z.array(z.record(z.string(), z.unknown())).max(60),
+    proposals: z.record(z.string(), z.record(z.string(), z.unknown())),
+  }),
+});
+export const coworkerThreadIdSchema = z.object({ params: coworkerThreadParams });

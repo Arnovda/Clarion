@@ -31,7 +31,50 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-09-24 (THE COWORKER COULD NOT OPEN WHAT IT HAD JUST
+**Last updated:** 2026-09-26 (THE COWORKER KEEPS A HISTORY — owner, with a
+screenshot of the empty panel: *"I want to keep a history of what I asked to
+clarion, right now I don't see it"*. A conversation lived only in the browser
+tab: a reload, "New conversation" or another device and it was gone. Branch
+`claude/happy-goldberg-iqszxs`.)
+
+- **Migration 103 `coworker_threads`** (canonical RLS dance): one row per
+  thread — client-generated UUID id, `user_id`, `title` (first question),
+  `context_label`, `message_count`, `messages` + `proposals` as the panel's own
+  JSON snapshot (nothing server-side reads inside it). The UUID comes from the
+  client so the first message never waits on a round trip.
+- **NEW `routes/coworkerThreads.ts`** at `/api/coworker/threads` (GET list /
+  GET one / PUT upsert / DELETE; admin+analyst; Zod on PUT/DELETE), mounted
+  BEFORE `/api/coworker` so history never spends `aiLimiter`. **Per user**:
+  every query filters tenant_id + user_id explicitly, and the upsert's
+  `ON CONFLICT DO UPDATE … WHERE` is owner-filtered, so a guessed colleague id
+  updates nothing and answers 404 (verified RED with the WHERE removed). Body
+  capped at 1.5 MB (413); at most 200 threads per person, oldest pruned on
+  save. Deliberately NOT behind the `ai_coworker` flag — off hides the panel,
+  your record stays yours.
+- **Provider**: the question is saved the moment it is sent (a reload mid-turn
+  keeps it), the thread again once the turn settles and on every decision;
+  the open thread's id is remembered in localStorage and reopened next visit.
+  Merely viewing a thread does not re-save it (no reordering).
+  **THE RULE FOR REOPENED THREADS: a proposal can only be kept or undone in the
+  session it was made.** Read back from the server, an undecided proposal is
+  `expired` ("no longer open — ask again") and a kept one loses Undo — the
+  table may have moved on, and keeping stale SQL (or restoring a stale
+  "before") would silently overwrite what happened since. Threads touched in
+  the same session stay fully live (per-session cache). Switching waits for a
+  running turn / Keep / Undo.
+- **Dock**: a clock button opens "Your conversations" (title, age, questions,
+  "about …", delete on hover); the empty panel shows the four most recent
+  under the suggestions; the reset icon became "New conversation" (the old
+  thread stays in history); a failed save says so under the composer.
+- Validation: NEW `coworker-threads.test.ts` 8 + `coworker.test.ts` green;
+  backend `npm run check` clean; all twelve ratchets green from the repo root
+  (validate-coverage 136, unchanged); frontend `tsc` clean, touched files
+  lint-clean, `next build` green. **Render-checked in headless Chromium** with
+  a mocked API: recent list, full list, a reopened thread with its expired
+  proposal (zero saves from viewing), send → saved with the question as
+  title, reload → the same thread back; zero page errors.
+
+**Prior last updated:** 2026-09-24 (THE COWORKER COULD NOT OPEN WHAT IT HAD JUST
 DESCRIBED — owner screenshot: asked "is receivables covered?" it answered
 correctly from describe_workspace, then on "Yes, open it" replied *"I'm having
 trouble opening it directly"*; *"investigate thoroughly and see if the AI can do
@@ -13121,6 +13164,7 @@ clarion/                              ← on disk: databridge/
 │       │   ├── quality.ts            ← quality profiling; alerts; trends
 │       │   ├── ingestion.ts          ← trigger ETL ingestion to Delta Lake warehouse
 │       │   ├── coworker.ts          ← the Studio coworker: GET /status, POST /turn (SSE), behind flag ai_coworker
+│       │   ├── coworkerThreads.ts   ← the coworker's history: list / get / save / delete, per user
 │       │   ├── products/            ← CRUD data products, split 11 ways (see products/index.ts)
 │       │   │   ├── topic.ts         ← GET /:id/topic — the topic page's single read model
 │       │   │   ├── buildOverview.ts ← GET /build-overview — the Build page's single read model
@@ -13389,7 +13433,7 @@ clarion/                              ← on disk: databridge/
             └── useDebounce.ts       ← custom debounce hook
 ```
 
-### Database Migrations (103 files on disk)
+### Database Migrations (104 files on disk)
 
 ```
 20260328000001  create_connections
@@ -13437,6 +13481,7 @@ clarion/                              ← on disk: databridge/
 20260920000100  glossary_links                    (business_glossary.links jsonb — a term's address in the topic layer)
 20260922000101  product_table_declaration         (product_tables.declared_by / declared_at — who last declared the SQL and when; "changed since the last build" = declared_at > last_run_at)
 20260924000102  link_shared_tables                (data only: backfills product_tables.source_product_table_id — every copy of a shared lookup points at its original)
+20260926000103  create_coworker_threads           (the coworker's saved conversations, per user)
 ```
 
 ---
@@ -13558,6 +13603,7 @@ All output stored with `ai_draft: true` until a human confirms.
 | Relationships canvas (measure, flag, confirm)   | YES   | YES     | NO     | `routes/relationships.ts`, `/relationships` page |
 | Your tables (managed grids)                     | YES   | YES     | NO     | `routes/managedGrids.ts` (no viewer read yet) |
 | Studio coworker (ask, look up, PROPOSE; Keep writes through the same routes) | YES | YES | NO | `routes/coworker.ts`, flag `ai_coworker`; the panel mounts in Studio only |
+| Coworker history (your own conversations only) | YES | YES | NO | `routes/coworkerThreads.ts` |
 | Glossary edit                                   | YES   | YES     | NO     | `POST/PUT/DELETE /semantic/glossary` |
 | Definitions pane (terms, metrics, verified answers — read) | YES | YES | YES | `GET /definitions`, `/definitions` page |
 | Quality: profile a table, evaluate rules        | YES   | YES     | NO     | `routes/quality.ts` profile/evaluate (source + product) |
