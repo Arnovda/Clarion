@@ -31,7 +31,67 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-09-26 (THE COWORKER KEEPS A HISTORY — owner, with a
+**Last updated:** 2026-09-26 (THE LOAD-TEST DATABASE HAS A LIFECYCLE — owner:
+*"I would like for you to set up everything. After we load it in, I want to
+delete the server so I don't have extra costs."* The 10M-row fixture in
+`docs/testing/sql-load-test/` had existed since 13 September and had never been
+run: this sandbox has no `az` and no Azure credentials, so "create the server"
+was a README the owner would have had to execute by hand. Branch
+`claude/demo-database-large-records-4lep7u`.)
+
+**NEW GITOPS CONTROL `.ops/loadtest-db` (`create` | `status` | `delete` |
+`noop`) + `.github/workflows/loadtest-db.yml`.** `create` makes an Azure
+Database for PostgreSQL Flexible Server in Clarion's region, loads
+`01-schema.sql` + `02-load.sql`, creates the read-only login `clarion_ro`,
+PROVES it (reads `erp.customers`, and a `CREATE TABLE` must fail), and puts
+`03-verify.sql`'s expected reading plus the exact Clarion form values in the
+run summary. `delete` removes every load-test server and fails unless a FRESH
+listing shows none left. A daily schedule (`17 5 * * *`) deletes any load-test
+server older than 72h — a backstop for a forgotten server, not the plan.
+- **THE REPO IS PUBLIC, and that decided the credential design.** The admin
+  password is generated per run, set with `az … update --admin-password`,
+  masked, stored nowhere (every run that needs admin sets a fresh one, which
+  also makes a half-failed `create` safe to re-run). The read-only password
+  could not be generated — nobody could be shown it — so it is the
+  **`LOADTEST_DB_PASSWORD` repository secret**, set by the owner; unset →
+  the run loads everything and says the login was skipped. It reaches SQL as a
+  psql variable (`:'ro_pw'`), so no character in it can break the statement.
+  The hostname IS printed: reachable only from Azure ranges (the "allow Azure
+  services" rule the sync worker needs), synthetic rows only, lives for hours.
+- **Servers are found by TAG (`purpose=clarion-loadtest`), never by a name kept
+  in a file**, so `delete` and the reaper cannot miss one. A dedicated group
+  `clarion-loadtest-rg` is used when the deploy identity may create groups;
+  otherwise the server goes into Clarion's group and the listing falls back to
+  that group — the identity's scope has never been measured (preflight only
+  read the role NAME, Contributor).
+- **General Purpose D2ds_v5, not the README's B2ms**: a Burstable server spends
+  its CPU credits on the 10M-row insert and is then throttled for the Clarion
+  sync being measured; the difference is cents for a server that lives hours.
+  ~€0.20–0.25/h all-in.
+- **TCP keepalives on the load connection are load-bearing**: `02-load.sql`
+  runs statements for minutes (index builds print nothing), and an idle NAT
+  mapping between runner and Azure drops well before that. The runner gets its
+  own firewall rule for the job, removed in an `always()` step.
+- **"Loaded" is detected by `erp.ix_sol_order`** — the last object 02-load.sql
+  creates before ANALYZE. Present → not reloaded; absent → 01-schema.sql drops
+  the schema and the load starts clean.
+- Validation: YAML parses, every `run:` block passes `bash -n`; 01 + 02 + 03
+  and the read-only-login SQL extracted from the YAML (run twice — the `\gexec`
+  create is idempotent — with a password containing `'`, `;`, `--` and `"`)
+  were run against a local Postgres 16; the login read 120,000 customers and
+  was refused `CREATE TABLE`. **NOT run against
+  Azure** — the first `create` is the first real test of the az half.
+- **A BUG THE LOCAL RUN CAUGHT, in the one number meant for reconciling**:
+  `03-verify.sql` printed `total_line_amount` as `###,###,###.##` — the sum is
+  ~59 billion and the format allowed 999 million. Widened (and the quantity
+  total with it). Locally: full 02-load in 83 s, reading 17 / 16 of 17 / 14 of
+  17 / 23, cursor tie 200,000 rows. The amount total is random per load, so
+  reconcile against the figure in THAT run's summary.
+- **Deleting the server keeps Clarion's copy**: synced tables, topics and
+  dashboards keep working over the warehouse; only re-syncing (and the
+  `04-changes.sql` follow-ups) needs the server alive.
+
+**Prior last updated:** 2026-09-26 (THE COWORKER KEEPS A HISTORY — owner, with a
 screenshot of the empty panel: *"I want to keep a history of what I asked to
 clarion, right now I don't see it"*. A conversation lived only in the browser
 tab: a reload, "New conversation" or another device and it was gone. Branch

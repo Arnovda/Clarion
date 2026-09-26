@@ -36,6 +36,29 @@ tables into the tenant that has real Exact Online data in it.
 
 ---
 
+## The CI way: `.ops/loadtest-db` (steps 1–3 without a laptop)
+
+Steps 1–3 below are automated by `.github/workflows/loadtest-db.yml`:
+
+1. Set the repository secret **`LOADTEST_DB_PASSWORD`** (Settings → Secrets and
+   variables → Actions). It becomes the password of the read-only login
+   `clarion_ro`, the one you type into Clarion. The repository is public, so the
+   workflow cannot generate one and show it to you.
+2. Put `create` in `.ops/loadtest-db` and push to `main`. The run creates the
+   server (General Purpose D2ds_v5 rather than B2ms — a Burstable server spends
+   its CPU credits on the load and is then throttled for the sync you came to
+   measure), loads the fixture, creates `clarion_ro`, proves it can read and
+   cannot write, and puts the expected reading and the exact Clarion form values
+   in the run summary.
+3. Continue at step 4 below.
+4. When Clarion has synced it: `delete` in `.ops/loadtest-db`, push. The run
+   fails unless a fresh listing shows no load-test server left. A daily
+   scheduled run deletes any load-test server older than 72 hours as a backstop.
+
+Deleting the server removes the source, not what Clarion synced: tables, topics
+and dashboards keep working over the warehouse copy. What stops working is
+syncing again — so the follow-up runs in §6 need the server alive.
+
 ## 1. Create the server (Azure)
 
 ```bash
