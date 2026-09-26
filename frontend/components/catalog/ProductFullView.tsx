@@ -27,7 +27,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import dynamic from 'next/dynamic';
 import { useRouter } from 'next/navigation';
 import {
-  ArrowRight, ArrowUpRight, BarChart3, Boxes, Check, Database, GitBranch, Loader2,
+  ArrowRight, ArrowUpRight, BarChart3, Boxes, Check, Database, Eye, EyeOff, GitBranch, Loader2,
   Link2, Plus, RefreshCw, ShieldCheck, Sparkles, Trash2, X,
 } from 'lucide-react';
 import api from '@/lib/api';
@@ -42,6 +42,7 @@ import type { FullDataProduct, ProductKpi } from '@/components/products/types';
 import ExplorerHeader, { HeaderAction, MoreMenu } from './ExplorerHeader';
 import SubjectRelations from './SubjectRelations';
 import { iconForAnalytics } from './entityIcons';
+import { useSubjectBuilds } from './subjectBuilds';
 import type { CatalogNavTarget } from './navigation';
 
 // The heavy tabs load when opened: the diagram (ReactFlow), the lineage
@@ -84,6 +85,7 @@ export default function ProductFullView({ productId, onNavigate, onChanged, onDe
   const [aiStarters, setAiStarters] = useState<string[] | null>(null);
   const [tab, setTab] = useState<Tab>('overview');
   const [loading, setLoading] = useState(true);
+  const builds = useSubjectBuilds();
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -253,6 +255,11 @@ export default function ProductFullView({ productId, onNavigate, onChanged, onDe
   const menuItems = [
     ...(admin ? [{ label: 'Sync the source, then rebuild', onClick: () => { void runRebuild(true); }, icon: <RefreshCw className="w-3.5 h-3.5" strokeWidth={1.75} aria-hidden /> }] : []),
     { label: 'Add a table', onClick: () => { setTab('tables'); setAdding(true); }, icon: <Plus className="w-3.5 h-3.5" strokeWidth={1.75} aria-hidden /> },
+    // Hide/show: whether the subject is LISTED on the Subjects page. It stays
+    // built and in this tree either way (the Build page's eye, moved here).
+    ...(builds ? [data.hidden
+      ? { label: 'Show on the Subjects page', onClick: () => { void builds.setHidden(data.id, false).then((ok) => { if (ok) void reload(); }); }, icon: <Eye className="w-3.5 h-3.5" strokeWidth={1.75} aria-hidden /> }
+      : { label: 'Hide from the Subjects page', onClick: () => { void builds.setHidden(data.id, true).then((ok) => { if (ok) void reload(); }); }, icon: <EyeOff className="w-3.5 h-3.5" strokeWidth={1.75} aria-hidden /> }] : []),
     ...(admin ? [{ label: 'Delete this subject', onClick: () => { void handleDelete(); }, icon: <Trash2 className="w-3.5 h-3.5" strokeWidth={1.75} aria-hidden /> }] : []),
   ];
 

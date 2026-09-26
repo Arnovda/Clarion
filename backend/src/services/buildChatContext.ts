@@ -1,5 +1,6 @@
 /**
- * Coverage context for the Build page's "Ask about your subjects" chat.
+ * Coverage context for the subject assistant (the Catalog's assistant; the
+ * Build page's "Ask about your subjects" chat until 2026-09-26).
  *
  * Assembles, from the real catalog, everything the chat model may state as
  * fact: the built subjects (with their metrics, questions and tables), the
@@ -118,7 +119,7 @@ export async function buildCoverageContext(db: Knex, tenantId: number, opts: Cov
     lines.push('  (none built yet)');
   }
   for (const p of analytics) {
-    lines.push(`- ${p.name}${withIds ? ` (product_id ${p.id})` : ''}${p.hidden === true ? ' (hidden — the eye toggle on Build shows it back)' : ''} — ${trim(p.description, 140) || 'no description'}`);
+    lines.push(`- ${p.name}${withIds ? ` (product_id ${p.id})` : ''}${p.hidden === true ? ' (hidden from the Subjects page — its ⋯ menu in the Catalog shows it back)' : ''} — ${trim(p.description, 140) || 'no description'}`);
     const tbls = tablesByProduct.get(p.id) ?? [];
     if (tbls.length) lines.push(`  Contains: ${tbls.slice(0, withIds ? 20 : 10).join(', ')}`);
     const pk = (kpisByProduct.get(p.id) ?? []).slice(0, 8);

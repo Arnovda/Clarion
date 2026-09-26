@@ -478,7 +478,7 @@ function TopicsCanvasInner() {
   if (model.nodes.size === 0) {
     return (
       <div className="flex h-full items-center justify-center px-8 text-center text-[13px] text-muted">
-        No topics built yet — create your topics on Build first.
+        No subjects built yet — create them from the Catalog first.
       </div>
     );
   }

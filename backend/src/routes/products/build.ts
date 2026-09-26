@@ -405,7 +405,7 @@ router.post('/bus-matrix/extend-start', requireAuth, requireRole('admin', 'analy
     if (!anyProduct) {
       res.status(409).json({
         ok: false,
-        error: 'No subjects exist for this source yet — use "Create my topics" first; additions build on top of that.',
+        error: 'No subjects exist for this source yet — use "Create the subjects" in the Catalog first; additions build on top of that.',
       });
       return;
     }

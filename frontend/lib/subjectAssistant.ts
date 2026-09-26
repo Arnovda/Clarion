@@ -18,9 +18,10 @@
  *
  *   • anchored   — a topic page. Can change this subject, and when the ask is
  *                  not a change to it, escalates here rather than dead-ending.
- *   • unanchored — /build. Coverage and additions; there is no subject to
- *                  change, which is the honest difference, not a missing
- *                  feature.
+ *   • unanchored — the Catalog with nothing selected (the Build page's chat
+ *                  until 2026-09-26). Coverage and additions; there is no
+ *                  subject to change, which is the honest difference, not a
+ *                  missing feature.
  *
  * This module is the shared half: asking, and turning an answer into a
  * build. It holds no React state so both callers keep their own thread UI.
@@ -49,7 +50,7 @@ export interface AssistantTurn {
 
 /**
  * Ask the assistant. `anchorProductId` is the subject the user is looking at;
- * omit it on /build. The backend answers only from the real catalog — it does
+ * omit it when nothing is selected. The backend answers only from the real catalog — it does
  * not guess what exists.
  */
 export async function askSubjectAssistant(

@@ -15,12 +15,18 @@
  *   • CHANGE — on a product table, for a curator: describe a change to the
  *     SQL; the proposal appears ON the table as a diff with Keep / Discard.
  *     Nothing is stored until Keep, and Keep is the editor's own Save.
+ *
+ * And when an answer is "that would be a new subject", the backend has
+ * already checked the proposal against the real catalog: it renders as a
+ * card with ONE button, "Add this subject" (the Build page's chat until
+ * 2026-09-26). Nothing builds until it is pressed.
  */
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { motion } from 'framer-motion';
-import { ChevronDown, Square } from 'lucide-react';
+import { ChevronDown, Loader2, Plus, Square } from 'lucide-react';
 import { ClarionMark } from '@/components/brand/ClarionMark';
 import { MarkdownAnswer } from '@/app/dashboards/components/MarkdownAnswer';
+import type { SubjectProposal } from '@/lib/subjectAssistant';
 
 export interface AssistantScope {
   /** What the next message is about. */
@@ -45,6 +51,9 @@ export interface CatalogChatMessage {
   working?: boolean;
   startedAt?: number;
   errorDetail?: string;
+  /** A new subject the answer proposes — see the header. */
+  proposal?: SubjectProposal;
+  proposalState?: 'idle' | 'starting' | 'started';
 }
 
 function useElapsed(since: number | undefined, active: boolean): number | null {
@@ -97,10 +106,15 @@ interface Props {
   onInputChange: (value: string) => void;
   onSubmit: () => void;
   onStop: () => void;
+  /** Start the build a proposal describes. */
+  onAddSubject?: (messageId: string) => void;
+  /** A build is already running — one at a time per workspace. */
+  addBlocked?: boolean;
 }
 
 export default function CatalogAssistant({
   open, onOpenChange, scope, messages, loading, mode, onModeChange, input, onInputChange, onSubmit, onStop,
+  onAddSubject, addBlocked,
 }: Props) {
   const endRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -230,6 +244,39 @@ export default function CatalogAssistant({
                 )}
                 {msg.errorDetail && (
                   <p className="mt-1.5 text-[11.5px] font-mono text-ink-2 break-words">{msg.errorDetail}</p>
+                )}
+                {msg.proposal && (
+                  <div className="mt-2.5 rounded-lg border border-ocean/40 bg-raised p-3">
+                    <div className="flex items-center gap-2">
+                      <ClarionMark size={16} className="shrink-0" />
+                      <span className="text-[13px] font-medium text-ink">New subject: {msg.proposal.name}</span>
+                    </div>
+                    {msg.proposal.description && (
+                      <p className="mt-1 text-[12px] leading-[1.5] text-ink-3">{msg.proposal.description}</p>
+                    )}
+                    <p className="mt-1.5 text-[11.5px] text-muted">
+                      Built from: {msg.proposal.entities.join(', ')} · your existing subjects stay untouched.
+                    </p>
+                    <button
+                      type="button"
+                      disabled={msg.proposalState !== 'idle' || addBlocked || !onAddSubject}
+                      onClick={() => onAddSubject?.(msg.id)}
+                      className={`mt-2.5 inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-[12.5px] font-medium ${
+                        msg.proposalState === 'started'
+                          ? 'cursor-default border border-line bg-softer text-muted'
+                          : 'bg-ocean text-white hover:bg-ocean-hover disabled:opacity-50'
+                      }`}
+                    >
+                      {msg.proposalState === 'started'
+                        ? 'Build started — follow it at the top'
+                        : msg.proposalState === 'starting'
+                          ? <><Loader2 className="h-3.5 w-3.5 animate-spin" strokeWidth={2} aria-hidden /> Starting…</>
+                          : <><Plus className="h-3.5 w-3.5" strokeWidth={2} aria-hidden /> Add this subject</>}
+                    </button>
+                    {addBlocked && msg.proposalState === 'idle' && (
+                      <p className="mt-1 text-[11px] text-muted-2">A build is running — add it when it finishes.</p>
+                    )}
+                  </div>
                 )}
               </div>
             );

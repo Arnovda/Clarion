@@ -452,7 +452,7 @@ function FirstBuildBody({ p }: { p: Extract<CoworkerProposal, { kind: 'first-bui
         </ul>
       )}
       <p className="text-[11.5px] text-muted">
-        {p.fromTemplate ? '' : 'Clarion designs them from what was synced. '}Designing and building takes a few minutes; you can follow it on Build.
+        {p.fromTemplate ? '' : 'Clarion designs them from what was synced. '}Designing and building takes a few minutes; you can follow it at the top of the Catalog.
       </p>
     </>
   );

@@ -55,7 +55,7 @@ export default function SubjectsPage() {
           rows
             // Same filter the rail rows used: reference products are the
             // shared lookups (they get their own band below), and hidden is
-            // the Build page's show/hide toggle doing its job.
+            // the subject's "Hide from the Subjects page" (Catalog) doing its job.
             .filter((p) => (p.kind ?? 'analytics') === 'analytics' && p.hidden !== true)
             .map((p) => ({
               id: p.id,
@@ -119,9 +119,9 @@ export default function SubjectsPage() {
             <Layers className="mx-auto mb-3 h-7 w-7 text-muted-2" strokeWidth={1.5} aria-hidden />
             <p className="text-[14px] text-ink-2">No subjects yet.</p>
             {role === 'admin' || role === 'analyst' ? (
-              <a href="/build" className="mt-3 inline-flex items-center gap-1.5 rounded-[8px] bg-ocean px-4 py-2 text-[13px] font-medium text-white hover:opacity-90">
+              <a href="/catalog" className="mt-3 inline-flex items-center gap-1.5 rounded-[8px] bg-ocean px-4 py-2 text-[13px] font-medium text-white hover:opacity-90">
                 <ClarionMark size={16} tone="mono" />
-                Create your topics
+                Create your subjects
               </a>
             ) : (
               <p className="mt-1 text-[13px] text-muted">Your team is still setting things up.</p>

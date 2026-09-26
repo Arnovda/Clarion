@@ -217,7 +217,7 @@ export default function LineageGraph({ layer, tableId }: { layer: 'source' | 'pr
           <p className="font-display text-[16px] text-ink tracking-[-0.01em]">No lineage recorded</p>
           <p className="text-[12px] text-muted mt-1.5 max-w-md mx-auto leading-relaxed">
             {data.anchor.layer === 'source'
-              ? 'Nothing built from this table yet — lineage is written when topics are created on Build.'
+              ? 'Nothing built from this table yet — lineage is written when its subjects are created (Catalog).'
               : 'No column-level lineage was recorded for this table.'}
           </p>
         </div>

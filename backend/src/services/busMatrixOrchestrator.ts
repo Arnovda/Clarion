@@ -1188,7 +1188,7 @@ export async function runTopicExtensionWorkflow(
   // materialises dim_date (build_order is forced past 1), so without an
   // existing owner the new subject's Date lookup could never resolve.
   if (!existing.dimDateOwnerProductId) {
-    throw new Error('No existing build to extend — run "Create my topics" first; additions build on top of it.');
+    throw new Error('No existing build to extend — run "Create the subjects" (Catalog) first; additions build on top of it.');
   }
 
   emit({

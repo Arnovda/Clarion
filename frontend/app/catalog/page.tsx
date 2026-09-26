@@ -20,6 +20,11 @@
  * preview inset, and the Trust and Glossary facets — health lives on the
  * landing, the glossary is the Definitions pane. The URL stayed the same, so
  * every existing deep link still lands; lib/catalogUrl.ts reads them.
+ *
+ * Absorbed 2026-09-26: the Build page (/build now redirects here). Creating
+ * a source's subjects and upgrading keys are lines on the landing, a full
+ * rebuild is on the source's ⋯ menu, hide/show on the subject's, and a build
+ * runs in a strip at the top of the view (components/catalog/subjectBuilds).
  */
 
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -43,7 +48,10 @@ import {
 } from '@/components/catalog/catalogAssistantContext';
 import { catalogHref, parseCatalogUrl, type CatalogIntent } from '@/lib/catalogUrl';
 import { catalogApi, parseIdFromSlug, type CatalogId, type SchemaEntry } from '@/lib/catalog';
-import { askSubjectAssistant, type AssistantTurn } from '@/lib/subjectAssistant';
+import { askSubjectAssistant, startSubjectAddition, type AssistantTurn } from '@/lib/subjectAssistant';
+import { SubjectBuildStrip, SubjectBuildsProvider, useSubjectBuilds } from '@/components/catalog/subjectBuilds';
+import { TOPICS_CHANGED_EVENT } from '@/lib/topicsChanged';
+import { useToast } from '@/components/ui/Toast';
 import { canCurate, useRole } from '@/lib/role';
 import api from '@/lib/api';
 import { getItem, setItem, storageKeys } from '@/lib/storage';
@@ -372,6 +380,14 @@ function CatalogInner() {
     setRefreshKey((k) => k + 1);
     void getProductTree(true);
   }, [getProductTree]);
+  // A build finished or a subject was hidden (subjectBuilds dispatches this):
+  // the tree follows, like after any other save.
+  useEffect(() => {
+    window.addEventListener(TOPICS_CHANGED_EVENT, handleSaved);
+    return () => window.removeEventListener(TOPICS_CHANGED_EVENT, handleSaved);
+  }, [handleSaved]);
+  const builds = useSubjectBuilds();
+  const toast = useToast();
 
   // ── The assistant ─────────────────────────────────────────────────────────
   const [assistantOpen, setAssistantOpen] = useState(false);
@@ -473,10 +489,14 @@ function CatalogInner() {
           .slice(-12)
           .map((m) => ({ role: m.role, content: m.text }));
         const reply = await askSubjectAssistant(history, scope.productId ?? null, scope.tableId ?? null, { signal: controller.signal });
-        const extra = reply.proposal
-          ? `\n\nThis would be a new subject (${reply.proposal.name}). The Build page can add it alongside what you have.`
-          : '';
-        patchMessage(workingId, { text: (reply.reply || 'I could not find anything to say about that.') + extra, working: false, decision: 'none' });
+        // A proposal the backend proved against the real catalog renders as
+        // a card with ONE button; nothing builds until it is pressed.
+        patchMessage(workingId, {
+          text: reply.reply || 'I could not find anything to say about that.',
+          working: false,
+          decision: 'none',
+          ...(reply.proposal ? { proposal: reply.proposal, proposalState: 'idle' as const } : {}),
+        });
       }
     } catch (err) {
       if (isAbort(err)) {
@@ -491,6 +511,29 @@ function CatalogInner() {
       setLoading(false);
     }
   }, [input, loading, mode, scope, messages, pushMessage, patchMessage]);
+
+  // "Add this subject": ADDITIVE by construction (the route refuses a name
+  // that exists and entities that never synced); the build then runs in the
+  // strip at the top of the view.
+  const addSubject = useCallback(async (messageId: string) => {
+    const msg = messages.find((m) => m.id === messageId);
+    if (!msg?.proposal || msg.proposalState !== 'idle' || builds?.building) return;
+    patchMessage(messageId, { proposalState: 'starting' });
+    try {
+      const started = await startSubjectAddition(msg.proposal);
+      patchMessage(messageId, { proposalState: 'started' });
+      builds?.attach(started.jobId, started.connectionId);
+    } catch (err) {
+      const existing = (err as { response?: { data?: { jobId?: string } } })?.response?.data?.jobId;
+      if (existing) {
+        patchMessage(messageId, { proposalState: 'started' });
+        builds?.attach(existing, msg.proposal.connection_id);
+      } else {
+        patchMessage(messageId, { proposalState: 'idle' });
+        toast.error('Could not start the build', { description: errorText(err, 'Please try again.') });
+      }
+    }
+  }, [messages, builds, patchMessage, toast]);
 
   // The editor reports back: the draft it holds, and what became of a proposal.
   const reportDraft = useCallback((tableId: number, sql: string) => { draftRef.current = { tableId, sql }; }, []);
@@ -593,6 +636,7 @@ function CatalogInner() {
         {/* `relative`: the assistant is positioned against this column, so it
             floats over the view and never over the tree. */}
         <section className="relative flex-1 min-h-0 flex flex-col overflow-hidden">
+          <SubjectBuildStrip />
           <EntityDetailPanel
             key={`detail-${detailKey}`}
             selection={selection}
@@ -615,6 +659,8 @@ function CatalogInner() {
               onInputChange={setInput}
               onSubmit={() => { void handleSubmit(); }}
               onStop={handleStop}
+              onAddSubject={(id) => { void addSubject(id); }}
+              addBlocked={builds?.building === true}
             />
           )}
         </section>
@@ -666,8 +712,16 @@ export default function CatalogPage() {
           <Loader2 className="w-5 h-5 animate-spin text-muted" />
         </div>
       }>
-        <CatalogInner />
+        <CuratorBuilds>
+          <CatalogInner />
+        </CuratorBuilds>
       </Suspense>
     </RequireRole>
   );
+}
+
+/** Subject builds are a curator's work; for a viewer the provider is inert. */
+function CuratorBuilds({ children }: { children: React.ReactNode }) {
+  const curator = canCurate(useRole());
+  return <SubjectBuildsProvider enabled={curator}>{children}</SubjectBuildsProvider>;
 }

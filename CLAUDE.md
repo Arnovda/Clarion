@@ -31,7 +31,67 @@ with false assumptions and produces broken code.
 ## Current State
 > Updated by Claude Code at the end of every session. Shows what actually exists now.
 
-**Last updated:** 2026-09-26 (THE CATALOG'S HEADER CHAT BUTTONS ARE GONE —
+**Last updated:** 2026-09-26 (THE BUILD PAGE IS FOLDED INTO THE CATALOG — owner,
+with a screenshot of /build: *"Is there any use to still having the 'build'
+pane? I think everything is done now through catalog, relations and
+definitions."* Checked in code first: four jobs still lived ONLY there, so
+they moved rather than disappeared; then *"Let's do that"*. Frontend + prompt
+text only; no route, migration or env var changed. Branch
+`claude/zealous-bell-e0dr1o`.)
+
+- **NEW `frontend/components/catalog/subjectBuilds.tsx`** — the Build page's
+  state and pieces, now owned by the catalog: `SubjectBuildsProvider`
+  (curators only; inert for viewers) holds `GET /products/build-overview`,
+  the running build (SSE on `/products/bus-matrix/:jobId/stream`, reattach on
+  mount and on every kept coworker change, queue position while waiting),
+  `startBuild` / `startKeyUpgrade` / `cancel` / `setHidden` / `attach`.
+  `SubjectBuildStrip` shows the run at the TOP OF THE CATALOG'S VIEW whatever
+  is selected (a build is workspace-level and runs for minutes — start a
+  rebuild from a source, go look at a table, the progress stays in sight).
+  `PlanPanel`, `KeysPanel`, `RunPanel`, `RebuildSubjectsConfirm` moved with it.
+- **Where each job went**: *create a source's subjects* and *upgrade keys* →
+  lines on the catalog landing (`CatalogLanding` "Subjects" section: "Odoo has
+  data but no subjects yet — N ready to create · See the plan", the keys panel
+  per source, and "Hidden from the Subjects page" chips with Show — the one
+  place a hidden subject is listed). *Full rebuild* (retire-and-replace,
+  warned) → the source's ⋯ menu in the catalog (`SourceRootPanel`; a source
+  with data but no subjects gets "Create subjects from this source…" there,
+  which opens the landing). *Hide/show* → the subject's ⋯ menu
+  (`ProductFullView`). *"Ask about your subjects"* → the catalog assistant:
+  an answer carrying a proposal renders the same card with ONE button, "Add
+  this subject" (`startSubjectAddition` → the strip); when the coworker is on
+  it replaces the assistant as before.
+- **`/build` is a redirect to `/catalog`** (old links keep working); its
+  `AskPanel.tsx` and `layout.tsx` are deleted. Rail: the Build entry is gone,
+  `/build` aliases Catalog; ⌘K "Build" became "Create subjects" → /catalog;
+  the sources card hint, the Subjects empty state, the coworker's "Follow the
+  build" (applyProposal + provider) and its Studio path list, the lineage and
+  topics-canvas empty states all point at the Catalog. The catalog page
+  listens for `TOPICS_CHANGED_EVENT` and reloads its tree.
+- **Backend: words only.** The subject assistant's prompt no longer says it
+  is "the guide on the Build page" (now: the subject assistant in the
+  Catalog; hide/show = the subject's ⋯ menu; no subjects yet = "Create the
+  subjects" on the Catalog start page); the coverage context's hidden hint,
+  the coworker prompt's "On Build…" line, the extend-start 409 text and the
+  orchestrator's "no build to extend" error say "Create the subjects" (the
+  button's new name). `products-build-chat.test.ts` follows the 409 text.
+- Validation: frontend `tsc` clean, touched files lint-clean (the two
+  `SourceRootPanel.tsx` findings are the documented pre-existing ones,
+  re-verified against the branch), vitest 94/94, `next build` green (`/build`
+  164 B redirect, `/catalog` 67.7 kB); backend `npm run check` clean; suites
+  build-chat + build-overview + subject-assistant-anchor + coworker +
+  coworker-e2e **64/64**; all eleven lint ratchets green (from the repo root,
+  via `npx tsx@4.22` as CI runs them). **Render-checked in headless Chromium
+  against the real build with a mocked API**: the landing's three lines, the
+  plan expanding, Create → the strip → the finish card, Show → `PUT
+  /products/12`, the source's ⋯ → Rebuild confirm, the subject's ⋯ → Hide,
+  the assistant's proposal card, `/build` → `/catalog`; zero page errors.
+- **Not changed**: the `/products/build-*`, bus-matrix and keys routes (the
+  landing reads the same `build-overview`); many code COMMENTS still say
+  "the Build page" (orchestrator events, keyHealth) — they describe history,
+  not a live surface.
+
+**Prior last updated:** 2026-09-26 (THE CATALOG'S HEADER CHAT BUTTONS ARE GONE —
 owner, with a screenshot of a table header: *"I think these 2 are not needed
 any more. Can you delete them? We have the regular chat now."* Frontend only.)
 - **Removed from the catalog's explorer headers**: *Change with AI* and *Ask AI*
@@ -13489,9 +13549,7 @@ clarion/                              ← on disk: databridge/
     │   ├── shared-data/              ← conformed lookups (was the "Core dimensions" product)
     │   │   ├── layout.tsx
     │   │   └── page.tsx
-    │   ├── build/                    ← Studio → Build: source → topics (plan, create, show/hide, warned rebuild)
-    │   │   ├── layout.tsx
-    │   │   └── page.tsx
+    │   ├── build/page.tsx            ← redirect → /catalog (the Build page was folded into the Catalog 2026-09-26)
     │   ├── query/                    ← NL chat with repair loop + disambiguation
     │   │   ├── page.tsx              ← stateful orchestrator
     │   │   ├── types.ts              ← Message, DebugInfo, Conversation, RepairState, EntityMismatch/Ambiguity, ForecastData
@@ -13588,7 +13646,8 @@ clarion/                              ← on disk: databridge/
     │   │   ├── navigation.ts         ← CatalogNavTarget (panels ask the page to navigate), CatalogConnection, AssistantOpenMode
     │   │   ├── CatalogBrowser.tsx    ← the ONE tree: subjects (the tables each BUILDS + a "Uses N from Reference" line of links to originals), sources under their mark, your tables; search filters it in place
     │   │   ├── EntityDetailPanel.tsx ← selection → panel (source-root / source-table / product-root / product-table)
-    │   │   ├── CatalogLanding.tsx    ← nothing selected: what needs you + the health overview
+    │   │   ├── CatalogLanding.tsx    ← nothing selected: what needs you (incl. subjects to create, keys, hidden subjects) + the health overview
+    │   │   ├── subjectBuilds.tsx     ← create / rebuild / re-key subjects, hide/show; the build strip at the top of the view (was /build)
     │   │   ├── SqlDeclaration.tsx    ← the SQL tab: CodeMirror editor · Format · Preview · Rebuild now · Save; a proposal as a diff with Keep / Discard
     │   │   ├── LineageSummary.tsx    ← the easy lineage line (Where it comes from / What it feeds) over GET /lineage/table
     │   │   ├── LineageGraph.tsx      ← the column-level lineage graph (two lanes, threads per column)
@@ -13805,7 +13864,7 @@ All output stored with `ai_draft: true` until a human confirms.
 | Review / confirm definitions (source layer)     | YES   | YES     | NO     | `PATCH /semantic/tables|columns|relationships/:id`, `/review` page |
 | Edit product-layer definitions & summaries      | YES   | YES     | NO     | `PATCH /semantic/product-tables|product-columns/:id`, `PATCH /products/tables/:id` |
 | Declare a table's SQL (read, save, preview, propose, rebuild one table) | YES | YES | NO | `GET /products/tables/:id/declaration`, `PUT …/sql` (guard → compile → store once → deploy cell), `POST …/sql/preview`, `POST …/sql/propose`, `POST …/run`; the Catalog's SQL tab + assistant (`canCurate`) |
-| Create, design, extend, rebuild subjects        | YES   | YES     | NO     | `POST/PUT /products`, every `/products/bus-matrix*` and `/build-*` route, `/build` page |
+| Create, design, extend, rebuild subjects        | YES   | YES     | NO     | `POST/PUT /products`, every `/products/bus-matrix*` and `/build-*` route; the Catalog's landing, source and subject ⋯ menus (`subjectBuilds.tsx`) |
 | Rebuild a whole subject (*Rebuild* / *Sync the source, then rebuild* on the catalog's subject page) | YES | NO | NO | `routes/products/build.ts` (`/:id/refresh-start`); `/:id/run-full`, `deploy-all`, `cells.ts`, `refine.ts`, `refineChat.ts` have had no caller since the workshop was deleted 2026-09-23 — the `/propose*`, `/build-proposed` and `design.ts` routes went 2026-09-07 |
 | Pipelines / Refresh                             | YES   | YES     | NO     | `routes/pipelines.ts`, `/pipelines` page |
 | Relationships canvas (measure, flag, confirm)   | YES   | YES     | NO     | `routes/relationships.ts`, `/relationships` page |
