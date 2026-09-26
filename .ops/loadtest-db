@@ -19,3 +19,6 @@ create
 # 2026-09-26: first create. Re-applied the same day: run #1 failed before
 # creating anything — the runner's az no longer accepts --high-availability
 # (HA is off by default, so the flag was dropped).
+# Run #2 failed the same way on --database-name (now elastic-cluster only);
+# every az call in the workflow was then checked against az 2.90 before run #3
+# — which also caught the firewall-rule syntax change (-s server, -n rule).

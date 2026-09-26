@@ -242,7 +242,6 @@ jobs:
               --admin-user "$LOADTEST_ADMIN" --admin-password "$PW" \
               --tier "$LOADTEST_TIER" --sku-name "$LOADTEST_SKU" \
               --storage-size "$LOADTEST_STORAGE_GB" --version 16 \
-              --database-name "$LOADTEST_DB" \
               --backup-retention 7 \
               --public-access 0.0.0.0 \
               --tags purpose="$LOADTEST_TAG" created="$(date +%s)" \
@@ -267,8 +266,18 @@ jobs:
         env:
           NAME: ${{ steps.server.outputs.name }}
           RGN: ${{ steps.server.outputs.rg }}
+          MODE: ${{ steps.mode.outputs.mode }}
         run: |
           set -euo pipefail
+          # az >= 2.7x takes --database-name on `create` only for elastic
+          # clusters, so the database is its own call. Checked first so a
+          # re-run over a loaded server never touches it.
+          if [ "$MODE" = "create" ] && ! az postgres flexible-server db show \
+               -g "$RGN" -s "$NAME" -n "$LOADTEST_DB" -o none 2>/dev/null; then
+            az postgres flexible-server db create -g "$RGN" -s "$NAME" \
+              -n "$LOADTEST_DB" -o none
+          fi
+
           PW="Lt9$(openssl rand -hex 16)"
           echo "::add-mask::$PW"
           az postgres flexible-server update -g "$RGN" -n "$NAME" \
@@ -278,8 +287,8 @@ jobs:
           # The "allow Azure services" rule is for the sync worker. This runner
           # gets its own rule for the length of the job, removed in the last step.
           IP=$(curl -fsS https://api.ipify.org)
-          az postgres flexible-server firewall-rule create -g "$RGN" -n "$NAME" \
-            --rule-name gha-runner --start-ip-address "$IP" --end-ip-address "$IP" -o none
+          az postgres flexible-server firewall-rule create -g "$RGN" -s "$NAME" \
+            -n gha-runner --start-ip-address "$IP" --end-ip-address "$IP" -o none
 
           which psql >/dev/null || { sudo apt-get update -qq && sudo apt-get install -y -qq postgresql-client; }
 
@@ -397,5 +406,5 @@ jobs:
           NAME: ${{ steps.server.outputs.name }}
           RGN: ${{ steps.server.outputs.rg }}
         run: |
-          az postgres flexible-server firewall-rule delete -g "$RGN" -n "$NAME" \
-            --rule-name gha-runner --yes -o none || true
+          az postgres flexible-server firewall-rule delete -g "$RGN" -s "$NAME" \
+            -n gha-runner --yes -o none || true
