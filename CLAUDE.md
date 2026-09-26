@@ -109,6 +109,17 @@ context + refresh-after-Keep wired on /definitions, /grids, /grids/[id]
 2. **The KPI routes rode RLS alone**: `POST /products/:id/kpis` never checked
    the subject was the caller's, PUT/DELETE had no tenant filter. Explicit
    tenant filters + a 404 on a foreign subject now.
+- **A THIRD BUG, found by CI on the rebased branch: saving a relationship could
+  OVERWRITE another one, and in production could not save at all.**
+  `POST /semantic/relationships` (and `re-suggest`) took the id from
+  `semantic_node_id_seq` and inserted with `.onConflict('id').merge()`; when that
+  sequence was behind `table_relationships_id_seq`, the new relationship replaced an
+  existing row and Undo then deleted it (CI's fresh database lined the two up on the
+  test fixture). And the `setval` after it needs UPDATE on the sequence, which
+  `databridge_app` lacks — measured locally: *permission denied for sequence* — so
+  under the production role the canvas's Keep, and the coworker's, 500'd. Both writers
+  now insert into Postgres first and give the graph edge that id. **Verified RED**
+  (the old route fails the new assertion and reproduces CI's failure).
 - Also: `/dashboards/execute` returns a sanitised `detail` (the database's own
   words, storage paths stripped) to admins/analysts on a failed query; viewers
   keep the friendly sentence. `internalCall` exposes it as `detail`.
@@ -13824,10 +13835,14 @@ write to those three tables.
 - Every WRITE that mutates one of those three tables in Neo4j MUST mirror the same
   change to Postgres in the same request, OR the consuming aggregate must be
   rewritten to read from Neo4j. No exceptions, no "we'll fix it next sprint."
-- The `id` is identical on both sides. Routes that create new rows pull an id from
-  `semantic_node_id_seq` via `graph.nextPgId()` and insert into Postgres with
-  `id = pgId` (using `.onConflict('id').merge()` for safety), then bump the Postgres
-  table's own sequence via `setval` so future Postgres-first inserts don't collide.
+- The `id` is identical on both sides. For relationships, every writer inserts into
+  Postgres FIRST, lets `table_relationships_id_seq` assign the id, then creates the
+  graph edge with that id (the profiler's pattern). **Never an explicit id with
+  `.onConflict('id').merge()`** — until 2026-09-26 the routes drew the id from
+  `semantic_node_id_seq` that way, which silently OVERWROTE an existing relationship
+  whenever that sequence was behind the table's own (its Undo then deleted it), and
+  the `setval` meant to keep them in step needs a sequence privilege `databridge_app`
+  does not have, so under the production role the save failed outright.
 
 **Aggregate surfaces that read Postgres directly (the reason the contract exists):**
 - `routes/home.ts` — Home health-score COUNTs of tables/columns/relationships and

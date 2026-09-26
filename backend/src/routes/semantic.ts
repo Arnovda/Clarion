@@ -563,9 +563,10 @@ router.get('/paths', requireAuth, async (req: Request, res: Response, next: Next
 //     must also be mirrored into Postgres `table_relationships`.
 //   • Mirrored writes (today): SchemaProfiler (Postgres-first, then Neo4j),
 //     POST/PATCH/DELETE /relationships, POST /relationships/re-suggest.
-//   • Mirror invariant: id is identical on both sides. The route uses
-//     `nextPgId()` (semantic_node_id_seq) as the source-of-truth id and inserts
-//     into Postgres with that explicit id, then bumps table_relationships_id_seq.
+//   • Mirror invariant: id is identical on both sides. Every writer inserts into
+//     Postgres FIRST and lets table_relationships_id_seq assign the id, then
+//     creates the graph edge with it. Never an explicit id + merge: that
+//     overwrote existing rows whenever another sequence was behind this one.
 //   • If you add a new write to relationships anywhere, MIRROR IT or extend the
 //     consuming aggregate to read from Neo4j. See CLAUDE.md → "Dual-write contract".
 
@@ -610,27 +611,16 @@ router.post('/relationships', requireAuth, requireRole('admin', 'analyst'), vali
       to_column_id   ? graph.getColumnByPgId(Number(to_column_id), req.user!.tenantId)   : Promise.resolve(null),
     ]);
 
-    const pgId = await graph.nextPgId();
-    await graph.createRelationship({
-      pgId,
-      fromTablePgId:   Number(from_table_id),
-      fromColumnPgId:  from_column_id ? Number(from_column_id) : null,
-      fromColName:     fromCol?.column_name ?? null,
-      toTablePgId:     Number(to_table_id),
-      toColumnPgId:    to_column_id   ? Number(to_column_id)   : null,
-      toColName:       toCol?.column_name ?? null,
-      relationshipType: String(relationship_type ?? ''),
-      description:     description ? String(description) : null,
-      aiDraft:         false,
-      tenantId:        req.user!.tenantId,
-    });
-    // Mirror to Postgres `table_relationships` so Home's "relationships
-    // approved / total" counts reflect the new row. Insert with explicit
-    // id = Neo4j pgId so PATCH/DELETE by id stays consistent across stores.
-    // See dual-write contract notes in CLAUDE.md.
-    await db('table_relationships')
+    // Postgres FIRST, with the id taken from the table's own sequence — the
+    // profiler's pattern. The id used to come from semantic_node_id_seq with
+    // `.onConflict('id').merge()`, so whenever that sequence was behind this
+    // table's, a new relationship silently OVERWROTE an existing one (and its
+    // Undo then deleted it); and the setval that tried to keep the two in step
+    // needs a sequence privilege the production role does not have, so the
+    // whole save failed there. The graph edge takes the same id afterwards.
+    // See the dual-write contract in CLAUDE.md.
+    const [row] = await db('table_relationships')
       .insert({
-        id:                pgId,
         from_table_id:     Number(from_table_id),
         from_column_id:    from_column_id ? Number(from_column_id) : null,
         to_table_id:       Number(to_table_id),
@@ -645,14 +635,21 @@ router.post('/relationships', requireAuth, requireRole('admin', 'analyst'), vali
         match_keys:        match_keys == null ? null : JSON.stringify(match_keys),
         measured:          measured == null ? null : JSON.stringify(measured),
       })
-      .onConflict('id').merge();
-    // Keep table_relationships_id_seq ahead of any pgId we've inserted so
-    // future SchemaProfiler runs (which let Postgres auto-assign id) don't
-    // collide with Neo4j-assigned pgIds we've already mirrored.
-    await db.raw(
-      `SELECT setval('table_relationships_id_seq', GREATEST(?, (SELECT COALESCE(MAX(id), 1) FROM table_relationships)))`,
-      [pgId],
-    );
+      .returning('id');
+    const pgId = Number(typeof row === 'object' ? row.id : row);
+    await graph.createRelationship({
+      pgId,
+      fromTablePgId:   Number(from_table_id),
+      fromColumnPgId:  from_column_id ? Number(from_column_id) : null,
+      fromColName:     fromCol?.column_name ?? null,
+      toTablePgId:     Number(to_table_id),
+      toColumnPgId:    to_column_id   ? Number(to_column_id)   : null,
+      toColName:       toCol?.column_name ?? null,
+      relationshipType: String(relationship_type ?? ''),
+      description:     description ? String(description) : null,
+      aiDraft:         false,
+      tenantId:        req.user!.tenantId,
+    });
     res.status(201).json({ ok: true, data: { id: pgId } });
   } catch (err) { next(err); }
 });
@@ -856,7 +853,20 @@ router.post('/relationships/re-suggest', requireAuth, requireRole('admin'), asyn
       const fromColPgId = rel.via_column ? (columnIdMap.get(`${rel.from_table}.${rel.via_column}`) ?? null) : null;
       const toColPgId   = rel.to_column  ? (columnIdMap.get(`${rel.to_table}.${rel.to_column}`)    ?? null) : null;
 
-      const pgId = await graph.nextPgId();
+      // Postgres first, id from the table's own sequence — see POST /relationships.
+      const description = rel.reason ?? `${rel.from_table}.${rel.via_column ?? '?'} → ${rel.to_table}.${rel.to_column ?? '?'}`;
+      const [row] = await db('table_relationships')
+        .insert({
+          from_table_id:     fromTablePgId,
+          from_column_id:    fromColPgId ?? null,
+          to_table_id:       toTablePgId,
+          to_column_id:      toColPgId ?? null,
+          relationship_type: rel.type,
+          description,
+          ai_draft:          true,
+        })
+        .returning('id');
+      const pgId = Number(typeof row === 'object' ? row.id : row);
       await graph.createRelationship({
         pgId,
         fromTablePgId,
@@ -866,31 +876,13 @@ router.post('/relationships/re-suggest', requireAuth, requireRole('admin'), asyn
         toColumnPgId:   toColPgId ?? null,
         toColName:      rel.to_column ?? null,
         relationshipType: rel.type,
-        description:    rel.reason ?? `${rel.from_table}.${rel.via_column ?? '?'} → ${rel.to_table}.${rel.to_column ?? '?'}`,
+        description,
         aiDraft:        true,
         tenantId:       req.user!.tenantId,
       });
-      // Mirror each new draft into Postgres with explicit id = Neo4j pgId.
-      await db('table_relationships')
-        .insert({
-          id:                pgId,
-          from_table_id:     fromTablePgId,
-          from_column_id:    fromColPgId ?? null,
-          to_table_id:       toTablePgId,
-          to_column_id:      toColPgId ?? null,
-          relationship_type: rel.type,
-          description:       rel.reason ?? `${rel.from_table}.${rel.via_column ?? '?'} → ${rel.to_table}.${rel.to_column ?? '?'}`,
-          ai_draft:          true,
-        })
-        .onConflict('id').merge();
       inserted++;
       emit({ phase: 'storing', message: `Stored: ${rel.from_table}.${rel.via_column} → ${rel.to_table}.${rel.to_column}` });
     }
-    // Keep the Postgres sequence ahead of every pgId we just inserted.
-    await db.raw(
-      `SELECT setval('table_relationships_id_seq', (SELECT COALESCE(MAX(id), 1) FROM table_relationships))`,
-    );
-
     emit({ phase: 'done', message: `Done — ${inserted} relationships created` });
 
     if (sse) sse.end();

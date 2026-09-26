@@ -323,6 +323,10 @@ describe('every proposal is checked, then kept and undone through the ordinary r
     expect(r.proposal).toMatchObject({ kind: 'relationship', fromLabel: 'Invoices.AccountID', toLabel: 'Accounts.ID' });
     expect((r.proposal!.measurement as { verdict: string }).verdict).toBe('strong');
     const p = r.proposal!;
+    // The id must come from the table itself: point the graph's sequence at the
+    // fixture's id, as happened on CI, and the old route overwrote that row
+    // (merge on conflict) and its Undo deleted it.
+    await getTestDb().raw(`SELECT setval('semantic_node_id_seq', ?, false)`, [relationshipId]);
     const keep = await (await api()).post('/api/semantic/relationships').set(auth()).send({
       from_table_id: p.fromTableId, from_column_id: p.fromColumnId, to_table_id: p.toTableId, to_column_id: p.toColumnId,
       relationship_type: 'many_to_one', description: p.reason, kind: 'join', measured: p.measurement,
@@ -332,6 +336,8 @@ describe('every proposal is checked, then kept and undone through the ordinary r
     const undo = await (await api()).delete(`/api/semantic/relationships/${keep.body.data.id}`).set(auth());
     expect(undo.status).toBeLessThan(300);
     expect(await getTestDb()('table_relationships').where({ id: keep.body.data.id }).first()).toBeUndefined();
+    expect(keep.body.data.id).not.toBe(relationshipId);
+    expect(await getTestDb()('table_relationships').where({ id: relationshipId }).first()).toMatchObject({ from_table_id: invoicesId, ai_draft: true });
   });
 
   it('relationship: a column that is not on its table is refused before measuring', async () => {
