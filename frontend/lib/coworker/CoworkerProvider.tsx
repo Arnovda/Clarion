@@ -149,10 +149,6 @@ interface CoworkerValue {
   setPageContext: (ctx: CoworkerPageContext | null) => void;
   registerFocusHandler: (fn: FocusHandler | null) => void;
   subscribeChanged: (fn: () => void) => () => void;
-  /** Ask the panel to open and put words in the box (a header action). */
-  prefill: string | null;
-  openWith: (text?: string) => void;
-  consumePrefill: () => void;
   // ─ history ─
   /** The open thread, or null before the first message of a new one. */
   threadId: string | null;
@@ -283,7 +279,6 @@ export function CoworkerProvider({ children }: { children: ReactNode }) {
   const [messages, setMessages] = useState<CwMessage[]>([]);
   const [proposals, setProposals] = useState<Record<string, ProposalState>>({});
   const [busy, setBusy] = useState(false);
-  const [prefill, setPrefill] = useState<string | null>(null);
   const [pageContext, setPageContextState] = useState<CoworkerPageContext>({ path: '' });
   const [threadId, setThreadIdState] = useState<string | null>(null);
   const [threads, setThreads] = useState<CwThreadSummary[] | null>(null);
@@ -671,22 +666,15 @@ export function CoworkerProvider({ children }: { children: ReactNode }) {
     if (decision === 'kept') notifyChanged();
   }, [notifyChanged]);
 
-  const openWith = useCallback((text?: string) => {
-    setOpen(true);
-    if (text) setPrefill(text);
-  }, [setOpen]);
-  const consumePrefill = useCallback(() => setPrefill(null), []);
-
   const value = useMemo<CoworkerValue>(() => ({
     enabled: inStudio ? enabled : false,
     open, setOpen, followAlong, setFollowAlong, messages, proposals, busy,
     send, stop, newChat, keep, discard, undo, rebuild, markDecided, goTo,
     pageContext, setPageContext, registerFocusHandler, subscribeChanged,
-    prefill, openWith, consumePrefill,
     threadId, threads, threadsError, loadThreads, openThread, deleteThread, saveError, canSwitch,
   }), [inStudio, enabled, open, setOpen, followAlong, setFollowAlong, messages, proposals, busy,
     send, stop, newChat, keep, discard, undo, rebuild, markDecided, goTo, pageContext, setPageContext,
-    registerFocusHandler, subscribeChanged, prefill, openWith, consumePrefill,
+    registerFocusHandler, subscribeChanged,
     threadId, threads, threadsError, loadThreads, openThread, deleteThread, saveError, canSwitch]);
 
   return <CoworkerContext.Provider value={value}>{children}</CoworkerContext.Provider>;

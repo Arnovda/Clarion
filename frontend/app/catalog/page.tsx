@@ -48,7 +48,7 @@ import { canCurate, useRole } from '@/lib/role';
 import api from '@/lib/api';
 import { getItem, setItem, storageKeys } from '@/lib/storage';
 import type { ProductTreeItem } from '@/components/semantic/types';
-import type { AssistantOpenMode, CatalogConnection, CatalogNavTarget } from '@/components/catalog/navigation';
+import type { CatalogConnection, CatalogNavTarget } from '@/components/catalog/navigation';
 import {
   useCoworker, useCoworkerChanged, useCoworkerFocusHandler, useCoworkerPageContext,
 } from '@/lib/coworker/CoworkerProvider';
@@ -417,13 +417,6 @@ function CatalogInner() {
   // A change needs a product table under a curator; anywhere else the box asks.
   useEffect(() => { if (!scope.canChange && mode === 'change') setMode('ask'); }, [scope.canChange, mode]);
 
-  // A header action ("Change with AI", "Ask about it") opens the panel in
-  // that mode, aimed at the selection it already follows.
-  const openAssistant = useCallback((wanted: AssistantOpenMode) => {
-    setMode(wanted === 'change' && scope.canChange ? 'change' : 'ask');
-    updateAssistantOpen(true);
-  }, [scope.canChange, updateAssistantOpen]);
-
   const pushMessage = useCallback((msg: CatalogChatMessage) => {
     setMessages((prev) => [...prev, msg].slice(-MAX_MESSAGES));
   }, []);
@@ -555,9 +548,6 @@ function CatalogInner() {
       if (decision === 'kept') handleSaved();
     },
   }), [coworkerSqlProposal, reportDraft, cw, handleSaved]);
-  const openCoworker = useCallback((wanted: AssistantOpenMode) => {
-    cw?.openWith(wanted === 'change' && scope.canChange ? `Change ${scope.label}: ` : undefined);
-  }, [cw, scope]);
 
   // Leaving the table drops its unanswered proposal — a diff nobody can see
   // must not be kept waiting.
@@ -610,7 +600,6 @@ function CatalogInner() {
             onSaved={handleSaved}
             onClose={() => clearSelection()}
             onNavigate={(target) => { void navigateTo(target); }}
-            onAskAssistant={curator ? (coworkerOn ? openCoworker : openAssistant) : undefined}
             empty={<CatalogLanding curator={curator} />}
           />
           {curator && !coworkerOn && (

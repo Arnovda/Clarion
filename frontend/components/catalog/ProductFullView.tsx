@@ -42,7 +42,7 @@ import type { FullDataProduct, ProductKpi } from '@/components/products/types';
 import ExplorerHeader, { HeaderAction, MoreMenu } from './ExplorerHeader';
 import SubjectRelations from './SubjectRelations';
 import { iconForAnalytics } from './entityIcons';
-import type { AssistantOpenMode, CatalogNavTarget } from './navigation';
+import type { CatalogNavTarget } from './navigation';
 
 // The heavy tabs load when opened: the diagram (ReactFlow), the lineage
 // graph, the metrics editor, the quality table, the history charts.
@@ -62,8 +62,6 @@ interface Props {
   productId: number;
   /** A breadcrumb or a table name: the page owns the selection. */
   onNavigate?: (target: CatalogNavTarget) => void;
-  /** Accepted for the panel contract; the subject's Ask AI is the deep link. */
-  onAskAssistant?: (mode: AssistantOpenMode) => void;
   /** Something about the subject changed (a table added, a rebuild landed). */
   onChanged?: () => void;
   /** The subject was deleted; the page clears the selection. */

@@ -88,15 +88,6 @@ export default function CoworkerDock() {
 
   useEffect(() => { if (cw?.open) endRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' }); }, [messages, cw?.open]);
 
-  // A header action ("Change with AI") opens the panel with words ready.
-  useEffect(() => {
-    if (cw?.prefill && cw.open) {
-      setInput(cw.prefill);
-      cw.consumePrefill();
-      setTimeout(() => inputRef.current?.focus(), 30);
-    }
-  }, [cw]);
-
   useEffect(() => { if (cw?.open) setTimeout(() => inputRef.current?.focus(), 60); }, [cw?.open]);
 
   // The history list is fetched when the panel first opens, and again every

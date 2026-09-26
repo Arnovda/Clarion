@@ -24,7 +24,7 @@
  */
 import { useEffect, useMemo, useState } from 'react';
 import dynamic from 'next/dynamic';
-import { BookOpen, ChevronDown, ChevronRight, MessageSquareText, Sparkles, Table2, WandSparkles } from 'lucide-react';
+import { BookOpen, ChevronDown, ChevronRight, Sparkles, Table2 } from 'lucide-react';
 import { ClarionMark } from '@/components/brand/ClarionMark';
 import api from '@/lib/api';
 import AiPromptDialog from './AiPromptDialog';
@@ -35,17 +35,16 @@ import QualityPanel from '@/components/QualityPanel';
 import { parseDomains, PreviewTable } from './shared';
 import { useRole, canCurate, isAdminRole } from '@/lib/role';
 import { formatRelative } from '@/lib/dates';
-import { askAboutSubject } from '@/lib/askLink';
 import { cn } from '@/lib/cn';
 import ConnectorMarkIcon from '@/components/ConnectorMarkIcon';
-import ExplorerHeader, { HeaderAction, type Crumb } from '@/components/catalog/ExplorerHeader';
+import ExplorerHeader, { type Crumb } from '@/components/catalog/ExplorerHeader';
 import AboutRail, { RailChip, type AboutSection } from '@/components/catalog/AboutRail';
 import ColumnsTable, { type ColumnRow } from '@/components/catalog/ColumnsTable';
 import LineageSummary from '@/components/catalog/LineageSummary';
 import SubjectRelations from '@/components/catalog/SubjectRelations';
 import { iconForReference } from '@/components/catalog/entityIcons';
 import { useSqlProposal } from '@/components/catalog/catalogAssistantContext';
-import type { AssistantOpenMode, CatalogConnection, CatalogNavTarget } from '@/components/catalog/navigation';
+import type { CatalogConnection, CatalogNavTarget } from '@/components/catalog/navigation';
 
 const LineageGraph = dynamic(() => import('@/components/catalog/LineageGraph'), { ssr: false });
 // The SQL editor pulls in CodeMirror — loaded only when the tab opens.
@@ -65,8 +64,6 @@ interface Props {
   initialTab?: 'sql';
   /** Breadcrumb and "used in" clicks: the page owns the selection. */
   onNavigate?: (target: CatalogNavTarget) => void;
-  /** "Change with AI" opens the floating assistant in that mode. */
-  onAskAssistant?: (mode: AssistantOpenMode) => void;
   /** GET /connections, for the source's name and mark. */
   connections?: CatalogConnection[];
 }
@@ -103,7 +100,7 @@ const colRoleChip = (role: string | null): { label: string; tone: ColumnRow['rol
 };
 
 export default function ProductTableDetailPanel({
-  tableId, productTree, columns, focusColumnId, onSaved, onClose, initialTab, onNavigate, onAskAssistant, connections = [],
+  tableId, productTree, columns, focusColumnId, onSaved, onClose, initialTab, onNavigate, connections = [],
 }: Props) {
   const role = useRole();
   const curator = canCurate(role);
@@ -294,10 +291,6 @@ export default function ProductTableDetailPanel({
     ...(curator ? [{ id: 'history' as const, label: 'History' }] : []),
   ];
 
-  const askHref = parentProductId != null && parentProductName
-    ? askAboutSubject({ productId: parentProductId, productName: parentProductName, connectionId: productConnectionId })
-    : null;
-
   // ── The rail ─────────────────────────────────────────────────────────────
   const status = decl?.transformation_status ?? tbl.transformation_status;
   const lastRunAt = decl?.last_run_at ?? tbl.last_run_at ?? null;
@@ -485,20 +478,6 @@ export default function ProductTableDetailPanel({
             />
           </>
         ) : undefined}
-        actions={(
-          <>
-            {curator && onAskAssistant && (
-              <HeaderAction onClick={() => onAskAssistant('change')} icon={<WandSparkles className="w-3.5 h-3.5" strokeWidth={1.75} aria-hidden />} title="Ask the assistant to change this table's SQL — it proposes a diff you keep or discard">
-                Change with AI
-              </HeaderAction>
-            )}
-            {askHref && (
-              <HeaderAction href={askHref} primary icon={<MessageSquareText className="w-3.5 h-3.5" strokeWidth={1.75} aria-hidden />} title="Ask a question about this subject in Ask AI">
-                Ask AI
-              </HeaderAction>
-            )}
-          </>
-        )}
         tabs={tabs}
         activeTab={viewTab}
         onTabChange={setViewTab}

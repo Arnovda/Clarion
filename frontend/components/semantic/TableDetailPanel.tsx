@@ -14,7 +14,7 @@
  */
 import { useEffect, useMemo, useState } from 'react';
 import dynamic from 'next/dynamic';
-import { ArrowRight, Check, ChevronDown, ChevronRight, Flag, MessageSquareText, Sparkles } from 'lucide-react';
+import { ArrowRight, Check, ChevronDown, ChevronRight, Flag, Sparkles } from 'lucide-react';
 import { ClarionMark } from '@/components/brand/ClarionMark';
 import api from '@/lib/api';
 import { SourceTable, SourceColumn } from './types';
@@ -27,12 +27,12 @@ import { useRole, canCurate, isAdminRole } from '@/lib/role';
 import { cn } from '@/lib/cn';
 import AiPromptDialog from './AiPromptDialog';
 import ConnectorMarkIcon from '@/components/ConnectorMarkIcon';
-import ExplorerHeader, { HeaderAction, type Crumb } from '@/components/catalog/ExplorerHeader';
+import ExplorerHeader, { type Crumb } from '@/components/catalog/ExplorerHeader';
 import AboutRail, { RailChip, type AboutSection } from '@/components/catalog/AboutRail';
 import ColumnsTable, { type ColumnRow } from '@/components/catalog/ColumnsTable';
 import LineageSummary from '@/components/catalog/LineageSummary';
 import SourceTableRelations from '@/components/catalog/SourceTableRelations';
-import type { AssistantOpenMode, CatalogConnection, CatalogNavTarget } from '@/components/catalog/navigation';
+import type { CatalogConnection, CatalogNavTarget } from '@/components/catalog/navigation';
 
 const LineageGraph = dynamic(() => import('@/components/catalog/LineageGraph'), { ssr: false });
 
@@ -46,7 +46,6 @@ interface Props {
   onSaved: () => void;
   onClose?: () => void;
   onNavigate?: (target: CatalogNavTarget) => void;
-  onAskAssistant?: (mode: AssistantOpenMode) => void;
   connections?: CatalogConnection[];
 }
 
@@ -54,7 +53,7 @@ interface UsedInProduct { id: number; name: string; status: string }
 interface PolicyRow { id: number; name: string; table_name: string; column_name: string | null; policy_type: string }
 
 export default function TableDetailPanel({
-  table, columns, focusColumnId, connectionDomains = [], onSaved, onClose, onNavigate, onAskAssistant, connections = [],
+  table, columns, focusColumnId, connectionDomains = [], onSaved, onClose, onNavigate, connections = [],
 }: Props) {
   const role = useRole();
   const curator = canCurate(role);
@@ -308,11 +307,6 @@ export default function TableDetailPanel({
             )}
           </>
         )}
-        actions={curator && onAskAssistant ? (
-          <HeaderAction onClick={() => onAskAssistant('ask')} primary icon={<MessageSquareText className="w-3.5 h-3.5" strokeWidth={1.75} aria-hidden />} title="Ask the assistant about this table">
-            Ask about it
-          </HeaderAction>
-        ) : undefined}
         tabs={tabs}
         activeTab={viewTab}
         onTabChange={setViewTab}

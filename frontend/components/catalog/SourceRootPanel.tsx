@@ -38,7 +38,7 @@ import { cn } from '@/lib/cn';
 import { useRole, canCurate } from '@/lib/role';
 import ConnectorMarkIcon from '@/components/ConnectorMarkIcon';
 import ExplorerHeader, { HeaderAction } from '@/components/catalog/ExplorerHeader';
-import type { AssistantOpenMode, CatalogNavTarget } from '@/components/catalog/navigation';
+import type { CatalogNavTarget } from '@/components/catalog/navigation';
 import { useSchema, type RelationshipRow } from '@/components/catalog/useSchema';
 import type { SourceTable, SourceColumn } from '@/components/semantic/types';
 import { formatRelative } from '@/lib/dates';
@@ -89,8 +89,6 @@ interface Props {
   connectionId: number;
   /** A breadcrumb click: the page owns the selection. */
   onNavigate?: (target: CatalogNavTarget) => void;
-  /** Reserved for a header action; the source page has none today. */
-  onAskAssistant?: (mode: AssistantOpenMode) => void;
 }
 
 export default function SourceRootPanel({ connectionId, onNavigate }: Props) {
