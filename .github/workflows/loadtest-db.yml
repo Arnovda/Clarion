@@ -1,0 +1,401 @@
+# Load-test database — create, load, report and DELETE the throwaway Postgres
+# server behind docs/testing/sql-load-test/.
+#
+#   .ops/loadtest-db   contains   `create`, `status`, `delete` or `noop`
+#
+#   create   create an Azure Database for PostgreSQL Flexible Server, load the
+#            17-table / ~14M-row fixture into it, print the expected reading
+#            (03-verify.sql) and create the read-only login Clarion uses.
+#            Idempotent: an already-loaded server is not reloaded, only
+#            re-verified.
+#   status   report whether a load-test server exists, how old it is, and what
+#            it holds. Changes no data (it does rotate the admin password,
+#            which nothing outside a run ever uses).
+#   delete   delete every load-test server (and the dedicated resource group),
+#            then CHECK that none remains. Run this once Clarion has synced it.
+#   noop     do nothing.
+#
+# A forgotten server is the one real cost risk here, so the workflow also runs
+# once a day on a schedule and deletes any load-test server older than
+# LOADTEST_MAX_AGE_HOURS (72). That is a safety net, not the plan — `delete` is.
+#
+# THE REPOSITORY IS PUBLIC, and that shapes three decisions:
+#   • The admin password is generated per run, set on the server with
+#     `az ... update`, masked, and never written anywhere. Nothing needs it
+#     after the run; the next run sets a new one.
+#   • The read-only password Clarion connects with is NOT generated here — a
+#     generated one could not be shown to anybody. It comes from the
+#     LOADTEST_DB_PASSWORD secret, which the owner sets and therefore knows.
+#   • The server hostname IS printed. It is reachable only from Azure IP ranges
+#     (the "allow Azure services" firewall rule, which is what lets the sync
+#     worker in), it holds nothing but generated rows, and it lives for hours.
+#
+# Servers are found by TAG (purpose=clarion-loadtest), never by a name kept in
+# this file, so `delete` and the reaper cannot miss one created by an earlier
+# run or a different resource group.
+
+name: Load-test database
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.ops/loadtest-db'
+  schedule:
+    - cron: '17 5 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: loadtest-db
+  cancel-in-progress: false
+
+env:
+  LOADTEST_TAG: clarion-loadtest
+  LOADTEST_RG: clarion-loadtest-rg
+  LOADTEST_DB: erp_demo
+  LOADTEST_ADMIN: clarionadmin
+  LOADTEST_RO_USER: clarion_ro
+  LOADTEST_MAX_AGE_HOURS: '72'
+  # General Purpose, not Burstable: a Burstable server spends its CPU credits
+  # on the 10M-row insert and is then throttled for the Clarion sync, which is
+  # the thing being measured. The difference is cents per hour for a server
+  # that lives a few hours. 128 GB is for IOPS, not space (the data is ~4 GB).
+  LOADTEST_SKU: Standard_D2ds_v5
+  LOADTEST_TIER: GeneralPurpose
+  LOADTEST_STORAGE_GB: '128'
+
+jobs:
+  loadtest-db:
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read mode
+        id: mode
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            MODE=reap
+          else
+            MODE=$(grep -vE '^[[:space:]]*(#|$)' .ops/loadtest-db | head -1 | tr -d '[:space:]')
+          fi
+          case "$MODE" in
+            create|status|delete|reap|noop) ;;
+            *) echo "::error::invalid mode '$MODE' (expected create, status, delete or noop)"; exit 1 ;;
+          esac
+          echo "mode=$MODE" >> "$GITHUB_OUTPUT"
+          echo "Mode: $MODE"
+
+      - name: Log in to Azure
+        if: steps.mode.outputs.mode != 'noop'
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      # ── Find what exists ────────────────────────────────────────────────────
+      - name: Find load-test servers
+        id: find
+        if: steps.mode.outputs.mode != 'noop'
+        env:
+          CLARION_RG: ${{ secrets.AZURE_RESOURCE_GROUP }}
+        run: |
+          set -euo pipefail
+          say() { echo "$1"; echo "$1" >> "$GITHUB_STEP_SUMMARY"; }
+          # One listing function for every step. Subscription-wide first; if the
+          # deploy identity is scoped to Clarion's group only, that call is
+          # refused and the listing falls back to that group — where `create`
+          # puts the server in exactly that case.
+          cat > "$RUNNER_TEMP/list.sh" <<'LIB'
+          list_servers() {
+            local q="[?tags.purpose=='${LOADTEST_TAG}'].{name:name, rg:resourceGroup, fqdn:fullyQualifiedDomainName, state:state, created:tags.created, sku:sku.name}"
+            az postgres flexible-server list --query "$q" -o json 2>/dev/null \
+              || az postgres flexible-server list -g "$CLARION_RG" --query "$q" -o json
+          }
+          LIB
+          . "$RUNNER_TEMP/list.sh"
+          list_servers > servers.json
+          COUNT=$(jq length servers.json)
+          echo "count=$COUNT" >> "$GITHUB_OUTPUT"
+          say "## Load-test database — ${{ steps.mode.outputs.mode }}"
+          say ""
+          if [ "$COUNT" = "0" ]; then
+            say "No load-test server exists."
+          else
+            say "| server | resource group | state | sku | age |"
+            say "|---|---|---|---|---|"
+            NOW=$(date +%s)
+            jq -c '.[]' servers.json | while read -r s; do
+              C=$(echo "$s" | jq -r '.created // "0"')
+              AGE=$(( (NOW - C) / 3600 ))
+              say "| \`$(echo "$s" | jq -r .name)\` | \`$(echo "$s" | jq -r .rg)\` | $(echo "$s" | jq -r .state) | $(echo "$s" | jq -r .sku) | ${AGE}h |"
+            done
+          fi
+          say ""
+
+      # ── delete / reap ───────────────────────────────────────────────────────
+      - name: Delete
+        if: steps.mode.outputs.mode == 'delete' || steps.mode.outputs.mode == 'reap'
+        env:
+          MODE: ${{ steps.mode.outputs.mode }}
+          CLARION_RG: ${{ secrets.AZURE_RESOURCE_GROUP }}
+        run: |
+          set -euo pipefail
+          say() { echo "$1"; echo "$1" >> "$GITHUB_STEP_SUMMARY"; }
+          NOW=$(date +%s)
+          MAX=$(( LOADTEST_MAX_AGE_HOURS * 3600 ))
+          DELETED=0
+          for s in $(jq -c '.[]' servers.json); do
+            NAME=$(echo "$s" | jq -r .name)
+            RGN=$(echo "$s" | jq -r .rg)
+            C=$(echo "$s" | jq -r '.created // "0"')
+            if [ "$MODE" = "reap" ] && [ $(( NOW - C )) -lt "$MAX" ]; then
+              say "- \`$NAME\` is $(( (NOW - C) / 3600 ))h old — under ${LOADTEST_MAX_AGE_HOURS}h, left alone"
+              continue
+            fi
+            say "- deleting \`$NAME\` in \`$RGN\`…"
+            az postgres flexible-server delete -g "$RGN" -n "$NAME" --yes
+            DELETED=$(( DELETED + 1 ))
+          done
+
+          # The dedicated group, if this workflow was allowed to create one.
+          # Only ever deleted when nothing but load-test servers were in it.
+          if az group show -n "$LOADTEST_RG" >/dev/null 2>&1; then
+            OTHERS=$(az resource list -g "$LOADTEST_RG" \
+                       --query "length([?tags.purpose!='${LOADTEST_TAG}'])" -o tsv)
+            REMAINING=$(az postgres flexible-server list -g "$LOADTEST_RG" --query "length(@)" -o tsv)
+            if [ "$REMAINING" = "0" ] && [ "$OTHERS" = "0" ]; then
+              say "- deleting resource group \`$LOADTEST_RG\`…"
+              az group delete -n "$LOADTEST_RG" --yes
+            elif [ "$REMAINING" = "0" ]; then
+              say "- ⚠️ \`$LOADTEST_RG\` holds $OTHERS resource(s) this workflow did not create — group left in place"
+            fi
+          fi
+
+          # The verdict comes from a fresh listing, never from the loop above.
+          . "$RUNNER_TEMP/list.sh"
+          LEFT=$(list_servers | jq length)
+          say ""
+          if [ "$MODE" = "delete" ] && [ "$LEFT" != "0" ]; then
+            say "**❌ $LEFT load-test server(s) still exist after delete.** They are still billing."
+            exit 1
+          fi
+          if [ "$LEFT" = "0" ]; then
+            say "**✅ No load-test server remains — nothing is billing.** ($DELETED deleted this run)"
+          else
+            say "$LEFT load-test server(s) remain (under the ${LOADTEST_MAX_AGE_HOURS}h limit)."
+          fi
+
+      # ── create ──────────────────────────────────────────────────────────────
+      - name: Create the server
+        id: server
+        if: steps.mode.outputs.mode == 'create' || steps.mode.outputs.mode == 'status'
+        env:
+          MODE: ${{ steps.mode.outputs.mode }}
+          CLARION_RG: ${{ secrets.AZURE_RESOURCE_GROUP }}
+        run: |
+          set -euo pipefail
+          say() { echo "$1"; echo "$1" >> "$GITHUB_STEP_SUMMARY"; }
+
+          COUNT=$(jq length servers.json)
+          if [ "$COUNT" -gt 1 ]; then
+            say "**❌ $COUNT load-test servers exist.** Run \`delete\`, then \`create\` again."
+            exit 1
+          fi
+
+          if [ "$COUNT" = "1" ]; then
+            NAME=$(jq -r '.[0].name' servers.json)
+            RGN=$(jq -r '.[0].rg' servers.json)
+            FQDN=$(jq -r '.[0].fqdn' servers.json)
+            STATE=$(jq -r '.[0].state' servers.json)
+            if [ "$STATE" = "Stopped" ] && [ "$MODE" = "create" ]; then
+              say "- server was stopped — starting it"
+              az postgres flexible-server start -g "$RGN" -n "$NAME"
+            fi
+          elif [ "$MODE" = "status" ]; then
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          else
+            # Same region as Clarion, so the sync worker reads it without
+            # crossing a region boundary.
+            LOC=$(az group show -n "$CLARION_RG" --query location -o tsv)
+
+            # A dedicated group makes the teardown one obvious object. If the
+            # deploy identity is scoped to Clarion's group only, it cannot
+            # create one — fall back to Clarion's group; the server is tagged
+            # either way, and `delete` finds it by tag.
+            if az group create -n "$LOADTEST_RG" -l "$LOC" \
+                 --tags purpose="$LOADTEST_TAG" -o none 2>/dev/null; then
+              RGN="$LOADTEST_RG"
+            else
+              RGN="$CLARION_RG"
+              say "- could not create \`$LOADTEST_RG\` (identity scoped to one group) — using \`$RGN\`"
+            fi
+
+            NAME="clarion-loadtest-$(openssl rand -hex 3)"
+            PW="Lt9$(openssl rand -hex 16)"
+            echo "::add-mask::$PW"
+            say "- creating \`$NAME\` in \`$RGN\` ($LOC, $LOADTEST_SKU, ${LOADTEST_STORAGE_GB} GB) — about 5–10 minutes"
+            az postgres flexible-server create \
+              --resource-group "$RGN" --name "$NAME" --location "$LOC" \
+              --admin-user "$LOADTEST_ADMIN" --admin-password "$PW" \
+              --tier "$LOADTEST_TIER" --sku-name "$LOADTEST_SKU" \
+              --storage-size "$LOADTEST_STORAGE_GB" --version 16 \
+              --database-name "$LOADTEST_DB" \
+              --high-availability Disabled --backup-retention 7 \
+              --public-access 0.0.0.0 \
+              --tags purpose="$LOADTEST_TAG" created="$(date +%s)" \
+              --yes -o none
+            FQDN=$(az postgres flexible-server show -g "$RGN" -n "$NAME" \
+                     --query fullyQualifiedDomainName -o tsv)
+          fi
+
+          {
+            echo "exists=true"
+            echo "name=$NAME"
+            echo "rg=$RGN"
+            echo "fqdn=$FQDN"
+          } >> "$GITHUB_OUTPUT"
+
+      # The admin password is not stored anywhere between runs, so every run
+      # that needs admin access sets a fresh one. That also makes a half-failed
+      # `create` safe to re-run.
+      - name: Open a session
+        id: session
+        if: steps.server.outputs.exists == 'true'
+        env:
+          NAME: ${{ steps.server.outputs.name }}
+          RGN: ${{ steps.server.outputs.rg }}
+        run: |
+          set -euo pipefail
+          PW="Lt9$(openssl rand -hex 16)"
+          echo "::add-mask::$PW"
+          az postgres flexible-server update -g "$RGN" -n "$NAME" \
+            --admin-password "$PW" -o none
+          echo "PGPASSWORD=$PW" >> "$GITHUB_ENV"
+
+          # The "allow Azure services" rule is for the sync worker. This runner
+          # gets its own rule for the length of the job, removed in the last step.
+          IP=$(curl -fsS https://api.ipify.org)
+          az postgres flexible-server firewall-rule create -g "$RGN" -n "$NAME" \
+            --rule-name gha-runner --start-ip-address "$IP" --end-ip-address "$IP" -o none
+
+          which psql >/dev/null || { sudo apt-get update -qq && sudo apt-get install -y -qq postgresql-client; }
+
+      - name: Load the fixture
+        if: steps.mode.outputs.mode == 'create'
+        env:
+          FQDN: ${{ steps.server.outputs.fqdn }}
+        working-directory: docs/testing/sql-load-test
+        run: |
+          set -euo pipefail
+          say() { echo "$1"; echo "$1" >> "$GITHUB_STEP_SUMMARY"; }
+          # Keepalives are load-bearing: 02-load.sql runs single statements for
+          # minutes with nothing on the wire, and an idle NAT mapping between
+          # the runner and Azure is dropped well before the statement ends.
+          CS="host=$FQDN port=5432 dbname=$LOADTEST_DB user=$LOADTEST_ADMIN sslmode=require connect_timeout=30 keepalives=1 keepalives_idle=30 keepalives_interval=10 keepalives_count=6"
+          echo "CS=$CS" >> "$GITHUB_ENV"
+
+          # The last object 02-load.sql creates is ix_sol_order, before ANALYZE.
+          # Its presence means a previous run finished the load.
+          DONE=$(psql "$CS" -tAc "SELECT to_regclass('erp.ix_sol_order') IS NOT NULL" 2>/dev/null || echo f)
+          if [ "$DONE" = "t" ]; then
+            say "- fixture already loaded — not reloading (\`delete\` then \`create\` for a fresh one)"
+            exit 0
+          fi
+
+          START=$(date +%s)
+          psql "$CS" -v ON_ERROR_STOP=1 -q -f 01-schema.sql
+          say "- schema created"
+          psql "$CS" -v ON_ERROR_STOP=1 -f 02-load.sql
+          say "- 02-load.sql finished in $(( ($(date +%s) - START) / 60 )) min"
+
+      - name: Create the read-only login
+        if: steps.mode.outputs.mode == 'create'
+        env:
+          FQDN: ${{ steps.server.outputs.fqdn }}
+          RO_PW: ${{ secrets.LOADTEST_DB_PASSWORD }}
+        run: |
+          set -euo pipefail
+          say() { echo "$1"; echo "$1" >> "$GITHUB_STEP_SUMMARY"; }
+          # An unset secret arrives as an empty string, not as unset.
+          if [ -z "$RO_PW" ]; then
+            say "- ⚠️ **\`LOADTEST_DB_PASSWORD\` secret is not set** — no read-only login created. Set it and push \`create\` again (the data is not reloaded)."
+            exit 0
+          fi
+          echo "::add-mask::$RO_PW"
+          # The password travels as a psql variable and is quoted by psql
+          # (:'ro_pw'), so any character in it is safe.
+          psql "$CS" -v ON_ERROR_STOP=1 -q -v ro_pw="$RO_PW" -v ro_user="$LOADTEST_RO_USER" -v db="$LOADTEST_DB" <<'SQL'
+          SELECT format('CREATE ROLE %I LOGIN', :'ro_user')
+           WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = :'ro_user') \gexec
+          ALTER ROLE :"ro_user" WITH LOGIN PASSWORD :'ro_pw';
+          GRANT CONNECT ON DATABASE :"db" TO :"ro_user";
+          GRANT USAGE ON SCHEMA erp TO :"ro_user";
+          GRANT SELECT ON ALL TABLES IN SCHEMA erp TO :"ro_user";
+          ALTER DEFAULT PRIVILEGES IN SCHEMA erp GRANT SELECT ON TABLES TO :"ro_user";
+          SQL
+          # Prove it: connect AS the read-only login, read, and fail to write.
+          RCS="host=$FQDN port=5432 dbname=$LOADTEST_DB user=$LOADTEST_RO_USER sslmode=require connect_timeout=30"
+          N=$(PGPASSWORD="$RO_PW" psql "$RCS" -tAc "SELECT count(*) FROM erp.customers")
+          if PGPASSWORD="$RO_PW" psql "$RCS" -tAc "CREATE TABLE erp.should_fail(x int)" >/dev/null 2>&1; then
+            say "- ❌ the read-only login could CREATE a table"; exit 1
+          fi
+          say "- read-only login \`$LOADTEST_RO_USER\` works (reads $N customers, cannot write)"
+
+      - name: Expected reading
+        if: steps.server.outputs.exists == 'true'
+        env:
+          FQDN: ${{ steps.server.outputs.fqdn }}
+        working-directory: docs/testing/sql-load-test
+        run: |
+          set -euo pipefail
+          CS="host=$FQDN port=5432 dbname=$LOADTEST_DB user=$LOADTEST_ADMIN sslmode=require connect_timeout=30"
+          if [ "$(psql "$CS" -tAc "SELECT to_regclass('erp.ix_sol_order') IS NOT NULL")" != "t" ]; then
+            echo "Fixture not (fully) loaded — nothing to verify." | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          psql "$CS" -v ON_ERROR_STOP=1 -f 03-verify.sql > verify.txt
+          {
+            echo "### Expected reading (03-verify.sql)"
+            echo '```'
+            cat verify.txt
+            echo '```'
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: How to add it in Clarion
+        if: steps.server.outputs.exists == 'true'
+        env:
+          FQDN: ${{ steps.server.outputs.fqdn }}
+        run: |
+          cat >> "$GITHUB_STEP_SUMMARY" <<EOF
+          ### Add it in Clarion
+
+          **Sources → Add a source → PostgreSQL**
+
+          | field | value |
+          |---|---|
+          | host | \`$FQDN\` |
+          | port | \`5432\` |
+          | database | \`$LOADTEST_DB\` |
+          | user | \`$LOADTEST_RO_USER\` |
+          | password | the value of the \`LOADTEST_DB_PASSWORD\` secret |
+          | schema | \`erp\` |
+          | Use SSL/TLS | **ticked** (Azure refuses unencrypted connections) |
+
+          Test connection should report **17 tables · 16 of 17 with a primary key · 14 of 17 synced incrementally · 23 relationships**.
+
+          When Clarion has synced it, set \`.ops/loadtest-db\` to \`delete\`. The synced copy stays in Clarion; only the source server goes. A server older than ${LOADTEST_MAX_AGE_HOURS}h is deleted automatically by the daily run.
+
+          Running cost while it exists: roughly €0.20–0.25 per hour (compute + 128 GB storage), billed per hour.
+          EOF
+
+      - name: Close the runner's firewall rule
+        if: always() && steps.server.outputs.exists == 'true'
+        env:
+          NAME: ${{ steps.server.outputs.name }}
+          RGN: ${{ steps.server.outputs.rg }}
+        run: |
+          az postgres flexible-server firewall-rule delete -g "$RGN" -n "$NAME" \
+            --rule-name gha-runner --yes -o none || true

@@ -1,0 +1,19 @@
+create
+
+# The throwaway Postgres server behind docs/testing/sql-load-test/ — 17 tables,
+# ~14M rows, 10M in the sales fact. Workflow: .github/workflows/loadtest-db.yml
+#
+#   create   create the server, load the fixture, print the expected reading,
+#            create the read-only login `clarion_ro`. Idempotent: a loaded
+#            server is only re-verified, never reloaded.
+#   status   report what exists and what it holds.
+#   delete   delete every load-test server and CHECK none remains. Do this once
+#            Clarion has synced it — the synced copy stays in Clarion.
+#   noop     do nothing.
+#
+# The read-only password is the LOADTEST_DB_PASSWORD repository secret, set by
+# the owner (this repo is public, so a generated one could never be shown).
+# A daily scheduled run deletes any load-test server older than 72 hours, so a
+# forgotten one stops billing on its own.
+#
+# 2026-09-26: first create.

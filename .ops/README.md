@@ -362,3 +362,23 @@ legitimate act.
 Unlike `warehouse-container-mode`, this control re-applies even when the value
 has not changed: doing so is harmless here, and a run that reports success while
 changing nothing is more confusing than a redundant revision.
+
+## `loadtest-db`
+
+Contains exactly one word: `create`, `status`, `delete` or `noop`.
+
+| Value | Meaning |
+|---|---|
+| `create` | Create an Azure Database for PostgreSQL server (tagged `purpose=clarion-loadtest`), load the SQL-connector load-test fixture (`docs/testing/sql-load-test/`, 10M-row sales fact), print the expected reading and create the read-only login `clarion_ro`. Idempotent — a loaded server is re-verified, not reloaded. |
+| `status` | Report what exists, its age and the expected reading. |
+| `delete` | Delete every load-test server (found by tag, not by name) and fail unless a fresh listing shows none remain. |
+| `noop` | Do nothing. |
+
+The read-only password comes from the `LOADTEST_DB_PASSWORD` repository secret —
+the repository is public, so a generated password could not be shown to anyone.
+A daily scheduled run deletes any load-test server older than 72 hours: a safety
+net against a forgotten server, not a replacement for `delete`.
+
+Cost while it exists: roughly €0.20–0.25 per hour (General Purpose D2ds_v5 +
+128 GB), billed per hour. Deleting the server does not touch what Clarion has
+already synced.

@@ -101,6 +101,6 @@ FROM sales_order_lines WHERE updated_at = timestamptz '2024-06-01 03:00:00+00';
 \echo
 \echo '=== Totals to reconcile against Clarion afterwards =================='
 SELECT to_char(count(*), 'FM999,999,999')          AS lines,
-       to_char(sum(line_amount), 'FM999,999,999.00') AS total_line_amount,
-       to_char(sum(quantity), 'FM999,999,999.000')   AS total_quantity
+       to_char(sum(line_amount), 'FM999,999,999,999.00') AS total_line_amount,
+       to_char(sum(quantity), 'FM999,999,999,999.000')   AS total_quantity
 FROM sales_order_lines;
