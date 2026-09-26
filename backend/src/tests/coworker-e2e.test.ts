@@ -407,6 +407,11 @@ describe('the new abilities: every proposal checked, nothing written until Keep,
     // The fact's GRAPH id deliberately equals the dim's POSTGRES id: the two
     // id sequences overlap in real life, and the mirror used to update BOTH
     // rows (`id = x OR neo4j_pg_id = x`). Only the fact may change.
+    // neo4j_pg_id is unique, and on a fresh database the small sequences can
+    // already have handed this graph id to another row (CI hit exactly that) —
+    // plant the collision so every run sees it, then release it.
+    await db()('product_tables').where({ id: dimId }).update({ neo4j_pg_id: dimId });
+    await db()('product_tables').where({ neo4j_pg_id: dimId }).whereNot({ id: factId }).update({ neo4j_pg_id: null });
     await db()('product_tables').where({ id: factId }).update({ neo4j_pg_id: dimId });
     const [openCol] = await db()('product_columns').where({ product_table_id: factId, column_name: 'open_amount' }).update({ neo4j_pg_id: 7_700_001 }).returning('id');
     const dimBefore = await db()('product_tables').where({ id: dimId }).first();
