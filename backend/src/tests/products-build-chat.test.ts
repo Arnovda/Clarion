@@ -156,7 +156,7 @@ describe('POST /api/products/bus-matrix/extend-start', () => {
     });
     const res = await start(adminToken, { connectionId: bareConnId, name: 'Quotations', entities: ['Quotations'] });
     expect(res.status).toBe(409);
-    expect(res.body.error).toContain('Create my topics');
+    expect(res.body.error).toContain('Create the subjects');
   });
 });
 

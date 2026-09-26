@@ -100,11 +100,9 @@ const NAV_ITEMS: NavItem[] = [
   // with Sources because it IS a source of data (the manual one); the rows
   // live in Postgres and materialise into the warehouse on every save.
   { key: 'grids',      href: '/grids',      label: 'Your tables',     icon: ICONS.table,   roles: ['admin', 'analyst'],            group: 'studio' },
-  // Where a source becomes topics — the tenant-level front door to the
-  // bus-matrix flow (build, show/hide, guarded rebuild). Tenant-level on
-  // purpose: preparing data spans sources (shared data is conformed across
-  // them), so this is NOT a per-source action on the source card.
-  { key: 'build',      href: '/build',      label: 'Build',           icon: ICONS.blocks,  roles: ['admin', 'analyst'],            group: 'studio' },
+  // (Build lived here until 2026-09-26 — folded into the Catalog: creating a
+  // source's subjects and upgrading keys are lines on its landing, a full
+  // rebuild is on the source's ⋯ menu, hide/show on the subject's.)
   // Where the relationship canvas lives. Studio on purpose — it is a repair and
   // escape-hatch tool for people who already know their data, not the front
   // door. A new customer must never meet 170 edges on day one.
@@ -138,10 +136,10 @@ const ROUTE_ALIASES: Record<string, string[]> = {
   '/subjects':   ['/subjects', '/topics', '/shared-data'],
   '/pipelines':  ['/pipelines'],
   '/sources':    ['/sources', '/setup'],
-  '/build':      ['/build'],
-  // Health lives on the catalog's landing; the old /health and /semantic
-  // links keep the Catalog entry lit instead of orphaning the active state.
-  '/catalog':    ['/catalog', '/semantic', '/health'],
+  // Health lives on the catalog's landing, and so does the Build page's
+  // work; the old /health, /semantic and /build links keep the Catalog
+  // entry lit instead of orphaning the active state.
+  '/catalog':    ['/catalog', '/semantic', '/health', '/build'],
   // The glossary became the Definitions pane.
   '/definitions': ['/definitions', '/glossary'],
   '/review':     ['/review', '/gaps', '/suggestions'],

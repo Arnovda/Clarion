@@ -60,9 +60,9 @@ const ACTIONS_ALL: ActionDef[] = [
   { type: 'action', id: 'connect',    title: 'Connect a source',   subtitle: 'Studio · add a data source',       icon: 'plug',  href: '/sources',    roles: ['admin', 'analyst'] },
   { type: 'action', id: 'shared',     title: 'Shared data',        subtitle: 'Studio · the lookups every topic slices by', icon: 'book', href: '/shared-data', roles: ['admin', 'analyst'] },
   { type: 'action', id: 'grids',      title: 'Your tables',        subtitle: 'Studio · budgets, mappings & lists you keep in Clarion', icon: 'columns', href: '/grids', roles: ['admin', 'analyst'] },
-  // Build is where a source becomes subjects; the workshop it replaced is
-  // gone (2026-09-23 — the catalog's subject page holds what it had).
-  { type: 'action', id: 'build',      title: 'Build',              subtitle: 'Studio · turn a source into subjects', icon: 'star',  href: '/build',      roles: ['admin', 'analyst'] },
+  // Turning a source into subjects happens in the Catalog since the Build
+  // page was folded in (2026-09-26): its landing offers what is waiting.
+  { type: 'action', id: 'build',      title: 'Create subjects',    subtitle: 'Studio · Catalog — turn a source into subjects', icon: 'star',  href: '/catalog',    roles: ['admin', 'analyst'] },
   { type: 'action', id: 'suggestions',title: 'Suggestions',        subtitle: 'Studio · confirm AI proposals',     icon: 'bolt',  href: '/review',     roles: ['admin', 'analyst'] },
   { type: 'action', id: 'team',       title: 'Team & roles',       subtitle: 'Settings · users & invites',        icon: 'users', href: '/users',      roles: ['admin'] },
 ];

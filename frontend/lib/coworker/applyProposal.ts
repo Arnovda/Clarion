@@ -9,7 +9,7 @@
  * guess about what used to be there.
  *
  * Two kinds need the panel itself after Keep (a new table's SQL arrives as a
- * next proposal; a build is followed on /build) — they are handled in the
+ * next proposal; a build is followed at the top of the Catalog) — they are handled in the
  * provider, not here.
  */
 import api from '@/lib/api';
@@ -126,7 +126,7 @@ export async function applyProposal(p: CoworkerProposal): Promise<KeepOutcome> {
     }
     case 'first-build': {
       await api.post('/products/bus-matrix/start', { connectionId: p.connectionId });
-      return { followHref: '/build', followLabel: 'Follow the build' };
+      return { followHref: '/catalog', followLabel: 'Follow the build' };
     }
     case 'grid-new': {
       const r = await api.post('/grids', {

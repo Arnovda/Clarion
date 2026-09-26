@@ -59,7 +59,7 @@ const proposeFirstBuild: CoworkerTool = {
   kind: 'propose',
   definition: {
     name: 'propose_first_build',
-    description: 'Propose "Create my topics" for a synced source that has NO subjects yet: Clarion designs and builds its subjects and shared lookups. For a source that already has subjects, use propose_new_subject instead.',
+    description: 'Propose "Create the subjects" for a synced source that has NO subjects yet: Clarion designs and builds its subjects and shared lookups. For a source that already has subjects, use propose_new_subject instead.',
     input_schema: {
       type: 'object',
       properties: { connection_id: { type: 'integer' } },

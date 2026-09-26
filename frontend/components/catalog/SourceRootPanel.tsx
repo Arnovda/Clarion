@@ -31,13 +31,14 @@ import Link from 'next/link';
 import {
   AlertTriangle, Boxes, ChevronRight, ChevronDown,
   Loader2, Network, Play,
-  Search, Sparkles, Workflow, X,
+  RefreshCw, Search, Sparkles, Workflow, X,
 } from 'lucide-react';
 import api from '@/lib/api';
 import { cn } from '@/lib/cn';
 import { useRole, canCurate } from '@/lib/role';
 import ConnectorMarkIcon from '@/components/ConnectorMarkIcon';
-import ExplorerHeader, { HeaderAction } from '@/components/catalog/ExplorerHeader';
+import ExplorerHeader, { HeaderAction, MoreMenu } from '@/components/catalog/ExplorerHeader';
+import { RebuildSubjectsConfirm, useSubjectBuilds } from '@/components/catalog/subjectBuilds';
 import type { CatalogNavTarget } from '@/components/catalog/navigation';
 import { useSchema, type RelationshipRow } from '@/components/catalog/useSchema';
 import type { SourceTable, SourceColumn } from '@/components/semantic/types';
@@ -98,6 +99,11 @@ export default function SourceRootPanel({ connectionId, onNavigate }: Props) {
   const [tab, setTab] = useState<DetailTab>('overview');
   const [conn, setConn] = useState<ConnectionRow | null>(null);
   const [connLoading, setConnLoading] = useState(true);
+  // Rebuilding a source's subjects (retire-and-replace) lives here since the
+  // Build page was folded into the catalog; it runs in the catalog's strip.
+  const builds = useSubjectBuilds();
+  const buildSource = builds?.overview?.sources.find((s) => s.id === connectionId) ?? null;
+  const [confirmRebuild, setConfirmRebuild] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -199,6 +205,15 @@ export default function SourceRootPanel({ connectionId, onNavigate }: Props) {
             <HeaderAction href={`/sources?connectionId=${connectionId}`} primary icon={<Play className="w-3.5 h-3.5" strokeWidth={1.75} aria-hidden />} title="Sync, analyse and configure this source">
               Open in Sources
             </HeaderAction>
+            {builds && buildSource && (
+              <MoreMenu
+                items={buildSource.products.length > 0
+                  ? [{ label: 'Rebuild the subjects from this source…', onClick: () => setConfirmRebuild(true), icon: <RefreshCw className="w-3.5 h-3.5" strokeWidth={1.75} aria-hidden /> }]
+                  : buildSource.tableCount > 0
+                    ? [{ label: 'Create subjects from this source…', onClick: () => onNavigate?.({ kind: 'catalog' }), icon: <Sparkles className="w-3.5 h-3.5" strokeWidth={1.75} aria-hidden /> }]
+                    : []}
+              />
+            )}
           </>
         ) : undefined}
         tabs={[
@@ -211,6 +226,17 @@ export default function SourceRootPanel({ connectionId, onNavigate }: Props) {
         activeTab={tab}
         onTabChange={setTab}
       />
+
+      {confirmRebuild && builds && (
+        <div className="border-b border-line px-6 py-3 shrink-0">
+          <RebuildSubjectsConfirm
+            sourceName={name}
+            disabled={builds.building}
+            onConfirm={() => { setConfirmRebuild(false); void builds.startBuild(connectionId); }}
+            onCancel={() => setConfirmRebuild(false)}
+          />
+        </div>
+      )}
 
       {/* Synced-but-unanalysed strip: tables were registered in the catalog
           straight after the first sync (structural pass, no AI), so the user

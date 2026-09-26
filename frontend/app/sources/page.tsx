@@ -861,10 +861,10 @@ function ConnectionCard({
       return 'Tables are loaded and visible in the catalog. Click Analyse to add AI descriptions and relationships.';
     if (profilingState.status !== 'done' && isSourceConnector && conn.last_synced_at)
       return 'Data is in. Click Analyse to register and describe the tables in the catalog.';
-    // Analysed — the next step in the journey lives on Build, not here:
+    // Analysed — the next step in the journey lives in the Catalog, not here:
     // turning sources into topics is a tenant-level act (shared data spans
     // sources), so this card only points at it.
-    return <>Analysed. <a href="/build" className="text-ocean hover:underline">Turn it into topics on Build →</a></>;
+    return <>Analysed. <a href="/catalog" className="text-ocean hover:underline">Turn it into subjects in the Catalog →</a></>;
   })();
 
   return (

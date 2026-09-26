@@ -52,7 +52,7 @@ const BACKEND_URL = process.env.NEXT_PUBLIC_API_URL?.replace('/api', '') ?? 'htt
 
 /** Where the coworker lives. Studio is the curators' part of the product. */
 const STUDIO_PREFIXES = [
-  '/catalog', '/sources', '/build', '/relationships', '/definitions',
+  '/catalog', '/sources', '/relationships', '/definitions',
   '/grids', '/pipelines', '/review', '/semantic', '/shared-data',
 ];
 export function isStudioPath(path: string | null): boolean {
@@ -606,7 +606,7 @@ export function CoworkerProvider({ children }: { children: ReactNode }) {
           connectionId: p.connectionId, name: p.name, description: p.description, entities: p.entities,
           ...(p.focus ? { focus: p.focus } : {}),
         });
-        setProposal(id, { status: 'kept', followHref: '/build', followLabel: 'Follow the build' });
+        setProposal(id, { status: 'kept', followHref: '/catalog', followLabel: 'Follow the build' });
       }
       notifyChanged();
     } catch (err) {
